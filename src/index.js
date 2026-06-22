@@ -923,6 +923,7 @@ async function getChannelById(channelId) {
 }
 
 async function loadSharedSignatures(draft) {
+  if (draft?.isAd) return draft;
   draft.signaturesByChannel = draft.signaturesByChannel || {};
   draft.signatureEnabledByChannel = draft.signatureEnabledByChannel || {};
   draft.signatureFormatsByChannel = draft.signatureFormatsByChannel || {};
@@ -1405,7 +1406,7 @@ function buildPostTextForChannel(draft, channelId) {
   if (draft.content?.text) parts.push(draft.content.text);
   const signature = draft.signaturesByChannel?.[String(channelId)];
   const enabled = draft.signatureEnabledByChannel?.[String(channelId)] !== false;
-  if (signature && enabled) parts.push(signature);
+  if (!draft.isAd && signature && enabled) parts.push(signature);
   return parts.join('\n\n').trim() || ' ';
 }
 
@@ -2228,6 +2229,699 @@ function lr31AdBotNotice() {
   return `✨ Рекламное размещение подготовлено через [LinkRay](${lr31BotUrl()}) — автопостинг, очередь публикаций и рекламные отчёты для MAX.`;
 }
 
+
+function lr32BotUrl() {
+  return 'https://max.ru/se13353901_bot';
+}
+
+function lr32Decode(value) {
+  return String(value ?? '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function lr32StripHtml(value) {
+  return lr32Decode(value)
+    .replace(/<a\s+[^>]*href=["'][^"']+["'][^>]*>([\s\S]*?)<\/a>/gi, '$1')
+    .replace(/<\/?(b|strong|i|em|u|s|strike|code|span|div|p|br)[^>]*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\*\*/g, '')
+    .replace(/__+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lr32Preview(value, max = 130) {
+  const plain = lr32StripHtml(value);
+  if (!plain) return 'пост без текста';
+  return plain.length > max ? `${plain.slice(0, max)}...` : plain;
+}
+
+function lr32SafeTitle(value) {
+  return String(value || '')
+    .replace(/[\[\]\n\r]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lr32ChannelTitle(channel) {
+  return lr32SafeTitle(channel?.title || channel?.name || `Канал #${channel?.id || ''}`.trim());
+}
+
+function lr32ChannelUrl(channel) {
+  const value = channel?.link || channel?.url || channel?.invite_link || channel?.join_link || channel?.channel_link || '';
+  return /^https?:\/\//i.test(String(value)) ? String(value) : '';
+}
+
+function lr32ChannelLine(channel) {
+  const title = lr32ChannelTitle(channel);
+  const url = lr32ChannelUrl(channel);
+  return url ? `• [${title}](${url})` : `• ${title}`;
+}
+
+function lr32ChannelsList(channels) {
+  if (!Array.isArray(channels) || !channels.length) return '• каналы не выбраны';
+  return channels.map((channel) => lr32ChannelLine(channel)).join('\n');
+}
+
+function lr32DraftText(draft) {
+  return draft?.content?.text || draft?.text || draft?.caption || draft?.preview_text || '';
+}
+
+function lr32PostPreviewFromDraft(draft) {
+  return lr32Preview(lr32DraftText(draft), 145);
+}
+
+function lr32MainMenuText() {
+  return `━━━━━━━━━━━━━━
+🧬 **LinkRay**
+
+Студия публикаций, очередь постов и рекламные отчёты для MAX.
+
+Выберите действие.
+━━━━━━━━━━━━━━`;
+}
+
+function lr32MainMenuKeyboard() {
+  return inlineKeyboard([
+    [callbackButton('🧬 LinkRay Studio', 'post:create')],
+    [callbackButton('📅 Очередь', 'queue:menu'), callbackButton('📡 Каналы', 'post:channels')],
+    [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'antifraud:menu')],
+  ]);
+}
+
+function lr32AfterPublishKeyboard() {
+  return inlineKeyboard([
+    [callbackButton('🧩 Собрать ещё пост', 'post:create')],
+    [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+    [callbackButton('🏠 В меню', 'main:menu')],
+  ]);
+}
+
+function lr32AdNotice() {
+  return `✨ Размещение подготовлено через [LinkRay](${lr32BotUrl()}) — автопостинг, очередь публикаций и рекламные отчёты для MAX.`;
+}
+
+function lr32PublishedAdText(draft, channels, ok, total) {
+  const preview = lr32PostPreviewFromDraft(draft);
+  const cpm = draft?.cpm ? `${draft.cpm} ₽` : 'не указан';
+
+  return `━━━━━━━━━━━━━━
+✅ **Рекламный пост опубликован**
+
+📝 Сообщение «${preview}»
+
+📣 **Каналы:**
+${lr32ChannelsList(channels)}
+
+🚀 **Опубликовано:** ${ok} из ${total}
+💼 **Тип:** рекламное размещение
+💰 **CPM:** ${cpm}
+📊 **Отчёт:** через 24ч после публикации
+
+${lr32AdNotice()}
+━━━━━━━━━━━━━━`;
+}
+
+function lr32PublishedNormalText(draft, channels, ok, total) {
+  return `━━━━━━━━━━━━━━
+✅ **Пост опубликован**
+
+📣 **Каналы:**
+${lr32ChannelsList(channels)}
+
+🚀 **Опубликовано:** ${ok} из ${total}
+━━━━━━━━━━━━━━`;
+}
+
+function lr32ScheduledAdText(draft, channels, publishAt) {
+  const preview = lr32PostPreviewFromDraft(draft);
+  const cpm = draft?.cpm ? `${draft.cpm} ₽` : 'не указан';
+  const dateText = lr32FormatDateTime(publishAt);
+
+  return `━━━━━━━━━━━━━━
+✅ **Рекламная публикация запланирована**
+
+📝 Сообщение «${preview}»
+
+📅 **Статус:** отложено
+🕒 **Публикация:** ${dateText}
+
+📣 **Каналы:**
+${lr32ChannelsList(channels)}
+
+🗑 **Автоудаление:** ${draft?.deleteAfterMinutes ? lr32MinutesText(draft.deleteAfterMinutes) : 'нет'}
+📊 **Отчёт:** через 24ч после публикации
+💼 **Тип:** рекламное размещение
+💰 **CPM:** ${cpm}
+
+${lr32AdNotice()}
+━━━━━━━━━━━━━━`;
+}
+
+async function lr32SendMessageToChat(chatId, text, attachments = null) {
+  return sendMaxMessage({
+    chatId,
+    text,
+    format: 'markdown',
+    attachments,
+  });
+}
+
+async function lr32SendMenuAfterPublish(chatId) {
+  return lr32SendMessageToChat(chatId, lr32MainMenuText(), lr32MainMenuKeyboard());
+}
+
+async function lr32AfterScheduled(callbackId, key, draft, publishAt) {
+  const channels = await getChannelsByIds(draft.channelIds || []);
+
+  if (draft?.isAd) {
+    const text = lr32ScheduledAdText(draft, channels, publishAt);
+    try {
+      await lr32SendMessageToChat(key, text, lr32AfterPublishKeyboard());
+      await lr32SendMenuAfterPublish(key);
+      await answerCallback({
+        callbackId,
+        text: '✅ Рекламная публикация запланирована. Карточку и меню отправил ниже.',
+      });
+    } catch (error) {
+      console.error('[schedule] ad card/menu send failed:', error.message || error);
+      await answerCallback({
+        callbackId,
+        text,
+        attachments: lr32AfterPublishKeyboard(),
+      });
+    }
+    return;
+  }
+
+  await lr32AfterScheduled(callbackId, key, draft, publishAt);
+}
+
+function lr32FormatDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return 'время не определено';
+
+  const weekdays = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+
+  return `${weekdays[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()} · ${hh}:${mm} МСК`;
+}
+
+function lr32MinutesText(minutes) {
+  const n = Number(minutes);
+  if (!Number.isFinite(n) || n <= 0) return 'нет';
+  if (n % 1440 === 0) return `${n / 1440}д`;
+  if (n % 60 === 0) return `${n / 60}ч`;
+  return `${n} мин`;
+}
+
+function lr32RowAd(row) {
+  const options = row?.options || row?.settings || {};
+  return row?.is_ad === true ||
+    row?.isAd === true ||
+    options?.isAd === true ||
+    options?.is_ad === true ||
+    Number(row?.cpm || options?.cpm || 0) > 0;
+}
+
+function lr32RowCpm(row) {
+  const options = row?.options || row?.settings || {};
+  return row?.cpm || options?.cpm || null;
+}
+
+function lr32RowText(row) {
+  return row?.text || row?.caption || row?.preview_text || row?.content_text || '';
+}
+
+function lr32RowDate(row) {
+  return row?.publish_at || row?.publishAt || row?.published_at || row?.created_at || row?.updated_at;
+}
+
+function lr32RowStatus(row) {
+  return String(row?.status || '').toLowerCase();
+}
+
+function lr32StatusText(row) {
+  const status = lr32RowStatus(row);
+  if (status === 'published') return 'опубликован';
+  if (status === 'scheduled') return 'отложено';
+  if (status === 'cancelled' || status === 'canceled') return 'отменено';
+  if (status === 'failed') return 'ошибка';
+  return status || 'неизвестно';
+}
+
+function lr32StatusIcon(row) {
+  const status = lr32RowStatus(row);
+  if (status === 'published') return '✅';
+  if (status === 'scheduled') return '⏳';
+  if (status === 'failed') return '⚠️';
+  if (status === 'cancelled' || status === 'canceled') return '❌';
+  return '📌';
+}
+
+function lr32PostButtonTitle(row) {
+  const date = new Date(lr32RowDate(row));
+  const hh = Number.isNaN(date.getTime()) ? '--:--' : `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const ad = lr32RowAd(row) ? '💼 ' : '';
+  const icon = lr32StatusIcon(row);
+  const preview = lr32Preview(lr32RowText(row), 32);
+  return `${ad}${icon} ${hh} · ${preview}`;
+}
+
+function lr32PostTextForSending(row) {
+  return lr32Decode(lr32RowText(row));
+}
+
+function lr32ParseMaybeJson(value, fallback) {
+  if (!value) return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function lr32RowAttachments(row) {
+  const value = row?.attachments || row?.media || row?.attachment;
+  const parsed = lr32ParseMaybeJson(value, null);
+  return parsed || null;
+}
+
+async function lr32ColumnExists(tableName, columnName) {
+  const result = await query(
+    `SELECT 1
+     FROM information_schema.columns
+     WHERE table_name = $1 AND column_name = $2
+     LIMIT 1`,
+    [tableName, columnName]
+  );
+  return result.rows.length > 0;
+}
+
+async function lr32GetQueueRows(mode = 'all', channelId = null, limit = 10) {
+  const conditions = [];
+  const params = [];
+
+  if (mode === 'scheduled') {
+    conditions.push(`sp.status = 'scheduled'`);
+  } else if (mode === 'published') {
+    conditions.push(`sp.status = 'published'`);
+  } else {
+    conditions.push(`sp.status IN ('scheduled', 'published')`);
+  }
+
+  if (channelId) {
+    params.push(Number(channelId));
+    conditions.push(`sp.channel_id = $${params.length}`);
+  }
+
+  params.push(Number(limit));
+
+  const sql = `
+    SELECT
+      sp.*,
+      c.title AS channel_title,
+      c.link AS channel_link,
+      c.id AS channel_real_id
+    FROM scheduled_posts sp
+    LEFT JOIN channels c ON c.id = sp.channel_id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY sp.publish_at ASC, sp.id ASC
+    LIMIT $${params.length}
+  `;
+
+  const result = await query(sql, params);
+  return result.rows;
+}
+
+async function lr32GetQueuePost(id) {
+  const result = await query(
+    `SELECT
+       sp.*,
+       c.title AS channel_title,
+       c.link AS channel_link,
+       c.id AS channel_real_id
+     FROM scheduled_posts sp
+     LEFT JOIN channels c ON c.id = sp.channel_id
+     WHERE sp.id = $1
+     LIMIT 1`,
+    [Number(id)]
+  );
+  return result.rows[0] || null;
+}
+
+async function lr32GetQueueChannels() {
+  const result = await query(
+    `SELECT
+       c.id,
+       c.title,
+       c.link,
+       COUNT(sp.id)::int AS total_count,
+       COUNT(sp.id) FILTER (WHERE sp.status = 'scheduled')::int AS scheduled_count,
+       COUNT(sp.id) FILTER (WHERE sp.status = 'published')::int AS published_count
+     FROM channels c
+     LEFT JOIN scheduled_posts sp
+       ON sp.channel_id = c.id
+      AND sp.status IN ('scheduled', 'published')
+     GROUP BY c.id, c.title, c.link
+     ORDER BY total_count DESC, c.title ASC`
+  );
+  return result.rows;
+}
+
+async function lr32EditQueueMenu(callbackId) {
+  const channels = await lr32GetQueueChannels();
+  const rows = [[callbackButton('🌐 Все каналы', 'queue:all')]];
+
+  for (const channel of channels.slice(0, 10)) {
+    const title = lr32ChannelTitle(channel);
+    const count = Number(channel.scheduled_count || 0) + Number(channel.published_count || 0);
+    rows.push([callbackButton(`📡 ${title}${count ? ` · ${count}` : ''}`, `queue:channel:${channel.id}`)]);
+  }
+
+  rows.push([callbackButton('⏳ Отложенные', 'queue:scheduled'), callbackButton('🟢 Опубликованные', 'queue:published')]);
+  rows.push([callbackButton('⬅️ В Studio', 'main:posting')]);
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+📅 **Очередь публикаций**
+
+Выберите канал или общий список.
+Рекламные посты помечаются значком 💼.
+━━━━━━━━━━━━━━`,
+    attachments: inlineKeyboard(rows),
+  });
+}
+
+function lr32QueueHeader(mode, channel = null, rows = []) {
+  const title = channel ? lr32ChannelTitle(channel) : 'Все каналы';
+  const published = rows.filter((r) => lr32RowStatus(r) === 'published').length;
+  const scheduled = rows.filter((r) => lr32RowStatus(r) === 'scheduled').length;
+
+  let modeText = 'все посты';
+  if (mode === 'scheduled') modeText = 'отложенные';
+  if (mode === 'published') modeText = 'опубликованные';
+
+  return `━━━━━━━━━━━━━━
+📅 **${title}**
+
+Фильтр: ${modeText}
+⏳ Отложено: ${scheduled}
+✅ Опубликовано: ${published}
+
+Нажмите на пост, чтобы открыть управление.
+━━━━━━━━━━━━━━`;
+}
+
+async function lr32EditQueueList(callbackId, mode = 'all', channelId = null) {
+  let channel = null;
+  if (channelId) {
+    const channels = await getChannelsByIds([Number(channelId)]);
+    channel = channels[0] || null;
+  }
+
+  const rowsData = await lr32GetQueueRows(mode, channelId, 12);
+  const rows = [];
+
+  for (const row of rowsData) {
+    rows.push([callbackButton(lr32PostButtonTitle(row), `queue:post:${row.id}`)]);
+  }
+
+  if (!rows.length) {
+    rows.push([callbackButton('Пока пусто', 'queue:noop')]);
+  }
+
+  rows.push([callbackButton('⏳ Отложенные', channelId ? `queue:channel:${channelId}:scheduled` : 'queue:scheduled'), callbackButton('🟢 Опубликованные', channelId ? `queue:channel:${channelId}:published` : 'queue:published')]);
+  rows.push([callbackButton('📋 Все посты', channelId ? `queue:channel:${channelId}:all` : 'queue:all')]);
+  rows.push([callbackButton('📅 Развернуть календарь', channelId ? `queue:calendar:${channelId}` : 'queue:calendar')]);
+  rows.push([callbackButton('⬅️ Назад', 'queue:menu')]);
+
+  await answerCallback({
+    callbackId,
+    text: lr32QueueHeader(mode, channel, rowsData),
+    attachments: inlineKeyboard(rows),
+  });
+}
+
+async function lr32SendQueuePostPreview(chatId, post) {
+  const text = lr32PostTextForSending(post);
+  const attachments = lr32RowAttachments(post);
+  if (!text && !attachments) return;
+
+  try {
+    await sendMaxMessage({
+      chatId,
+      text: text || ' ',
+      format: post.format || post.content_format || 'html',
+      attachments,
+    });
+  } catch (error) {
+    console.error('[queue] preview send failed:', error.message || error);
+  }
+}
+
+async function lr32EditQueuePost(callbackId, key, id, sendPreview = true) {
+  const post = await lr32GetQueuePost(id);
+  if (!post) {
+    await answerCallback({
+      callbackId,
+      text: 'Публикация не найдена.',
+      attachments: inlineKeyboard([[callbackButton('⬅️ К очереди', 'queue:all')]]),
+    });
+    return;
+  }
+
+  if (sendPreview) {
+    await lr32SendQueuePostPreview(key, post);
+  }
+
+  const channel = {
+    id: post.channel_real_id || post.channel_id,
+    title: post.channel_title,
+    link: post.channel_link,
+  };
+
+  const status = lr32StatusText(post);
+  const isAd = lr32RowAd(post);
+  const cpm = lr32RowCpm(post);
+  const deleteAfter = post.delete_after_minutes || post.auto_delete_minutes || post.delete_after || lr32ParseMaybeJson(post.options, {})?.deleteAfterMinutes;
+
+  const rows = [
+    [callbackButton('✏️ Перейти в редактор', `queue:edit:text:${post.id}`)],
+    [callbackButton(`🗑 Автоудаление: ${lr32MinutesText(deleteAfter)}`, `queue:autodel:${post.id}`)],
+    [callbackButton(status === 'published' ? '❌ Удалить из канала' : '❌ Отменить публикацию', `queue:delete:${post.id}`)],
+    [callbackButton('⬅️ Назад', 'queue:all')],
+  ];
+
+  const text = `━━━━━━━━━━━━━━
+${isAd ? '💼 **Рекламная публикация**' : '📄 **Публикация**'} #${post.id}
+
+📣 **Канал:**
+${lr32ChannelLine(channel)}
+
+🕒 **Время:** ${lr32FormatDateTime(lr32RowDate(post))}
+${lr32StatusIcon(post)} **Статус:** ${status}
+🗑 **Автоудаление:** ${lr32MinutesText(deleteAfter)}
+${isAd ? `💰 **CPM:** ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}
+📝 **Текст:** «${lr32Preview(lr32RowText(post), 160)}»
+
+Пост-превью отправлен выше, чтобы видеть изменения.
+━━━━━━━━━━━━━━`;
+
+  await answerCallback({
+    callbackId,
+    text,
+    attachments: inlineKeyboard(rows),
+  });
+}
+
+async function lr32QueueAutoDeleteMenu(callbackId, id) {
+  const rows = [
+    [callbackButton('1ч', `queue:autodel_set:${id}:60`), callbackButton('2ч', `queue:autodel_set:${id}:120`), callbackButton('6ч', `queue:autodel_set:${id}:360`)],
+    [callbackButton('24ч', `queue:autodel_set:${id}:1440`), callbackButton('48ч', `queue:autodel_set:${id}:2880`), callbackButton('72ч', `queue:autodel_set:${id}:4320`)],
+    [callbackButton('🚫 Не удалять', `queue:autodel_set:${id}:none`)],
+    [callbackButton('⬅️ К публикации', `queue:post:${id}`)],
+  ];
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+🗑 **Автоудаление**
+
+Выберите срок для публикации #${id}.
+━━━━━━━━━━━━━━`,
+    attachments: inlineKeyboard(rows),
+  });
+}
+
+async function lr32QueueSetAutoDelete(callbackId, id, value) {
+  const minutes = value === 'none' ? null : Number(value);
+
+  if (await lr32ColumnExists('scheduled_posts', 'delete_after_minutes')) {
+    await query('UPDATE scheduled_posts SET delete_after_minutes = $2, updated_at = now() WHERE id = $1', [Number(id), minutes]);
+  } else if (await lr32ColumnExists('scheduled_posts', 'options')) {
+    await query(
+      `UPDATE scheduled_posts
+       SET options = COALESCE(options, '{}'::jsonb) || $2::jsonb,
+           updated_at = now()
+       WHERE id = $1`,
+      [Number(id), JSON.stringify({ deleteAfterMinutes: minutes })]
+    );
+  }
+
+  await answerCallback({
+    callbackId,
+    text: `🗑 Автоудаление обновлено: ${lr32MinutesText(minutes)}.`,
+    attachments: inlineKeyboard([[callbackButton('⬅️ К публикации', `queue:post:${id}`)]]),
+  });
+}
+
+async function lr32QueueDelete(callbackId, id) {
+  const post = await lr32GetQueuePost(id);
+  if (!post) {
+    await answerCallback({
+      callbackId,
+      text: 'Публикация не найдена.',
+      attachments: inlineKeyboard([[callbackButton('⬅️ К очереди', 'queue:all')]]),
+    });
+    return;
+  }
+
+  const status = lr32RowStatus(post);
+  const targetStatus = status === 'published' ? 'deleted' : 'cancelled';
+
+  try {
+    await query('UPDATE scheduled_posts SET status = $2, updated_at = now() WHERE id = $1', [Number(id), targetStatus]);
+  } catch (error) {
+    console.error('[queue] delete/cancel status update failed:', error.message || error);
+    await query('UPDATE scheduled_posts SET error_message = $2, updated_at = now() WHERE id = $1', [Number(id), 'removed from queue by user']);
+  }
+
+  await answerCallback({
+    callbackId,
+    text: status === 'published'
+      ? `❌ Публикация #${id} убрана из очереди LinkRay. Если MAX message_id сохранён, физическое удаление добавим отдельным шагом.`
+      : `❌ Публикация #${id} отменена.`,
+    attachments: inlineKeyboard([[callbackButton('📅 Очередь', 'queue:all')]]),
+  });
+}
+
+async function lr32QueueCalendar(callbackId, channelId = null) {
+  const rowsData = await lr32GetQueueRows('all', channelId, 30);
+  const byDate = new Map();
+
+  for (const row of rowsData) {
+    const d = new Date(lr32RowDate(row));
+    if (Number.isNaN(d.getTime())) continue;
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    byDate.set(key, (byDate.get(key) || 0) + 1);
+  }
+
+  const lines = Array.from(byDate.entries())
+    .slice(0, 12)
+    .map(([date, count]) => `• ${date} — ${count}`)
+    .join('\n') || 'Пока нет публикаций.';
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+📅 **Календарь очереди**
+
+${lines}
+━━━━━━━━━━━━━━`,
+    attachments: inlineKeyboard([[callbackButton('⬅️ К очереди', channelId ? `queue:channel:${channelId}` : 'queue:all')]]),
+  });
+}
+
+async function lr32HandleQueueCallback(payload, callbackId, key) {
+  if (payload === 'queue:noop') return true;
+
+  
+  if (payload.startsWith('queue:')) {
+    const handledByLr32Queue = await lr32HandleQueueCallback(payload, callbackId, key);
+    if (handledByLr32Queue) return;
+  }
+
+if (payload === 'queue:menu') {
+    await lr32EditQueueMenu(callbackId);
+    return true;
+  }
+
+  if (payload === 'queue:all') {
+    await lr32EditQueueList(callbackId, 'all');
+    return true;
+  }
+
+  if (payload === 'queue:scheduled') {
+    await lr32EditQueueList(callbackId, 'scheduled');
+    return true;
+  }
+
+  if (payload === 'queue:published') {
+    await lr32EditQueueList(callbackId, 'published');
+    return true;
+  }
+
+  if (payload.startsWith('queue:channel:')) {
+    const parts = payload.split(':');
+    const channelId = Number(parts[2]);
+    const mode = parts[3] || 'all';
+    await lr32EditQueueList(callbackId, mode, channelId);
+    return true;
+  }
+
+  if (payload.startsWith('queue:post:')) {
+    const id = Number(payload.split(':')[2]);
+    await lr32EditQueuePost(callbackId, key, id, true);
+    return true;
+  }
+
+  if (payload.startsWith('queue:autodel:')) {
+    const id = Number(payload.split(':')[2]);
+    await lr32QueueAutoDeleteMenu(callbackId, id);
+    return true;
+  }
+
+  if (payload.startsWith('queue:autodel_set:')) {
+    const parts = payload.split(':');
+    const id = Number(parts[2]);
+    const value = parts[3];
+    await lr32QueueSetAutoDelete(callbackId, id, value);
+    return true;
+  }
+
+  if (payload.startsWith('queue:delete:')) {
+    const id = Number(payload.split(':')[2]);
+    await lr32QueueDelete(callbackId, id);
+    return true;
+  }
+
+  if (payload === 'queue:calendar') {
+    await lr32QueueCalendar(callbackId);
+    return true;
+  }
+
+  if (payload.startsWith('queue:calendar:')) {
+    const id = Number(payload.split(':')[2]);
+    await lr32QueueCalendar(callbackId, id);
+    return true;
+  }
+
+  return false;
+}
+
 async function handleCallback(update) {
   const callbackId = getCallbackId(update);
   const payload = getCallbackPayload(update);
@@ -2424,7 +3118,7 @@ ${sig}
     await saveQuickTime(key, time);
     await scheduleDraft(draft, key, publishAt);
     await clearSession(key);
-    await answerCallback({ callbackId, text: await textScheduled(draft, publishAt), attachments: kbFinal() });
+    await lr32AfterScheduled(callbackId, key, draft, publishAt);
     return;
   }
   if (payload === 'publish:now') {
@@ -2436,12 +3130,12 @@ ${sig}
     await clearSession(key);
 
     const resultText = draft.isAd
-      ? lr31PublishedAdText(draft, channels, ok, total)
-      : lr31PublishedNormalText(draft, channels, ok, total);
+      ? lr32PublishedAdText(draft, channels, ok, total)
+      : lr32PublishedNormalText(draft, channels, ok, total);
 
     try {
-      await lr31SendMessageToChat(key, resultText, lr31AfterPublishKeyboard());
-      await lr31SendMenuAfterPublish(key);
+      await lr32SendMessageToChat(key, resultText, lr32AfterPublishKeyboard());
+      await lr32SendMenuAfterPublish(key);
       await answerCallback({
         callbackId,
         text: '✅ Готово. Карточку публикации и новое меню отправил ниже.',
@@ -2451,7 +3145,7 @@ ${sig}
       await answerCallback({
         callbackId,
         text: resultText,
-        attachments: lr31AfterPublishKeyboard(),
+        attachments: lr32AfterPublishKeyboard(),
       });
     }
 
