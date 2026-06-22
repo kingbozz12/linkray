@@ -2614,37 +2614,198 @@ function lr34PostButtonTitle(row) {
   return `${ad}${icon} ${hh} · ${preview}${delText}`;
 }
 
-async function lr32EditQueueMenu(callbackId) {
+
+function lr35MonthName(date) {
+  const months = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+  return months[date.getMonth()] || '';
+}
+
+function lr35ShortDay(date) {
+  const days = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  return days[date.getDay()] || '';
+}
+
+function lr35DateLine(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return 'дата не выбрана';
+  return `${lr35ShortDay(date)} ${date.getDate()} ${lr35MonthName(date)} ${date.getFullYear()} г.`;
+}
+
+function lr35Time(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '--:--';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function lr35ReadablePreview(row, max = 42) {
+  const text = lr32StripHtml(lr32RowText(row));
+  if (!text) return 'пост без текста';
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function lr35PostMainButton(row) {
+  const date = new Date(lr32RowDate(row));
+  const time = lr35Time(date);
+  const ad = lr32RowAd(row) ? '💼 ' : '';
+  const icon = lr32StatusIcon(row);
+  const media = lr32RowAttachments(row) ? '🖼 ' : '';
+  return `${ad}${icon} ${time} · ${media}${lr35ReadablePreview(row, 34)}`;
+}
+
+function lr35QueueTitle(mode, channel, rows) {
+  const title = channel ? lr32ChannelTitle(channel) : 'Все каналы';
+  const published = rows.filter((r) => lr32RowStatus(r) === 'published').length;
+  const scheduled = rows.filter((r) => lr32RowStatus(r) === 'scheduled').length;
+  const first = rows.length ? new Date(lr32RowDate(rows[0])) : new Date();
+
+  let modeLabel = 'все посты';
+  if (mode === 'scheduled') modeLabel = 'запланированные';
+  if (mode === 'published') modeLabel = 'опубликованные';
+
+  return `━━━━━━━━━━━━━━
+🗂 **${title}**
+📅 ${lr35DateLine(first)}
+
+${scheduled ? `⏳ ${scheduled} запланировано\n` : ''}${published ? `✅ ${published} опубликовано\n` : ''}Фильтр: ${modeLabel}
+
+Выберите пост или действие ниже.
+━━━━━━━━━━━━━━`;
+}
+
+async function lr35EditPostsList(callbackId, mode = 'all', channelId = null) {
+  let channel = null;
+  if (channelId) {
+    const channels = await getChannelsByIds([Number(channelId)]);
+    channel = channels[0] || null;
+  }
+
+  const rowsData = await lr32GetQueueRows(mode, channelId, 12);
+  const rows = [];
+
+  for (const row of rowsData) {
+    rows.push([
+      callbackButton(lr35PostMainButton(row), `queue:post:${row.id}`),
+      callbackButton('🗑', `queue:trash:${row.id}`),
+    ]);
+  }
+
+  if (!rows.length) {
+    rows.push([callbackButton('Постов пока нет', 'queue:noop')]);
+  }
+
+  rows.push([
+    callbackButton('⏳ Запланированные', channelId ? `queue:channel:${channelId}:scheduled` : 'queue:scheduled'),
+    callbackButton('🟢 Опубликованные', channelId ? `queue:channel:${channelId}:published` : 'queue:published'),
+  ]);
+
+  rows.push([callbackButton('📋 Все посты', channelId ? `queue:channel:${channelId}:all` : 'queue:all')]);
+  rows.push([callbackButton('📡 По каналам', 'queue:channels')]);
+  rows.push([callbackButton('📅 Календарь', channelId ? `queue:calendar:${channelId}` : 'queue:calendar')]);
+  rows.push([callbackButton('⬅️ Назад', 'main:posting')]);
+
+  await answerCallback({
+    callbackId,
+    text: lr35QueueTitle(mode, channel, rowsData),
+    attachments: inlineKeyboard(rows),
+  });
+}
+
+async function lr35EditPostsChannels(callbackId) {
   const channels = await lr32GetQueueChannels();
+  const rows = [[callbackButton('🌐 Все каналы', 'queue:all')]];
 
-  const rows = [
-    [callbackButton('📌 Все посты', 'queue:all')],
-    [callbackButton('⏳ Запланированные', 'queue:scheduled'), callbackButton('🟢 Опубликованные', 'queue:published')],
-  ];
-
-  for (const channel of channels.slice(0, 10)) {
+  for (const channel of channels.slice(0, 12)) {
     const title = lr32ChannelTitle(channel);
     const scheduled = Number(channel.scheduled_count || 0);
     const published = Number(channel.published_count || 0);
-    const countText = scheduled || published ? ` · ⏳${scheduled} / ✅${published}` : '';
-    rows.push([callbackButton(`📡 ${title}${countText}`, `queue:channel:${channel.id}`)]);
+    rows.push([callbackButton(`📡 ${title} · ⏳${scheduled} / ✅${published}`, `queue:channel:${channel.id}`)]);
   }
 
-  rows.push([callbackButton('⬅️ В Studio', 'main:posting')]);
+  rows.push([callbackButton('⬅️ К постам', 'queue:all')]);
 
   await answerCallback({
     callbackId,
     text: `━━━━━━━━━━━━━━
-🗂 **Посты**
+📡 **Посты по каналам**
 
-Здесь собраны запланированные и опубликованные публикации.
-
-Можно открыть общий список или выбрать канал.
-Рекламные публикации помечаются 💼.
+Выберите канал, чтобы посмотреть его запланированные и опубликованные посты.
 ━━━━━━━━━━━━━━`,
     attachments: inlineKeyboard(rows),
   });
 }
+
+async function lr35TrashConfirm(callbackId, id) {
+  const post = await lr32GetQueuePost(id);
+  if (!post) {
+    await answerCallback({
+      callbackId,
+      text: 'Публикация не найдена.',
+      attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'queue:all')]]),
+    });
+    return;
+  }
+
+  const status = lr32RowStatus(post);
+  const actionText = status === 'published' ? 'удалить из канала' : 'отменить публикацию';
+  const preview = lr35ReadablePreview(post, 100);
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+🗑 **Подтвердите действие**
+
+Пост #${post.id}
+«${preview}»
+
+Действие: ${actionText}.
+━━━━━━━━━━━━━━`,
+    attachments: inlineKeyboard([
+      [callbackButton('✅ Да, выполнить', `queue:delete:${post.id}`)],
+      [callbackButton('⬅️ Назад к посту', `queue:post:${post.id}:nopreview`)],
+      [callbackButton('📋 К постам', 'queue:all')],
+    ]),
+  });
+}
+
+async function lr35QueueDelete(callbackId, id) {
+  const post = await lr32GetQueuePost(id);
+  if (!post) {
+    await answerCallback({
+      callbackId,
+      text: 'Публикация не найдена.',
+      attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'queue:all')]]),
+    });
+    return;
+  }
+
+  const status = lr32RowStatus(post);
+  const targetStatus = status === 'published' ? 'deleted' : 'cancelled';
+
+  try {
+    await query('UPDATE scheduled_posts SET status = $2, updated_at = now() WHERE id = $1', [Number(id), targetStatus]);
+  } catch (error) {
+    console.error('[posts] delete/cancel failed:', error.message || error);
+    try {
+      await query('UPDATE scheduled_posts SET error_message = $2, updated_at = now() WHERE id = $1', [Number(id), 'removed by user']);
+    } catch (inner) {
+      console.error('[posts] error_message update failed:', inner.message || inner);
+    }
+  }
+
+  await answerCallback({
+    callbackId,
+    text: status === 'published'
+      ? `✅ Пост #${id} убран из списка LinkRay.`
+      : `✅ Запланированный пост #${id} отменён.`,
+    attachments: inlineKeyboard([
+      [callbackButton('📋 Все посты', 'queue:all')],
+      [callbackButton('⬅️ В Studio', 'main:posting')],
+    ]),
+  });
+}
+
+async function lr32EditQueueMenu(callbackId) {
+  await lr35EditPostsList(callbackId, 'all');
+}
+
 
 
 function lr32QueueHeader(mode, channel = null, rows = []) {
@@ -2675,37 +2836,9 @@ ${dayLine}
 
 
 async function lr32EditQueueList(callbackId, mode = 'all', channelId = null) {
-  let channel = null;
-  if (channelId) {
-    const channels = await getChannelsByIds([Number(channelId)]);
-    channel = channels[0] || null;
-  }
-
-  const rowsData = await lr32GetQueueRows(mode, channelId, 12);
-  const rows = [];
-
-  for (const row of rowsData) {
-    rows.push([callbackButton(lr34PostButtonTitle(row), `queue:post:${row.id}`)]);
-  }
-
-  if (!rows.length) {
-    rows.push([callbackButton('Пока пусто', 'queue:noop')]);
-  }
-
-  rows.push([
-    callbackButton('⏳ Запланированные', channelId ? `queue:channel:${channelId}:scheduled` : 'queue:scheduled'),
-    callbackButton('🟢 Опубликованные', channelId ? `queue:channel:${channelId}:published` : 'queue:published'),
-  ]);
-  rows.push([callbackButton('📋 Все посты', channelId ? `queue:channel:${channelId}:all` : 'queue:all')]);
-  rows.push([callbackButton('📅 Календарь', channelId ? `queue:calendar:${channelId}` : 'queue:calendar')]);
-  rows.push([callbackButton('⬅️ Назад', 'queue:menu')]);
-
-  await answerCallback({
-    callbackId,
-    text: lr32QueueHeader(mode, channel, rowsData),
-    attachments: inlineKeyboard(rows),
-  });
+  await lr35EditPostsList(callbackId, mode, channelId);
 }
+
 
 
 async function lr32SendQueuePostPreview(chatId, post) {
@@ -2754,7 +2887,7 @@ async function lr32EditQueuePost(callbackId, key, id, sendPreview = true) {
   const rows = [
     [callbackButton('✏️ Перейти в редактор', `queue:edit:text:${post.id}`)],
     [callbackButton(`🗑 Автоудаление: ${lr32MinutesText(deleteAfter)}`, `queue:autodel:${post.id}`)],
-    [callbackButton(status === 'published' ? '❌ Удалить из канала' : '❌ Отменить публикацию', `queue:delete:${post.id}`)],
+    [callbackButton(status === 'published' ? '❌ Удалить из канала' : '❌ Отменить публикацию', `queue:trash:${post.id}`)],
     [callbackButton('⬅️ Назад', 'queue:all')],
   ];
 
@@ -2769,8 +2902,7 @@ ${lr32ChannelLine(channel)}
 🕒 **Время:** ${lr32FormatDateTime(lr32RowDate(post))}
 ${lr32StatusIcon(post)} **Статус:** ${status}
 🗑 **Автоудаление:** ${lr32MinutesText(deleteAfter)}
-${isAd ? `💰 **CPM:** ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}
-Выберите действие.
+${isAd ? `💰 **CPM:** ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}Выберите действие.
 ━━━━━━━━━━━━━━`;
 
   await answerCallback({
@@ -2779,6 +2911,7 @@ ${isAd ? `💰 **CPM:** ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}
     attachments: inlineKeyboard(rows),
   });
 }
+
 
 
 async function lr32QueueAutoDeleteMenu(callbackId, id) {
@@ -2882,29 +3015,23 @@ ${lines}
 async function lr32HandleQueueCallback(payload, callbackId, key) {
   if (payload === 'queue:noop') return true;
 
-  
-  if (payload.startsWith('queue:')) {
-    const handledByLr32Queue = await lr32HandleQueueCallback(payload, callbackId, key);
-    if (handledByLr32Queue) return;
-  }
-
-if (payload === 'queue:menu') {
-    await lr32EditQueueMenu(callbackId);
+  if (payload === 'queue:menu' || payload === 'queue:all') {
+    await lr35EditPostsList(callbackId, 'all');
     return true;
   }
 
-  if (payload === 'queue:all') {
-    await lr32EditQueueList(callbackId, 'all');
+  if (payload === 'queue:channels') {
+    await lr35EditPostsChannels(callbackId);
     return true;
   }
 
   if (payload === 'queue:scheduled') {
-    await lr32EditQueueList(callbackId, 'scheduled');
+    await lr35EditPostsList(callbackId, 'scheduled');
     return true;
   }
 
   if (payload === 'queue:published') {
-    await lr32EditQueueList(callbackId, 'published');
+    await lr35EditPostsList(callbackId, 'published');
     return true;
   }
 
@@ -2912,13 +3039,27 @@ if (payload === 'queue:menu') {
     const parts = payload.split(':');
     const channelId = Number(parts[2]);
     const mode = parts[3] || 'all';
-    await lr32EditQueueList(callbackId, mode, channelId);
+    await lr35EditPostsList(callbackId, mode, channelId);
     return true;
   }
 
   if (payload.startsWith('queue:post:')) {
+    const parts = payload.split(':');
+    const id = Number(parts[2]);
+    const sendPreview = parts[3] !== 'nopreview';
+    await lr32EditQueuePost(callbackId, key, id, sendPreview);
+    return true;
+  }
+
+  if (payload.startsWith('queue:trash:')) {
     const id = Number(payload.split(':')[2]);
-    await lr32EditQueuePost(callbackId, key, id, true);
+    await lr35TrashConfirm(callbackId, id);
+    return true;
+  }
+
+  if (payload.startsWith('queue:delete:')) {
+    const id = Number(payload.split(':')[2]);
+    await lr35QueueDelete(callbackId, id);
     return true;
   }
 
@@ -2936,12 +3077,6 @@ if (payload === 'queue:menu') {
     return true;
   }
 
-  if (payload.startsWith('queue:delete:')) {
-    const id = Number(payload.split(':')[2]);
-    await lr32QueueDelete(callbackId, id);
-    return true;
-  }
-
   if (payload === 'queue:calendar') {
     await lr32QueueCalendar(callbackId);
     return true;
@@ -2955,6 +3090,7 @@ if (payload === 'queue:menu') {
 
   return false;
 }
+
 
 async function handleCallback(update) {
   const callbackId = getCallbackId(update);
