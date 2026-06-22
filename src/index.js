@@ -1826,7 +1826,7 @@ async function handleMessage(update) {
 
     // Не отвечаем на обычные сообщения в каналах.
     // Иначе меню бота может случайно уйти в канал после публикации/событий MAX.
-    if (updateType === 'message_created' && Number(chatId) < 0) {
+    if (getUpdateType(update) === 'message_created' && Number(chatId) < 0) {
       return res.json({ ok: true, ignored: 'channel_message_created' });
     }
 
