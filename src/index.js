@@ -1119,7 +1119,7 @@ function kbEditor(draft) {
 
 function kbPublish(draft) {
   return inlineKeyboard([
-    [callbackButton(draft.autoDeleteMinutes ? `🗑 ${formatMinutes(draft.autoDeleteMinutes)}` : '🗑 Автоудаление', 'publish:auto_delete'), callbackButton(draft.notify ? '🔔 Звук: вкл' : '🔕 Звук: выкл', 'publish:sound')],
+    [callbackButton(draft.autoDeleteMinutes ? `🗑 ${formatMinutes(draft.autoDeleteMinutes)}` : '🗑 Автоудаление', 'publish:auto_delete')],
     [callbackButton('📆 Календарь', 'schedule:calendar'), callbackButton('✍️ Ввести время', 'schedule:manual')],
     [callbackButton('⚡ Опубликовать сейчас', 'publish:now')],
     [callbackButton('⬅️ В Studio', 'publish:back'), callbackButton('❌ Отмена', 'post:cancel')],
@@ -1716,15 +1716,7 @@ function lrMinutesHuman(minutes) {
 
 
 function lrAdBotNotice() {
-  const rawUrl =
-    process.env.LINKRAY_BOT_URL ||
-    process.env.BOT_PUBLIC_URL ||
-    process.env.PUBLIC_BOT_URL ||
-    'https://linkray.ru';
-
-  const url = String(rawUrl).trim() || 'https://linkray.ru';
-
-  return `✨ Рекламное размещение подготовлено через [LinkRay](${url}) — автопостинг, очередь публикаций и рекламные отчёты для MAX.`;
+  return `✨ Рекламное размещение подготовлено через [LinkRay](https://max.ru/se13353901_bot) — автопостинг, очередь публикаций и рекламные отчёты для MAX.`;
 }
 
 
@@ -2095,6 +2087,147 @@ async function handleMessage(update) {
 ━━━━━━━━━━━━━━`, attachments: kbMain() });
 }
 
+
+function lr31BotUrl() {
+  return 'https://max.ru/se13353901_bot';
+}
+
+function lr31Decode(value) {
+  return String(value ?? '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function lr31PlainPreview(value, max = 130) {
+  const plain = lr31Decode(value)
+    .replace(/<a\s+[^>]*href=["'][^"']+["'][^>]*>([\s\S]*?)<\/a>/gi, '$1')
+    .replace(/<\/?(b|strong|i|em|u|s|strike|code|span|div|p|br)[^>]*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\*\*/g, '')
+    .replace(/__+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!plain) return 'пост без текста';
+  return plain.length > max ? `${plain.slice(0, max)}...` : plain;
+}
+
+function lr31ChannelTitle(channel) {
+  return String(channel?.title || channel?.name || `Канал #${channel?.id || ''}`.trim())
+    .replace(/[\[\]\n\r]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lr31ChannelUrl(channel) {
+  const value = channel?.link || channel?.url || channel?.invite_link || channel?.join_link || '';
+  return /^https?:\/\//i.test(String(value)) ? String(value) : '';
+}
+
+function lr31ChannelLine(channel) {
+  const title = lr31ChannelTitle(channel);
+  const url = lr31ChannelUrl(channel);
+  return url ? `• [${title}](${url})` : `• ${title}`;
+}
+
+function lr31ChannelsList(channels) {
+  if (!Array.isArray(channels) || !channels.length) return '• каналы не выбраны';
+  return channels.map((channel) => lr31ChannelLine(channel)).join('\n');
+}
+
+function lr31PostPreviewFromDraft(draft) {
+  return lr31PlainPreview(
+    draft?.content?.text ||
+    draft?.text ||
+    draft?.caption ||
+    draft?.preview_text ||
+    '',
+    145
+  );
+}
+
+function lr31AfterPublishKeyboard() {
+  return inlineKeyboard([
+    [callbackButton('🧩 Собрать ещё пост', 'post:create')],
+    [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+    [callbackButton('🏠 В меню', 'main:menu')],
+  ]);
+}
+
+function lr31MainMenuText() {
+  return `━━━━━━━━━━━━━━
+🧬 **LinkRay**
+
+Студия публикаций, очередь постов и рекламные отчёты для MAX.
+
+Выберите действие.
+━━━━━━━━━━━━━━`;
+}
+
+function lr31MainMenuKeyboard() {
+  return inlineKeyboard([
+    [callbackButton('🧬 LinkRay Studio', 'post:create')],
+    [callbackButton('📅 Очередь', 'queue:menu'), callbackButton('📡 Каналы', 'post:channels')],
+    [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'antifraud:menu')],
+  ]);
+}
+
+function lr31PublishedAdText(draft, channels, ok, total) {
+  const preview = lr31PostPreviewFromDraft(draft);
+  const cpm = draft?.cpm ? `${draft.cpm} ₽` : 'не указан';
+  const botUrl = lr31BotUrl();
+
+  return `━━━━━━━━━━━━━━
+✅ **Рекламный пост опубликован**
+
+📝 Сообщение «${preview}»
+
+📣 **Каналы:**
+${lr31ChannelsList(channels)}
+
+🚀 **Опубликовано:** ${ok} из ${total}
+💼 **Тип:** рекламное размещение
+💰 **CPM:** ${cpm}
+📊 **Отчёт:** через 24ч после публикации
+
+✨ Размещение подготовлено через [LinkRay](${botUrl}) — автопостинг, очередь публикаций и рекламные отчёты для MAX.
+━━━━━━━━━━━━━━`;
+}
+
+function lr31PublishedNormalText(draft, channels, ok, total) {
+  return `━━━━━━━━━━━━━━
+✅ **Пост опубликован**
+
+📣 **Каналы:**
+${lr31ChannelsList(channels)}
+
+🚀 **Опубликовано:** ${ok} из ${total}
+━━━━━━━━━━━━━━`;
+}
+
+async function lr31SendMessageToChat(chatId, text, attachments = null) {
+  return sendMaxMessage({
+    chatId,
+    text,
+    format: 'markdown',
+    attachments,
+  });
+}
+
+async function lr31SendMenuAfterPublish(chatId) {
+  return lr31SendMessageToChat(chatId, lr31MainMenuText(), lr31MainMenuKeyboard());
+}
+
+function lr31AdBotNotice() {
+  return `✨ Рекламное размещение подготовлено через [LinkRay](${lr31BotUrl()}) — автопостинг, очередь публикаций и рекламные отчёты для MAX.`;
+}
+
 async function handleCallback(update) {
   const callbackId = getCallbackId(update);
   const payload = getCallbackPayload(update);
@@ -2242,7 +2375,13 @@ ${sig}
   }
 
   if (payload === 'publish:back') { await editStudio(callbackId, key, draft); return; }
-  if (payload === 'publish:sound') { draft.notify = !draft.notify; await editPublish(callbackId, key, draft); return; }
+  if (payload === 'publish:sound') {
+    await answerCallback({
+      callbackId,
+      text: '🔔 Настройка звука убрана. Публикации отправляются без отдельного переключателя звука.',
+    });
+    return;
+  }
   if (payload === 'publish:auto_delete') { await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n🗑 **Автоудаление**\n\nВыберите срок.\n━━━━━━━━━━━━━━`, attachments: kbAutoDelete() }); return; }
   if (payload.startsWith('autodel:')) {
     const value = payload.split(':')[1];
@@ -2290,10 +2429,32 @@ ${sig}
   }
   if (payload === 'publish:now') {
     const results = await publishNow(draft);
-    const ok = results.filter((r) => r.ok).length;
-    const channels = await getChannelsByIds(draft.channelIds);
+    const ok = results.filter((result) => result && result.ok).length;
+    const total = results.length || (draft.channelIds || []).length || 0;
+    const channels = await getChannelsByIds(draft.channelIds || []);
+
     await clearSession(key);
-    await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n✅ **Пост опубликован**\n\n📡 Каналы:\n${channelsPlainList(channels)}\n\nОпубликовано: ${ok} из ${results.length}\n━━━━━━━━━━━━━━`, attachments: kbFinal() });
+
+    const resultText = draft.isAd
+      ? lr31PublishedAdText(draft, channels, ok, total)
+      : lr31PublishedNormalText(draft, channels, ok, total);
+
+    try {
+      await lr31SendMessageToChat(key, resultText, lr31AfterPublishKeyboard());
+      await lr31SendMenuAfterPublish(key);
+      await answerCallback({
+        callbackId,
+        text: '✅ Готово. Карточку публикации и новое меню отправил ниже.',
+      });
+    } catch (error) {
+      console.error('[publish] result/menu send failed:', error.message || error);
+      await answerCallback({
+        callbackId,
+        text: resultText,
+        attachments: lr31AfterPublishKeyboard(),
+      });
+    }
+
     return;
   }
 
