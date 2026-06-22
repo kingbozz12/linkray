@@ -1798,6 +1798,7 @@ async function editQueuePost(callbackId, key, id, sendPreview = true) {
 }
 
 
+
 async function handleMessage(update) {
   const chatId = getChatId(update);
 
@@ -2838,6 +2839,7 @@ async function lr32EditQueuePost(callbackId, key, id, sendPreview = true) {
 
 
 
+
 async function lr32QueueAutoDeleteMenu(callbackId, id) {
   const rows = [
     [callbackButton('1ч', `queue:autodel_set:${id}:60`), callbackButton('2ч', `queue:autodel_set:${id}:120`), callbackButton('6ч', `queue:autodel_set:${id}:360`)],
@@ -3330,6 +3332,7 @@ async function lr36ShowPost(callbackId, key, id, sendPreview = true) {
   await lr41ShowPost(callbackId, key, id, sendPreview);
 }
 
+
 async function lr36TrashConfirm(callbackId, id) {
   const r = await lr36GetOnePost(id);
   if (!r) { await answerCallback({ callbackId, text: 'Пост не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'queue:all')]]) }); return; }
@@ -3696,6 +3699,7 @@ async function lr41SendPostPreview(key, row) {
 
 async function lr41ShowPost(callbackId, key, id, sendPreview = true) {
   const row = await lr41GetOnePost(id);
+
   if (!row) {
     await answerCallback({
       callbackId,
@@ -3705,41 +3709,21 @@ async function lr41ShowPost(callbackId, key, id, sendPreview = true) {
     return;
   }
 
-  if (sendPreview) await lr41SendPostPreview(key, row);
+  const locked = lr43IsOlderThan24h(row);
 
-  const sp = lr41Sp(row);
-  const ch = lr41Ch(row);
-  const d = lr41PostDate(row);
-  const isAd = lr41IsAd(row);
-  const cpm = lr41Cpm(row);
-  const deleteAfter = lr41DeleteAfter(row);
+  // ВАЖНО: не редактируем старое сообщение списка в меню поста.
+  // Сначала тихо отвечаем на callback, потом отправляем новые сообщения:
+  // 1) сам пост-превью;
+  // 2) отдельное меню управления под ним.
+  await lr43AnswerCallbackSilently(callbackId);
 
-  await answerCallback({
-    callbackId,
-    text: `━━━━━━━━━━━━━━
-${isAd ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${sp.id}
+  if (sendPreview) {
+    await lr41SendPostPreview(key, row);
+  }
 
-↑ Пост находится над этим сообщением ↑
-
-📣 <b>Канал:</b>
-${lr41ChannelHtmlLine(ch)}
-
-🕒 <b>Время:</b> ${lr41Time(d)} · ${lr41DateLine(d)}
-${lr41StatusIcon(row)} <b>Статус:</b> ${lr41StatusText(row)}
-🗑 <b>Автоудаление:</b> ${lr41MinutesText(deleteAfter)}
-${isAd ? `💰 <b>CPM:</b> ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}
-Выберите действие.
-━━━━━━━━━━━━━━`,
-    format: 'html',
-    attachments: inlineKeyboard([
-      [callbackButton('✏️ Редактировать пост', `queue:edit:text:${sp.id}`)],
-      [callbackButton('🕒 Изменить время', `queue:edit:time:${sp.id}`)],
-      [callbackButton('🚀 Опубликовать сейчас', `queue:now:${sp.id}`)],
-      [callbackButton(lr41PostStatus(row) === 'published' ? '❌ Удалить из канала' : '❌ Удалить пост', `queue:delete_confirm:${sp.id}`)],
-      [callbackButton('⬅️ К постам', 'queue:all')],
-    ]),
-  });
+  await lr43SendPostControlMenu(key, row, locked);
 }
+
 
 async function lr41PickRemovedStatus() {
   try {
@@ -3886,6 +3870,113 @@ async function lr41HandlePostsPayload(payload, callbackId, key) {
   await lr41ShowPosts(callbackId, 'all');
   return true;
 }
+
+// ===== LinkRay v43 post open order START =====
+function lr43IsOlderThan24h(row) {
+  const sp = lr41Sp(row);
+  const status = lr41PostStatus(row);
+  if (status !== 'published') return false;
+
+  const base = sp.published_at || sp.publish_at || sp.updated_at || sp.created_at;
+  const d = new Date(base);
+  if (Number.isNaN(d.getTime())) return false;
+
+  return Date.now() - d.getTime() > 24 * 60 * 60 * 1000;
+}
+
+function lr43PostMenuText(row, locked) {
+  const sp = lr41Sp(row);
+  const ch = lr41Ch(row);
+  const d = lr41PostDate(row);
+  const isAd = lr41IsAd(row);
+  const cpm = lr41Cpm(row);
+  const deleteAfter = lr41DeleteAfter(row);
+
+  if (locked) {
+    return `━━━━━━━━━━━━━━
+🔒 <b>Пост #${sp.id}</b>
+
+↑ Пост находится над этим сообщением ↑
+
+📣 <b>Канал:</b>
+${lr41ChannelHtmlLine(ch)}
+
+🕒 <b>Опубликован:</b> ${lr41Time(d)} · ${lr41DateLine(d)}
+✅ <b>Статус:</b> опубликован
+
+Редактирование недоступно: после публикации прошло больше 24 часов.
+━━━━━━━━━━━━━━`;
+  }
+
+  return `━━━━━━━━━━━━━━
+${isAd ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${sp.id}
+
+↑ Пост находится над этим сообщением ↑
+
+📣 <b>Канал:</b>
+${lr41ChannelHtmlLine(ch)}
+
+🕒 <b>Время:</b> ${lr41Time(d)} · ${lr41DateLine(d)}
+${lr41StatusIcon(row)} <b>Статус:</b> ${lr41StatusText(row)}
+🗑 <b>Автоудаление:</b> ${lr41MinutesText(deleteAfter)}
+${isAd ? `💰 <b>CPM:</b> ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}
+Выберите действие.
+━━━━━━━━━━━━━━`;
+}
+
+function lr43PostMenuKeyboard(row, locked) {
+  const sp = lr41Sp(row);
+  const status = lr41PostStatus(row);
+
+  if (locked) {
+    return inlineKeyboard([
+      [callbackButton('⬅️ К постам', 'queue:all')],
+    ]);
+  }
+
+  const rows = [
+    [callbackButton('✏️ Редактировать пост', `queue:edit:text:${sp.id}`)],
+    [callbackButton('🕒 Изменить время', `queue:edit:time:${sp.id}`)],
+    [callbackButton('🗑 Автоудаление', `queue:auto_delete:${sp.id}`)],
+  ];
+
+  if (status !== 'published') {
+    rows.push([callbackButton('🚀 Опубликовать сейчас', `queue:now:${sp.id}`)]);
+  }
+
+  rows.push([
+    callbackButton(status === 'published' ? '❌ Удалить из канала' : '❌ Удалить пост', `queue:delete_confirm:${sp.id}`),
+  ]);
+
+  rows.push([callbackButton('⬅️ К постам', 'queue:all')]);
+
+  return inlineKeyboard(rows);
+}
+
+async function lr43AnswerCallbackSilently(callbackId) {
+  try {
+    await answerCallback({ callbackId, notification: 'Открываю пост...' });
+    return;
+  } catch (error) {
+    try {
+      await answerCallback({ callbackId, text: 'Открываю пост...' });
+    } catch (inner) {
+      console.error('[v43] callback ack failed:', inner.message || inner);
+    }
+  }
+}
+
+async function lr43SendPostControlMenu(key, row, locked) {
+  await sendMaxMessage({
+    chatId: Number(key),
+    text: lr43PostMenuText(row, locked),
+    format: 'html',
+    attachments: lr43PostMenuKeyboard(row, locked),
+    notify: false,
+  });
+}
+// ===== LinkRay v43 post open order END =====
+
 // ===== LinkRay v41 posts UI END =====
 
 app.get('/health', async (_req, res) => {
