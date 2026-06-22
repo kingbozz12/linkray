@@ -1071,11 +1071,11 @@ function buttonRowsForChannels(channels, prefix, selectedIds = []) {
 function kbMain() {
   return inlineKeyboard([
     [callbackButton('🧬 LinkRay Studio', 'main:posting')],
-    [callbackButton('📅 Очередь', 'queue:menu'), callbackButton('📡 Каналы', 'post:channels')],
-    [callbackButton('📊 Отчёты', 'main:stub'), callbackButton('🛡 Антифрод', 'main:stub')],
-    [callbackButton('💼 Реклама', 'main:stub'), callbackButton('⚙️ Профиль', 'main:stub')],
+    [callbackButton('📡 Каналы', 'post:channels')],
+    [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'antifraud:menu')],
   ]);
 }
+
 
 function kbPosting() {
   return inlineKeyboard([
@@ -2310,11 +2310,13 @@ function lr32MainMenuText() {
 
 function lr32MainMenuKeyboard() {
   return inlineKeyboard([
-    [callbackButton('🧬 LinkRay Studio', 'post:create')],
-    [callbackButton('📅 Очередь', 'queue:menu'), callbackButton('📡 Каналы', 'post:channels')],
+    [callbackButton('🧬 LinkRay Studio', 'main:posting')],
+    [callbackButton('📡 Каналы', 'post:channels')],
     [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'antifraud:menu')],
-  ]);
+      [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+]);
 }
+
 
 function lr32AfterPublishKeyboard() {
   return inlineKeyboard([
