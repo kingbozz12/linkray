@@ -686,7 +686,7 @@ function emptyDraft() {
     activeSignatureChannelId: null,
     isAd: false,
     cpm: null,
-    notify: true,
+
     autoDeleteMinutes: null,
     reportAfterHours: 24,
     scheduleDate: null,
@@ -1544,24 +1544,115 @@ async function scheduleDraft(draft, key, publishAt) {
   }
 }
 
+
+function lrDecodePreviewEntities(value) {
+  return String(value ?? '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function lrPlainPreview(value, max = 105) {
+  const plain = lrDecodePreviewEntities(String(value || ''))
+    .replace(/<a\s+[^>]*href=["'][^"']+["'][^>]*>([\s\S]*?)<\/a>/gi, '$1')
+    .replace(/<\/?(b|strong|i|em|u|s|strike|code|span|div|p|br)[^>]*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\*\*/g, '')
+    .replace(/__+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!plain) return 'пост без текста';
+  return plain.length > max ? `${plain.slice(0, max)}...` : plain;
+}
+
+function lrChannelTitleSafe(channel) {
+  return String(channel?.title || channel?.name || `Канал #${channel?.id || ''}`.trim())
+    .replace(/[\[\]\n\r]/g, ' ')
+    .trim();
+}
+
+function lrChannelLinkSafe(channel) {
+  const link = channel?.link || channel?.url || channel?.invite_link || channel?.join_link || '';
+  return /^https?:\/\//i.test(String(link)) ? String(link) : '';
+}
+
+function lrChannelMarkdownLine(channel) {
+  const title = lrChannelTitleSafe(channel);
+  const link = lrChannelLinkSafe(channel);
+  return link ? `• [${title}](${link})` : `• ${title}`;
+}
+
+function lrScheduledWeekday(date) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    weekday: 'short',
+  }).format(date);
+}
+
+function lrScheduledDate(date) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(date);
+}
+
+function lrScheduledTime(date) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
+
+function lrMinutesHuman(minutes) {
+  const value = Number(minutes);
+  if (!value) return 'нет';
+  if (value % 1440 === 0) return `${value / 1440}д`;
+  if (value % 60 === 0) return `${value / 60}ч`;
+  return `${value} мин`;
+}
+
+
 async function textScheduled(draft, publishAt) {
-  const channels = await getChannelsByIds(draft.channelIds);
+  const date = new Date(publishAt);
+  const channels = await getChannelsByIds(draft.channelIds || []);
+  const channelsText = channels.length
+    ? channels.map((channel) => lrChannelMarkdownLine(channel)).join('\n')
+    : '• каналы не выбраны';
+
+  const rawText =
+    draft?.content?.text ||
+    draft?.text ||
+    draft?.caption ||
+    '';
+
+  const preview = lrPlainPreview(rawText, 105);
+  const autoDelete = lrMinutesHuman(draft.autoDeleteMinutes);
+  const report = draft.reportAfterHours ? `через ${draft.reportAfterHours}ч после публикации` : 'через 24ч после публикации';
   const ad = draft.isAd ? `да${draft.cpm ? ` · CPM ${draft.cpm} ₽` : ''}` : 'нет';
-  const title = previewText(buildPreviewText(draft), 70);
 
   return `━━━━━━━━━━━━━━
 ✅ **Публикация запланирована**
 
-📝 Сообщение «${title}»
+📝 Сообщение «${preview}»
 
 📅 **Статус:** отложено
-🕒 **Публикация:** ${formatMsk(publishAt)} МСК
+🕒 **Публикация:** ${lrScheduledWeekday(date)} ${lrScheduledDate(date)} · ${lrScheduledTime(date)} МСК
 
 📣 **Каналы:**
-${channelsPlainList(channels)}
+${channelsText}
 
-🗑 **Автоудаление:** ${draft.autoDeleteMinutes ? formatMinutes(draft.autoDeleteMinutes) : 'нет'}
-📊 **Отчёт:** через ${draft.reportAfterHours || 24}ч после публикации
+🗑 **Автоудаление:** ${autoDelete}
+📊 **Отчёт:** ${report}
 💼 **Реклама:** ${ad}
 
 Пост добавлен в очередь LinkRay.

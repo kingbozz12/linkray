@@ -130,7 +130,7 @@ async function publishDuePosts() {
         text: row.text || ' ',
         format: row.format || 'markdown',
         attachments: buildPostAttachments(row),
-        notify: row.notify !== false,
+
       });
 
       const messageId =
