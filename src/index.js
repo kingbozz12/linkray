@@ -1782,24 +1782,14 @@ async function getQueueRows(channelId = null) {
 }
 
 async function editQueueMenu(callbackId) {
-  const channels = await getChannels();
-  const rows = [[callbackButton('🌐 Все каналы', 'queue:all')]];
-  rows.push(...buttonRowsForChannels(channels, 'queue:channel'));
-  rows.push([callbackButton('⬅️ В Studio', 'main:posting')]);
-  await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📅 **Посты**\n\nВыберите канал, чтобы посмотреть запланированные посты.\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard(rows) });
+  await lr36ShowPosts(callbackId, 'all');
 }
 
-async function editQueueList(callbackId, channelId = null) {
-  const rows = await getQueueRows(channelId);
-  if (!rows.length) {
-    await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n🗂 **Посты пуста**\n\nДля выбранного режима нет отложенных публикаций.\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard([[callbackButton('⬅️ Назад', 'queue:menu')], [callbackButton('🧩 Собрать пост', 'post:create')]]) });
-    return;
-  }
-  const text = rows.map((row, index) => `${index + 1}. ${row.channel_title || 'Канал'}\n   ${formatMsk(new Date(row.publish_at))}\n   ${previewText(row.text, 80)}`).join('\n\n');
-  const buttons = rows.slice(0, 12).map((row, index) => [callbackButton(`${index + 1}. ${row.channel_title || 'Канал'} · ${formatMsk(new Date(row.publish_at)).slice(0, 17)}`, `queue:post:${row.id}`)]);
-  buttons.push([callbackButton('⬅️ К каналам', 'queue:menu')]);
-  await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📅 **Посты**\n\n${text}\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard(buttons) });
+
+async function editQueueList(callbackId, mode = 'all', channelId = null) {
+  await lr36ShowPosts(callbackId, mode, channelId);
 }
+
 
 async function editQueuePost(callbackId, postId) {
   const rows = await query(
@@ -2803,8 +2793,9 @@ async function lr35QueueDelete(callbackId, id) {
 }
 
 async function lr32EditQueueMenu(callbackId) {
-  await lr35EditPostsList(callbackId, 'all');
+  await lr36ShowPosts(callbackId, 'all');
 }
+
 
 
 
@@ -2836,8 +2827,9 @@ ${dayLine}
 
 
 async function lr32EditQueueList(callbackId, mode = 'all', channelId = null) {
-  await lr35EditPostsList(callbackId, mode, channelId);
+  await lr36ShowPosts(callbackId, mode, channelId);
 }
+
 
 
 
@@ -3093,6 +3085,11 @@ async function lr32HandleQueueCallback(payload, callbackId, key) {
 
 
 async function handleCallback(update) {
+  if (String(payload || '').startsWith('queue:')) {
+    const handledByV36 = await lr36HandlePostsPayload(payload, callbackId, key);
+    if (handledByV36) return;
+  }
+
   const callbackId = getCallbackId(update);
   const payload = getCallbackPayload(update);
   const key = getSessionKey(update);
@@ -3338,6 +3335,177 @@ ${sig}
 
   await answerCallback({ callbackId, text: 'Команда пока не обработана.', attachments: kbMain() });
 }
+
+
+
+// ===== LinkRay v36 posts UI override START =====
+function lr36Decode(v) {
+  return String(v || '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+function lr36Plain(v) {
+  return lr36Decode(v)
+    .replace(/<a\s+[^>]*href=["'][^"']+["'][^>]*>(.*?)<\/a>/gis, '$1')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(b|strong|i|em|u|s|strike|span|p|div|code|pre)[^>]*>/gis, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+function lr36Short(v, max = 38) {
+  const s = lr36Plain(v).replace(/\s+/g, ' ').trim();
+  if (!s) return 'пост без текста';
+  return s.length > max ? `${s.slice(0, max)}...` : s;
+}
+function lr36Json(v, fb = {}) { try { if (!v) return fb; return typeof v === 'object' ? v : JSON.parse(v); } catch { return fb; } }
+function lr36Sp(r) { return r?.sp || r || {}; }
+function lr36Ch(r) { return r?.ch || {}; }
+function lr36Text(r) { const sp = lr36Sp(r); const o = lr36Json(sp.options, {}); return sp.text || sp.caption || o.text || o.caption || o.originalText || ''; }
+function lr36DateValue(r) { const sp = lr36Sp(r); return sp.publish_at || sp.published_at || sp.created_at || new Date().toISOString(); }
+function lr36Status(r) { return String(lr36Sp(r).status || '').toLowerCase(); }
+function lr36IsAd(r) { const sp = lr36Sp(r); const o = lr36Json(sp.options, {}); return Boolean(sp.is_ad || sp.isAd || o.isAd || o.is_ad || sp.cpm || o.cpm); }
+function lr36Cpm(r) { const sp = lr36Sp(r); const o = lr36Json(sp.options, {}); return sp.cpm || o.cpm || null; }
+function lr36HasMedia(r) { const sp = lr36Sp(r); const o = lr36Json(sp.options, {}); return Boolean(sp.attachments || sp.media || sp.attachment || o.attachments || o.media); }
+function lr36Icon(r) { const s = lr36Status(r); if (s === 'published') return '✅'; if (s === 'scheduled') return '⏳'; if (s === 'failed') return '⚠️'; if (s === 'cancelled' || s === 'canceled' || s === 'deleted') return '❌'; return '📝'; }
+function lr36StatusText(r) { const s = lr36Status(r); if (s === 'published') return 'опубликован'; if (s === 'scheduled') return 'запланирован'; if (s === 'failed') return 'ошибка'; if (s === 'cancelled' || s === 'canceled') return 'отменён'; if (s === 'deleted') return 'удалён'; return s || 'неизвестно'; }
+function lr36Date(v) { const d = new Date(v); return Number.isNaN(d.getTime()) ? new Date() : d; }
+function lr36Time(d) { return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+function lr36Day(d) { return ['вс','пн','вт','ср','чт','пт','сб'][d.getDay()]; }
+function lr36Month(d) { return ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'][d.getMonth()]; }
+function lr36DateLine(d) { return `${lr36Day(d)} ${d.getDate()} ${lr36Month(d)} ${d.getFullYear()} г.`; }
+function lr36Esc(v) { return String(v || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function lr36ChannelTitle(ch) { return ch.title || ch.name || `Канал #${ch.id || ch.channel_id || ''}`; }
+function lr36ChannelLink(ch) { return ch.link || ch.url || ch.invite_link || ''; }
+function lr36ChannelLine(ch) { const t = lr36Esc(lr36ChannelTitle(ch)); const l = lr36ChannelLink(ch); return l ? `• <a href="${l}">${t}</a>` : `• ${t}`; }
+
+async function lr36GetPosts(mode = 'all', channelId = null, limit = 12) {
+  const where = ["sp.status::text IN ('scheduled','published')"];
+  const params = [];
+  if (mode === 'scheduled') where.push("sp.status::text = 'scheduled'");
+  if (mode === 'published') where.push("sp.status::text = 'published'");
+  if (channelId) { params.push(Number(channelId)); where.push(`sp.channel_id = $${params.length}`); }
+  params.push(Number(limit));
+  return (await query(`
+    SELECT to_jsonb(sp) AS sp, to_jsonb(c) AS ch
+    FROM scheduled_posts sp
+    LEFT JOIN channels c ON c.id = sp.channel_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY sp.publish_at DESC NULLS LAST, sp.id DESC
+    LIMIT $${params.length}
+  `, params)).rows;
+}
+async function lr36GetOnePost(id) {
+  return (await query(`
+    SELECT to_jsonb(sp) AS sp, to_jsonb(c) AS ch
+    FROM scheduled_posts sp
+    LEFT JOIN channels c ON c.id = sp.channel_id
+    WHERE sp.id = $1
+    LIMIT 1
+  `, [Number(id)])).rows[0] || null;
+}
+async function lr36GetChannels() {
+  return (await query(`
+    SELECT to_jsonb(c) AS ch,
+      COUNT(sp.id) FILTER (WHERE sp.status::text = 'scheduled') AS scheduled_count,
+      COUNT(sp.id) FILTER (WHERE sp.status::text = 'published') AS published_count
+    FROM channels c
+    LEFT JOIN scheduled_posts sp ON sp.channel_id = c.id AND sp.status::text IN ('scheduled','published')
+    GROUP BY c.id
+    ORDER BY c.id
+    LIMIT 20
+  `)).rows;
+}
+function lr36PostButton(r) {
+  const d = lr36Date(lr36DateValue(r));
+  const ad = lr36IsAd(r) ? '💼 ' : '';
+  const media = lr36HasMedia(r) ? '🖼 ' : '';
+  return `${ad}${lr36Icon(r)} ${lr36Time(d)} · ${media}${lr36Short(lr36Text(r), 32)}`;
+}
+function lr36Header(mode, channel, rows) {
+  const title = channel ? lr36ChannelTitle(channel) : 'Все каналы';
+  const scheduled = rows.filter((r) => lr36Status(r) === 'scheduled').length;
+  const published = rows.filter((r) => lr36Status(r) === 'published').length;
+  const d = rows.length ? lr36Date(lr36DateValue(rows[0])) : new Date();
+  let filter = 'все посты';
+  if (mode === 'scheduled') filter = 'запланированные';
+  if (mode === 'published') filter = 'опубликованные';
+  return `━━━━━━━━━━━━━━\n🗂 <b>${lr36Esc(title)}</b>\n📅 ${lr36DateLine(d)}\n\n${scheduled ? `⏳ ${scheduled} запланировано\n` : ''}${published ? `✅ ${published} опубликовано\n` : ''}Фильтр: ${filter}\n\nНажмите на пост, чтобы открыть управление.\n━━━━━━━━━━━━━━`;
+}
+async function lr36ShowPosts(callbackId, mode = 'all', channelId = null) {
+  const rowsData = await lr36GetPosts(mode, channelId, 12);
+  const channel = channelId && rowsData[0] ? lr36Ch(rowsData[0]) : null;
+  const kb = [];
+  for (const r of rowsData) {
+    const id = lr36Sp(r).id;
+    kb.push([callbackButton(lr36PostButton(r), `queue:post:${id}`), callbackButton('🗑', `queue:trash:${id}`)]);
+  }
+  if (!kb.length) kb.push([callbackButton('Постов пока нет', 'queue:noop')]);
+  kb.push([callbackButton('⏳ Запланированные', channelId ? `queue:channel:${channelId}:scheduled` : 'queue:scheduled'), callbackButton('🟢 Опубликованные', channelId ? `queue:channel:${channelId}:published` : 'queue:published')]);
+  kb.push([callbackButton('📋 Все посты', channelId ? `queue:channel:${channelId}:all` : 'queue:all')]);
+  kb.push([callbackButton('📡 По каналам', 'queue:channels')]);
+  kb.push([callbackButton('⬅️ В Studio', 'main:posting')]);
+  await answerCallback({ callbackId, text: lr36Header(mode, channel, rowsData), format: 'html', attachments: inlineKeyboard(kb) });
+}
+async function lr36ShowChannels(callbackId) {
+  const rows = await lr36GetChannels();
+  const kb = [[callbackButton('🌐 Все каналы', 'queue:all')]];
+  for (const r of rows) {
+    const ch = r.ch || {};
+    kb.push([callbackButton(`📡 ${lr36ChannelTitle(ch)} · ⏳${Number(r.scheduled_count || 0)} / ✅${Number(r.published_count || 0)}`, `queue:channel:${ch.id}`)]);
+  }
+  kb.push([callbackButton('⬅️ К постам', 'queue:all')]);
+  await answerCallback({ callbackId, text: '━━━━━━━━━━━━━━\n📡 <b>Посты по каналам</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━', format: 'html', attachments: inlineKeyboard(kb) });
+}
+async function lr36ShowPost(callbackId, key, id, sendPreview = true) {
+  const r = await lr36GetOnePost(id);
+  if (!r) { await answerCallback({ callbackId, text: 'Пост не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'queue:all')]]) }); return; }
+  if (sendPreview) {
+    try {
+      if (typeof lr32SendQueuePostPreview === 'function') await lr32SendQueuePostPreview(key, lr36Sp(r));
+      else if (typeof sendQueuePostPreview === 'function') await sendQueuePostPreview(key, lr36Sp(r));
+    } catch (e) { console.error('[v36 posts] preview failed:', e.message || e); }
+  }
+  const sp = lr36Sp(r), ch = lr36Ch(r), d = lr36Date(lr36DateValue(r));
+  const isAd = lr36IsAd(r), cpm = lr36Cpm(r);
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━\n${isAd ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${sp.id}\n\n↑ Пост находится над этим сообщением ↑\n\n📣 <b>Канал:</b>\n${lr36ChannelLine(ch)}\n\n🕒 <b>Время:</b> ${lr36Time(d)} · ${lr36DateLine(d)}\n${lr36Icon(r)} <b>Статус:</b> ${lr36StatusText(r)}\n${isAd ? `💰 <b>CPM:</b> ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}Выберите действие.\n━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard([[callbackButton('✏️ Перейти в редактор', `queue:edit:text:${sp.id}`)], [callbackButton(lr36Status(r) === 'published' ? '❌ Удалить из канала' : '❌ Отменить публикацию', `queue:trash:${sp.id}`)], [callbackButton('⬅️ К постам', 'queue:all')]]),
+  });
+}
+async function lr36TrashConfirm(callbackId, id) {
+  const r = await lr36GetOnePost(id);
+  if (!r) { await answerCallback({ callbackId, text: 'Пост не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'queue:all')]]) }); return; }
+  const action = lr36Status(r) === 'published' ? 'удалить из канала' : 'отменить публикацию';
+  await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n🗑 <b>Подтверждение</b>\n\nПост #${lr36Sp(r).id}\n«${lr36Esc(lr36Short(lr36Text(r), 100))}»\n\nНужно ${action}?\n━━━━━━━━━━━━━━`, format: 'html', attachments: inlineKeyboard([[callbackButton('✅ Да', `queue:delete:${lr36Sp(r).id}`)], [callbackButton('⬅️ Назад', `queue:post:${lr36Sp(r).id}:nopreview`)]]) });
+}
+async function lr36PickCancelStatus() {
+  try {
+    const vals = (await query(`SELECT e.enumlabel FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid WHERE t.typname = (SELECT udt_name FROM information_schema.columns WHERE table_name = 'scheduled_posts' AND column_name = 'status' LIMIT 1)`)).rows.map((r) => r.enumlabel);
+    for (const v of ['cancelled', 'canceled', 'deleted', 'failed']) if (vals.includes(v)) return v;
+  } catch (e) { console.error('[v36 posts] enum read failed:', e.message || e); }
+  return 'failed';
+}
+async function lr36DeletePost(callbackId, id) {
+  const status = await lr36PickCancelStatus();
+  await query('UPDATE scheduled_posts SET status = $2, updated_at = now() WHERE id = $1', [Number(id), status]);
+  await answerCallback({ callbackId, text: `✅ Пост #${id} убран из активного списка.`, attachments: inlineKeyboard([[callbackButton('📋 К постам', 'queue:all')], [callbackButton('⬅️ В Studio', 'main:posting')]]) });
+}
+async function lr36HandlePostsPayload(payload, callbackId, key) {
+  if (!payload || !String(payload).startsWith('queue:')) return false;
+  if (payload === 'queue:noop') return true;
+  if (payload === 'queue:menu' || payload === 'queue:all') { await lr36ShowPosts(callbackId, 'all'); return true; }
+  if (payload === 'queue:scheduled') { await lr36ShowPosts(callbackId, 'scheduled'); return true; }
+  if (payload === 'queue:published') { await lr36ShowPosts(callbackId, 'published'); return true; }
+  if (payload === 'queue:channels') { await lr36ShowChannels(callbackId); return true; }
+  if (payload.startsWith('queue:channel:')) { const p = payload.split(':'); await lr36ShowPosts(callbackId, p[3] || 'all', Number(p[2])); return true; }
+  if (payload.startsWith('queue:post:')) { const p = payload.split(':'); await lr36ShowPost(callbackId, key, Number(p[2]), p[3] !== 'nopreview'); return true; }
+  if (payload.startsWith('queue:trash:')) { await lr36TrashConfirm(callbackId, Number(payload.split(':')[2])); return true; }
+  if (payload.startsWith('queue:delete:')) { await lr36DeletePost(callbackId, Number(payload.split(':')[2])); return true; }
+  await lr36ShowPosts(callbackId, 'all'); return true;
+}
+// ===== LinkRay v36 posts UI override END =====
 
 app.get('/health', async (_req, res) => {
   try {
