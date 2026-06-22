@@ -123,14 +123,72 @@ export async function getMaxMessage(messageId) {
   return data;
 }
 
-export async function sendMaxMessage({
-  chatId,
-  userId,
-  text,
-  format = 'markdown',
-  attachments = [],
-  notify = true,
-  link = null,
+export async function sendMaxMessage({ chatId, userId, text, format = 'markdown', attachments = [], notify = true }) {
+  const token = getBotToken();
+
+  const url = new URL(`${MAX_API_URL}/messages`);
+
+  if (chatId) {
+    url.searchParams.set('chat_id', String(chatId));
+  } else if (userId) {
+    url.searchParams.set('user_id', String(userId));
+  } else {
+    throw new Error('chatId or userId is required');
+  }
+
+  const baseBody = {
+    text: text || '',
+    format,
+  };
+
+  if (Array.isArray(attachments) && attachments.length) {
+    baseBody.attachments = attachments;
+  }
+
+  // В некоторых версиях MAX API поле notify/channel_notify для каналов даёт:
+  // 400 proto.payload / Errors.SendMessage.channel_notify.
+  // Поэтому сначала пробуем с уведомлением, потом автоматически повторяем без него.
+  const bodyWithNotify = { ...baseBody, notify: Boolean(notify) };
+
+  async function postMessage(body) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const data = await response.json().catch(() => null);
+
+    return { response, data };
+  }
+
+  let { response, data } = await postMessage(bodyWithNotify);
+
+  if (!response.ok) {
+    const errorText = JSON.stringify(data || {});
+    const shouldRetryWithoutNotify =
+      response.status === 400 &&
+      (
+        errorText.includes('channel_notify') ||
+        errorText.includes('proto.payload') ||
+        errorText.includes('notify')
+      );
+
+    if (shouldRetryWithoutNotify) {
+      console.warn('[maxClient] retry send without notify:', errorText);
+
+      ({ response, data } = await postMessage(baseBody));
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`MAX API error ${response.status}: ${JSON.stringify(data)}`);
+  }
+
+  return data;
 }) {
   const url = new URL(`${MAX_API_URL}/messages`);
 
