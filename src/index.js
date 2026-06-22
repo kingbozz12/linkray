@@ -902,44 +902,62 @@ function channelLinkRows(channels) {
 
 
 async function loadSharedSignatures(draft) {
-  const channelIds = [...new Set((draft.channelIds || []).map(Number).filter(Boolean))];
-
   draft.signaturesByChannel = draft.signaturesByChannel || {};
   draft.signatureEnabledByChannel = draft.signatureEnabledByChannel || {};
   draft.signatureFormatsByChannel = draft.signatureFormatsByChannel || {};
   draft.signatureMarkupByChannel = draft.signatureMarkupByChannel || {};
 
-  if (!channelIds.length) return draft;
+  const ids = [...new Set((draft.channelIds || []).map(Number).filter(Boolean))];
+
+  if (!ids.length) return draft;
 
   const rows = await query(
     `
     SELECT channel_id, text, format, markup, is_active
     FROM channel_signatures
     WHERE channel_id = ANY($1::int[])
-      AND COALESCE(owner_key, 'shared') = 'shared'
-    ORDER BY updated_at DESC
     `,
-    [channelIds]
+    [ids]
   );
 
   for (const row of rows) {
     const id = String(row.channel_id);
-
-    if (draft.signaturesByChannel[id] === undefined) {
-      draft.signaturesByChannel[id] = row.text || '';
-    }
-
-    if (draft.signatureEnabledByChannel[id] === undefined) {
-      draft.signatureEnabledByChannel[id] = row.is_active !== false && Boolean(row.text);
-    }
-
-    draft.signatureFormatsByChannel[id] = row.format === 'html' ? 'html' : 'markdown';
+    draft.signaturesByChannel[id] = row.text || '';
+    draft.signatureEnabledByChannel[id] = row.is_active !== false;
+    draft.signatureFormatsByChannel[id] = row.format || (lrLooksLikeHtml(row.text) ? 'html' : 'markdown');
     draft.signatureMarkupByChannel[id] = Array.isArray(row.markup) ? row.markup : [];
   }
 
   return draft;
 }
 
+
+
+function lrEscapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrNormalizeSignatureHtml(value) {
+  let html = String(value || '');
+
+  // Старый код мог сохранять ссылку и жирный в неверном порядке:
+  // <a href="..."><b>текст</a></b>
+  // Делаем валидно: <b><a href="...">текст</a></b>
+  html = html.replace(/<a\s+href="([^"]+)"><b>([\s\S]*?)<\/a><\/b>/gi, '<b><a href="$1">$2</a></b>');
+  html = html.replace(/<a\s+href="([^"]+)"><strong>([\s\S]*?)<\/a><\/strong>/gi, '<strong><a href="$1">$2</a></strong>');
+  html = html.replace(/<a\s+href="([^"]+)"><i>([\s\S]*?)<\/a><\/i>/gi, '<i><a href="$1">$2</a></i>');
+  html = html.replace(/<a\s+href="([^"]+)"><em>([\s\S]*?)<\/a><\/em>/gi, '<em><a href="$1">$2</a></em>');
+  html = html.replace(/<a\s+href="([^"]+)"><u>([\s\S]*?)<\/a><\/u>/gi, '<u><a href="$1">$2</a></u>');
+
+  return html;
+}
+
+function lrLooksLikeHtml(value) {
+  return /<\/?(a|b|strong|i|em|u|s|strike|code|br)\b/i.test(String(value || ''));
+}
 
 async function saveSharedSignature(channelId, text, format = 'markdown', markup = []) {
   const updated = await query(
@@ -1913,16 +1931,82 @@ async function handleCallback(update) {
   }
   if (payload === 'sig:back') { await editStudio(callbackId, key, draft); return; }
   if (payload.startsWith('sig:channel:')) {
-    const channelId = Number(payload.split(':')[2]);
-    draft.activeSignatureChannelId = channelId;
-    const channel = await getChannel(channelId);
-    const sig = draft.signaturesByChannel[String(channelId)];
-    const enabled = draft.signatureEnabledByChannel[String(channelId)] !== false;
-    await setSession(key, 'signature_channel', { draft });
-    await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n🏷 **${channelName(channel)}**\n\nСтатус: ${sig ? (enabled ? 'включена' : 'выключена') : 'не создана'}\n\n${sig ? `Текст:\n${sig}` : 'Создайте подпись для этого канала.'}\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard([[callbackButton(sig ? '✏️ Заменить подпись' : '➕ Создать подпись', 'sig:add')], [callbackButton(enabled ? '🚫 Выключить' : '✅ Включить', 'sig:toggle')], [callbackButton('⬅️ К подписям', 'sig:menu')]]) });
-    return;
-  }
-  if (payload === 'sig:add') { await editPrompt(callbackId, key, 'wait_signature', draft, `━━━━━━━━━━━━━━\n🏷 **Новая подпись**\n\nОтправьте текст подписи. Она сразу включится для выбранного канала.\n━━━━━━━━━━━━━━`, 'sig:menu'); return; }
+      const channelId = Number(payload.split(':')[2]);
+      draft.signatureCurrentChannelId = channelId;
+
+      await loadSharedSignatures(draft);
+
+      const channel = await getChannelById(channelId);
+      const channelKey = String(channelId);
+
+      const sig = draft.signaturesByChannel?.[channelKey] || '';
+      const enabled = draft.signatureEnabledByChannel?.[channelKey] !== false;
+      const sigFormat =
+        draft.signatureFormatsByChannel?.[channelKey] ||
+        (lrLooksLikeHtml(sig) ? 'html' : 'markdown');
+
+      await setSession(key, 'signature_channel', { draft });
+
+      const rows = [
+        [callbackButton(sig ? '✏️ Заменить подпись' : '➕ Создать подпись', 'sig:add')],
+      ];
+
+      if (sig) {
+        rows.push([callbackButton(enabled ? '🚫 Выключить' : '✅ Включить', 'sig:toggle')]);
+      }
+
+      rows.push([callbackButton('⬅️ К подписям', 'sig:menu')]);
+
+      if (!sig) {
+        await answerCallback({
+          callbackId,
+          text: `━━━━━━━━━━━━━━
+🏷 **${channelName(channel)}**
+
+Статус: не создана
+
+Создайте подпись для этого канала.
+━━━━━━━━━━━━━━`,
+          attachments: inlineKeyboard(rows),
+        });
+        return;
+      }
+
+      if (sigFormat === 'html' || lrLooksLikeHtml(sig)) {
+        const htmlSignature = lrNormalizeSignatureHtml(sig);
+
+        await answerCallback({
+          callbackId,
+          format: 'html',
+          text: `━━━━━━━━━━━━━━
+<b>🏷 ${lrEscapeHtml(channelName(channel))}</b>
+
+Статус: ${enabled ? 'включена' : 'выключена'}
+
+<b>Подпись:</b>
+${htmlSignature}
+━━━━━━━━━━━━━━`,
+          attachments: inlineKeyboard(rows),
+        });
+        return;
+      }
+
+      await answerCallback({
+        callbackId,
+        text: `━━━━━━━━━━━━━━
+🏷 **${channelName(channel)}**
+
+Статус: ${enabled ? 'включена' : 'выключена'}
+
+**Подпись:**
+${sig}
+━━━━━━━━━━━━━━`,
+        attachments: inlineKeyboard(rows),
+      });
+      return;
+    }
+
+    if (payload === 'sig:add') { await editPrompt(callbackId, key, 'wait_signature', draft, `━━━━━━━━━━━━━━\n🏷 **Новая подпись**\n\nОтправьте текст подписи. Она сразу включится для выбранного канала.\n━━━━━━━━━━━━━━`, 'sig:menu'); return; }
   if (payload === 'sig:toggle') {
     const channelId = String(draft.activeSignatureChannelId || draft.channelIds[0]);
     draft.signatureEnabledByChannel[channelId] = draft.signatureEnabledByChannel[channelId] === false;
