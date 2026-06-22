@@ -2947,6 +2947,18 @@ async function handleCallback(update) {
   const callbackId = getCallbackId(update);
   const payload = getCallbackPayload(update);
 const key = getSessionKey(update);
+  // LR42_DIRECT_QUEUE_INTERCEPT_START
+  if (String(payload || '').startsWith('queue:')) {
+    if (typeof lr41HandlePostsPayload === 'function') {
+      const handledByLr41 = await lr41HandlePostsPayload(payload, callbackId, key);
+      if (handledByLr41) return;
+    }
+    if (typeof lr36HandlePostsPayload === 'function') {
+      const handledByLr36 = await lr36HandlePostsPayload(payload, callbackId, key);
+      if (handledByLr36) return;
+    }
+  }
+  // LR42_DIRECT_QUEUE_INTERCEPT_END
 console.log('[callback]', JSON.stringify({ callbackId, key, payload }));
   await writeFile('/tmp/linkray_last_callback.json', JSON.stringify(update, null, 2)).catch(() => {});
   if (!callbackId || !key) return;
