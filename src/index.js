@@ -3089,12 +3089,7 @@ async function handleCallback(update) {
   const callbackId = getCallbackId(update);
   const payload = getCallbackPayload(update);
 const key = getSessionKey(update);
-  if (String(payload || '').startsWith('queue:')) {
-    const handledByV36 = await lr36HandlePostsPayload(payload, callbackId, key);
-    if (handledByV36) return;
-  }
-
-  console.log('[callback]', JSON.stringify({ callbackId, key, payload }));
+console.log('[callback]', JSON.stringify({ callbackId, key, payload }));
   await writeFile('/tmp/linkray_last_callback.json', JSON.stringify(update, null, 2)).catch(() => {});
   if (!callbackId || !key) return;
 
