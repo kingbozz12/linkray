@@ -901,6 +901,27 @@ function channelLinkRows(channels) {
 }
 
 
+
+async function getChannelById(channelId) {
+  const id = Number(channelId);
+
+  if (!id) {
+    return null;
+  }
+
+  const rows = await query(
+    `
+    SELECT *
+    FROM channels
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [id]
+  );
+
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
 async function loadSharedSignatures(draft) {
   draft.signaturesByChannel = draft.signaturesByChannel || {};
   draft.signatureEnabledByChannel = draft.signatureEnabledByChannel || {};
