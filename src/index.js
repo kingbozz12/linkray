@@ -944,18 +944,19 @@ async function loadSharedSignatures(draft) {
 async function saveSharedSignature(channelId, text, format = 'markdown', markup = []) {
   await query(
     `
-    DELETE FROM channel_signatures
-    WHERE channel_id = $1 AND COALESCE(owner_key, 'shared') = 'shared'
-    `,
-    [Number(channelId)]
-  );
-
-  await query(
-    `
     INSERT INTO channel_signatures
       (channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at)
     VALUES
       ($1, 'shared', 'Автоподпись', $2, $3, $4::jsonb, true, now(), now())
+    ON CONFLICT (channel_id)
+    DO UPDATE SET
+      owner_key = 'shared',
+      title = 'Автоподпись',
+      text = EXCLUDED.text,
+      format = EXCLUDED.format,
+      markup = EXCLUDED.markup,
+      is_active = true,
+      updated_at = now()
     `,
     [
       Number(channelId),
