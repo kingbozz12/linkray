@@ -64,6 +64,8 @@ async function ensureDb() {
   await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
   await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`);
   await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS format text NOT NULL DEFAULT 'markdown'`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS markup jsonb NOT NULL DEFAULT '[]'::jsonb`);
   await query(`UPDATE channel_signatures SET owner_key = 'global' WHERE owner_key IS NULL`);
   await query(`ALTER TABLE channel_signatures ALTER COLUMN owner_key SET NOT NULL`);
 
@@ -679,6 +681,8 @@ function emptyDraft() {
     buttons: [],
     signaturesByChannel: {},
     signatureEnabledByChannel: {},
+    signatureFormatsByChannel: {},
+    signatureMarkupByChannel: {},
     activeSignatureChannelId: null,
     isAd: false,
     cpm: null,
@@ -709,6 +713,8 @@ function safeDraft(data) {
     channelIds: Array.isArray(source.channelIds) ? source.channelIds.map(Number).filter(Boolean) : [],
     signaturesByChannel: source.signaturesByChannel && typeof source.signaturesByChannel === 'object' ? source.signaturesByChannel : {},
     signatureEnabledByChannel: source.signatureEnabledByChannel && typeof source.signatureEnabledByChannel === 'object' ? source.signatureEnabledByChannel : {},
+    signatureFormatsByChannel: source.signatureFormatsByChannel && typeof source.signatureFormatsByChannel === 'object' ? source.signatureFormatsByChannel : {},
+    signatureMarkupByChannel: source.signatureMarkupByChannel && typeof source.signatureMarkupByChannel === 'object' ? source.signatureMarkupByChannel : {},
   };
 }
 
@@ -889,13 +895,19 @@ function channelLinkRows(channels) {
     .map((channel) => [linkButton(`🔗 ${channelName(channel)}`, channel.link)]);
 }
 
+
 async function loadSharedSignatures(draft) {
   const ids = (draft.channelIds || []).map(Number).filter(Boolean);
   if (!ids.length) return draft;
 
   const rows = await query(
     `
-    SELECT DISTINCT ON (channel_id) channel_id, text, is_active
+    SELECT DISTINCT ON (channel_id)
+      channel_id,
+      text,
+      COALESCE(format, 'markdown') AS format,
+      COALESCE(markup, '[]'::jsonb) AS markup,
+      is_active
     FROM channel_signatures
     WHERE channel_id = ANY($1::int[])
       AND owner_key = 'shared'
@@ -904,10 +916,21 @@ async function loadSharedSignatures(draft) {
     [ids]
   );
 
+  draft.signaturesByChannel ||= {};
+  draft.signatureEnabledByChannel ||= {};
+  draft.signatureFormatsByChannel ||= {};
+  draft.signatureMarkupByChannel ||= {};
+
   for (const row of rows) {
     const key = String(row.channel_id);
     if (!draft.signaturesByChannel[key] && row.text) {
       draft.signaturesByChannel[key] = row.text;
+    }
+    if (!draft.signatureFormatsByChannel[key]) {
+      draft.signatureFormatsByChannel[key] = row.format || 'markdown';
+    }
+    if (!draft.signatureMarkupByChannel[key]) {
+      draft.signatureMarkupByChannel[key] = Array.isArray(row.markup) ? row.markup : [];
     }
     if (draft.signatureEnabledByChannel[key] === undefined) {
       draft.signatureEnabledByChannel[key] = row.is_active !== false;
@@ -917,7 +940,8 @@ async function loadSharedSignatures(draft) {
   return draft;
 }
 
-async function saveSharedSignature(channelId, text) {
+
+async function saveSharedSignature(channelId, text, format = 'markdown', markup = []) {
   await query(
     `
     UPDATE channel_signatures
@@ -929,10 +953,10 @@ async function saveSharedSignature(channelId, text) {
 
   await query(
     `
-    INSERT INTO channel_signatures (channel_id, owner_key, title, text, is_active, updated_at)
-    VALUES ($1, 'shared', 'Автоподпись', $2, true, now())
+    INSERT INTO channel_signatures (channel_id, owner_key, title, text, format, markup, is_active, updated_at)
+    VALUES ($1, 'shared', 'Автоподпись', $2, $3, $4::jsonb, true, now())
     `,
-    [Number(channelId), text]
+    [Number(channelId), text, format || 'markdown', JSON.stringify(Array.isArray(markup) ? markup : [])]
   );
 }
 
@@ -1613,14 +1637,25 @@ async function handleMessage(update) {
       await sendStudio(chatId, key, draft);
       return;
     }
-    draft.content.exactForward = false;
-    draft.signaturesByChannel[channelId] = text;
+
+    const signatureContent = contentFromMaxMessage(update);
+
+    draft.signaturesByChannel ||= {};
+    draft.signatureEnabledByChannel ||= {};
+    draft.signatureFormatsByChannel ||= {};
+    draft.signatureMarkupByChannel ||= {};
+
+    draft.signaturesByChannel[channelId] = signatureContent.text;
     draft.signatureEnabledByChannel[channelId] = true;
+    draft.signatureFormatsByChannel[channelId] = signatureContent.format;
+    draft.signatureMarkupByChannel[channelId] = signatureContent.markup;
+
     try {
-      await saveSharedSignature(Number(channelId), text);
+      await saveSharedSignature(Number(channelId), signatureContent.text, signatureContent.format, signatureContent.markup);
     } catch (error) {
       console.error('[signature] save failed:', error.message || error);
     }
+
     await sendStudio(chatId, key, draft, { preview: true });
     return;
   }
