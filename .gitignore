@@ -1,0 +1,17 @@
+.env
+node_modules/
+npm-debug.log
+*.log
+.DS_Store
+
+backups/
+backups_*/
+*.backup
+*.bak
+
+linkray_*.tar.gz
+linkray_current_src.tar.gz
+linkray_last_update.json
+
+tmp/
+.cache/

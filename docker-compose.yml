@@ -1,0 +1,40 @@
+services:
+  app:
+    build: .
+    container_name: linkray-app
+    restart: always
+    env_file:
+      - .env
+    environment:
+      TZ: Europe/Moscow
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  postgres:
+    image: mirror.gcr.io/library/postgres:16-alpine
+    container_name: linkray-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: linkray
+      POSTGRES_USER: linkray
+      POSTGRES_PASSWORD: linkray_test_password_12345
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: mirror.gcr.io/library/redis:7-alpine
+    container_name: linkray-redis
+    restart: always
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,14 @@
+{
+  "name": "linkray-bot",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.18.3",
+    "pg": "^8.13.1"
+  }
+}
