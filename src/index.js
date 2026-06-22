@@ -3376,28 +3376,42 @@ function lr36ChannelLine(ch) { const t = lr36Esc(lr36ChannelTitle(ch)); const l 
 async function lr36GetPosts(mode = 'all', channelId = null, limit = 12) {
   const where = ["sp.status::text IN ('scheduled','published')"];
   const params = [];
+
   if (mode === 'scheduled') where.push("sp.status::text = 'scheduled'");
   if (mode === 'published') where.push("sp.status::text = 'published'");
-  if (channelId) { params.push(Number(channelId)); where.push(`sp.channel_id = $${params.length}`); }
+
+  if (channelId) {
+    params.push(Number(channelId));
+    where.push(`sp.channel_id = $${params.length}`);
+  }
+
   params.push(Number(limit));
-  return (await query(`
+
+  const result = await query(`
     SELECT to_jsonb(sp) AS sp, to_jsonb(c) AS ch
     FROM scheduled_posts sp
     LEFT JOIN channels c ON c.id = sp.channel_id
     WHERE ${where.join(' AND ')}
     ORDER BY sp.publish_at DESC NULLS LAST, sp.id DESC
     LIMIT $${params.length}
-  `, params)).rows;
+  `, params);
+
+  return lr40Rows(result);
 }
+
 async function lr36GetOnePost(id) {
-  return (await query(`
+  const result = await query(`
     SELECT to_jsonb(sp) AS sp, to_jsonb(c) AS ch
     FROM scheduled_posts sp
     LEFT JOIN channels c ON c.id = sp.channel_id
     WHERE sp.id = $1
     LIMIT 1
-  `, [Number(id)])).rows[0] || null;
+  `, [Number(id)]);
+
+  const rows = lr40Rows(result);
+  return rows[0] || null;
 }
+
 async function lr36GetChannels() {
   return (await query(`
     SELECT to_jsonb(c) AS ch,
@@ -3426,8 +3440,16 @@ function lr36Header(mode, channel, rows) {
   if (mode === 'published') filter = 'опубликованные';
   return `━━━━━━━━━━━━━━\n🗂 <b>${lr36Esc(title)}</b>\n📅 ${lr36DateLine(d)}\n\n${scheduled ? `⏳ ${scheduled} запланировано\n` : ''}${published ? `✅ ${published} опубликовано\n` : ''}Фильтр: ${filter}\n\nНажмите на пост, чтобы открыть управление.\n━━━━━━━━━━━━━━`;
 }
+
+function lr40Rows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  if (result && Array.isArray(result.data)) return result.data;
+  return [];
+}
+
 async function lr36ShowPosts(callbackId, mode = 'all', channelId = null) {
-  const rowsData = await lr36GetPosts(mode, channelId, 12);
+  const rowsData = lr40Rows(await lr36GetPosts(mode, channelId, 12));
   const channel = channelId && rowsData[0] ? lr36Ch(rowsData[0]) : null;
   const kb = [];
   for (const r of rowsData) {
