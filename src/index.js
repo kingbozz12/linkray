@@ -1080,7 +1080,7 @@ function kbMain() {
 function kbPosting() {
   return inlineKeyboard([
     [callbackButton('🧩 Собрать пост', 'post:create')],
-    [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+    [callbackButton('🗂 Посты', 'queue:menu')],
     [callbackButton('📡 Мои каналы', 'post:channels'), callbackButton('➕ Подключить канал', 'post:add_channel')],
     [callbackButton('🏠 Главное меню', 'main:menu')],
   ]);
@@ -1140,7 +1140,7 @@ function kbAutoDelete() {
 function kbFinal() {
   return inlineKeyboard([
     [callbackButton('🧩 Собрать ещё пост', 'post:create')],
-    [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+    [callbackButton('🗂 Посты', 'queue:menu')],
     [callbackButton('🏠 В меню', 'main:menu')],
   ]);
 }
@@ -1786,19 +1786,19 @@ async function editQueueMenu(callbackId) {
   const rows = [[callbackButton('🌐 Все каналы', 'queue:all')]];
   rows.push(...buttonRowsForChannels(channels, 'queue:channel'));
   rows.push([callbackButton('⬅️ В Studio', 'main:posting')]);
-  await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📅 **Очередь публикаций**\n\nВыберите канал, чтобы посмотреть отложенные посты.\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard(rows) });
+  await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📅 **Посты**\n\nВыберите канал, чтобы посмотреть запланированные посты.\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard(rows) });
 }
 
 async function editQueueList(callbackId, channelId = null) {
   const rows = await getQueueRows(channelId);
   if (!rows.length) {
-    await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📅 **Очередь пуста**\n\nДля выбранного режима нет отложенных публикаций.\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard([[callbackButton('⬅️ Назад', 'queue:menu')], [callbackButton('🧩 Собрать пост', 'post:create')]]) });
+    await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n🗂 **Посты пуста**\n\nДля выбранного режима нет отложенных публикаций.\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard([[callbackButton('⬅️ Назад', 'queue:menu')], [callbackButton('🧩 Собрать пост', 'post:create')]]) });
     return;
   }
   const text = rows.map((row, index) => `${index + 1}. ${row.channel_title || 'Канал'}\n   ${formatMsk(new Date(row.publish_at))}\n   ${previewText(row.text, 80)}`).join('\n\n');
   const buttons = rows.slice(0, 12).map((row, index) => [callbackButton(`${index + 1}. ${row.channel_title || 'Канал'} · ${formatMsk(new Date(row.publish_at)).slice(0, 17)}`, `queue:post:${row.id}`)]);
   buttons.push([callbackButton('⬅️ К каналам', 'queue:menu')]);
-  await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📅 **Очередь публикаций**\n\n${text}\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard(buttons) });
+  await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📅 **Посты**\n\n${text}\n━━━━━━━━━━━━━━`, attachments: inlineKeyboard(buttons) });
 }
 
 async function editQueuePost(callbackId, postId) {
@@ -1824,7 +1824,7 @@ async function editQueuePost(callbackId, postId) {
       [callbackButton('✏️ Изменить текст', `queueedit:text:${post.id}`), callbackButton('🕒 Изменить время', `queueedit:time:${post.id}`)],
       [callbackButton('🚀 Опубликовать сейчас', `queue:now:${post.id}`)],
       [callbackButton('🗑 Отменить публикацию', `queue:cancel:${post.id}`)],
-      [callbackButton('⬅️ К очереди', 'queue:all')],
+      [callbackButton('⬅️ К постам', 'queue:all')],
     ]),
   });
 }
@@ -2156,7 +2156,7 @@ function lr31PostPreviewFromDraft(draft) {
 function lr31AfterPublishKeyboard() {
   return inlineKeyboard([
     [callbackButton('🧩 Собрать ещё пост', 'post:create')],
-    [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+    [callbackButton('🗂 Посты', 'queue:menu')],
     [callbackButton('🏠 В меню', 'main:menu')],
   ]);
 }
@@ -2174,7 +2174,7 @@ function lr31MainMenuText() {
 function lr31MainMenuKeyboard() {
   return inlineKeyboard([
     [callbackButton('🧬 LinkRay Studio', 'post:create')],
-    [callbackButton('📅 Очередь', 'queue:menu'), callbackButton('📡 Каналы', 'post:channels')],
+    [callbackButton('🗂 Посты', 'queue:menu'), callbackButton('📡 Каналы', 'post:channels')],
     [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'antifraud:menu')],
   ]);
 }
@@ -2313,7 +2313,7 @@ function lr32MainMenuKeyboard() {
     [callbackButton('🧬 LinkRay Studio', 'main:posting')],
     [callbackButton('📡 Каналы', 'post:channels')],
     [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'antifraud:menu')],
-      [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+      [callbackButton('🗂 Посты', 'queue:menu')],
 ]);
 }
 
@@ -2321,7 +2321,7 @@ function lr32MainMenuKeyboard() {
 function lr32AfterPublishKeyboard() {
   return inlineKeyboard([
     [callbackButton('🧩 Собрать ещё пост', 'post:create')],
-    [callbackButton('📅 Очередь публикаций', 'queue:menu')],
+    [callbackButton('🗂 Посты', 'queue:menu')],
     [callbackButton('🏠 В меню', 'main:menu')],
   ]);
 }
@@ -2602,30 +2602,50 @@ async function lr32GetQueueChannels() {
   return result.rows;
 }
 
+
+function lr34PostButtonTitle(row) {
+  const date = new Date(lr32RowDate(row));
+  const hh = Number.isNaN(date.getTime()) ? '--:--' : `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const ad = lr32RowAd(row) ? '💼 ' : '';
+  const icon = lr32StatusIcon(row);
+  const preview = lr32Preview(lr32RowText(row), 34);
+  const del = row?.delete_after_minutes || row?.auto_delete_minutes || lr32ParseMaybeJson(row?.options, {})?.deleteAfterMinutes;
+  const delText = del ? ` · 🗑 ${lr32MinutesText(del)}` : '';
+  return `${ad}${icon} ${hh} · ${preview}${delText}`;
+}
+
 async function lr32EditQueueMenu(callbackId) {
   const channels = await lr32GetQueueChannels();
-  const rows = [[callbackButton('🌐 Все каналы', 'queue:all')]];
+
+  const rows = [
+    [callbackButton('📌 Все посты', 'queue:all')],
+    [callbackButton('⏳ Запланированные', 'queue:scheduled'), callbackButton('🟢 Опубликованные', 'queue:published')],
+  ];
 
   for (const channel of channels.slice(0, 10)) {
     const title = lr32ChannelTitle(channel);
-    const count = Number(channel.scheduled_count || 0) + Number(channel.published_count || 0);
-    rows.push([callbackButton(`📡 ${title}${count ? ` · ${count}` : ''}`, `queue:channel:${channel.id}`)]);
+    const scheduled = Number(channel.scheduled_count || 0);
+    const published = Number(channel.published_count || 0);
+    const countText = scheduled || published ? ` · ⏳${scheduled} / ✅${published}` : '';
+    rows.push([callbackButton(`📡 ${title}${countText}`, `queue:channel:${channel.id}`)]);
   }
 
-  rows.push([callbackButton('⏳ Отложенные', 'queue:scheduled'), callbackButton('🟢 Опубликованные', 'queue:published')]);
   rows.push([callbackButton('⬅️ В Studio', 'main:posting')]);
 
   await answerCallback({
     callbackId,
     text: `━━━━━━━━━━━━━━
-📅 **Очередь публикаций**
+🗂 **Посты**
 
-Выберите канал или общий список.
-Рекламные посты помечаются значком 💼.
+Здесь собраны запланированные и опубликованные публикации.
+
+Можно открыть общий список или выбрать канал.
+Рекламные публикации помечаются 💼.
 ━━━━━━━━━━━━━━`,
     attachments: inlineKeyboard(rows),
   });
 }
+
 
 function lr32QueueHeader(mode, channel = null, rows = []) {
   const title = channel ? lr32ChannelTitle(channel) : 'Все каналы';
@@ -2633,19 +2653,26 @@ function lr32QueueHeader(mode, channel = null, rows = []) {
   const scheduled = rows.filter((r) => lr32RowStatus(r) === 'scheduled').length;
 
   let modeText = 'все посты';
-  if (mode === 'scheduled') modeText = 'отложенные';
+  if (mode === 'scheduled') modeText = 'запланированные';
   if (mode === 'published') modeText = 'опубликованные';
 
-  return `━━━━━━━━━━━━━━
-📅 **${title}**
+  const firstDate = rows.length ? new Date(lr32RowDate(rows[0])) : null;
+  const dayLine = firstDate && !Number.isNaN(firstDate.getTime())
+    ? `📅 ${lr32FormatDateTime(firstDate).replace(' МСК', '')}`
+    : '📅 публикаций пока нет';
 
+  return `━━━━━━━━━━━━━━
+🗂 **Посты · ${title}**
+
+${dayLine}
 Фильтр: ${modeText}
-⏳ Отложено: ${scheduled}
+⏳ Запланировано: ${scheduled}
 ✅ Опубликовано: ${published}
 
 Нажмите на пост, чтобы открыть управление.
 ━━━━━━━━━━━━━━`;
 }
+
 
 async function lr32EditQueueList(callbackId, mode = 'all', channelId = null) {
   let channel = null;
@@ -2658,16 +2685,19 @@ async function lr32EditQueueList(callbackId, mode = 'all', channelId = null) {
   const rows = [];
 
   for (const row of rowsData) {
-    rows.push([callbackButton(lr32PostButtonTitle(row), `queue:post:${row.id}`)]);
+    rows.push([callbackButton(lr34PostButtonTitle(row), `queue:post:${row.id}`)]);
   }
 
   if (!rows.length) {
     rows.push([callbackButton('Пока пусто', 'queue:noop')]);
   }
 
-  rows.push([callbackButton('⏳ Отложенные', channelId ? `queue:channel:${channelId}:scheduled` : 'queue:scheduled'), callbackButton('🟢 Опубликованные', channelId ? `queue:channel:${channelId}:published` : 'queue:published')]);
+  rows.push([
+    callbackButton('⏳ Запланированные', channelId ? `queue:channel:${channelId}:scheduled` : 'queue:scheduled'),
+    callbackButton('🟢 Опубликованные', channelId ? `queue:channel:${channelId}:published` : 'queue:published'),
+  ]);
   rows.push([callbackButton('📋 Все посты', channelId ? `queue:channel:${channelId}:all` : 'queue:all')]);
-  rows.push([callbackButton('📅 Развернуть календарь', channelId ? `queue:calendar:${channelId}` : 'queue:calendar')]);
+  rows.push([callbackButton('📅 Календарь', channelId ? `queue:calendar:${channelId}` : 'queue:calendar')]);
   rows.push([callbackButton('⬅️ Назад', 'queue:menu')]);
 
   await answerCallback({
@@ -2676,6 +2706,7 @@ async function lr32EditQueueList(callbackId, mode = 'all', channelId = null) {
     attachments: inlineKeyboard(rows),
   });
 }
+
 
 async function lr32SendQueuePostPreview(chatId, post) {
   const text = lr32PostTextForSending(post);
@@ -2700,7 +2731,7 @@ async function lr32EditQueuePost(callbackId, key, id, sendPreview = true) {
     await answerCallback({
       callbackId,
       text: 'Публикация не найдена.',
-      attachments: inlineKeyboard([[callbackButton('⬅️ К очереди', 'queue:all')]]),
+      attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'queue:all')]]),
     });
     return;
   }
@@ -2728,7 +2759,9 @@ async function lr32EditQueuePost(callbackId, key, id, sendPreview = true) {
   ];
 
   const text = `━━━━━━━━━━━━━━
-${isAd ? '💼 **Рекламная публикация**' : '📄 **Публикация**'} #${post.id}
+${isAd ? '💼 **Рекламный пост**' : '📄 **Пост**'} #${post.id}
+
+↑ Пост находится над этим сообщением ↑
 
 📣 **Канал:**
 ${lr32ChannelLine(channel)}
@@ -2737,9 +2770,7 @@ ${lr32ChannelLine(channel)}
 ${lr32StatusIcon(post)} **Статус:** ${status}
 🗑 **Автоудаление:** ${lr32MinutesText(deleteAfter)}
 ${isAd ? `💰 **CPM:** ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}
-📝 **Текст:** «${lr32Preview(lr32RowText(post), 160)}»
-
-Пост-превью отправлен выше, чтобы видеть изменения.
+Выберите действие.
 ━━━━━━━━━━━━━━`;
 
   await answerCallback({
@@ -2748,6 +2779,7 @@ ${isAd ? `💰 **CPM:** ${cpm ? `${cpm} ₽` : 'не указан'}\n` : ''}
     attachments: inlineKeyboard(rows),
   });
 }
+
 
 async function lr32QueueAutoDeleteMenu(callbackId, id) {
   const rows = [
@@ -2796,7 +2828,7 @@ async function lr32QueueDelete(callbackId, id) {
     await answerCallback({
       callbackId,
       text: 'Публикация не найдена.',
-      attachments: inlineKeyboard([[callbackButton('⬅️ К очереди', 'queue:all')]]),
+      attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'queue:all')]]),
     });
     return;
   }
@@ -2816,7 +2848,7 @@ async function lr32QueueDelete(callbackId, id) {
     text: status === 'published'
       ? `❌ Публикация #${id} убрана из очереди LinkRay. Если MAX message_id сохранён, физическое удаление добавим отдельным шагом.`
       : `❌ Публикация #${id} отменена.`,
-    attachments: inlineKeyboard([[callbackButton('📅 Очередь', 'queue:all')]]),
+    attachments: inlineKeyboard([[callbackButton('🗂 Посты', 'queue:all')]]),
   });
 }
 
@@ -2843,7 +2875,7 @@ async function lr32QueueCalendar(callbackId, channelId = null) {
 
 ${lines}
 ━━━━━━━━━━━━━━`,
-    attachments: inlineKeyboard([[callbackButton('⬅️ К очереди', channelId ? `queue:channel:${channelId}` : 'queue:all')]]),
+    attachments: inlineKeyboard([[callbackButton('⬅️ К постам', channelId ? `queue:channel:${channelId}` : 'queue:all')]]),
   });
 }
 
@@ -3160,11 +3192,11 @@ ${sig}
   if (payload.startsWith('queue:post:')) { await editQueuePost(callbackId, Number(payload.split(':')[2])); return; }
   if (payload.startsWith('queueedit:text:')) { const id = Number(payload.split(':')[2]); await setSession(key, `queue_edit_text:${id}`, {}); await answerCallback({ callbackId, text: `Отправьте новый текст для публикации #${id}.`, attachments: kbBackCancel('queue:all') }); return; }
   if (payload.startsWith('queueedit:time:')) { const id = Number(payload.split(':')[2]); await setSession(key, `queue_edit_time:${id}`, {}); await answerCallback({ callbackId, text: `Отправьте новое время для публикации #${id}.`, attachments: kbBackCancel('queue:all') }); return; }
-  if (payload.startsWith('queue:cancel:')) { const id = Number(payload.split(':')[2]); await query('UPDATE scheduled_posts SET status = $2, updated_at = now() WHERE id = $1', [id, 'canceled']); await answerCallback({ callbackId, text: `🗑 Публикация #${id} отменена.`, attachments: inlineKeyboard([[callbackButton('📅 Очередь', 'queue:all')]]) }); return; }
+  if (payload.startsWith('queue:cancel:')) { const id = Number(payload.split(':')[2]); await query('UPDATE scheduled_posts SET status = $2, updated_at = now() WHERE id = $1', [id, 'canceled']); await answerCallback({ callbackId, text: `🗑 Публикация #${id} отменена.`, attachments: inlineKeyboard([[callbackButton('🗂 Посты', 'queue:all')]]) }); return; }
   if (payload.startsWith('queue:now:')) {
     const id = Number(payload.split(':')[2]);
     await query('UPDATE scheduled_posts SET publish_at = now(), status = $2, updated_at = now() WHERE id = $1', [id, 'scheduled']);
-    await answerCallback({ callbackId, text: `🚀 Публикация #${id} отправлена на ближайшую публикацию.`, attachments: inlineKeyboard([[callbackButton('📅 Очередь', 'queue:all')]]) });
+    await answerCallback({ callbackId, text: `🚀 Публикация #${id} отправлена на ближайшую публикацию.`, attachments: inlineKeyboard([[callbackButton('🗂 Посты', 'queue:all')]]) });
     return;
   }
 
