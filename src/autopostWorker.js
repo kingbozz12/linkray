@@ -125,15 +125,12 @@ async function publishDuePosts() {
     }
 
     try {
-      const draft = safeObject(row.draft);
-      const exactForward = draft?.content?.forwardMid && draft?.content?.exactForward && !isDraftModified(draft);
       const result = await sendMaxMessage({
         chatId: row.max_chat_id,
-        text: exactForward ? '' : (row.text || ' '),
+        text: row.text || ' ',
         format: row.format || 'markdown',
-        attachments: exactForward ? [] : buildPostAttachments(row),
+        attachments: buildPostAttachments(row),
         notify: row.notify !== false,
-        link: exactForward ? { type: 'forward', mid: String(draft.content.forwardMid) } : null,
       });
 
       const messageId =

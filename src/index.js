@@ -168,8 +168,32 @@ function getCallbackId(update) {
 }
 
 function getCallbackPayload(update) {
-  const payload = update.callback?.payload || update.callback?.button?.payload || update.payload || '';
-  return typeof payload === 'string' ? payload : JSON.stringify(payload);
+  const candidates = [
+    update.callback?.payload,
+    update.callback?.button?.payload,
+    update.callback?.data,
+    update.callback?.value,
+    update.button?.payload,
+    update.button?.data,
+    update.message?.body?.payload,
+    update.message?.body?.button?.payload,
+    update.message?.payload,
+    update.payload,
+    update.data,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null || candidate === '') continue;
+    if (typeof candidate === 'string') return candidate;
+    if (typeof candidate === 'object') {
+      if (typeof candidate.payload === 'string') return candidate.payload;
+      if (typeof candidate.value === 'string') return candidate.value;
+      if (typeof candidate.data === 'string') return candidate.data;
+      return JSON.stringify(candidate);
+    }
+  }
+
+  return '';
 }
 
 function getMessageText(update) {
@@ -275,6 +299,70 @@ function deepCollectAttachments(value, found = [], seen = new Set()) {
   }
 
   return found;
+}
+
+
+function firstMarkupFromKnownPaths(update) {
+  const candidates = [
+    update.message?.body?.markup,
+    update.message?.markup,
+    update.message?.link?.message?.body?.markup,
+    update.message?.link?.message?.markup,
+    update.message?.forwarded_message?.body?.markup,
+    update.message?.forwarded_message?.markup,
+    update.message?.forwardedMessage?.body?.markup,
+    update.message?.forwardedMessage?.markup,
+    update.message?.forwarded?.body?.markup,
+    update.message?.forwarded?.markup,
+    update.message?.original_message?.body?.markup,
+    update.message?.originalMessage?.body?.markup,
+    update.message?.shared_message?.body?.markup,
+    update.message?.sharedMessage?.body?.markup,
+    update.message?.attached_message?.body?.markup,
+    update.message?.attachedMessage?.body?.markup,
+    update.message?.post_message?.body?.markup,
+    update.message?.postMessage?.body?.markup,
+    update.body?.markup,
+    update.markup,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length) return candidate;
+  }
+
+  return [];
+}
+
+function applyMaxMarkupToMarkdown(text, markup = []) {
+  let result = String(text || '');
+  const ranges = Array.isArray(markup) ? [...markup] : [];
+
+  ranges.sort((a, b) => Number(b.from || 0) - Number(a.from || 0));
+
+  for (const item of ranges) {
+    const from = Number(item.from);
+    const length = Number(item.length);
+
+    if (!Number.isFinite(from) || !Number.isFinite(length) || length <= 0) continue;
+    if (from < 0 || from >= result.length) continue;
+
+    const before = result.slice(0, from);
+    const body = result.slice(from, from + length);
+    const after = result.slice(from + length);
+    const type = String(item.type || '').toLowerCase();
+
+    let replacement = body;
+
+    if (type === 'link' && item.url) replacement = `[${escapeMarkdownLinkText(body)}](${item.url})`;
+    else if (type === 'strong' || type === 'bold') replacement = `**${body}**`;
+    else if (type === 'emphasized' || type === 'italic') replacement = `*${body}*`;
+    else if (type === 'strikethrough' || type === 'strike') replacement = `~~${body}~~`;
+    else if (type === 'code' || type === 'monospace') replacement = `\`${body}\``;
+
+    result = `${before}${replacement}${after}`;
+  }
+
+  return result;
 }
 
 function firstTextFromKnownPaths(update) {
@@ -422,7 +510,9 @@ function detectForwarded(update) {
 function extractContent(update) {
   const knownText = firstTextFromKnownPaths(update);
   const deepText = deepFindBestText(update.message || update);
-  const text = (knownText || deepText || '').trim();
+const rawText = (knownText || deepText || '').trim();
+  const markup = firstMarkupFromKnownPaths(update);
+  const text = applyMaxMarkupToMarkdown(rawText, markup).trim();
   const attachments = deepCollectAttachments(update.message || update).filter(Boolean);
   const isForwarded = detectForwarded(update);
 
@@ -430,11 +520,13 @@ function extractContent(update) {
 
   return {
     text,
+    markup,
     attachments,
     kind: isForwarded ? 'forwarded' : attachments.length ? 'media' : 'text',
     raw: update.message || null,
     forwardMid,
-    exactForward: Boolean(forwardMid),
+    // LinkRay копирует пост как обычный, без системной плашки MAX «Переслано».
+    exactForward: false,
     sourceNote: isForwarded && !text && !attachments.length && !forwardMid
       ? 'MAX не передал содержимое пересланного поста в webhook. Я сохранил raw payload на сервере для точной доработки.'
       : '',
@@ -607,6 +699,7 @@ function emptyDraft() {
       attachments: [],
       kind: 'text',
       raw: null,
+      markup: [],
       sourceNote: '',
       forwardMid: null,
       exactForward: false,
@@ -638,6 +731,7 @@ function safeDraft(data) {
       ...base.content,
       ...(source.content || {}),
       attachments: Array.isArray(source.content?.attachments) ? source.content.attachments : [],
+      markup: Array.isArray(source.content?.markup) ? source.content.markup : [],
     },
     buttons: Array.isArray(source.buttons) ? source.buttons : [],
     channelIds: Array.isArray(source.channelIds) ? source.channelIds.map(Number).filter(Boolean) : [],
@@ -1148,6 +1242,28 @@ async function editChannelSelect(callbackId, key, draft, multi = false) {
   await answerCallback({ callbackId, text: `━━━━━━━━━━━━━━\n📡 **Куда выпустить пост**\n\nВыберите канал. Уже добавленный материал и настройки сохранятся при смене канала.\n━━━━━━━━━━━━━━`, attachments: kbChannelSelect(channels, draft.channelIds, multi) });
 }
 
+
+async function sendChannelSelect(chatId, key, draft, multi = false) {
+  await refreshAllChannelsMeta();
+  const channels = await getChannels();
+
+  if (!channels.length) {
+    await sendMaxMessage({
+      chatId,
+      text: `━━━━━━━━━━━━━━\n📡 **Каналы не подключены**\n\nДобавьте LinkRay в администраторы канала и выдайте право публикации.\n━━━━━━━━━━━━━━`,
+      attachments: inlineKeyboard([[callbackButton('➕ Как подключить канал', 'post:add_channel')], [callbackButton('⬅️ Назад', 'post:back')]]),
+    });
+    return;
+  }
+
+  await setSession(key, multi ? 'select_channels_multi' : 'select_channel', { draft });
+  await sendMaxMessage({
+    chatId,
+    text: `━━━━━━━━━━━━━━\n📡 **Куда выпустить пост**\n\nВыберите канал. Материал и настройки сохранятся.\n━━━━━━━━━━━━━━`,
+    attachments: kbChannelSelect(channels, draft.channelIds, multi),
+  });
+}
+
 async function editWaitContent(callbackId, key, draft) {
   const channels = await getChannelsByIds(draft.channelIds);
   await setSession(key, 'wait_post_content', { draft });
@@ -1161,23 +1277,7 @@ async function editWaitContent(callbackId, key, draft) {
 }
 
 async function sendPreview(chatId, draft) {
-  const exactForward = draft.content?.forwardMid && draft.content?.exactForward && !isDraftModified(draft);
-
-  if (exactForward) {
-    try {
-      await sendMaxMessage({
-        chatId,
-        text: '',
-        attachments: [],
-        notify: false,
-        link: { type: 'forward', mid: String(draft.content.forwardMid) },
-      });
-      return;
-    } catch (error) {
-      console.error('[preview] exact forward failed:', error.message || error);
-    }
-  }
-
+  // Показываем материал как обычный пост LinkRay, без системной плашки MAX «Переслано».
   const text = buildPreviewText(draft);
   const attachments = buildPostAttachments(draft);
   const hasText = normalizeUserText(text).trim() && normalizeUserText(text).trim() !== ' ';
@@ -1525,7 +1625,9 @@ async function handleMessage(update) {
     const newDraft = emptyDraft();
     newDraft.content = incomingContent;
     newDraft.content.text = normalizeUserText(newDraft.content.text);
-    await sendStudio(chatId, key, newDraft, { preview: true });
+    await setSession(key, 'select_channel', { draft: newDraft });
+    await sendPreview(chatId, newDraft);
+    await sendChannelSelect(chatId, key, newDraft, false);
     return;
   }
 
@@ -1540,6 +1642,7 @@ async function handleCallback(update) {
   const key = getSessionKey(update);
 
   console.log('[callback]', JSON.stringify({ callbackId, key, payload }));
+  await writeFile('/tmp/linkray_last_callback.json', JSON.stringify(update, null, 2)).catch(() => {});
   if (!callbackId || !key) return;
 
   const session = await getSession(key);
@@ -1552,7 +1655,7 @@ async function handleCallback(update) {
   if (payload === 'post:cancel') { await clearSession(key); await answerCallback({ callbackId, text: '❌ Действие отменено.', attachments: kbPosting() }); return; }
   if (payload === 'post:back') { await editPosting(callbackId, key); return; }
 
-  if (payload === 'post:create') { draft = emptyDraft(); await editWaitContent(callbackId, key, draft); return; }
+  if (payload === 'post:create') { draft = emptyDraft(); await editChannelSelect(callbackId, key, draft, false); return; }
   if (payload === 'post:multi') { await editChannelSelect(callbackId, key, draft, true); return; }
   if (payload.startsWith('post:toggle:')) {
     const id = Number(payload.split(':')[2]);
