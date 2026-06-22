@@ -1714,6 +1714,20 @@ function lrMinutesHuman(minutes) {
 }
 
 
+
+function lrAdBotNotice() {
+  const rawUrl =
+    process.env.LINKRAY_BOT_URL ||
+    process.env.BOT_PUBLIC_URL ||
+    process.env.PUBLIC_BOT_URL ||
+    'https://linkray.ru';
+
+  const url = String(rawUrl).trim() || 'https://linkray.ru';
+
+  return `✨ Рекламное размещение подготовлено через [LinkRay](${url}) — автопостинг, очередь публикаций и рекламные отчёты для MAX.`;
+}
+
+
 async function textScheduled(draft, publishAt) {
   const date = new Date(publishAt);
   const channels = await getChannelsByIds(draft.channelIds || []);
@@ -1731,6 +1745,7 @@ async function textScheduled(draft, publishAt) {
   const autoDelete = lrMinutesHuman(draft.autoDeleteMinutes);
   const report = draft.reportAfterHours ? `через ${draft.reportAfterHours}ч после публикации` : 'через 24ч после публикации';
   const ad = draft.isAd ? `да${draft.cpm ? ` · CPM ${draft.cpm} ₽` : ''}` : 'нет';
+  const adNotice = draft.isAd ? lrAdBotNotice() : '';
 
   return `━━━━━━━━━━━━━━
 ✅ **Публикация запланирована**
@@ -1747,7 +1762,7 @@ ${channelsText}
 📊 **Отчёт:** ${report}
 💼 **Реклама:** ${ad}
 
-Пост добавлен в очередь LinkRay.
+${adNotice}
 ━━━━━━━━━━━━━━`;
 }
 async function getQueueRows(channelId = null) {
