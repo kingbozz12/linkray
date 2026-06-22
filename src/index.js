@@ -334,35 +334,7 @@ function firstMarkupFromKnownPaths(update) {
 }
 
 function applyMaxMarkupToMarkdown(text, markup = []) {
-  let result = String(text || '');
-  const ranges = Array.isArray(markup) ? [...markup] : [];
-
-  ranges.sort((a, b) => Number(b.from || 0) - Number(a.from || 0));
-
-  for (const item of ranges) {
-    const from = Number(item.from);
-    const length = Number(item.length);
-
-    if (!Number.isFinite(from) || !Number.isFinite(length) || length <= 0) continue;
-    if (from < 0 || from >= result.length) continue;
-
-    const before = result.slice(0, from);
-    const body = result.slice(from, from + length);
-    const after = result.slice(from + length);
-    const type = String(item.type || '').toLowerCase();
-
-    let replacement = body;
-
-    if (type === 'link' && item.url) replacement = `[${escapeMarkdownLinkText(body)}](${item.url})`;
-    else if (type === 'strong' || type === 'bold') replacement = `**${body}**`;
-    else if (type === 'emphasized' || type === 'italic') replacement = `*${body}*`;
-    else if (type === 'strikethrough' || type === 'strike') replacement = `~~${body}~~`;
-    else if (type === 'code' || type === 'monospace') replacement = `\`${body}\``;
-
-    result = `${before}${replacement}${after}`;
-  }
-
-  return result;
+  return applyMaxMarkupToHtml(text, markup);
 }
 
 function firstTextFromKnownPaths(update) {
@@ -510,25 +482,24 @@ function detectForwarded(update) {
 function extractContent(update) {
   const knownText = firstTextFromKnownPaths(update);
   const deepText = deepFindBestText(update.message || update);
-const rawText = (knownText || deepText || '').trim();
+  const rawText = (knownText || deepText || '').trim();
   const markup = firstMarkupFromKnownPaths(update);
-  const text = applyMaxMarkupToMarkdown(rawText, markup).trim();
+  const text = markup.length ? applyMaxMarkupToHtml(rawText, markup).trim() : rawText;
   const attachments = deepCollectAttachments(update.message || update).filter(Boolean);
   const isForwarded = detectForwarded(update);
-
   const forwardMid = findForwardMid(update.message || update);
 
   return {
     text,
     markup,
+    format: markup.length ? 'html' : 'markdown',
     attachments,
     kind: isForwarded ? 'forwarded' : attachments.length ? 'media' : 'text',
     raw: update.message || null,
     forwardMid,
-    // LinkRay копирует пост как обычный, без системной плашки MAX «Переслано».
     exactForward: false,
     sourceNote: isForwarded && !text && !attachments.length && !forwardMid
-      ? 'MAX не передал содержимое пересланного поста в webhook. Я сохранил raw payload на сервере для точной доработки.'
+      ? 'MAX не передал содержимое пересланного поста в webhook. Raw payload сохранён на сервере.'
       : '',
   };
 }
@@ -701,6 +672,7 @@ function emptyDraft() {
       raw: null,
       markup: [],
       sourceNote: '',
+      format: 'markdown',
       forwardMid: null,
       exactForward: false,
     },
@@ -807,6 +779,97 @@ function channelName(channel) {
 
 function escapeMarkdownLinkText(text) {
   return String(text || '').replace(/[\[\]\n\r]/g, ' ').trim();
+}
+
+function htmlEscape(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function htmlAttrEscape(value) {
+  return htmlEscape(value).replace(/"/g, '&quot;');
+}
+
+function applyMaxMarkupToHtml(text, markup = []) {
+  const source = String(text || '');
+  const marks = Array.isArray(markup) ? markup : [];
+  const opens = new Map();
+  const closes = new Map();
+
+  function addOpen(pos, tag) {
+    if (!opens.has(pos)) opens.set(pos, []);
+    opens.get(pos).push(tag);
+  }
+
+  function addClose(pos, tag) {
+    if (!closes.has(pos)) closes.set(pos, []);
+    closes.get(pos).push(tag);
+  }
+
+  for (const item of marks) {
+    const from = Number(item.from);
+    const length = Number(item.length);
+    if (!Number.isFinite(from) || !Number.isFinite(length) || length <= 0) continue;
+    if (from < 0 || from >= source.length) continue;
+
+    const end = Math.min(source.length, from + length);
+    const type = String(item.type || '').toLowerCase();
+
+    let open = '';
+    let close = '';
+
+    if ((type === 'link' || type === 'url') && item.url) {
+      open = `<a href="${htmlAttrEscape(item.url)}">`;
+      close = '</a>';
+    } else if (type === 'strong' || type === 'bold') {
+      open = '<b>';
+      close = '</b>';
+    } else if (type === 'emphasized' || type === 'italic') {
+      open = '<i>';
+      close = '</i>';
+    } else if (type === 'strikethrough' || type === 'strike') {
+      open = '<s>';
+      close = '</s>';
+    } else if (type === 'underline' || type === 'underlined') {
+      open = '<u>';
+      close = '</u>';
+    } else if (type === 'code' || type === 'monospace') {
+      open = '<code>';
+      close = '</code>';
+    } else if (type === 'header') {
+      open = '<h1>';
+      close = '</h1>';
+    }
+
+    if (!open || !close) continue;
+
+    addOpen(from, { tag: open, length });
+    addClose(end, { tag: close, length });
+  }
+
+  let out = '';
+
+  for (let i = 0; i <= source.length; i += 1) {
+    if (closes.has(i)) {
+      const list = closes.get(i).sort((a, b) => a.length - b.length);
+      for (const item of list) out += item.tag;
+    }
+
+    if (opens.has(i)) {
+      const list = opens.get(i).sort((a, b) => b.length - a.length);
+      for (const item of list) out += item.tag;
+    }
+
+    if (i < source.length) out += htmlEscape(source[i]);
+  }
+
+  return out;
+}
+
+function draftFormat(draft) {
+  return draft?.content?.format === 'html' ? 'html' : 'markdown';
 }
 
 function channelTextLink(channel) {
@@ -1286,11 +1349,11 @@ async function sendPreview(chatId, draft) {
   if (!hasText && !hasAttachments) return;
 
   try {
-    await sendMaxMessage({ chatId, text, attachments, notify: false });
+    await sendMaxMessage({ chatId, text, format: draftFormat(draft), attachments, notify: false });
   } catch (error) {
     console.error('[preview] failed with attachments:', error.message || error);
     try {
-      await sendMaxMessage({ chatId, text, attachments: [], notify: false });
+      await sendMaxMessage({ chatId, text, format: draftFormat(draft), attachments: [], notify: false });
     } catch (fallbackError) {
       console.error('[preview] failed without attachments:', fallbackError.message || fallbackError);
     }
@@ -1356,7 +1419,7 @@ async function publishNow(draft) {
   const results = [];
   for (const channel of channels) {
     try {
-      await sendMaxMessage({ chatId: channel.max_chat_id, text: buildPostTextForChannel(draft, channel.id), attachments: buildPostAttachments(draft), notify: draft.notify });
+      await sendMaxMessage({ chatId: channel.max_chat_id, text: buildPostTextForChannel(draft, channel.id), format: draftFormat(draft), attachments: buildPostAttachments(draft), notify: draft.notify });
       results.push({ channel, ok: true });
     } catch (error) {
       console.error('[publish] failed:', channel.max_chat_id, error.message || error);
@@ -1375,7 +1438,7 @@ async function scheduleDraft(draft, key, publishAt) {
         channel_id, text, format, publish_at, notify, created_by_max_user_id,
         attachments, buttons, draft, is_ad, cpm, auto_delete_minutes, report_after_hours, status, updated_at
       )
-      VALUES ($1, $2, 'markdown', $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, 'scheduled', now())
+      VALUES ($1, $2, $13, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, 'scheduled', now())
       `,
       [
         channel.id,
@@ -1390,6 +1453,7 @@ async function scheduleDraft(draft, key, publishAt) {
         draft.cpm,
         draft.autoDeleteMinutes,
         draft.reportAfterHours || 24,
+        draftFormat(draft),
       ]
     );
   }
@@ -1828,7 +1892,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (updateType === 'bot_started') { if (chatId) await sendMainMenu(chatId); return; }
-    if (updateType === 'message_callback') { await handleCallback(update); return; }
+    if (updateType === 'message_callback' || updateType === 'callback' || updateType.includes('callback') || getCallbackPayload(update)) { await handleCallback(update); return; }
     if (updateType === 'message_created') { await handleMessage(update); return; }
   } catch (error) {
     console.error('[webhook] processing error:', error);
