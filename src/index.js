@@ -875,7 +875,12 @@ function applyMaxMarkupToHtml(text, markup = []) {
 }
 
 function draftFormat(draft) {
-  return draft?.content?.format === 'html' ? 'html' : 'markdown';
+  if (draft?.content?.format === 'html') return 'html';
+
+  const sigFormats = Object.values(draft?.signatureFormatsByChannel || {});
+  if (sigFormats.includes('html')) return 'html';
+
+  return 'markdown';
 }
 
 function channelTextLink(channel) {
@@ -897,44 +902,39 @@ function channelLinkRows(channels) {
 
 
 async function loadSharedSignatures(draft) {
-  const ids = (draft.channelIds || []).map(Number).filter(Boolean);
-  if (!ids.length) return draft;
+  const channelIds = [...new Set((draft.channelIds || []).map(Number).filter(Boolean))];
+
+  draft.signaturesByChannel = draft.signaturesByChannel || {};
+  draft.signatureEnabledByChannel = draft.signatureEnabledByChannel || {};
+  draft.signatureFormatsByChannel = draft.signatureFormatsByChannel || {};
+  draft.signatureMarkupByChannel = draft.signatureMarkupByChannel || {};
+
+  if (!channelIds.length) return draft;
 
   const rows = await query(
     `
-    SELECT DISTINCT ON (channel_id)
-      channel_id,
-      text,
-      COALESCE(format, 'markdown') AS format,
-      COALESCE(markup, '[]'::jsonb) AS markup,
-      is_active
+    SELECT channel_id, text, format, markup, is_active
     FROM channel_signatures
     WHERE channel_id = ANY($1::int[])
-      AND owner_key = 'shared'
-    ORDER BY channel_id, updated_at DESC, id DESC
+      AND COALESCE(owner_key, 'shared') = 'shared'
+    ORDER BY updated_at DESC
     `,
-    [ids]
+    [channelIds]
   );
 
-  draft.signaturesByChannel ||= {};
-  draft.signatureEnabledByChannel ||= {};
-  draft.signatureFormatsByChannel ||= {};
-  draft.signatureMarkupByChannel ||= {};
-
   for (const row of rows) {
-    const key = String(row.channel_id);
-    if (!draft.signaturesByChannel[key] && row.text) {
-      draft.signaturesByChannel[key] = row.text;
+    const id = String(row.channel_id);
+
+    if (draft.signaturesByChannel[id] === undefined) {
+      draft.signaturesByChannel[id] = row.text || '';
     }
-    if (!draft.signatureFormatsByChannel[key]) {
-      draft.signatureFormatsByChannel[key] = row.format || 'markdown';
+
+    if (draft.signatureEnabledByChannel[id] === undefined) {
+      draft.signatureEnabledByChannel[id] = row.is_active !== false && Boolean(row.text);
     }
-    if (!draft.signatureMarkupByChannel[key]) {
-      draft.signatureMarkupByChannel[key] = Array.isArray(row.markup) ? row.markup : [];
-    }
-    if (draft.signatureEnabledByChannel[key] === undefined) {
-      draft.signatureEnabledByChannel[key] = row.is_active !== false;
-    }
+
+    draft.signatureFormatsByChannel[id] = row.format === 'html' ? 'html' : 'markdown';
+    draft.signatureMarkupByChannel[id] = Array.isArray(row.markup) ? row.markup : [];
   }
 
   return draft;
@@ -944,19 +944,25 @@ async function loadSharedSignatures(draft) {
 async function saveSharedSignature(channelId, text, format = 'markdown', markup = []) {
   await query(
     `
-    UPDATE channel_signatures
-    SET is_active = false, updated_at = now()
-    WHERE channel_id = $1 AND owner_key = 'shared'
+    DELETE FROM channel_signatures
+    WHERE channel_id = $1 AND COALESCE(owner_key, 'shared') = 'shared'
     `,
     [Number(channelId)]
   );
 
   await query(
     `
-    INSERT INTO channel_signatures (channel_id, owner_key, title, text, format, markup, is_active, updated_at)
-    VALUES ($1, 'shared', 'Автоподпись', $2, $3, $4::jsonb, true, now())
+    INSERT INTO channel_signatures
+      (channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at)
+    VALUES
+      ($1, 'shared', 'Автоподпись', $2, $3, $4::jsonb, true, now(), now())
     `,
-    [Number(channelId), text, format || 'markdown', JSON.stringify(Array.isArray(markup) ? markup : [])]
+    [
+      Number(channelId),
+      String(text || ''),
+      format === 'html' ? 'html' : 'markdown',
+      JSON.stringify(Array.isArray(markup) ? markup : []),
+    ]
   );
 }
 
@@ -1632,34 +1638,74 @@ async function handleMessage(update) {
   }
 
   if (session.state === 'wait_signature') {
-    const channelId = String(draft.activeSignatureChannelId || draft.channelIds[0]);
+    const channelId = session.data?.channelId || draft.channelIds?.[0];
+
     if (!channelId) {
-      await sendStudio(chatId, key, draft);
+      await sendMaxMessage({
+        chatId,
+        text: `━━━━━━━━━━━━━━\n⚠️ Сначала выберите канал для подписи.\n━━━━━━━━━━━━━━`,
+        attachments: inlineKeyboard([[callbackButton('📡 Выбрать канал', 'editor:channels')]]),
+      });
       return;
     }
 
-    const signatureContent = contentFromMaxMessage(update);
+    const signatureContent = await extractContentWithHydration(update).catch((error) => {
+      console.error('[signature] extract failed:', error.message || error);
+      return null;
+    });
 
-    draft.signaturesByChannel ||= {};
-    draft.signatureEnabledByChannel ||= {};
-    draft.signatureFormatsByChannel ||= {};
-    draft.signatureMarkupByChannel ||= {};
+    let signatureText = signatureContent?.text || getMessageText(update) || '';
+    signatureText = String(signatureText || '').trim();
 
-    draft.signaturesByChannel[channelId] = signatureContent.text;
-    draft.signatureEnabledByChannel[channelId] = true;
-    draft.signatureFormatsByChannel[channelId] = signatureContent.format;
-    draft.signatureMarkupByChannel[channelId] = signatureContent.markup;
-
-    try {
-      await saveSharedSignature(Number(channelId), signatureContent.text, signatureContent.format, signatureContent.markup);
-    } catch (error) {
-      console.error('[signature] save failed:', error.message || error);
+    if (signatureContent?.format !== 'html') {
+      signatureText = normalizeUserText(signatureText);
     }
+
+    if (!signatureText) {
+      await sendMaxMessage({
+        chatId,
+        text: `━━━━━━━━━━━━━━\n🏷 **Подпись пустая**\n\nОтправьте текст подписи ещё раз. Можно использовать ссылки и оформление MAX.\n━━━━━━━━━━━━━━`,
+        attachments: inlineKeyboard([[callbackButton('⬅️ Назад', 'sig:menu')], [callbackButton('❌ Отмена', 'cancel')]]),
+      });
+      return;
+    }
+
+    const id = String(channelId);
+    const sigFormat = signatureContent?.format === 'html' ? 'html' : 'markdown';
+    const sigMarkup = Array.isArray(signatureContent?.markup) ? signatureContent.markup : [];
+
+    draft.signaturesByChannel = draft.signaturesByChannel || {};
+    draft.signatureEnabledByChannel = draft.signatureEnabledByChannel || {};
+    draft.signatureFormatsByChannel = draft.signatureFormatsByChannel || {};
+    draft.signatureMarkupByChannel = draft.signatureMarkupByChannel || {};
+
+    draft.signaturesByChannel[id] = signatureText;
+    draft.signatureEnabledByChannel[id] = true;
+    draft.signatureFormatsByChannel[id] = sigFormat;
+    draft.signatureMarkupByChannel[id] = sigMarkup;
+
+    if (sigFormat === 'html') {
+      draft.content = draft.content || {};
+      draft.content.format = 'html';
+    }
+
+    await saveSharedSignature(Number(channelId), signatureText, sigFormat, sigMarkup).catch((error) => {
+      console.error('[signature] save failed:', error.message || error);
+      throw error;
+    });
+
+    await setSession(key, 'post_editor', { draft });
+
+    await sendMaxMessage({
+      chatId,
+      text: `━━━━━━━━━━━━━━\n✅ **Подпись сохранена**\n\nОна включена для выбранного канала и будет доступна другим админам.\n━━━━━━━━━━━━━━`,
+    });
 
     await sendStudio(chatId, key, draft, { preview: true });
     return;
   }
 
+  
   if (session.state === 'wait_cpm') {
     const cpm = parseCpm(text);
     if (!cpm) {
