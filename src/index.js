@@ -3085,13 +3085,13 @@ async function lr32HandleQueueCallback(payload, callbackId, key) {
 
 
 async function handleCallback(update) {
+
+  const callbackId = getCallbackId(update);
+  const payload = getCallbackPayload(update);
   if (String(payload || '').startsWith('queue:')) {
     const handledByV36 = await lr36HandlePostsPayload(payload, callbackId, key);
     if (handledByV36) return;
   }
-
-  const callbackId = getCallbackId(update);
-  const payload = getCallbackPayload(update);
   const key = getSessionKey(update);
 
   console.log('[callback]', JSON.stringify({ callbackId, key, payload }));
