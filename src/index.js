@@ -1197,29 +1197,121 @@ function parseTimeParts(text) {
   return { hour, minute };
 }
 
-function parsePublishTime(text, draft = emptyDraft()) {
-  const raw = String(text || '').trim().toLowerCase();
-  const now = new Date();
-  let m = raw.match(/^через\s+(\d+)\s*(м|мин|минут|минуту|минуты)$/);
-  if (m) return new Date(now.getTime() + Number(m[1]) * 60 * 1000);
-  m = raw.match(/^через\s+(\d+)\s*(ч|час|часа|часов)$/);
-  if (m) return new Date(now.getTime() + Number(m[1]) * 60 * 60 * 1000);
-  m = raw.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})$/);
-  if (m) return dateFromMsk(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
 
-  const time = parseTimeParts(raw);
-  if (time) {
-    if (draft.scheduleDate) {
-      const [year, month, day] = draft.scheduleDate.split('-').map(Number);
-      return dateFromMsk(year, month, day, time.hour, time.minute);
+function lrMskParts(date = new Date()) {
+  const shifted = new Date(date.getTime() + 3 * 60 * 60 * 1000);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds(),
+  };
+}
+
+function lrUtcFromMsk(year, month, day, hour = 0, minute = 0, second = 0) {
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour) - 3, Number(minute), Number(second)));
+}
+
+function lrAddMskDays(parts, days) {
+  const utc = lrUtcFromMsk(parts.year, parts.month, parts.day + Number(days || 0), 0, 0, 0);
+  return lrMskParts(utc);
+}
+
+function lrParseScheduleInput(input, draft = {}) {
+  const raw = String(input || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!raw) return null;
+
+  const now = new Date();
+  const nowMs = now.getTime();
+  const nowMsk = lrMskParts(now);
+
+  let m;
+
+  // через 1 минуту / через 2 часа / через 3 дня
+  m = raw.match(/^через\s+(\d+)\s*(мин|минута|минуту|минуты|минут|час|часа|часов|ч|день|дня|дней|д)$/i);
+  if (m) {
+    const n = Number(m[1]);
+    const unit = m[2];
+    if (unit.startsWith('мин')) return new Date(nowMs + n * 60 * 1000);
+    if (unit.startsWith('час') || unit === 'ч') return new Date(nowMs + n * 60 * 60 * 1000);
+    return new Date(nowMs + n * 24 * 60 * 60 * 1000);
+  }
+
+  // 2026-06-23 18:30 или 2026-06-23T18:30
+  m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ t]+(\d{1,2})[:\s](\d{2})(?::(\d{2}))?$/);
+  if (m) {
+    return lrUtcFromMsk(m[1], m[2], m[3], m[4], m[5], m[6] || 0);
+  }
+
+  // 23.06 18:30 или 23.06.2026 18:30
+  m = raw.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\s+(\d{1,2})[:\s](\d{2})(?::(\d{2}))?$/);
+  if (m) {
+    const year = m[3] || nowMsk.year;
+    let candidate = lrUtcFromMsk(year, m[2], m[1], m[4], m[5], m[6] || 0);
+    if (!m[3] && candidate.getTime() <= nowMs) {
+      candidate = lrUtcFromMsk(Number(year) + 1, m[2], m[1], m[4], m[5], m[6] || 0);
     }
-    const p = mskParts(now);
-    let d = dateFromMsk(p.year, p.month, p.day, time.hour, time.minute);
-    if (d.getTime() <= now.getTime()) d = new Date(d.getTime() + 24 * 60 * 60 * 1000);
-    return d;
+    return candidate;
+  }
+
+  let dayParts = null;
+  let timePart = raw;
+
+  if (raw.startsWith('завтра ')) {
+    dayParts = lrAddMskDays(nowMsk, 1);
+    timePart = raw.replace(/^завтра\s+/, '').trim();
+  } else if (raw.startsWith('сегодня ')) {
+    dayParts = nowMsk;
+    timePart = raw.replace(/^сегодня\s+/, '').trim();
+  } else if (draft?.scheduleDate) {
+    const dm = String(draft.scheduleDate).match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (dm) {
+      dayParts = { year: Number(dm[1]), month: Number(dm[2]), day: Number(dm[3]) };
+    }
+  }
+
+  // 0235 / 2346 / 02 35 / 02:35 / 02:35:54
+  m = timePart.match(/^(\d{1,2})[:\s](\d{2})(?::(\d{2}))?$/);
+  if (!m && /^\d{3,4}$/.test(timePart)) {
+    const padded = timePart.padStart(4, '0');
+    m = [timePart, padded.slice(0, 2), padded.slice(2, 4), '0'];
+  }
+
+  if (m) {
+    const hour = Number(m[1]);
+    const minute = Number(m[2]);
+    const second = Number(m[3] || 0);
+
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+      return null;
+    }
+
+    if (!dayParts) dayParts = nowMsk;
+
+    let candidate = lrUtcFromMsk(dayParts.year, dayParts.month, dayParts.day, hour, minute, second);
+
+    // Если дата не выбрана явно и время уже прошло — ставим на завтра.
+    const explicitDay =
+      raw.startsWith('завтра ') ||
+      raw.startsWith('сегодня ') ||
+      Boolean(draft?.scheduleDate);
+
+    if (!explicitDay && candidate.getTime() <= nowMs + 15 * 1000) {
+      const tomorrow = lrAddMskDays(nowMsk, 1);
+      candidate = lrUtcFromMsk(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute, second);
+    }
+
+    return candidate;
   }
 
   return null;
+}
+
+
+function parsePublishTime(input, draft = {}) {
+  return lrParseScheduleInput(input, draft);
 }
 
 function parseCpm(text) {
@@ -1731,6 +1823,13 @@ async function editQueuePost(callbackId, postId) {
 
 async function handleMessage(update) {
   const chatId = getChatId(update);
+
+    // Не отвечаем на обычные сообщения в каналах.
+    // Иначе меню бота может случайно уйти в канал после публикации/событий MAX.
+    if (updateType === 'message_created' && Number(chatId) < 0) {
+      return res.json({ ok: true, ignored: 'channel_message_created' });
+    }
+
   const key = getSessionKey(update);
   const text = normalizeUserText(getMessageText(update));
 
