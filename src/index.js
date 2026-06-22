@@ -942,21 +942,36 @@ async function loadSharedSignatures(draft) {
 
 
 async function saveSharedSignature(channelId, text, format = 'markdown', markup = []) {
+  const updated = await query(
+    `
+    UPDATE channel_signatures
+    SET
+      owner_key = 'shared',
+      title = 'Автоподпись',
+      text = $2,
+      format = $3,
+      markup = $4::jsonb,
+      is_active = true,
+      updated_at = now()
+    WHERE channel_id = $1
+    RETURNING channel_id
+    `,
+    [
+      Number(channelId),
+      String(text || ''),
+      format === 'html' ? 'html' : 'markdown',
+      JSON.stringify(Array.isArray(markup) ? markup : []),
+    ]
+  );
+
+  if (updated.length) return;
+
   await query(
     `
     INSERT INTO channel_signatures
       (channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at)
     VALUES
       ($1, 'shared', 'Автоподпись', $2, $3, $4::jsonb, true, now(), now())
-    ON CONFLICT (channel_id)
-    DO UPDATE SET
-      owner_key = 'shared',
-      title = 'Автоподпись',
-      text = EXCLUDED.text,
-      format = EXCLUDED.format,
-      markup = EXCLUDED.markup,
-      is_active = true,
-      updated_at = now()
     `,
     [
       Number(channelId),
@@ -1639,26 +1654,57 @@ async function handleMessage(update) {
   }
 
   if (session.state === 'wait_signature') {
-    const channelId = session.data?.channelId || draft.channelIds?.[0];
+    const localCommandText = String(messageText || getMessageText(update) || '').trim().toLowerCase();
+
+    if (
+      localCommandText === '/start' ||
+      localCommandText === 'start' ||
+      localCommandText === 'старт' ||
+      localCommandText === '/menu' ||
+      localCommandText === 'меню'
+    ) {
+      await clearSession(key);
+      await sendMainMenu(chatId);
+      return;
+    }
+
+    const channelId = Number(session.data?.channelId || draft.channelIds?.[0]);
 
     if (!channelId) {
+      await clearSession(key);
       await sendMaxMessage({
         chatId,
-        text: `━━━━━━━━━━━━━━\n⚠️ Сначала выберите канал для подписи.\n━━━━━━━━━━━━━━`,
-        attachments: inlineKeyboard([[callbackButton('📡 Выбрать канал', 'editor:channels')]]),
+        text: `━━━━━━━━━━━━━━\n⚠️ **Канал не выбран**\n\nСначала выберите канал, потом создайте подпись.\n━━━━━━━━━━━━━━`,
+        attachments: inlineKeyboard([
+          [callbackButton('📡 Выбрать канал', 'editor:channels')],
+          [callbackButton('🏠 В меню', 'main:home')],
+        ]),
       });
       return;
     }
 
-    const signatureContent = await extractContentWithHydration(update).catch((error) => {
-      console.error('[signature] extract failed:', error.message || error);
-      return null;
-    });
+    const rawMarkup =
+      (typeof firstMarkupFromKnownPaths === 'function' ? firstMarkupFromKnownPaths(update) : []) ||
+      update.message?.body?.markup ||
+      update.message?.markup ||
+      [];
 
-    let signatureText = signatureContent?.text || getMessageText(update) || '';
-    signatureText = String(signatureText || '').trim();
+    const rawText =
+      getMessageText(update) ||
+      update.message?.body?.text ||
+      update.message?.text ||
+      update.body?.text ||
+      (typeof deepFindBestText === 'function' ? deepFindBestText(update.message || update) : '') ||
+      '';
 
-    if (signatureContent?.format !== 'html') {
+    let signatureText = String(rawText || '').trim();
+    let signatureFormat = 'markdown';
+    const signatureMarkup = Array.isArray(rawMarkup) ? rawMarkup : [];
+
+    if (signatureMarkup.length && typeof applyMaxMarkupToHtml === 'function') {
+      signatureText = applyMaxMarkupToHtml(signatureText, signatureMarkup).trim();
+      signatureFormat = 'html';
+    } else {
       signatureText = normalizeUserText(signatureText);
     }
 
@@ -1666,14 +1712,15 @@ async function handleMessage(update) {
       await sendMaxMessage({
         chatId,
         text: `━━━━━━━━━━━━━━\n🏷 **Подпись пустая**\n\nОтправьте текст подписи ещё раз. Можно использовать ссылки и оформление MAX.\n━━━━━━━━━━━━━━`,
-        attachments: inlineKeyboard([[callbackButton('⬅️ Назад', 'sig:menu')], [callbackButton('❌ Отмена', 'cancel')]]),
+        attachments: inlineKeyboard([
+          [callbackButton('⬅️ Назад', 'sig:menu')],
+          [callbackButton('❌ Отмена', 'cancel')],
+        ]),
       });
       return;
     }
 
     const id = String(channelId);
-    const sigFormat = signatureContent?.format === 'html' ? 'html' : 'markdown';
-    const sigMarkup = Array.isArray(signatureContent?.markup) ? signatureContent.markup : [];
 
     draft.signaturesByChannel = draft.signaturesByChannel || {};
     draft.signatureEnabledByChannel = draft.signatureEnabledByChannel || {};
@@ -1682,24 +1729,34 @@ async function handleMessage(update) {
 
     draft.signaturesByChannel[id] = signatureText;
     draft.signatureEnabledByChannel[id] = true;
-    draft.signatureFormatsByChannel[id] = sigFormat;
-    draft.signatureMarkupByChannel[id] = sigMarkup;
+    draft.signatureFormatsByChannel[id] = signatureFormat;
+    draft.signatureMarkupByChannel[id] = signatureMarkup;
 
-    if (sigFormat === 'html') {
+    if (signatureFormat === 'html') {
       draft.content = draft.content || {};
       draft.content.format = 'html';
     }
 
-    await saveSharedSignature(Number(channelId), signatureText, sigFormat, sigMarkup).catch((error) => {
+    try {
+      await saveSharedSignature(channelId, signatureText, signatureFormat, signatureMarkup);
+    } catch (error) {
       console.error('[signature] save failed:', error.message || error);
-      throw error;
-    });
+      await sendMaxMessage({
+        chatId,
+        text: `━━━━━━━━━━━━━━\n⚠️ **Не удалось сохранить подпись**\n\nОшибка базы: ${error.message || error}\n━━━━━━━━━━━━━━`,
+        attachments: inlineKeyboard([
+          [callbackButton('⬅️ Назад', 'sig:menu')],
+          [callbackButton('🏠 В меню', 'main:home')],
+        ]),
+      });
+      return;
+    }
 
     await setSession(key, 'post_editor', { draft });
 
     await sendMaxMessage({
       chatId,
-      text: `━━━━━━━━━━━━━━\n✅ **Подпись сохранена**\n\nОна включена для выбранного канала и будет доступна другим админам.\n━━━━━━━━━━━━━━`,
+      text: `━━━━━━━━━━━━━━\n✅ **Подпись сохранена**\n\nОна включена для выбранного канала и доступна другим админам.\n━━━━━━━━━━━━━━`,
     });
 
     await sendStudio(chatId, key, draft, { preview: true });
