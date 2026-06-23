@@ -159,6 +159,64 @@ function parseDbDate(v) { const d = new Date(v || Date.now()); return Number.isN
 function formatAutoDelete(minutes) { if (!minutes) return 'без удаления'; const n = Number(minutes); if (!Number.isFinite(n) || n <= 0) return 'без удаления'; if (n % 1440 === 0) return `${n / 1440}д`; if (n % 60 === 0) return `${n / 60}ч`; return `${n} мин`; }
 function autoDeleteRows(prefix = 'publish') { return [[callbackButton('24', `${prefix}:auto_set:1440`), callbackButton('48', `${prefix}:auto_set:2880`), callbackButton('72', `${prefix}:auto_set:4320`)],[callbackButton('Без удаления', `${prefix}:auto_set:0`)]]; }
 function reportUrl(groupId) { return `${PUBLIC_BASE_URL}/analytics/stats/${encodeURIComponent(String(groupId || ''))}`; }
+function rawDateKey(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function weekStart(date) { const d = keyToDate(rawDateKey(date)); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); return d; }
+function calendarTitle(dayKey) { const d = keyToDate(dayKey); return `${monthName(d)} ${d.getFullYear()} · ${dateText(d)}`; }
+function calendarRows(baseKey, selectedKey = null) {
+  const today = dateKey(new Date());
+  const base = keyToDate(baseKey || today);
+  const start = weekStart(base);
+  const dayRow = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const k = rawDateKey(d);
+    const isPast = k < today;
+    const label = isPast ? '•' : (selectedKey === k ? `🔴 ${d.getDate()}` : String(d.getDate()));
+    dayRow.push(callbackButton(label, isPast ? 'noop' : `schedule:day:${k}`));
+  }
+  const prev = new Date(start); prev.setDate(start.getDate() - 7);
+  const next = new Date(start); next.setDate(start.getDate() + 7);
+  return [
+    [callbackButton('⬅️ Неделя', `schedule:week:${rawDateKey(prev)}`), callbackButton('Неделя ➡️', `schedule:week:${rawDateKey(next)}`)],
+    dayRow,
+    [callbackButton('⬅️ Назад', 'editor:next')],
+  ];
+}
+function timeRowsForDay(dayKey) {
+  return [
+    [callbackButton('09:00', `schedule:time:${dayKey}:0900`), callbackButton('12:00', `schedule:time:${dayKey}:1200`), callbackButton('15:00', `schedule:time:${dayKey}:1500`)],
+    [callbackButton('18:00', `schedule:time:${dayKey}:1800`), callbackButton('21:00', `schedule:time:${dayKey}:2100`), callbackButton('23:00', `schedule:time:${dayKey}:2300`)],
+    [callbackButton('✍️ Ввести время', `schedule:manual_day:${dayKey}`)],
+    [callbackButton('⬅️ К календарю', `schedule:week:${dayKey}`)],
+  ];
+}
+function dateTimeFromDayTime(dayKey, hhmm) {
+  const hh = String(hhmm).slice(0, 2);
+  const mm = String(hhmm).slice(2, 4);
+  return new Date(`${dayKey}T${hh}:${mm}:00+03:00`);
+}
+async function showScheduleCalendar(callbackId, key, dayKey = null) {
+  const s = await getSession(key);
+  await setSession(key, 'publish_menu', s.data || {});
+  const baseKey = dayKey || dateKey(new Date());
+  return cb(callbackId, `━━━━━━━━━━━━━━\n📅 <b>Календарь публикации</b>\n\n${calendarTitle(baseKey)}\n\nПрошедшие дни отмечены точкой. Выберите число для публикации.\n━━━━━━━━━━━━━━`, calendarRows(baseKey));
+}
+async function showScheduleTimes(callbackId, key, dayKey) {
+  const s = await getSession(key);
+  await setSession(key, 'publish_menu', s.data || {});
+  return cb(callbackId, `━━━━━━━━━━━━━━\n🕒 <b>Время публикации</b>\n\n${dateText(keyToDate(dayKey))}\n\nВыберите время или введите вручную.\n━━━━━━━━━━━━━━`, timeRowsForDay(dayKey));
+}
+async function scheduleFromCallbackTime(callbackId, chatId, key, dayKey, hhmm) {
+  const s = await getSession(key);
+  const draft = safeDraft(s.data);
+  const publishAt = dateTimeFromDayTime(dayKey, hhmm);
+  if (publishAt.getTime() <= Date.now()) return cb(callbackId, 'Это время уже прошло. Выберите будущую дату и время.', calendarRows(dayKey));
+  const ids = await scheduleDraft(draft, key, publishAt);
+  await clearSession(key);
+  await answerCallback({ callbackId, notification: 'Пост запланирован.' }).catch(() => {});
+  return afterPlanned(chatId, draft, publishAt, ids);
+}
 
 function channelName(ch) { return ch?.title || ch?.name || `Канал #${ch?.id || '?'}`; }
 function channelLine(ch) { const title = escapeHtml(channelName(ch)); const link = ch?.link || ch?.url || ch?.invite_link || ''; return link ? `• <a href="${attr(link)}">${title}</a>` : `• ${title}`; }
@@ -716,9 +774,9 @@ async function handleCallback(update) {
   if (payload === 'post:create') { const draft = emptyDraft(); return showChannelSelect(callbackId, key, draft, false); }
   if (payload === 'post:multi') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), true); }
   if (payload.startsWith('post:toggle:')) { const id = Number(payload.split(':')[2]); const s = await getSession(key); const draft = safeDraft(s.data); const set = new Set(draft.channelIds); set.has(id) ? set.delete(id) : set.add(id); draft.channelIds = [...set]; return showChannelSelect(callbackId, key, draft, true); }
-  if (payload.startsWith('post:single:')) { const id = Number(payload.split(':')[2]); const s = await getSession(key); const draft = safeDraft(s.data); draft.channelIds = [id]; return hasContent(draft) ? showEditor(callbackId, key, draft) : askContent(callbackId, key, draft); }
-  if (payload === 'post:all_channels') { const s = await getSession(key); const draft = safeDraft(s.data); draft.channelIds = (await getChannels()).map(c=>Number(c.id)); return hasContent(draft) ? showEditor(callbackId, key, draft) : askContent(callbackId, key, draft); }
-  if (payload === 'post:channels_next') { const s = await getSession(key); const draft = safeDraft(s.data); if (!draft.channelIds.length) return cb(callbackId, 'Выберите хотя бы один канал.', [[callbackButton('⬅️ Назад','post:multi')]]); return hasContent(draft) ? showEditor(callbackId, key, draft) : askContent(callbackId, key, draft); }
+  if (payload.startsWith('post:single:')) { const id = Number(payload.split(':')[2]); const s = await getSession(key); const draft = safeDraft(s.data); draft.channelIds = [id]; if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
+  if (payload === 'post:all_channels') { const s = await getSession(key); const draft = safeDraft(s.data); draft.channelIds = (await getChannels()).map(c=>Number(c.id)); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
+  if (payload === 'post:channels_next') { const s = await getSession(key); const draft = safeDraft(s.data); if (!draft.channelIds.length) return cb(callbackId, 'Выберите хотя бы один канал.', [[callbackButton('⬅️ Назад','post:multi')]]); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
   if (payload === 'post:change_channels') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), false); }
   if (payload === 'post:add_channel') return cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и нажмите «Мои каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('📡 Мои каналы','channels:list')],[callbackButton('⬅️ Назад','post:create')]]);
   if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
@@ -735,7 +793,11 @@ async function handleCallback(update) {
   if (payload === 'publish:auto_delete') { const s = await getSession(key); return showPublishMenu(callbackId, key, safeDraft(s.data)); }
   if (payload.startsWith('publish:auto_set:')) { const session = await getSession(key); const draft = safeDraft(session.data); const v = Number(payload.split(':')[2] || 0) || null; draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return showPublishMenu(callbackId, key, draft); }
   if (payload === 'schedule:manual') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '🕒 Введите время: 18:30, 0235, завтра 18:30, через 1 минуту или 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
-  if (payload === 'schedule:calendar') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '📅 Пока календарь в ручном режиме. Введите дату и время: 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
+  if (payload === 'schedule:calendar') return showScheduleCalendar(callbackId, key, dateKey(new Date()));
+  if (payload.startsWith('schedule:week:')) return showScheduleCalendar(callbackId, key, payload.split(':')[2]);
+  if (payload.startsWith('schedule:day:')) return showScheduleTimes(callbackId, key, payload.split(':')[2]);
+  if (payload.startsWith('schedule:time:')) { const [, , dayKey, hhmm] = payload.split(':'); return scheduleFromCallbackTime(callbackId, chatId, key, dayKey, hhmm); }
+  if (payload.startsWith('schedule:manual_day:')) { const dayKey = payload.split(':')[2]; const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, `🕒 Введите время для ${dateText(keyToDate(dayKey))}: ${dayKey} 18:30`, [[callbackButton('⬅️ К календарю', `schedule:week:${dayKey}`)]]); }
   if (payload === 'publish:now') { const s = await getSession(key); const draft = safeDraft(s.data); const results = await publishDraftNow(draft, key); await clearSession(key); await answerCallback({ callbackId, notification: 'Публикация выполнена.' }).catch(()=>{}); return afterPublished(chatId, draft, results); }
   if (payload === 'post:all') {
     return showPosts(callbackId, 'all', await defaultPostDay('all'), null, chatId);
@@ -783,6 +845,12 @@ async function handleMessage(update) {
 async function sendStudioEditorMessage(chatId, draft) {
   const mid = await sendDraftPreview(chatId, draft);
   if (mid) draft.previewMessageId = mid;
+  return msg(chatId, editorMenuText(), editorMenuRows(draft));
+}
+async function sendEditorAsNew(chatId, key, draft) {
+  const mid = await sendDraftPreview(chatId, draft);
+  if (mid) draft.previewMessageId = mid;
+  await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
   return msg(chatId, editorMenuText(), editorMenuRows(draft));
 }
 
