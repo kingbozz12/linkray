@@ -22,6 +22,7 @@ app.use(express.json({ limit: '50mb' }));
 
 const PORT = Number(process.env.PORT || 3000);
 const BOT_LINK = process.env.BOT_LINK || 'https://max.ru/se13353901_bot';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.SITE_URL || process.env.WEBAPP_URL || 'https://linkray.ru').replace(/\/$/, '');
 const MSK_TZ = 'Europe/Moscow';
 const MAX_PREVIEW_ATTACHMENTS = 8;
 
@@ -77,6 +78,13 @@ async function ensureDb() {
   await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS published_at timestamptz`);
   await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS published_message_id text`);
   await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+  await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS report_group_id text`);
+  await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS report_sent_at timestamptz`);
+  await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS report_message_id text`);
+  await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS report_error_message text`);
+  await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS report_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb`);
+  await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS auto_deleted_at timestamptz`);
+  await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS auto_delete_error_message text`);
 
   await query(`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'scheduled_post_status') THEN ALTER TYPE scheduled_post_status ADD VALUE IF NOT EXISTS 'publishing'; ALTER TYPE scheduled_post_status ADD VALUE IF NOT EXISTS 'published'; ALTER TYPE scheduled_post_status ADD VALUE IF NOT EXISTS 'error'; ALTER TYPE scheduled_post_status ADD VALUE IF NOT EXISTS 'canceled'; END IF; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
   await query(`UPDATE scheduled_posts SET notify = false WHERE notify IS NULL`);
@@ -98,6 +106,8 @@ async function ensureDb() {
   await query(`CREATE TABLE IF NOT EXISTS user_quick_times (owner_key text NOT NULL, time_text text NOT NULL, used_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(owner_key, time_text))`);
   await query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_publish ON scheduled_posts(status, publish_at)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_channel ON scheduled_posts(channel_id, publish_at)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_report ON scheduled_posts(is_ad, status, report_sent_at, published_at)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_delete ON scheduled_posts(status, auto_delete_minutes, published_at)`);
 }
 
 function getUpdateType(u) { return u.update_type || u.updateType || u.type || u.event_type || ''; }
@@ -146,6 +156,9 @@ function dateText(d) { return `${dayName(d)} ${d.getDate()} ${monthName(d)} ${d.
 function dateButtonText(d) { return `${d.getDate()} ${monthName(d)} ${d.getFullYear()}`; }
 function dateTimeText(d) { return `${timeText(d)} · ${dateText(d)}`; }
 function parseDbDate(v) { const d = new Date(v || Date.now()); return Number.isNaN(d.getTime()) ? new Date() : d; }
+function formatAutoDelete(minutes) { if (!minutes) return 'без удаления'; const n = Number(minutes); if (!Number.isFinite(n) || n <= 0) return 'без удаления'; if (n % 1440 === 0) return `${n / 1440}д`; if (n % 60 === 0) return `${n / 60}ч`; return `${n} мин`; }
+function autoDeleteRows(prefix = 'publish') { return [[callbackButton('24', `${prefix}:auto_set:1440`), callbackButton('48', `${prefix}:auto_set:2880`), callbackButton('72', `${prefix}:auto_set:4320`)],[callbackButton('Без удаления', `${prefix}:auto_set:0`)]]; }
+function reportUrl(groupId) { return `${PUBLIC_BASE_URL}/analytics/stats/${encodeURIComponent(String(groupId || ''))}`; }
 
 function channelName(ch) { return ch?.title || ch?.name || `Канал #${ch?.id || '?'}`; }
 function channelLine(ch) { const title = escapeHtml(channelName(ch)); const link = ch?.link || ch?.url || ch?.invite_link || ''; return link ? `• <a href="${attr(link)}">${title}</a>` : `• ${title}`; }
@@ -182,8 +195,24 @@ async function refreshChannelMeta(channel) {
   }
 }
 
-function emptyDraft() { return { channelIds: [], content: { text: '', format: 'html', attachments: [], markup: [], raw: null }, buttons: [], isAd: false, cpm: null, autoDeleteMinutes: null, reportAfterHours: 24, signatureEnabled: true, scheduleDate: null }; }
-function safeDraft(data) { const d = data?.draft || data || {}; const base = emptyDraft(); return { ...base, ...d, content: { ...base.content, ...(d.content || {}), attachments: Array.isArray(d.content?.attachments) ? d.content.attachments : [] }, buttons: Array.isArray(d.buttons) ? d.buttons : [], channelIds: Array.isArray(d.channelIds) ? d.channelIds.map(Number).filter(Boolean) : [] }; }
+function emptyDraft() { return { campaignId: `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`, channelIds: [], content: { text: '', format: 'html', attachments: [], markup: [], raw: null }, buttons: [], isAd: false, cpm: null, autoDeleteMinutes: null, reportAfterHours: 24, signatureEnabled: true, scheduleDate: null, previewMessageId: null }; }
+function safeDraft(data) {
+  const d = data?.draft || data || {};
+  const base = emptyDraft();
+  const draft = {
+    ...base,
+    ...d,
+    campaignId: d.campaignId || d.reportGroupId || base.campaignId,
+    content: {
+      ...base.content,
+      ...(d.content || {}),
+      attachments: Array.isArray(d.content?.attachments) ? d.content.attachments : [],
+    },
+    buttons: Array.isArray(d.buttons) ? d.buttons : [],
+    channelIds: Array.isArray(d.channelIds) ? d.channelIds.map(Number).filter(Boolean) : [],
+  };
+  return draft;
+}
 function hasContent(d) { return Boolean(String(d?.content?.text || '').trim() || (Array.isArray(d?.content?.attachments) && d.content.attachments.length)); }
 
 function applyMarkupToHtml(text, markup = []) {
@@ -430,7 +459,28 @@ async function sendDraftPreview(chatId, draft) {
 }
 
 
-function parseDuration(input) { const raw = String(input || '').trim().toLowerCase(); if (!raw || raw === 'нет' || raw === '0') return null; const h = raw.match(/^(\d+(?:[.,]\d+)?)\s*(ч|час|часа|часов|h)$/); if (h) return Math.round(Number(h[1].replace(',','.'))*60); const d = raw.match(/^(\d+(?:[.,]\d+)?)\s*(д|дн|день|дня|дней|d)$/); if (d) return Math.round(Number(d[1].replace(',','.'))*1440); const hm = raw.match(/^(\d{1,3})\s*:\s*(\d{1,2})$/); if (hm) return Number(hm[1])*60+Number(hm[2]); const n = raw.match(/^(\d+)$/); if (n) return Number(n[1]); return undefined; }
+function parseDuration(input) {
+  const raw = String(input || '').trim().toLowerCase();
+  if (!raw || raw === 'нет' || raw === 'без' || raw === '0' || raw === 'без удаления') return null;
+
+  const hm = raw.match(/^(\d{1,3})\s*:\s*(\d{1,2})$/);
+  if (hm) return Number(hm[1]) * 60 + Number(hm[2]);
+
+  const h = raw.match(/^(\d+(?:[.,]\d+)?)\s*(ч|час|часа|часов|h)$/);
+  if (h) return Math.round(Number(h[1].replace(',', '.')) * 60);
+
+  const d = raw.match(/^(\d+(?:[.,]\d+)?)\s*(д|дн|день|дня|дней|d)$/);
+  if (d) return Math.round(Number(d[1].replace(',', '.')) * 1440);
+
+  const n = raw.match(/^(\d+)$/);
+  if (n) {
+    const value = Number(n[1]);
+    if (value >= 1 && value <= 72) return value * 60;
+    return value;
+  }
+
+  return undefined;
+}
 function parseSchedule(input) {
   const raw = String(input || '').trim().toLowerCase(); const now = mskDate(new Date());
   let m = raw.match(/^через\s+(\d+)\s*(мин|минут|минуту|минуты)$/); if (m) { const d = new Date(); d.setMinutes(d.getMinutes()+Number(m[1])); return d; }
@@ -441,32 +491,112 @@ function parseSchedule(input) {
   m = raw.match(/^(\d{2})(\d{2})$/); if (m) { const d = new Date(now); d.setHours(Number(m[1]), Number(m[2]), 0, 0); if (d.getTime() <= now.getTime()) d.setDate(d.getDate()+1); return d; }
   return null;
 }
-async function showPublishMenu(callbackId, key, draft) { await setSession(key, 'publish_menu', { draft }); const channels = await getChannelsByIds(draft.channelIds); await cb(callbackId, `━━━━━━━━━━━━━━\n🚀 <b>К выпуску</b>\n\n📡 Каналы:\n${channelsLines(channels)}\n\n🗑 Автоудаление: ${draft.autoDeleteMinutes ? `${Math.round(draft.autoDeleteMinutes/60)}ч` : 'нет'}\n${draft.isAd ? `💼 Реклама: да · CPM ${draft.cpm || 'не указан'} ₽\n📊 Отчёт: через 24ч` : 'Реклама: нет'}\n\nВыберите способ публикации.\n━━━━━━━━━━━━━━`, [[callbackButton('🗑 Автоудаление', 'publish:auto_delete')],[callbackButton('📅 Календарь', 'schedule:calendar'), callbackButton('✍️ Ввести время', 'schedule:manual')],[callbackButton('⚡ Опубликовать сейчас', 'publish:now')],[callbackButton('⬅️ В Studio', 'editor:back'), callbackButton('❌ Отмена', 'post:cancel')]]); }
+async function showPublishMenu(callbackId, key, draft) {
+  await setSession(key, 'publish_menu', { draft });
+  const channels = await getChannelsByIds(draft.channelIds);
+  const rows = [
+    ...autoDeleteRows('publish'),
+    [callbackButton('📅 Календарь', 'schedule:calendar'), callbackButton('✍️ Ввести время', 'schedule:manual')],
+    [callbackButton('⚡ Опубликовать сейчас', 'publish:now')],
+    [callbackButton('⬅️ В редактор', 'editor:back'), callbackButton('❌ Отмена', 'post:cancel')],
+  ];
+  await cb(callbackId, `━━━━━━━━━━━━━━
+🚀 <b>К выпуску</b>
+
+📡 Каналы:
+${channelsLines(channels)}
+
+🗑 Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
+${draft.isAd ? `💼 Реклама: да · CPM ${draft.cpm || 'не указан'} ₽
+📊 Отчёт: через 24ч` : 'Реклама: нет'}
+
+Выберите срок автоудаления кнопками или способ публикации.
+━━━━━━━━━━━━━━`, rows);
+}
 async function scheduleDraft(draft, key, publishAt) {
+  if (!draft.campaignId) draft.campaignId = `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  if (draft.isAd && !draft.autoDeleteMinutes) draft.autoDeleteMinutes = 2880;
   const ids = [];
   for (const channelId of draft.channelIds) {
     const content = await composePostForChannel(draft, channelId);
-    const r = await query(`INSERT INTO scheduled_posts(channel_id,text,format,publish_at,status,notify,created_by_max_user_id,attachments,buttons,draft,is_ad,cpm,auto_delete_minutes,report_after_hours,updated_at) VALUES($1,$2,$3,$4,'scheduled',false,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,now()) RETURNING id`, [channelId, content.text, content.format, publishAt, String(key), JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24]);
+    const r = await query(`INSERT INTO scheduled_posts(channel_id,text,format,publish_at,status,notify,created_by_max_user_id,attachments,buttons,draft,is_ad,cpm,auto_delete_minutes,report_after_hours,report_group_id,updated_at) VALUES($1,$2,$3,$4,'scheduled',false,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,now()) RETURNING id`, [channelId, content.text, content.format, publishAt, String(key), JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24, draft.campaignId]);
     ids.push(r[0].id);
   }
   return ids;
 }
 function extractMessageId(res) { return res?.message?.body?.mid || res?.message?.id || res?.message_id || res?.messageId || res?.id || res?.mid || null; }
 async function publishDraftNow(draft, key) {
+  if (!draft.campaignId) draft.campaignId = `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  if (draft.isAd && !draft.autoDeleteMinutes) draft.autoDeleteMinutes = 2880;
   const results = [];
   for (const channel of await getChannelsByIds(draft.channelIds)) {
     try {
       const content = await composePostForChannel(draft, channel.id);
       const sent = await sendMaxMessage({ chatId: channel.max_chat_id, ...content });
       const messageId = extractMessageId(sent);
-      const r = await query(`INSERT INTO scheduled_posts(channel_id,text,format,publish_at,status,notify,created_by_max_user_id,attachments,buttons,draft,is_ad,cpm,auto_delete_minutes,report_after_hours,published_at,published_message_id,updated_at) VALUES($1,$2,$3,now(),'published',false,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8,$9,$10,$11,now(),$12,now()) RETURNING id`, [channel.id, content.text, content.format, String(key), JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24, messageId]);
-      results.push({ ok: true, channel, id: r[0].id });
-    } catch (e) { console.error('[publish now]', e.message || e); results.push({ ok: false, channel, error: e.message || String(e) }); }
+      const r = await query(`INSERT INTO scheduled_posts(channel_id,text,format,publish_at,status,notify,created_by_max_user_id,attachments,buttons,draft,is_ad,cpm,auto_delete_minutes,report_after_hours,report_group_id,published_at,published_message_id,updated_at) VALUES($1,$2,$3,now(),'published',false,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12,now(),$13,now()) RETURNING id`, [channel.id, content.text, content.format, String(key), JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24, draft.campaignId, messageId]);
+      results.push({ ok: true, channel, id: r[0].id, messageId });
+    } catch (e) {
+      console.error('[publish now]', e.message || e);
+      results.push({ ok: false, channel, error: e.message || String(e) });
+    }
   }
   return results;
 }
-async function afterPlanned(chatId, draft, publishAt, ids) { const channels = await getChannelsByIds(draft.channelIds); const d = parseDbDate(publishAt); if (draft.isAd) await msg(chatId, `━━━━━━━━━━━━━━\n✅ <b>Рекламный пост запланирован</b>\n\n📝 Сообщение «${escapeHtml(short(draft.content.text, 80))}»\n📅 ${dateText(d)}\n🕒 ${timeText(d)} МСК\n\n📣 Каналы:\n${channelsLines(channels)}\n\n💼 CPM: ${draft.cpm || 'не указан'} ₽\n🗑 Автоудаление: ${draft.autoDeleteMinutes ? `${Math.round(draft.autoDeleteMinutes/60)}ч` : 'нет'}\n📊 Отчёт: через 24ч\n\nПост добавлен в очередь <a href="${BOT_LINK}">LinkRay</a>.\n━━━━━━━━━━━━━━`, [[callbackButton('🧩 Собрать ещё пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]); else await msg(chatId, `━━━━━━━━━━━━━━\n✅ <b>Публикация запланирована</b>\n\n📅 ${dateText(d)}\n🕒 ${timeText(d)} МСК\n\n📣 Каналы:\n${channelsLines(channels)}\n\nПост добавлен в очередь.\n━━━━━━━━━━━━━━`, [[callbackButton('🧩 Собрать ещё пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]); await sendMain(chatId); }
-async function afterPublished(chatId, draft, results) { const ok = results.filter(x=>x.ok); const channels = ok.map(x=>x.channel); if (draft.isAd) await msg(chatId, `━━━━━━━━━━━━━━\n✅ <b>Рекламный пост опубликован</b>\n\n📣 Каналы:\n${channelsLines(channels)}\n\nОпубликовано: ${ok.length} из ${results.length}\n💼 CPM: ${draft.cpm || 'не указан'} ₽\n📊 Отчёт будет готов через 24ч.\n\nРазмещение выполнено через <a href="${BOT_LINK}">LinkRay</a>.\n━━━━━━━━━━━━━━`, [[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]); else await msg(chatId, `━━━━━━━━━━━━━━\n✅ <b>Пост опубликован</b>\n\n📣 Каналы:\n${channelsLines(channels)}\n\nОпубликовано: ${ok.length} из ${results.length}\n━━━━━━━━━━━━━━`, [[callbackButton('🧩 Собрать ещё пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]); await sendMain(chatId); }
+async function afterPlanned(chatId, draft, publishAt, ids) {
+  const channels = await getChannelsByIds(draft.channelIds);
+  const d = parseDbDate(publishAt);
+  if (draft.isAd) {
+    await msg(chatId, `━━━━━━━━━━━━━━
+✅ <b>Рекламный пост запланирован</b>
+
+📝 Сообщение «${escapeHtml(short(draft.content.text, 80))}»
+📅 ${dateText(d)}
+🕒 ${timeText(d)} МСК
+
+📣 Каналы:
+${channelsLines(channels)}
+
+💼 CPM: ${draft.cpm || 'не указан'} ₽
+🗑 Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
+📊 Отчёт: через 24ч
+🔗 Страница отчёта: <a href="${reportUrl(draft.campaignId)}">LinkRay Analytics</a>
+
+Пост добавлен в очередь <a href="${BOT_LINK}">LinkRay</a>.
+━━━━━━━━━━━━━━`, [[callbackButton('🧩 Собрать ещё пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]);
+  } else {
+    await msg(chatId, `━━━━━━━━━━━━━━
+✅ <b>Публикация запланирована</b>
+
+📅 ${dateText(d)}
+🕒 ${timeText(d)} МСК
+
+📣 Каналы:
+${channelsLines(channels)}
+
+🗑 Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
+Пост добавлен в очередь.
+━━━━━━━━━━━━━━`, [[callbackButton('🧩 Собрать ещё пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]);
+  }
+  await sendMain(chatId);
+}
+async function afterPublished(chatId, draft, results) {
+  if (draft.isAd) {
+    await msg(chatId, `━━━━━━━━━━━━━━
+✅ <b>Рекламный пост опубликован</b>
+
+Каналов: ${results.filter(r=>r.ok).length}/${results.length}
+💼 CPM: ${draft.cpm || 'не указан'} ₽
+🗑 Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
+📊 Отчёт придёт через 24ч
+🔗 Страница отчёта: <a href="${reportUrl(draft.campaignId)}">LinkRay Analytics</a>
+━━━━━━━━━━━━━━`, [[callbackButton('📊 Открыть отчёт', `report:open:${draft.campaignId}`)],[callbackButton('🗂 Посты','post:all')],[callbackButton('🏠 В меню','main:menu')]]);
+  } else {
+    await msg(chatId, `✅ Пост опубликован.
+Успешно: ${results.filter(r=>r.ok).length}/${results.length}`, [[callbackButton('🗂 Посты','post:all')],[callbackButton('🏠 В меню','main:menu')]]);
+  }
+  await sendMain(chatId);
+}
 
 async function postsForDay(mode = 'all', day = null, channelId = null) {
   const safeDay = day || dateKey();
@@ -547,8 +677,27 @@ async function getPost(id) { const r = await query(`SELECT sp.*, c.title AS chan
 function postChannelObj(p) { return { id: p.channel_id, title: p.channel_title, link: p.channel_link, max_chat_id: p.max_chat_id }; }
 function postPreviewDraft(p) { return { ...emptyDraft(), channelIds: [p.channel_id], content: { text: p.text || '', format: p.format || 'html', attachments: safeJson(p.attachments, []), markup: [] }, buttons: safeJson(p.buttons, []), isAd: Boolean(p.is_ad), cpm: p.cpm ? Number(p.cpm) : null, autoDeleteMinutes: p.auto_delete_minutes, reportAfterHours: p.report_after_hours || 24, signatureEnabled: false }; }
 function olderThan24(p) { return p.status === 'published' && Date.now() - parseDbDate(p.published_at || p.publish_at).getTime() > 24*60*60*1000; }
-function postMenuText(p) { const d = parseDbDate(p.published_at || p.publish_at); const ch = postChannelObj(p); if (olderThan24(p)) return `━━━━━━━━━━━━━━\n🔒 <b>Пост #${p.id}</b>\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Опубликован:</b> ${dateTimeText(d)}\n📌 <b>Статус:</b> опубликован\n🗑 <b>Автоудаление:</b> ${p.auto_delete_minutes ? Math.round(p.auto_delete_minutes/60)+'ч' : 'нет'}\n\n<b>Канал:</b>\n${channelLine(ch)}\n\nРедактирование недоступно: прошло больше 24 часов.\n━━━━━━━━━━━━━━`; if (p.status === 'published') return `━━━━━━━━━━━━━━\n${p.is_ad ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${p.id}\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Опубликован:</b> ${dateTimeText(d)}\n📌 <b>Статус:</b> опубликован\n🗑 <b>Автоудаление:</b> ${p.auto_delete_minutes ? Math.round(p.auto_delete_minutes/60)+'ч' : 'нет'}\n${p.is_ad ? `💰 <b>CPM:</b> ${p.cpm || 'не указан'} ₽\n` : ''}\n<b>Канал:</b>\n${channelLine(ch)}\n━━━━━━━━━━━━━━`; return `━━━━━━━━━━━━━━\n${p.is_ad ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${p.id}\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Время:</b> ${dateTimeText(d)}\n⏳ <b>Статус:</b> ожидает публикации\n🗑 <b>Автоудаление:</b> ${p.auto_delete_minutes ? Math.round(p.auto_delete_minutes/60)+'ч' : 'нет'}\n\nПост будет опубликован в канал:\n${channelLine(ch)}\n━━━━━━━━━━━━━━`; }
-function postMenuRows(p) { const back = filterPayload(p.status === 'published' ? 'published' : 'scheduled', dateKey(parseDbDate(p.publish_at)), p.channel_id); if (olderThan24(p)) return [[callbackButton('⬅️ Назад', back)]]; if (p.status === 'published') return [[callbackButton('✏️ Перейти в редактор', `post:editor:${p.id}`)],[callbackButton(`🗑 Удаление: ${p.auto_delete_minutes ? Math.round(p.auto_delete_minutes/60)+'ч' : 'нет'}`, `post:auto:${p.id}`)],[callbackButton('❌ Удалить из канала', `post:delete_confirm:${p.id}`)],[callbackButton('⬅️ Назад', back)]]; return [[callbackButton('✏️ Перейти в редактор', `post:editor:${p.id}`)],[callbackButton('↪️ Изменить время', `post:time:${p.id}`)],[callbackButton(`🗑 Удаление: ${p.auto_delete_minutes ? Math.round(p.auto_delete_minutes/60)+'ч' : 'нет'}`, `post:auto:${p.id}`)],[callbackButton('🚀 Опубликовать сейчас', `post:now:${p.id}`)],[callbackButton('❌ Удалить', `post:delete_confirm:${p.id}`)],[callbackButton('⬅️ Назад', back)]]; }
+function postMenuText(p) { const d = parseDbDate(p.published_at || p.publish_at); const ch = postChannelObj(p); if (olderThan24(p)) return `━━━━━━━━━━━━━━\n🔒 <b>Пост #${p.id}</b>\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Опубликован:</b> ${dateTimeText(d)}\n📌 <b>Статус:</b> опубликован\n🗑 <b>Автоудаление:</b> ${formatAutoDelete(p.auto_delete_minutes)}\n\n<b>Канал:</b>\n${channelLine(ch)}\n\nРедактирование недоступно: прошло больше 24 часов.\n━━━━━━━━━━━━━━`; if (p.status === 'published') return `━━━━━━━━━━━━━━\n${p.is_ad ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${p.id}\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Опубликован:</b> ${dateTimeText(d)}\n📌 <b>Статус:</b> опубликован\n🗑 <b>Автоудаление:</b> ${formatAutoDelete(p.auto_delete_minutes)}\n${p.is_ad ? `💰 <b>CPM:</b> ${p.cpm || 'не указан'} ₽\n` : ''}\n<b>Канал:</b>\n${channelLine(ch)}\n━━━━━━━━━━━━━━`; return `━━━━━━━━━━━━━━\n${p.is_ad ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${p.id}\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Время:</b> ${dateTimeText(d)}\n⏳ <b>Статус:</b> ожидает публикации\n🗑 <b>Автоудаление:</b> ${formatAutoDelete(p.auto_delete_minutes)}\n\nПост будет опубликован в канал:\n${channelLine(ch)}\n━━━━━━━━━━━━━━`; }
+function postMenuRows(p) {
+  const back = filterPayload(p.status === 'published' ? 'published' : 'scheduled', dateKey(parseDbDate(p.publish_at)), p.channel_id);
+  if (olderThan24(p)) return [[callbackButton('⬅️ Назад', back)]];
+  if (p.status === 'published') return [
+    [callbackButton('✏️ Перейти в редактор', `post:editor:${p.id}`)],
+    [callbackButton(`🗑 Удаление: ${formatAutoDelete(p.auto_delete_minutes)}`, `post:auto:${p.id}`)],
+    [callbackButton('❌ Удалить из канала', `post:delete_confirm:${p.id}`)],
+    [callbackButton('⬅️ Назад', back)],
+  ];
+  return [
+    [callbackButton('✏️ Перейти в редактор', `post:editor:${p.id}`)],
+    [callbackButton('↪️ Изменить время', `post:time:${p.id}`)],
+    [callbackButton(`🗑 Удаление: ${formatAutoDelete(p.auto_delete_minutes)}`, `post:auto:${p.id}`)],
+    [callbackButton('🚀 Опубликовать сейчас', `post:now:${p.id}`)],
+    [callbackButton('❌ Удалить', `post:delete_confirm:${p.id}`)],
+    [callbackButton('⬅️ Назад', back)],
+  ];
+}
+function postAutoRows(postId) { return [[callbackButton('24', `post:auto_set:${postId}:1440`), callbackButton('48', `post:auto_set:${postId}:2880`), callbackButton('72', `post:auto_set:${postId}:4320`)],[callbackButton('Без удаления', `post:auto_set:${postId}:0`)],[callbackButton('✍️ Ввести вручную', `post:auto_manual:${postId}`)],[callbackButton('⬅️ Назад', `post:open:${postId}`)]]; }
+
 async function openPost(callbackId, chatId, id) { const p = await getPost(id); if (!p) { await cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); return; } await answerCallback({ callbackId, notification: 'Открываю пост...' }).catch(()=>{}); try { const d = postPreviewDraft(p); await sendMaxMessage({ chatId, text: p.text || '', format: p.format || 'html', attachments: finalAttachments(d) }); await msg(chatId, postMenuText(p), postMenuRows(p)); } catch (e) { console.error('[open post]', e.message || e); await cb(callbackId, `${postMenuText(p)}\n\n⚠️ Пост не удалось вывести отдельно: ${escapeHtml(e.message || e)}`, postMenuRows(p)); } }
 async function editExisting(callbackId, key, id) { const p = await getPost(id); if (!p) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); if (olderThan24(p)) return cb(callbackId, '🔒 Редактирование недоступно: прошло больше 24 часов.', [[callbackButton('⬅️ Назад', `post:open:${id}`)]]); const draft = makeDraftFromPost(p); await showEditor(callbackId, key, draft); }
 async function saveExisting(callbackId, key, draft) { const post = await getPost(draft.postId); if (!post) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); const content = await composePostForChannel(draft, draft.channelIds[0]); await query(`UPDATE scheduled_posts SET text=$2, format=$3, attachments=$4::jsonb, buttons=$5::jsonb, draft=$6::jsonb, is_ad=$7, cpm=$8, auto_delete_minutes=$9, report_after_hours=$10, updated_at=now() WHERE id=$1`, [draft.postId, content.text, content.format, JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24]); let warn = ''; if (post.status === 'published' && post.published_message_id) { try { await editMaxMessage(post.published_message_id, content); } catch(e) { warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение: ${escapeHtml(e.message || e)}`; } } await clearSession(key); await cb(callbackId, `━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>${warn}\n━━━━━━━━━━━━━━`, [[callbackButton('👁 Открыть пост', `post:open:${draft.postId}`)],[callbackButton('🗂 Посты','post:all')]]); }
@@ -583,7 +732,8 @@ async function handleCallback(update) {
   if (payload === 'editor:back') { const s = await getSession(key); return showEditor(callbackId, key, safeDraft(s.data)); }
   if (payload === 'editor:next') { const s = await getSession(key); return showPublishMenu(callbackId, key, safeDraft(s.data)); }
   if (payload === 'editor:save') { const s = await getSession(key); return saveExisting(callbackId, key, safeDraft(s.data)); }
-  if (payload === 'publish:auto_delete') { const s = await getSession(key); await setSession(key, 'wait_auto_delete', s.data); return cb(callbackId, '🗑 Введите срок: 48ч, 2д, 120 или 5:30. Для отключения: 0.', [[callbackButton('⬅️ Назад','editor:next')]]); }
+  if (payload === 'publish:auto_delete') { const s = await getSession(key); return showPublishMenu(callbackId, key, safeDraft(s.data)); }
+  if (payload.startsWith('publish:auto_set:')) { const session = await getSession(key); const draft = safeDraft(session.data); const v = Number(payload.split(':')[2] || 0) || null; draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return showPublishMenu(callbackId, key, draft); }
   if (payload === 'schedule:manual') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '🕒 Введите время: 18:30, 0235, завтра 18:30, через 1 минуту или 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
   if (payload === 'schedule:calendar') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '📅 Пока календарь в ручном режиме. Введите дату и время: 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
   if (payload === 'publish:now') { const s = await getSession(key); const draft = safeDraft(s.data); const results = await publishDraftNow(draft, key); await clearSession(key); await answerCallback({ callbackId, notification: 'Публикация выполнена.' }).catch(()=>{}); return afterPublished(chatId, draft, results); }
@@ -597,11 +747,14 @@ async function handleCallback(update) {
   }
   if (payload.startsWith('post:open:')) return openPost(callbackId, chatId, Number(payload.split(':')[2]));
   if (payload.startsWith('post:editor:')) return editExisting(callbackId, key, Number(payload.split(':')[2]));
-  if (payload.startsWith('post:auto:')) { await setSession(key, 'wait_post_auto_delete', { postId: Number(payload.split(':')[2]) }); return cb(callbackId, '🗑 Введите новый срок автоудаления: 48ч, 2д, 120 или 0.', [[callbackButton('⬅️ Назад', `post:open:${payload.split(':')[2]}`)]]); }
+  if (payload.startsWith('post:auto:')) { const id = Number(payload.split(':')[2]); return cb(callbackId, '🗑 <b>Автоудаление</b>\n\nВыберите срок. Числа — часы.', postAutoRows(id)); }
+  if (payload.startsWith('post:auto_set:')) { const [, , idRaw, minutesRaw] = payload.split(':'); const id = Number(idRaw); const v = Number(minutesRaw || 0) || null; await query('UPDATE scheduled_posts SET auto_delete_minutes=$2, updated_at=now() WHERE id=$1', [id, v]); return cb(callbackId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('👁 Открыть пост', `post:open:${id}`)]]); }
+  if (payload.startsWith('post:auto_manual:')) { await setSession(key, 'wait_post_auto_delete', { postId: Number(payload.split(':')[2]) }); return cb(callbackId, '🗑 Введите срок автоудаления числом от 1 до 72, либо 0. Например: 24, 48, 72.', [[callbackButton('⬅️ Назад', `post:open:${payload.split(':')[2]}`)]]); }
   if (payload.startsWith('post:time:')) { await setSession(key, 'wait_post_time', { postId: Number(payload.split(':')[2]) }); return cb(callbackId, '🕒 Введите новое время публикации.', [[callbackButton('⬅️ Назад', `post:open:${payload.split(':')[2]}`)]]); }
   if (payload.startsWith('post:now:')) { const p = await getPost(Number(payload.split(':')[2])); if (!p) return cb(callbackId, 'Пост не найден.', [[callbackButton('🗂 Посты','post:all')]]); const draft = makeDraftFromPost(p); const results = await publishDraftNow(draft, key); await query(`UPDATE scheduled_posts SET status='canceled', updated_at=now() WHERE id=$1`, [p.id]); await answerCallback({ callbackId, notification: 'Отправлено на публикацию.' }).catch(()=>{}); return afterPublished(chatId, draft, results); }
   if (payload.startsWith('post:delete_confirm:')) { const id = Number(payload.split(':')[2]); return cb(callbackId, `❌ Удалить пост #${id}?`, [[callbackButton('✅ Да, удалить', `post:delete:${id}`)],[callbackButton('⬅️ Назад', `post:open:${id}`)]]); }
   if (payload.startsWith('post:delete:')) { const id = Number(payload.split(':')[2]); const p = await getPost(id); if (p?.status === 'published' && p.published_message_id) await deleteMaxMessage(p.published_message_id).catch(e=>console.error('[delete max]', e.message || e)); await query(`UPDATE scheduled_posts SET status='canceled', updated_at=now() WHERE id=$1`, [id]); return cb(callbackId, `✅ Пост #${id} удалён.`, [[callbackButton('🗂 Посты','post:all')]]); }
+  if (payload.startsWith('report:open:')) { const gid = payload.split(':').slice(2).join(':'); return cb(callbackId, `📊 <b>LinkRay Analytics</b>\n\nОтчёт: <a href="${reportUrl(gid)}">открыть красивую страницу</a>`, [[linkButton('📊 Открыть отчёт', reportUrl(gid))],[callbackButton('🏠 В меню','main:menu')]]); }
   if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
   await cb(callbackId, 'Команда пока не обработана.', [[callbackButton('🏠 В меню','main:menu')]]);
 }
@@ -620,9 +773,9 @@ async function handleMessage(update) {
   if (session.state === 'wait_button') { const parsed = parseButtonsInput(text); if (!parsed.length) return msg(chatId, 'Не понял кнопку. Формат: Название - https://site.ru'); draft.buttons = [...(draft.buttons || []), ...parsed]; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, content); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
-  if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Пример: 48ч, 2д, 120 или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, '✅ Автоудаление обновлено.', [[callbackButton('➡️ К выпуску','editor:next')]]); }
+  if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('➡️ К выпуску','editor:next')]]); }
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
-  if (session.state === 'wait_post_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок.'); await query('UPDATE scheduled_posts SET auto_delete_minutes=$2, updated_at=now() WHERE id=$1', [session.data.postId, v]); await clearSession(key); return msg(chatId, '✅ Автоудаление обновлено.', [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
+  if (session.state === 'wait_post_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); await query('UPDATE scheduled_posts SET auto_delete_minutes=$2, updated_at=now() WHERE id=$1', [session.data.postId, v]); await clearSession(key); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
   if (session.state === 'wait_post_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время.'); await query(`UPDATE scheduled_posts SET publish_at=$2, updated_at=now() WHERE id=$1`, [session.data.postId, publishAt]); await clearSession(key); return msg(chatId, '✅ Время обновлено.', [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
   const content = await hydrateContent(update); if (content.text || content.attachments.length) { const d = emptyDraft(); d.content = { ...d.content, ...content }; await setSession(key, 'select_channels', { draft: d }); const channels = await getChannels(); const rs = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `post:single:${c.id}`)]); rs.push([callbackButton('🌐 Все каналы','post:all_channels')],[callbackButton('❌ Отмена','post:cancel')]); return msg(chatId, '📡 Пост принят. Теперь выберите канал для публикации.', rs); }
   return msg(chatId, 'Команда не найдена. Нажмите /start.');
@@ -633,6 +786,28 @@ async function sendStudioEditorMessage(chatId, draft) {
   return msg(chatId, editorMenuText(), editorMenuRows(draft));
 }
 
+
+
+app.get('/analytics/stats/:groupId', async (req, res) => {
+  try {
+    const groupId = String(req.params.groupId || '');
+    const posts = await query(`
+      SELECT sp.*, c.title AS channel_title, c.link AS channel_link
+      FROM scheduled_posts sp
+      LEFT JOIN channels c ON c.id = sp.channel_id
+      WHERE COALESCE(sp.report_group_id, sp.id::text) = $1
+      ORDER BY sp.id ASC
+    `, [groupId]);
+    const snapshot = safeJson(posts[0]?.report_snapshot, {});
+    const total = snapshot.totalViews ?? posts.reduce((sum, p) => sum + Number(safeJson(p.draft, {}).views || p.views || 0), 0);
+    const title = escapeHtml(short(posts[0]?.text || 'Рекламный пост', 120));
+    const rowsHtml = posts.map((p, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(p.channel_title || 'Канал')}</td><td>${escapeHtml(String(p.status || ''))}</td><td>${escapeHtml(formatAutoDelete(p.auto_delete_minutes))}</td></tr>`).join('');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LinkRay Analytics</title><style>body{font-family:Inter,Arial,sans-serif;background:#07111f;color:#eaf2ff;margin:0;padding:24px}.card{max-width:860px;margin:0 auto;background:linear-gradient(135deg,#10243f,#111827);border:1px solid #233b5f;border-radius:24px;padding:28px;box-shadow:0 20px 80px #0008}h1{margin:0 0 8px;font-size:32px}.muted{color:#9fb3d0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin:22px 0}.metric{background:#0b1728;border:1px solid #243b5a;border-radius:18px;padding:18px}.metric b{font-size:28px}table{width:100%;border-collapse:collapse;margin-top:20px}td,th{padding:12px;border-bottom:1px solid #243b5a;text-align:left}a{color:#7dd3fc}.brand{color:#7dd3fc;font-weight:800}</style></head><body><div class="card"><div class="brand">LinkRay Analytics</div><h1>Сводный отчёт</h1><p class="muted">${title}</p><div class="grid"><div class="metric"><div class="muted">Публикаций</div><b>${posts.length}</b></div><div class="metric"><div class="muted">Просмотры</div><b>${total || '—'}</b></div><div class="metric"><div class="muted">Автоудаление</div><b>${escapeHtml(formatAutoDelete(posts[0]?.auto_delete_minutes))}</b></div></div><table><thead><tr><th>#</th><th>Канал</th><th>Статус</th><th>Удаление</th></tr></thead><tbody>${rowsHtml}</tbody></table><p class="muted">Отчёт сформирован LinkRay. ${snapshot.sentAt ? 'Сформирован: '+escapeHtml(new Date(snapshot.sentAt).toLocaleString('ru-RU'))+'.' : 'Данные просмотров обновляются по доступности MAX API.'}</p></div></body></html>`);
+  } catch (e) {
+    res.status(500).send(`Report error: ${escapeHtml(e.message || e)}`);
+  }
+});
 
 app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.json({ ok: true, service: 'linkray-bot', db: true, time: nowIso() }); } catch(e) { res.status(500).json({ ok:false, error: e.message }); } });
 app.post('/webhook', async (req, res) => {
