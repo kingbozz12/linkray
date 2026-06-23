@@ -125,6 +125,15 @@ async function clearSession(key) { await setSession(key, 'idle', {}); }
 function buttonRows(rows) { return inlineKeyboard(rows); }
 async function cb(callbackId, text, rows = [], format = 'html') { return answerCallback({ callbackId, text, format, attachments: buttonRows(rows) }); }
 async function msg(chatId, text, rows = [], format = 'html') { return sendMaxMessage({ chatId, text, format, attachments: rows.length ? buttonRows(rows) : [] }); }
+async function cbOrMsg(callbackId, chatId, text, rows = [], format = 'html') {
+  try {
+    return await cb(callbackId, text, rows, format);
+  } catch (error) {
+    console.error('[callback fallback to message]', error.message || error);
+    if (chatId) return msg(chatId, text, rows, format);
+    throw error;
+  }
+}
 
 function mskDate(date = new Date()) { return new Date(date.toLocaleString('en-US', { timeZone: MSK_TZ })); }
 function dateKey(date = new Date()) { const d = mskDate(date); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -352,16 +361,46 @@ async function countsForDay(day, channelId = null) { const where = [`sp.status I
 async function defaultPostDay(mode = 'all') { const where = [`status IN ('scheduled','published')`]; if (mode === 'scheduled') where.push(`status='scheduled'`); if (mode === 'published') where.push(`status='published'`); const r = await query(`SELECT (publish_at AT TIME ZONE '${MSK_TZ}')::date::text day FROM scheduled_posts WHERE ${where.join(' AND ')} ORDER BY publish_at DESC LIMIT 1`); return r[0]?.day || dateKey(); }
 function filterPayload(mode, day, channelId = 0) { return `post:filter:${mode}:${day}:${channelId || 0}`; }
 function postButtonText(p) { const icon = p.status === 'published' ? '📌' : '⏳'; const ad = p.is_ad ? '💼 ' : ''; const media = safeJson(p.attachments, []).length ? '🖼 ' : ''; return `${ad}${icon} ${timeText(parseDbDate(p.publish_at))} · ${media}${short(p.text, 34)}`; }
-async function showPosts(callbackId, mode = 'all', day = null, channelId = null) {
-  const safeMode = ['all','scheduled','published'].includes(mode) ? mode : 'all'; const safeDay = day || await defaultPostDay(safeMode); const posts = await postsForDay(safeMode, safeDay, channelId); const counts = await countsForDay(safeDay, channelId); const rows = posts.map(p => [callbackButton(postButtonText(p), `post:open:${p.id}`)]);
+async function buildPostsView(mode = 'all', day = null, channelId = null) {
+  const safeMode = ['all','scheduled','published'].includes(mode) ? mode : 'all';
+  const safeDay = day || await defaultPostDay(safeMode);
+  const posts = await postsForDay(safeMode, safeDay, channelId);
+  const counts = await countsForDay(safeDay, channelId);
+  const rows = posts.map(p => [callbackButton(postButtonText(p), `post:open:${p.id}`)]);
   if (!rows.length) rows.push([callbackButton('Постов в этот день нет', 'noop')]);
   rows.push([callbackButton(safeMode==='scheduled'?'🔴 Отложенные':'⏳ Отложенные', filterPayload('scheduled', safeDay, channelId)), callbackButton(safeMode==='published'?'🔴 Опубликованные':'Опубликованные', filterPayload('published', safeDay, channelId))]);
   rows.push([callbackButton(safeMode==='all'?'🔴 Все посты':'📋 Все посты', filterPayload('all', safeDay, channelId))]);
   rows.push([callbackButton('⬅️ День', filterPayload(safeMode, shiftDay(safeDay,-1), channelId)), callbackButton(`📅 ${dateText(keyToDate(safeDay)).replace(' г.','')}`, 'noop'), callbackButton('День ➡️', filterPayload(safeMode, shiftDay(safeDay,1), channelId))]);
   rows.push([callbackButton('📡 По каналам', 'post:channels')],[callbackButton('⬅️ В Studio', 'main:posting')]);
-  await cb(callbackId, `━━━━━━━━━━━━━━\n🗂 <b>Посты</b>\n\n📣 <b>${channelId ? escapeHtml(channelName(await getChannel(channelId))) : 'Все каналы'}</b>\n📅 ${dateText(keyToDate(safeDay))}\n\nФильтр: <b>${safeMode === 'scheduled' ? 'отложенные' : safeMode === 'published' ? 'опубликованные' : 'все посты'}</b>\n\n📋 Всего за день: ${counts.all}\n⏳ Отложено: ${counts.scheduled}\n📌 Опубликовано: ${counts.published}\n👁 Показано: ${posts.length}${posts.length ? '' : '\n\nПостов в этот день нет. Листайте дни стрелками ниже.'}\n\nНажмите на пост, чтобы открыть управление.\n━━━━━━━━━━━━━━`, rows);
+
+  const title = channelId ? escapeHtml(channelName(await getChannel(channelId))) : 'Все каналы';
+  const text = `━━━━━━━━━━━━━━
+🗂 <b>Посты</b>
+
+📣 <b>${title}</b>
+📅 ${dateText(keyToDate(safeDay))}
+
+Фильтр: <b>${safeMode === 'scheduled' ? 'отложенные' : safeMode === 'published' ? 'опубликованные' : 'все посты'}</b>
+
+📋 Всего за день: ${counts.all}
+⏳ Отложено: ${counts.scheduled}
+📌 Опубликовано: ${counts.published}
+👁 Показано: ${posts.length}${posts.length ? '' : '\n\nПостов в этот день нет. Листайте дни стрелками ниже.'}
+
+Нажмите на пост, чтобы открыть управление.
+━━━━━━━━━━━━━━`;
+
+  return { text, rows, safeMode, safeDay, posts, counts };
 }
-async function showPostChannels(callbackId) { const channels = await getChannels(); const day = await defaultPostDay('all'); const rows = [[callbackButton('🌐 Все каналы', filterPayload('all', day, 0))]]; for (const c of channels) rows.push([callbackButton(`📡 ${channelName(c)}`, filterPayload('all', day, c.id))]); rows.push([callbackButton('⬅️ К постам', filterPayload('all', day, 0))]); await cb(callbackId, `━━━━━━━━━━━━━━\n📡 <b>Посты по каналам</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
+async function showPosts(callbackId, mode = 'all', day = null, channelId = null, chatId = null) {
+  const view = await buildPostsView(mode, day, channelId);
+  return cbOrMsg(callbackId, chatId, view.text, view.rows);
+}
+async function sendPosts(chatId, mode = 'all', day = null, channelId = null) {
+  const view = await buildPostsView(mode, day, channelId);
+  return msg(chatId, view.text, view.rows);
+}
+async function showPostChannels(callbackId, chatId = null) { const channels = await getChannels(); const day = await defaultPostDay('all'); const rows = [[callbackButton('🌐 Все каналы', filterPayload('all', day, 0))]]; for (const c of channels) rows.push([callbackButton(`📡 ${channelName(c)}`, filterPayload('all', day, c.id))]); rows.push([callbackButton('⬅️ К постам', filterPayload('all', day, 0))]); await cbOrMsg(callbackId, chatId, `━━━━━━━━━━━━━━\n📡 <b>Посты по каналам</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
 async function getPost(id) { const r = await query(`SELECT sp.*, c.title AS channel_title, c.link AS channel_link, c.max_chat_id FROM scheduled_posts sp LEFT JOIN channels c ON c.id=sp.channel_id WHERE sp.id=$1`, [Number(id)]); return r[0] || null; }
 function postChannelObj(p) { return { id: p.channel_id, title: p.channel_title, link: p.channel_link, max_chat_id: p.max_chat_id }; }
 function postPreviewDraft(p) { return { ...emptyDraft(), channelIds: [p.channel_id], content: { text: p.text || '', format: p.format || 'html', attachments: safeJson(p.attachments, []), markup: [] }, buttons: safeJson(p.buttons, []), isAd: Boolean(p.is_ad), cpm: p.cpm ? Number(p.cpm) : null, autoDeleteMinutes: p.auto_delete_minutes, reportAfterHours: p.report_after_hours || 24, signatureEnabled: false }; }
@@ -406,9 +445,15 @@ async function handleCallback(update) {
   if (payload === 'schedule:manual') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '🕒 Введите время: 18:30, 0235, завтра 18:30, через 1 минуту или 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
   if (payload === 'schedule:calendar') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '📅 Пока календарь в ручном режиме. Введите дату и время: 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
   if (payload === 'publish:now') { const s = await getSession(key); const draft = safeDraft(s.data); const results = await publishDraftNow(draft, key); await clearSession(key); await answerCallback({ callbackId, notification: 'Публикация выполнена.' }).catch(()=>{}); return afterPublished(chatId, draft, results); }
-  if (payload === 'post:all') return showPosts(callbackId, 'all', await defaultPostDay('all'));
-  if (payload === 'post:channels') return showPostChannels(callbackId);
-  if (payload.startsWith('post:filter:')) { const [, , mode, day, channel] = payload.split(':'); return showPosts(callbackId, mode, day, Number(channel) || null); }
+  if (payload === 'post:all') {
+    await answerCallback({ callbackId, notification: 'Открываю посты...' }).catch(()=>{});
+    return sendPosts(chatId, 'all', await defaultPostDay('all'));
+  }
+  if (payload === 'post:channels') return showPostChannels(callbackId, chatId);
+  if (payload.startsWith('post:filter:')) {
+    const [, , mode, day, channel] = payload.split(':');
+    return showPosts(callbackId, mode, day, Number(channel) || null, chatId);
+  }
   if (payload.startsWith('post:open:')) return openPost(callbackId, chatId, Number(payload.split(':')[2]));
   if (payload.startsWith('post:editor:')) return editExisting(callbackId, key, Number(payload.split(':')[2]));
   if (payload.startsWith('post:auto:')) { await setSession(key, 'wait_post_auto_delete', { postId: Number(payload.split(':')[2]) }); return cb(callbackId, '🗑 Введите новый срок автоудаления: 48ч, 2д, 120 или 0.', [[callbackButton('⬅️ Назад', `post:open:${payload.split(':')[2]}`)]]); }
