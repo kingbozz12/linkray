@@ -2949,18 +2949,9 @@ async function handleCallback(update) {
   const callbackId = getCallbackId(update);
   const payload = getCallbackPayload(update);
 const key = getSessionKey(update);
-  // LR42_DIRECT_QUEUE_INTERCEPT_START
-  if (String(payload || '').startsWith('queue:')) {
-    if (typeof lr41HandlePostsPayload === 'function') {
-      const handledByLr41 = await lr41HandlePostsPayload(payload, callbackId, key);
-      if (handledByLr41) return;
-    }
-    if (typeof lr36HandlePostsPayload === 'function') {
-      const handledByLr36 = await lr36HandlePostsPayload(payload, callbackId, key);
-      if (handledByLr36) return;
-    }
-  }
-  // LR42_DIRECT_QUEUE_INTERCEPT_END
+  // LR44_CALLBACK_ROUTER_START
+  if (await lr44HandleCallbackPayload(payload, callbackId, key)) return;
+  // LR44_CALLBACK_ROUTER_END
 console.log('[callback]', JSON.stringify({ callbackId, key, payload }));
   await writeFile('/tmp/linkray_last_callback.json', JSON.stringify(update, null, 2)).catch(() => {});
   if (!callbackId || !key) return;
@@ -3979,6 +3970,1201 @@ async function lr43SendPostControlMenu(key, row, locked) {
 
 // ===== LinkRay v41 posts UI END =====
 
+
+// ===== LinkRay v44 stable posts START =====
+const LR44_BOT_LINK = 'https://max.ru/se13353901_bot';
+
+function lr44Rows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  if (result && Array.isArray(result.data)) return result.data;
+  return [];
+}
+
+function lr44Json(value, fallback = {}) {
+  try {
+    if (!value) return fallback;
+    if (typeof value === 'object') return value;
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function lr44Escape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lr44Attr(value) {
+  return lr44Escape(value).replace(/"/g, '&quot;');
+}
+
+function lr44Plain(value) {
+  return String(value || '')
+    .replace(/<a\s+[^>]*href=["'][^"']+["'][^>]*>([\s\S]*?)<\/a>/gi, '$1')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(b|strong|i|em|u|s|strike|code|pre|span|p|div|h1|h2|h3)[^>]*>/gi, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\*\*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function lr44Short(value, max = 42) {
+  const s = lr44Plain(value).replace(/\s+/g, ' ').trim();
+  if (!s) return 'пост без текста';
+  return s.length > max ? `${s.slice(0, max)}...` : s;
+}
+
+function lr44Month(d) {
+  return ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'][d.getMonth()] || '';
+}
+
+function lr44Day(d) {
+  return ['вс','пн','вт','ср','чт','пт','сб'][d.getDay()] || '';
+}
+
+function lr44Time(d) {
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+function lr44Date(d) {
+  return `${lr44Day(d)} ${d.getDate()} ${lr44Month(d)} ${d.getFullYear()} г.`;
+}
+
+function lr44DateTime(d) {
+  return `${lr44Time(d)} · ${lr44Date(d)}`;
+}
+
+function lr44ValidDate(value) {
+  const d = new Date(value || Date.now());
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+function lr44PostDate(sp) {
+  return lr44ValidDate(sp.published_at || sp.publish_at || sp.updated_at || sp.created_at);
+}
+
+function lr44IsPublished(sp) {
+  return String(sp.status || '').toLowerCase() === 'published';
+}
+
+function lr44IsScheduled(sp) {
+  return String(sp.status || '').toLowerCase() === 'scheduled';
+}
+
+function lr44StatusLabel(sp) {
+  const status = String(sp.status || '').toLowerCase();
+  if (status === 'published') return 'опубликован';
+  if (status === 'scheduled') return 'запланирован';
+  if (status === 'publishing') return 'публикуется';
+  if (status === 'error') return 'ошибка';
+  if (status === 'canceled' || status === 'cancelled') return 'отменён';
+  return status || 'неизвестно';
+}
+
+function lr44StatusIcon(sp) {
+  const status = String(sp.status || '').toLowerCase();
+  if (status === 'published') return '✅';
+  if (status === 'scheduled') return '⏳';
+  if (status === 'error') return '⚠️';
+  if (status === 'canceled' || status === 'cancelled') return '❌';
+  return '📄';
+}
+
+function lr44IsAd(sp) {
+  const draft = lr44Json(sp.draft, {});
+  return Boolean(sp.is_ad || draft.isAd || draft.is_ad || sp.cpm || draft.cpm);
+}
+
+function lr44Cpm(sp) {
+  const draft = lr44Json(sp.draft, {});
+  return sp.cpm || draft.cpm || null;
+}
+
+function lr44AutoDelete(sp) {
+  const draft = lr44Json(sp.draft, {});
+  return sp.auto_delete_minutes || draft.autoDeleteMinutes || draft.auto_delete_minutes || null;
+}
+
+function lr44MinutesText(value) {
+  if (!value) return 'нет';
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 'нет';
+  if (n % 1440 === 0) return `${n / 1440}д`;
+  if (n % 60 === 0) return `${n / 60}ч`;
+  return `${n} мин`;
+}
+
+function lr44OlderThan24h(sp) {
+  if (!lr44IsPublished(sp)) return false;
+  const base = sp.published_at || sp.publish_at || sp.updated_at || sp.created_at;
+  const d = new Date(base);
+  if (Number.isNaN(d.getTime())) return false;
+  return Date.now() - d.getTime() > 24 * 60 * 60 * 1000;
+}
+
+function lr44ChannelName(ch) {
+  return ch?.title || ch?.name || `Канал #${ch?.id || ch?.channel_id || '?'}`;
+}
+
+function lr44ChannelLine(ch) {
+  const title = lr44Escape(lr44ChannelName(ch));
+  const link = ch?.link || ch?.url || ch?.invite_link || '';
+  return link ? `• <a href="${lr44Attr(link)}">${title}</a>` : `• ${title}`;
+}
+
+function lr44MessageId(sp) {
+  const draft = lr44Json(sp.draft, {});
+  return sp.published_message_id || sp.message_id || sp.max_message_id || draft.published_message_id || draft.message_id || draft.max_message_id || null;
+}
+
+function lr44PostText(sp) {
+  const draft = lr44Json(sp.draft, {});
+  return sp.text || draft.text || draft.content?.text || '';
+}
+
+function lr44PostFormat(sp) {
+  const draft = lr44Json(sp.draft, {});
+  return sp.format || draft.format || draft.content?.format || 'html';
+}
+
+function lr44PostAttachments(sp) {
+  const draft = lr44Json(sp.draft, {});
+  const a = sp.attachments || draft.attachments || draft.content?.attachments || [];
+  return Array.isArray(a) ? a : [];
+}
+
+function lr44PostButtons(sp) {
+  const draft = lr44Json(sp.draft, {});
+  const b = sp.buttons || draft.buttons || [];
+  return Array.isArray(b) ? b : [];
+}
+
+function lr44IsInlineKeyboard(att) {
+  return String(att?.type || '').toLowerCase() === 'inline_keyboard';
+}
+
+function lr44MediaOnly(attachments = []) {
+  return (Array.isArray(attachments) ? attachments : []).filter((a) => a && !lr44IsInlineKeyboard(a));
+}
+
+function lr44ButtonAttachment(buttons = []) {
+  if (!Array.isArray(buttons) || !buttons.length) return null;
+  const rows = [];
+  for (const row of buttons) {
+    const items = Array.isArray(row) ? row : [row];
+    const btnRow = [];
+    for (const b of items) {
+      const text = String(b?.text || b?.title || '').trim();
+      const url = String(b?.url || b?.link || '').trim();
+      if (text && /^https?:\/\//i.test(url)) btnRow.push(linkButton(text, url));
+    }
+    if (btnRow.length) rows.push(btnRow);
+  }
+  return rows.length ? inlineKeyboard(rows) : null;
+}
+
+function lr44FinalAttachments(media = [], buttons = []) {
+  const out = [...lr44MediaOnly(media)];
+  const kb = lr44ButtonAttachment(buttons);
+  if (kb) out.push(kb);
+  return out;
+}
+
+function lr44MakeEditorFromPost(row) {
+  const sp = row.sp || row;
+  const ch = row.ch || {};
+  const draft = lr44Json(sp.draft, {});
+  return {
+    postId: Number(sp.id),
+    channelId: Number(sp.channel_id || ch.id),
+    channel: ch,
+    status: String(sp.status || ''),
+    publishedMessageId: lr44MessageId(sp),
+    isAd: lr44IsAd(sp),
+    cpm: lr44Cpm(sp),
+    autoDeleteMinutes: lr44AutoDelete(sp),
+    text: lr44PostText(sp),
+    format: lr44PostFormat(sp),
+    attachments: lr44PostAttachments(sp),
+    buttons: lr44PostButtons(sp),
+    signatureEnabled: false,
+    signatureText: '',
+    signatureFormat: 'html',
+    signatureMarkup: [],
+    originalDraft: draft,
+  };
+}
+
+function lr44BuildEditorText(editor) {
+  let text = String(editor.text || '');
+  let format = editor.format || 'html';
+
+  if (!editor.isAd && editor.signatureEnabled && String(editor.signatureText || '').trim()) {
+    text = `${text}\n\n${editor.signatureText}`;
+    if (editor.signatureFormat === 'html' || (typeof lrLooksLikeHtml === 'function' && lrLooksLikeHtml(editor.signatureText))) format = 'html';
+  }
+
+  return { text, format };
+}
+
+function lr44ParseButtonLines(input) {
+  const rows = [];
+  const lines = String(input || '').split(/\n+/).map((x) => x.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const parts = line.split('|').map((x) => x.trim()).filter(Boolean);
+    const row = [];
+    for (const part of parts) {
+      const m = part.match(/^(.+?)\s*(?:-|—|–)\s*(https?:\/\/\S+)$/i);
+      if (!m) continue;
+      row.push({ text: m[1].trim(), url: m[2].trim() });
+    }
+    if (row.length) rows.push(row);
+  }
+
+  return rows;
+}
+
+function lr44ParseDuration(text) {
+  const raw = String(text || '').trim().toLowerCase();
+  if (!raw || raw === 'нет' || raw === 'none' || raw === '0') return null;
+
+  const hm = raw.match(/^(\d{1,3})\s*:\s*(\d{1,2})$/);
+  if (hm) return Number(hm[1]) * 60 + Number(hm[2]);
+
+  const h = raw.match(/^(\d+(?:[.,]\d+)?)\s*(ч|час|часа|часов|h)$/i);
+  if (h) return Math.round(Number(h[1].replace(',', '.')) * 60);
+
+  const d = raw.match(/^(\d+(?:[.,]\d+)?)\s*(д|дн|день|дня|дней|d)$/i);
+  if (d) return Math.round(Number(d[1].replace(',', '.')) * 1440);
+
+  const m = raw.match(/^(\d+(?:[.,]\d+)?)\s*(мин|м|minute|minutes|min)?$/i);
+  if (m) return Math.round(Number(m[1].replace(',', '.')));
+
+  return null;
+}
+
+async function lr44GetPosts(mode = 'all', channelId = null, limit = 12) {
+  const where = ["sp.status::text IN ('scheduled','published')"];
+  const params = [];
+
+  if (mode === 'scheduled') where.push("sp.status::text = 'scheduled'");
+  if (mode === 'published') where.push("sp.status::text = 'published'");
+
+  if (channelId) {
+    params.push(Number(channelId));
+    where.push(`sp.channel_id = $${params.length}`);
+  }
+
+  params.push(Number(limit));
+
+  return lr44Rows(await query(`
+    SELECT to_jsonb(sp) AS sp, to_jsonb(c) AS ch
+    FROM scheduled_posts sp
+    LEFT JOIN channels c ON c.id = sp.channel_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY sp.publish_at DESC NULLS LAST, sp.id DESC
+    LIMIT $${params.length}
+  `, params));
+}
+
+async function lr44GetOnePost(id) {
+  const rows = lr44Rows(await query(`
+    SELECT to_jsonb(sp) AS sp, to_jsonb(c) AS ch
+    FROM scheduled_posts sp
+    LEFT JOIN channels c ON c.id = sp.channel_id
+    WHERE sp.id = $1
+    LIMIT 1
+  `, [Number(id)]));
+  return rows[0] || null;
+}
+
+async function lr44GetChannelsWithCounts() {
+  return lr44Rows(await query(`
+    SELECT
+      to_jsonb(c) AS ch,
+      COUNT(sp.id) FILTER (WHERE sp.status::text = 'scheduled') AS scheduled_count,
+      COUNT(sp.id) FILTER (WHERE sp.status::text = 'published') AS published_count
+    FROM channels c
+    LEFT JOIN scheduled_posts sp ON sp.channel_id = c.id AND sp.status::text IN ('scheduled','published')
+    GROUP BY c.id
+    ORDER BY c.title ASC NULLS LAST, c.id ASC
+    LIMIT 30
+  `));
+}
+
+function lr44PostListButton(row) {
+  const sp = row.sp || row;
+  const d = lr44PostDate(sp);
+  const ad = lr44IsAd(sp) ? '💼 ' : '';
+  const media = lr44PostAttachments(sp).length ? '🖼 ' : '';
+  return `${ad}${lr44StatusIcon(sp)} ${lr44Time(d)} · ${media}${lr44Short(lr44PostText(sp), 34)}`;
+}
+
+async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
+  const rowsData = await lr44GetPosts(mode, channelId, 12);
+  let channel = rowsData[0]?.ch || null;
+
+  if (channelId && (!channel || !channel.id)) {
+    const rows = await getChannelsByIds([Number(channelId)]).catch(() => []);
+    channel = rows[0] || null;
+  }
+
+  const buttons = [];
+  for (const row of rowsData) {
+    const sp = row.sp || row;
+    buttons.push([callbackButton(lr44PostListButton(row), `post:open:${sp.id}`)]);
+  }
+
+  if (!buttons.length) buttons.push([callbackButton('Постов пока нет', 'post:noop')]);
+
+  buttons.push([
+    callbackButton('⏳ Отложенные', channelId ? `post:channel:${channelId}:scheduled` : 'post:scheduled'),
+    callbackButton('🟢 Опубликованные', channelId ? `post:channel:${channelId}:published` : 'post:published'),
+  ]);
+  buttons.push([callbackButton('📋 Все посты', channelId ? `post:channel:${channelId}:all` : 'post:all')]);
+  buttons.push([callbackButton('📡 По каналам', 'post:channels')]);
+  buttons.push([callbackButton('⬅️ В Studio', 'main:posting')]);
+
+  const title = channel ? lr44ChannelName(channel) : 'Все каналы';
+  const scheduled = rowsData.filter((r) => lr44IsScheduled(r.sp || r)).length;
+  const published = rowsData.filter((r) => lr44IsPublished(r.sp || r)).length;
+  const modeText = mode === 'scheduled' ? 'отложенные' : mode === 'published' ? 'опубликованные' : 'все посты';
+  const dateLine = rowsData.length ? lr44Date(lr44PostDate(rowsData[0].sp || rowsData[0])) : lr44Date(new Date());
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+🗂 <b>Посты</b>
+
+📣 ${lr44Escape(title)}
+📅 ${dateLine}
+Фильтр: ${modeText}
+
+⏳ Отложено: ${scheduled}
+✅ Опубликовано: ${published}${rowsData.length ? '' : '\n\nПостов пока нет.'}
+
+Нажмите на пост, чтобы открыть управление.
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard(buttons),
+  });
+}
+
+async function lr44ShowChannels(callbackId) {
+  const rows = await lr44GetChannelsWithCounts();
+  const buttons = [[callbackButton('🌐 Все каналы', 'post:all')]];
+
+  for (const row of rows) {
+    const ch = row.ch || {};
+    buttons.push([callbackButton(`📡 ${lr44ChannelName(ch)} · ⏳${Number(row.scheduled_count || 0)} / ✅${Number(row.published_count || 0)}`, `post:channel:${ch.id}:all`)]);
+  }
+
+  if (!rows.length) buttons.push([callbackButton('Каналов пока нет', 'post:noop')]);
+  buttons.push([callbackButton('⬅️ К постам', 'post:all')]);
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+📡 <b>Посты по каналам</b>
+
+Выберите канал.
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard(buttons),
+  });
+}
+
+async function lr44Ack(callbackId, text = 'Открываю...') {
+  try {
+    await answerCallback({ callbackId, notification: text });
+  } catch {
+    try { await answerCallback({ callbackId, text }); } catch {}
+  }
+}
+
+async function lr44SendStoredPostPreview(key, row) {
+  const sp = row.sp || row;
+  await sendMaxMessage({
+    chatId: Number(key),
+    text: lr44PostText(sp),
+    format: lr44PostFormat(sp),
+    attachments: lr44FinalAttachments(lr44PostAttachments(sp), lr44PostButtons(sp)),
+    notify: false,
+  });
+}
+
+function lr44PostCardText(row) {
+  const sp = row.sp || row;
+  const ch = row.ch || {};
+  const d = lr44PostDate(sp);
+  const isAd = lr44IsAd(sp);
+  const locked = lr44OlderThan24h(sp);
+
+  if (locked) {
+    return `━━━━━━━━━━━━━━
+🔒 <b>Пост #${sp.id}</b>
+
+↑ Пост находится над этим сообщением ↑
+
+🕒 <b>Опубликован:</b> ${lr44DateTime(d)}
+✅ <b>Статус:</b> опубликован
+🗑 <b>Автоудаление:</b> ${lr44MinutesText(lr44AutoDelete(sp))}
+
+<b>Канал:</b>
+${lr44ChannelLine(ch)}
+
+Редактирование недоступно: после публикации прошло больше 24 часов.
+━━━━━━━━━━━━━━`;
+  }
+
+  if (lr44IsPublished(sp)) {
+    return `━━━━━━━━━━━━━━
+${isAd ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${sp.id}
+
+↑ Пост находится над этим сообщением ↑
+
+🕒 <b>Опубликован:</b> ${lr44DateTime(d)}
+✅ <b>Статус:</b> опубликован
+🗑 <b>Автоудаление:</b> ${lr44MinutesText(lr44AutoDelete(sp))}
+${isAd ? `💰 <b>CPM:</b> ${lr44Cpm(sp) || 'не указан'} ₽\n` : ''}
+<b>Канал:</b>
+${lr44ChannelLine(ch)}
+━━━━━━━━━━━━━━`;
+  }
+
+  return `━━━━━━━━━━━━━━
+${isAd ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${sp.id}
+
+↑ Пост находится над этим сообщением ↑
+
+🕒 <b>Запланирован:</b> ${lr44DateTime(d)}
+⏳ <b>Статус:</b> запланирован
+🗑 <b>Автоудаление:</b> ${lr44MinutesText(lr44AutoDelete(sp))}
+${isAd ? `💰 <b>CPM:</b> ${lr44Cpm(sp) || 'не указан'} ₽\n` : ''}
+<b>Канал:</b>
+${lr44ChannelLine(ch)}
+━━━━━━━━━━━━━━`;
+}
+
+function lr44PostCardKeyboard(row) {
+  const sp = row.sp || row;
+  if (lr44OlderThan24h(sp)) {
+    return inlineKeyboard([[callbackButton('⬅️ Назад', 'post:all')]]);
+  }
+
+  if (lr44IsPublished(sp)) {
+    return inlineKeyboard([
+      [callbackButton('✏️ Перейти в редактор', `post:editor:${sp.id}`)],
+      [callbackButton(`🗑 Удаление: ${lr44MinutesText(lr44AutoDelete(sp))}`, `post:auto_delete:${sp.id}`)],
+      [callbackButton('❌ Удалить из канала', `post:delete_confirm:${sp.id}`)],
+      [callbackButton('⬅️ Назад', 'post:all')],
+    ]);
+  }
+
+  return inlineKeyboard([
+    [callbackButton('✏️ Перейти в редактор', `post:editor:${sp.id}`)],
+    [callbackButton('🕒 Изменить время', `queue:edit:time:${sp.id}`)],
+    [callbackButton(`🗑 Удаление: ${lr44MinutesText(lr44AutoDelete(sp))}`, `post:auto_delete:${sp.id}`)],
+    [callbackButton('🚀 Опубликовать сейчас', `post:now:${sp.id}`)],
+    [callbackButton('❌ Удалить пост', `post:delete_confirm:${sp.id}`)],
+    [callbackButton('⬅️ Назад', 'post:all')],
+  ]);
+}
+
+async function lr44OpenPost(callbackId, key, id) {
+  const row = await lr44GetOnePost(id);
+
+  if (!row) {
+    await answerCallback({
+      callbackId,
+      text: 'Пост не найден.',
+      attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'post:all')]]),
+    });
+    return;
+  }
+
+  await lr44Ack(callbackId, 'Открываю пост...');
+  await lr44SendStoredPostPreview(key, row);
+  await sendMaxMessage({
+    chatId: Number(key),
+    text: lr44PostCardText(row),
+    format: 'html',
+    attachments: lr44PostCardKeyboard(row),
+    notify: false,
+  });
+}
+
+function lr44EditorText(editor) {
+  const hasButtons = Array.isArray(editor.buttons) && editor.buttons.length;
+  const hasMedia = Array.isArray(editor.attachments) && lr44MediaOnly(editor.attachments).length;
+  const sig = editor.isAd ? 'выключена для рекламы' : (editor.signatureEnabled ? 'включена' : 'выключена');
+
+  return `━━━━━━━━━━━━━━
+🧬 <b>Редактор LinkRay</b>
+
+${editor.isAd ? '💼 Рекламный пост\n' : ''}Текст: ${String(editor.text || '').trim() ? 'есть' : 'нет'}
+Медиа: ${hasMedia ? 'есть' : 'нет'}
+Кнопки: ${hasButtons ? 'есть' : 'нет'}
+Автоподпись: ${sig}
+Удаление: ${lr44MinutesText(editor.autoDeleteMinutes)}
+
+Настройте пост и нажмите «Сохранить пост».
+━━━━━━━━━━━━━━`;
+}
+
+function lr44EditorKeyboard(editor) {
+  return inlineKeyboard([
+    [callbackButton('✏️ Изменить текст', 'post:edit_text'), callbackButton('🖼 Медиа', 'post:edit_media')],
+    [callbackButton('🔘 Добавить кнопку', 'post:add_button'), callbackButton('🏷 Автоподпись', 'post:signature')],
+    [callbackButton('🔗 Редактировать кнопки', 'post:buttons')],
+    [callbackButton('💾 Сохранить пост', 'post:save')],
+    [callbackButton('⬅️ Назад', `post:open:${editor.postId}`)],
+  ]);
+}
+
+async function lr44ShowEditor(callbackId, key, id) {
+  const row = await lr44GetOnePost(id);
+  if (!row) {
+    await answerCallback({ callbackId, text: 'Пост не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'post:all')]]) });
+    return;
+  }
+
+  const sp = row.sp || row;
+  if (lr44OlderThan24h(sp)) {
+    await answerCallback({
+      callbackId,
+      text: '🔒 Пост опубликован больше 24 часов назад. Редактирование недоступно.',
+      attachments: inlineKeyboard([[callbackButton('⬅️ Назад', `post:open:${sp.id}`)]]),
+    });
+    return;
+  }
+
+  const editor = lr44MakeEditorFromPost(row);
+  await setSession(key, 'lr44_editor', { editor });
+  await answerCallback({
+    callbackId,
+    text: lr44EditorText(editor),
+    format: 'html',
+    attachments: lr44EditorKeyboard(editor),
+  });
+}
+
+async function lr44GetEditor(key) {
+  const session = await getSession(key);
+  if (!String(session.state || '').startsWith('lr44_')) return null;
+  return session.data?.editor || null;
+}
+
+async function lr44SetEditor(key, state, editor) {
+  await setSession(key, state, { editor });
+}
+
+async function lr44RefreshEditorByCallback(callbackId, key, editor) {
+  await answerCallback({
+    callbackId,
+    text: lr44EditorText(editor),
+    format: 'html',
+    attachments: lr44EditorKeyboard(editor),
+  });
+}
+
+async function lr44Prompt(callbackId, key, state, editor, text) {
+  await lr44SetEditor(key, state, editor);
+  await answerCallback({
+    callbackId,
+    text,
+    format: 'html',
+    attachments: inlineKeyboard([[callbackButton('⬅️ Назад', 'post:editor_back')], [callbackButton('❌ Отмена', 'post:cancel_edit')]]),
+  });
+}
+
+async function lr44ShowButtonsEditor(callbackId, key) {
+  const editor = await lr44GetEditor(key);
+  if (!editor) {
+    await answerCallback({ callbackId, text: 'Редактор не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'post:all')]]) });
+    return;
+  }
+
+  const rows = [];
+  (editor.buttons || []).forEach((row, rowIndex) => {
+    (Array.isArray(row) ? row : [row]).forEach((b, colIndex) => {
+      rows.push([callbackButton(`❌ ${b.text || b.title || 'кнопка'}`, `post:button_delete:${rowIndex}:${colIndex}`)]);
+    });
+  });
+
+  if (!rows.length) rows.push([callbackButton('Кнопок пока нет', 'post:noop')]);
+  rows.push([callbackButton('➕ Добавить кнопку', 'post:add_button')]);
+  rows.push([callbackButton('⬅️ В редактор', 'post:editor_back')]);
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+🔗 <b>Кнопки поста</b>
+
+Нажмите на кнопку, чтобы удалить её.
+Формат добавления: <code>Название - https://site.ru</code>
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard(rows),
+  });
+}
+
+async function lr44ShowSignature(callbackId, key) {
+  const editor = await lr44GetEditor(key);
+  if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' });
+
+  if (editor.isAd) {
+    await answerCallback({
+      callbackId,
+      text: '💼 Для рекламного поста автоподпись не добавляется.',
+      attachments: inlineKeyboard([[callbackButton('⬅️ В редактор', 'post:editor_back')]]),
+    });
+    return;
+  }
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+🏷 <b>Автоподпись</b>
+
+Статус: ${editor.signatureEnabled ? 'включена' : 'выключена'}
+
+Можно отправить подпись обычным сообщением: ссылки, жирный, курсив и подчёркивание из MAX сохраняются.
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard([
+      [callbackButton('✏️ Заменить подпись', 'post:signature_set')],
+      [callbackButton(editor.signatureEnabled ? '🚫 Выключить' : '✅ Включить', 'post:signature_toggle')],
+      [callbackButton('⬅️ В редактор', 'post:editor_back')],
+    ]),
+  });
+}
+
+async function lr44ShowAutoDelete(callbackId, key, postId = null) {
+  const target = postId || 'editor';
+  const rows = [
+    [callbackButton('1ч', `post:auto_set:${target}:60`), callbackButton('2ч', `post:auto_set:${target}:120`), callbackButton('4ч', `post:auto_set:${target}:240`)],
+    [callbackButton('8ч', `post:auto_set:${target}:480`), callbackButton('12ч', `post:auto_set:${target}:720`), callbackButton('24ч', `post:auto_set:${target}:1440`)],
+    [callbackButton('48ч', `post:auto_set:${target}:2880`), callbackButton('72ч', `post:auto_set:${target}:4320`), callbackButton('7д', `post:auto_set:${target}:10080`)],
+    [callbackButton('🚫 Не удалять', `post:auto_set:${target}:none`)],
+    [callbackButton('✍️ Ввести вручную', `post:auto_manual:${target}`)],
+    [callbackButton('⬅️ Назад', postId ? `post:open:${postId}` : 'post:editor_back')],
+  ];
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+🗑 <b>Автоудаление</b>
+
+Выберите срок или введите вручную.
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard(rows),
+  });
+}
+
+async function lr44UpdatePostAutoDelete(postId, minutes) {
+  await query(`
+    UPDATE scheduled_posts
+    SET auto_delete_minutes = $2, updated_at = now()
+    WHERE id = $1
+  `, [Number(postId), minutes === null ? null : Number(minutes)]);
+}
+
+async function lr44SetAutoDelete(callbackId, key, target, value) {
+  const minutes = value === 'none' ? null : Number(value);
+
+  if (target === 'editor') {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' });
+    editor.autoDeleteMinutes = minutes;
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await lr44RefreshEditorByCallback(callbackId, key, editor);
+    return;
+  }
+
+  await lr44UpdatePostAutoDelete(Number(target), minutes);
+  await answerCallback({
+    callbackId,
+    text: `✅ Автоудаление обновлено: ${lr44MinutesText(minutes)}.`,
+    attachments: inlineKeyboard([[callbackButton('⬅️ Назад к посту', `post:open:${target}`)], [callbackButton('📋 К постам', 'post:all')]]),
+  });
+}
+
+function lr44ApiUrl() {
+  return process.env.MAX_API_URL || process.env.MAX_BASE_URL || 'https://platform-api.max.ru';
+}
+
+function lr44Token() {
+  return process.env.BOT_TOKEN || process.env.MAX_BOT_TOKEN || process.env.MAX_TOKEN || '';
+}
+
+function lr44Headers() {
+  return {
+    Authorization: lr44Token(),
+    'Content-Type': 'application/json',
+  };
+}
+
+async function lr44MaxEditMessage(messageId, body) {
+  if (!messageId) throw new Error('published_message_id is empty');
+
+  const url = new URL(`${lr44ApiUrl()}/messages`);
+  url.searchParams.set('message_id', String(messageId));
+
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: lr44Headers(),
+    body: JSON.stringify(body),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok || data?.success === false) {
+    throw new Error(`MAX edit message failed ${response.status}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+async function lr44MaxDeleteMessage(messageId) {
+  if (!messageId) throw new Error('published_message_id is empty');
+
+  const url = new URL(`${lr44ApiUrl()}/messages`);
+  url.searchParams.set('message_id', String(messageId));
+
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: lr44Headers(),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok || data?.success === false) {
+    throw new Error(`MAX delete message failed ${response.status}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+async function lr44SaveEditor(callbackId, key) {
+  const editor = await lr44GetEditor(key);
+  if (!editor) {
+    await answerCallback({ callbackId, text: 'Редактор не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'post:all')]]) });
+    return;
+  }
+
+  const row = await lr44GetOnePost(editor.postId);
+  if (!row) {
+    await answerCallback({ callbackId, text: 'Пост не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'post:all')]]) });
+    return;
+  }
+
+  const sp = row.sp || row;
+  if (lr44OlderThan24h(sp)) {
+    await answerCallback({ callbackId, text: '🔒 Редактирование недоступно: прошло больше 24 часов.', attachments: inlineKeyboard([[callbackButton('⬅️ Назад', `post:open:${sp.id}`)]]) });
+    return;
+  }
+
+  const final = lr44BuildEditorText(editor);
+  const finalAttachments = lr44FinalAttachments(editor.attachments, editor.buttons);
+  const draft = {
+    ...(editor.originalDraft || {}),
+    lr44Edited: true,
+    content: {
+      text: editor.text,
+      format: editor.format,
+      attachments: lr44MediaOnly(editor.attachments),
+    },
+    buttons: editor.buttons,
+    signatureEnabled: editor.signatureEnabled,
+    signatureText: editor.signatureText,
+    signatureFormat: editor.signatureFormat,
+    autoDeleteMinutes: editor.autoDeleteMinutes,
+    cpm: editor.cpm,
+    isAd: editor.isAd,
+  };
+
+  await query(`
+    UPDATE scheduled_posts
+    SET text = $2,
+        format = $3,
+        attachments = $4::jsonb,
+        buttons = $5::jsonb,
+        draft = $6::jsonb,
+        auto_delete_minutes = $7,
+        updated_at = now()
+    WHERE id = $1
+  `, [
+    editor.postId,
+    final.text,
+    final.format,
+    JSON.stringify(lr44MediaOnly(editor.attachments)),
+    JSON.stringify(editor.buttons || []),
+    JSON.stringify(draft),
+    editor.autoDeleteMinutes === null || editor.autoDeleteMinutes === undefined ? null : Number(editor.autoDeleteMinutes),
+  ]);
+
+  let maxUpdated = false;
+  let warning = '';
+
+  if (lr44IsPublished(sp)) {
+    const mid = editor.publishedMessageId || lr44MessageId(sp);
+    if (mid) {
+      try {
+        await lr44MaxEditMessage(mid, {
+          text: final.text,
+          format: final.format,
+          attachments: finalAttachments,
+        });
+        maxUpdated = true;
+      } catch (error) {
+        warning = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение: ${lr44Escape(error.message || error)}`;
+        console.error('[v44] edit published failed:', error.message || error);
+      }
+    } else {
+      warning = '\n\n⚠️ В базе сохранено, но у поста нет published_message_id для изменения сообщения в канале.';
+    }
+  }
+
+  await clearSession(key);
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+✅ <b>Пост сохранён</b>
+
+${lr44IsPublished(sp) ? (maxUpdated ? 'Сообщение в канале обновлено.' : 'Изменения сохранены в базе.') : 'Изменения сохранены для очереди.'}${warning}
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard([
+      [callbackButton('👁 Открыть пост', `post:open:${editor.postId}`)],
+      [callbackButton('📋 К постам', 'post:all')],
+    ]),
+  });
+}
+
+async function lr44ConfirmDelete(callbackId, id) {
+  const row = await lr44GetOnePost(id);
+  if (!row) return answerCallback({ callbackId, text: 'Пост не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'post:all')]]) });
+
+  const sp = row.sp || row;
+  const action = lr44IsPublished(sp) ? 'удалить из канала' : 'удалить из очереди';
+
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+❌ <b>Подтвердите удаление</b>
+
+Пост #${sp.id}
+«${lr44Escape(lr44Short(lr44PostText(sp), 90))}»
+
+Действие: ${action}.
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: inlineKeyboard([
+      [callbackButton('✅ Да, удалить', `post:delete:${sp.id}`)],
+      [callbackButton('⬅️ Назад', `post:open:${sp.id}`)],
+    ]),
+  });
+}
+
+async function lr44DeletePost(callbackId, id) {
+  const row = await lr44GetOnePost(id);
+  if (!row) return answerCallback({ callbackId, text: 'Пост не найден.', attachments: inlineKeyboard([[callbackButton('⬅️ К постам', 'post:all')]]) });
+
+  const sp = row.sp || row;
+  let warning = '';
+
+  if (lr44IsPublished(sp)) {
+    const mid = lr44MessageId(sp);
+    if (mid) {
+      try {
+        await lr44MaxDeleteMessage(mid);
+      } catch (error) {
+        warning = `\n\n⚠️ MAX не удалил сообщение: ${lr44Escape(error.message || error)}`;
+        console.error('[v44] delete published failed:', error.message || error);
+      }
+    } else {
+      warning = '\n\n⚠️ У поста нет published_message_id, поэтому удалить сообщение из канала через API нельзя.';
+    }
+  }
+
+  await query(`UPDATE scheduled_posts SET status = 'canceled', updated_at = now() WHERE id = $1`, [Number(id)]);
+
+  await answerCallback({
+    callbackId,
+    text: `✅ Пост #${id} удалён из активного списка.${warning}`,
+    format: 'html',
+    attachments: inlineKeyboard([[callbackButton('📋 К постам', 'post:all')], [callbackButton('⬅️ В Studio', 'main:posting')]]),
+  });
+}
+
+async function lr44PublishNow(callbackId, id) {
+  await query(`UPDATE scheduled_posts SET publish_at = now(), status = 'scheduled', updated_at = now() WHERE id = $1`, [Number(id)]);
+  await answerCallback({
+    callbackId,
+    text: `🚀 Пост #${id} отправлен на ближайшую публикацию.`,
+    attachments: inlineKeyboard([[callbackButton('📋 К постам', 'post:all')]]),
+  });
+}
+
+async function lr44HandleCallbackPayload(payload, callbackId, key) {
+  const p = String(payload || '');
+  if (!p.startsWith('post:') && !p.startsWith('queue:')) return false;
+
+  if (p === 'post:noop' || p === 'queue:noop') return true;
+
+  if (p === 'post:all' || p === 'queue:all' || p === 'queue:menu') {
+    await lr44ShowPosts(callbackId, 'all');
+    return true;
+  }
+
+  if (p === 'post:scheduled' || p === 'queue:scheduled') {
+    await lr44ShowPosts(callbackId, 'scheduled');
+    return true;
+  }
+
+  if (p === 'post:published' || p === 'queue:published') {
+    await lr44ShowPosts(callbackId, 'published');
+    return true;
+  }
+
+  if (p === 'post:channels' || p === 'queue:channels') {
+    await lr44ShowChannels(callbackId);
+    return true;
+  }
+
+  if (p.startsWith('post:channel:') || p.startsWith('queue:channel:')) {
+    const parts = p.split(':');
+    const id = Number(parts[2]);
+    const mode = parts[3] || 'all';
+    await lr44ShowPosts(callbackId, mode, id);
+    return true;
+  }
+
+  if (p.startsWith('post:open:') || p.startsWith('queue:post:')) {
+    const id = Number(p.split(':')[2]);
+    await lr44OpenPost(callbackId, key, id);
+    return true;
+  }
+
+  if (p.startsWith('post:editor:')) {
+    await lr44ShowEditor(callbackId, key, Number(p.split(':')[2]));
+    return true;
+  }
+
+  if (p === 'post:editor_back') {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await lr44RefreshEditorByCallback(callbackId, key, editor);
+    return true;
+  }
+
+  if (p === 'post:cancel_edit') {
+    await clearSession(key);
+    await answerCallback({ callbackId, text: 'Редактирование отменено.', attachments: inlineKeyboard([[callbackButton('📋 К постам', 'post:all')]]) });
+    return true;
+  }
+
+  if (p === 'post:edit_text') {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+    await lr44Prompt(callbackId, key, 'lr44_wait_text', editor, `━━━━━━━━━━━━━━\n✏️ <b>Новый текст</b>\n\nОтправьте новый текст поста. Форматирование MAX сохранится.\n━━━━━━━━━━━━━━`);
+    return true;
+  }
+
+  if (p === 'post:edit_media') {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+    await lr44Prompt(callbackId, key, 'lr44_wait_media', editor, `━━━━━━━━━━━━━━\n🖼 <b>Медиа</b>\n\nОтправьте фото, видео или файл. Текст поста сохранится, если вы не добавите новую подпись к медиа.\n━━━━━━━━━━━━━━`);
+    return true;
+  }
+
+  if (p === 'post:add_button') {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+    await lr44Prompt(callbackId, key, 'lr44_wait_button', editor, `━━━━━━━━━━━━━━\n🔘 <b>Кнопка под постом</b>\n\nФормат:\n<code>Название - https://site.ru</code>\n\nНесколько кнопок в одной строке: через <code>|</code>.\nКаждая новая строка — новый ряд.\n━━━━━━━━━━━━━━`);
+    return true;
+  }
+
+  if (p === 'post:signature') {
+    await lr44ShowSignature(callbackId, key);
+    return true;
+  }
+
+  if (p === 'post:signature_set') {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+    await lr44Prompt(callbackId, key, 'lr44_wait_signature', editor, `━━━━━━━━━━━━━━\n🏷 <b>Новая автоподпись</b>\n\nОтправьте подпись. Ссылки, жирный, курсив и подчёркивание из MAX сохранятся.\n━━━━━━━━━━━━━━`);
+    return true;
+  }
+
+  if (p === 'post:signature_toggle') {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+    if (!editor.isAd) editor.signatureEnabled = !editor.signatureEnabled;
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await lr44ShowSignature(callbackId, key);
+    return true;
+  }
+
+  if (p === 'post:buttons') {
+    await lr44ShowButtonsEditor(callbackId, key);
+    return true;
+  }
+
+  if (p.startsWith('post:button_delete:')) {
+    const editor = await lr44GetEditor(key);
+    if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+    const [, , rowIndexRaw, colIndexRaw] = p.split(':');
+    const rowIndex = Number(rowIndexRaw);
+    const colIndex = Number(colIndexRaw);
+    const rows = Array.isArray(editor.buttons) ? editor.buttons : [];
+    if (Array.isArray(rows[rowIndex])) rows[rowIndex].splice(colIndex, 1);
+    editor.buttons = rows.map((r) => (Array.isArray(r) ? r.filter(Boolean) : [])).filter((r) => r.length);
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await lr44ShowButtonsEditor(callbackId, key);
+    return true;
+  }
+
+  if (p === 'post:save') {
+    await lr44SaveEditor(callbackId, key);
+    return true;
+  }
+
+  if (p.startsWith('post:auto_delete:')) {
+    await lr44ShowAutoDelete(callbackId, key, Number(p.split(':')[2]));
+    return true;
+  }
+
+  if (p.startsWith('post:auto_manual:')) {
+    const target = p.split(':')[2];
+    if (target === 'editor') {
+      const editor = await lr44GetEditor(key);
+      if (!editor) return answerCallback({ callbackId, text: 'Редактор не найден.' }), true;
+      await lr44Prompt(callbackId, key, 'lr44_wait_auto_delete', { ...editor, autoDeleteTarget: 'editor' }, `━━━━━━━━━━━━━━\n🗑 <b>Автоудаление</b>\n\nВведите срок: 48ч, 2д, 120 или 5:30.\n━━━━━━━━━━━━━━`);
+    } else {
+      await setSession(key, 'lr44_wait_auto_delete', { autoDeleteTarget: target });
+      await answerCallback({ callbackId, text: 'Введите срок автоудаления: 48ч, 2д, 120 или 5:30.', attachments: inlineKeyboard([[callbackButton('⬅️ Назад', `post:open:${target}`)]]) });
+    }
+    return true;
+  }
+
+  if (p.startsWith('post:auto_set:')) {
+    const parts = p.split(':');
+    await lr44SetAutoDelete(callbackId, key, parts[2], parts[3]);
+    return true;
+  }
+
+  if (p.startsWith('post:delete_confirm:')) {
+    await lr44ConfirmDelete(callbackId, Number(p.split(':')[2]));
+    return true;
+  }
+
+  if (p.startsWith('post:delete:')) {
+    await lr44DeletePost(callbackId, Number(p.split(':')[2]));
+    return true;
+  }
+
+  if (p.startsWith('post:now:')) {
+    await lr44PublishNow(callbackId, Number(p.split(':')[2]));
+    return true;
+  }
+
+  return false;
+}
+
+async function lr44HandleTextState(update, key) {
+  const session = await getSession(key);
+  const state = String(session.state || '');
+  if (!state.startsWith('lr44_')) return false;
+
+  const text = getMessageText(update);
+  let editor = session.data?.editor || null;
+
+  if (state === 'lr44_wait_auto_delete') {
+    const minutes = lr44ParseDuration(text);
+    const target = session.data?.autoDeleteTarget || editor?.autoDeleteTarget || 'editor';
+
+    if (minutes === undefined) {
+      await sendMaxMessage({ chatId: Number(key), text: 'Не понял срок. Пример: 48ч, 2д, 120 или 5:30.', notify: false });
+      return true;
+    }
+
+    if (target === 'editor') {
+      editor.autoDeleteMinutes = minutes;
+      await lr44SetEditor(key, 'lr44_editor', editor);
+      await sendMaxMessage({ chatId: Number(key), text: lr44EditorText(editor), format: 'html', attachments: lr44EditorKeyboard(editor), notify: false });
+      return true;
+    }
+
+    await lr44UpdatePostAutoDelete(Number(target), minutes);
+    await clearSession(key);
+    await sendMaxMessage({ chatId: Number(key), text: `✅ Автоудаление обновлено: ${lr44MinutesText(minutes)}.`, attachments: inlineKeyboard([[callbackButton('👁 Открыть пост', `post:open:${target}`)], [callbackButton('📋 К постам', 'post:all')]]), notify: false });
+    return true;
+  }
+
+  if (!editor) return false;
+
+  if (state === 'lr44_wait_text') {
+    const content = await extractContentWithHydration(update);
+    editor.text = content.text || text;
+    editor.format = content.format || ((typeof lrLooksLikeHtml === 'function' && lrLooksLikeHtml(editor.text)) ? 'html' : 'markdown');
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await sendMaxMessage({ chatId: Number(key), text: lr44EditorText(editor), format: 'html', attachments: lr44EditorKeyboard(editor), notify: false });
+    return true;
+  }
+
+  if (state === 'lr44_wait_media') {
+    const content = await extractContentWithHydration(update);
+    if (Array.isArray(content.attachments) && content.attachments.length) {
+      editor.attachments = content.attachments;
+    }
+    if (String(content.text || '').trim()) {
+      editor.text = content.text;
+      editor.format = content.format || editor.format;
+    }
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await sendMaxMessage({ chatId: Number(key), text: lr44EditorText(editor), format: 'html', attachments: lr44EditorKeyboard(editor), notify: false });
+    return true;
+  }
+
+  if (state === 'lr44_wait_button') {
+    const parsed = lr44ParseButtonLines(text);
+    if (!parsed.length) {
+      await sendMaxMessage({ chatId: Number(key), text: 'Не понял кнопку. Формат: Название - https://site.ru', notify: false });
+      return true;
+    }
+    editor.buttons = [...(Array.isArray(editor.buttons) ? editor.buttons : []), ...parsed];
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await sendMaxMessage({ chatId: Number(key), text: lr44EditorText(editor), format: 'html', attachments: lr44EditorKeyboard(editor), notify: false });
+    return true;
+  }
+
+  if (state === 'lr44_wait_signature') {
+    const content = await extractContentWithHydration(update);
+    editor.signatureText = content.text || text;
+    editor.signatureFormat = content.format || ((typeof lrLooksLikeHtml === 'function' && lrLooksLikeHtml(editor.signatureText)) ? 'html' : 'markdown');
+    editor.signatureMarkup = content.markup || [];
+    editor.signatureEnabled = true;
+    await lr44SetEditor(key, 'lr44_editor', editor);
+    await sendMaxMessage({ chatId: Number(key), text: lr44EditorText(editor), format: 'html', attachments: lr44EditorKeyboard(editor), notify: false });
+    return true;
+  }
+
+  return false;
+}
+// ===== LinkRay v44 stable posts END =====
+
 app.get('/health', async (_req, res) => {
   try {
     await query('SELECT 1 AS ok');
@@ -3998,6 +5184,9 @@ app.post('/webhook', async (req, res) => {
     const updateType = getUpdateType(update);
     const chatId = getChatId(update);
     const key = getSessionKey(update);
+    // LR44_TEXT_STATE_ROUTER_START
+    if (await lr44HandleTextState(update, key)) return res.json({ ok: true });
+    // LR44_TEXT_STATE_ROUTER_END
     console.log('[webhook]', JSON.stringify({ updateType, chatId, key }));
 
     if (updateType === 'bot_added' && chatId) {
