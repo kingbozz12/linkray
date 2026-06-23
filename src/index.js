@@ -352,13 +352,88 @@ async function afterPlanned(chatId, draft, publishAt, ids) { const channels = aw
 async function afterPublished(chatId, draft, results) { const ok = results.filter(x=>x.ok); const channels = ok.map(x=>x.channel); if (draft.isAd) await msg(chatId, `━━━━━━━━━━━━━━\n✅ <b>Рекламный пост опубликован</b>\n\n📣 Каналы:\n${channelsLines(channels)}\n\nОпубликовано: ${ok.length} из ${results.length}\n💼 CPM: ${draft.cpm || 'не указан'} ₽\n📊 Отчёт будет готов через 24ч.\n\nРазмещение выполнено через <a href="${BOT_LINK}">LinkRay</a>.\n━━━━━━━━━━━━━━`, [[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]); else await msg(chatId, `━━━━━━━━━━━━━━\n✅ <b>Пост опубликован</b>\n\n📣 Каналы:\n${channelsLines(channels)}\n\nОпубликовано: ${ok.length} из ${results.length}\n━━━━━━━━━━━━━━`, [[callbackButton('🧩 Собрать ещё пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏠 В меню', 'main:menu')]]); await sendMain(chatId); }
 
 async function postsForDay(mode = 'all', day = null, channelId = null) {
-  const safeDay = day || dateKey(); const where = [`sp.status IN ('scheduled','published')`, `(sp.publish_at AT TIME ZONE '${MSK_TZ}')::date = $1::date`]; const params = [safeDay];
-  if (mode === 'scheduled') where.push(`sp.status='scheduled'`); if (mode === 'published') where.push(`sp.status='published'`);
-  if (channelId) { params.push(Number(channelId)); where.push(`sp.channel_id=$${params.length}`); }
-  return query(`SELECT sp.*, c.title AS channel_title, c.link AS channel_link, c.max_chat_id FROM scheduled_posts sp LEFT JOIN channels c ON c.id=sp.channel_id WHERE ${where.join(' AND ')} ORDER BY sp.publish_at ASC, sp.id ASC`, params);
+  const safeDay = day || dateKey();
+
+  const where = [
+    "sp.status::text IN ('scheduled','published')",
+    `(sp.publish_at AT TIME ZONE '${MSK_TZ}')::date = $1::date`,
+  ];
+
+  const params = [safeDay];
+
+  if (mode === 'scheduled') where.push("sp.status::text = 'scheduled'");
+  if (mode === 'published') where.push("sp.status::text = 'published'");
+
+  if (channelId) {
+    params.push(Number(channelId));
+    where.push(`sp.channel_id = $${params.length}`);
+  }
+
+  return query(`
+    SELECT
+      sp.*,
+      c.title AS channel_title,
+      c.link AS channel_link,
+      c.max_chat_id
+    FROM scheduled_posts sp
+    LEFT JOIN channels c ON c.id = sp.channel_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY sp.publish_at ASC NULLS LAST, sp.id ASC
+  `, params);
 }
-async function countsForDay(day, channelId = null) { const where = [`sp.status IN ('scheduled','published')`, `(sp.publish_at AT TIME ZONE '${MSK_TZ}')::date = $1::date`]; const params = [day]; if (channelId) { params.push(Number(channelId)); where.push(`sp.channel_id=$${params.length}`); } const r = await query(`SELECT COUNT(*)::int all_count, COUNT(*) FILTER(WHERE status='scheduled')::int scheduled_count, COUNT(*) FILTER(WHERE status='published')::int published_count FROM scheduled_posts sp WHERE ${where.join(' AND ')}`, params); return { all: Number(r[0]?.all_count || 0), scheduled: Number(r[0]?.scheduled_count || 0), published: Number(r[0]?.published_count || 0) }; }
-async function defaultPostDay(mode = 'all') { const where = [`status IN ('scheduled','published')`]; if (mode === 'scheduled') where.push(`status='scheduled'`); if (mode === 'published') where.push(`status='published'`); const r = await query(`SELECT (publish_at AT TIME ZONE '${MSK_TZ}')::date::text day FROM scheduled_posts WHERE ${where.join(' AND ')} ORDER BY publish_at DESC LIMIT 1`); return r[0]?.day || dateKey(); }
+
+async function countsForDay(day, channelId = null) {
+  const safeDay = day || dateKey();
+
+  const where = [
+    "sp.status::text IN ('scheduled','published')",
+    `(sp.publish_at AT TIME ZONE '${MSK_TZ}')::date = $1::date`,
+  ];
+
+  const params = [safeDay];
+
+  if (channelId) {
+    params.push(Number(channelId));
+    where.push(`sp.channel_id = $${params.length}`);
+  }
+
+  const r = await query(`
+    SELECT
+      COUNT(*)::int AS all_count,
+      COUNT(*) FILTER (WHERE sp.status::text = 'scheduled')::int AS scheduled_count,
+      COUNT(*) FILTER (WHERE sp.status::text = 'published')::int AS published_count
+    FROM scheduled_posts sp
+    WHERE ${where.join(' AND ')}
+  `, params);
+
+  return {
+    all: Number(r[0]?.all_count || 0),
+    scheduled: Number(r[0]?.scheduled_count || 0),
+    published: Number(r[0]?.published_count || 0),
+  };
+}
+
+async function defaultPostDay(mode = 'all') {
+  const where = [
+    "status::text IN ('scheduled','published')",
+    "publish_at IS NOT NULL",
+  ];
+
+  if (mode === 'scheduled') where.push("status::text = 'scheduled'");
+  if (mode === 'published') where.push("status::text = 'published'");
+
+  const r = await query(`
+    SELECT
+      (publish_at AT TIME ZONE '${MSK_TZ}')::date::text AS day_key
+    FROM scheduled_posts
+    WHERE ${where.join(' AND ')}
+    ORDER BY publish_at DESC NULLS LAST, id DESC
+    LIMIT 1
+  `);
+
+  return r[0]?.day_key || dateKey();
+}
+
 function filterPayload(mode, day, channelId = 0) { return `post:filter:${mode}:${day}:${channelId || 0}`; }
 function postButtonText(p) { const icon = p.status === 'published' ? '📌' : '⏳'; const ad = p.is_ad ? '💼 ' : ''; const media = safeJson(p.attachments, []).length ? '🖼 ' : ''; return `${ad}${icon} ${timeText(parseDbDate(p.publish_at))} · ${media}${short(p.text, 34)}`; }
 async function buildPostsView(mode = 'all', day = null, channelId = null) {
