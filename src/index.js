@@ -2945,6 +2945,10 @@ async function lr32HandleQueueCallback(payload, callbackId, key) {
 
 
 async function handleCallback(update) {
+  // LR49_STUDIO_HARD_OPEN_START
+  if (await lr49MaybeHandleStudioCallback(update)) return;
+  // LR49_STUDIO_HARD_OPEN_END
+
   // LR46_EARLY_POST_CALLBACK_START
   {
     const lr46CallbackId = getCallbackId(update);
@@ -5527,6 +5531,57 @@ async function lr44HandleTextState(update, key) {
 }
 // ===== LinkRay v44 stable posts END =====
 
+
+// ===== LinkRay v49 Studio hard open START =====
+function lr49StudioKeyboard() {
+  return inlineKeyboard([
+    [callbackButton('🧩 Собрать пост', 'post:create')],
+    [callbackButton('🗂 Посты', 'post:all')],
+    [callbackButton('🏷 Автоподписи', 'sig:menu')],
+    [callbackButton('📡 Каналы', 'post:channels')],
+    [callbackButton('⬅️ В меню', 'main:menu')],
+  ]);
+}
+
+async function lr49ShowStudio(callbackId) {
+  await answerCallback({
+    callbackId,
+    text: `━━━━━━━━━━━━━━
+🧬 <b>LinkRay Studio</b>
+
+Здесь собираются посты, отложенные публикации и рекламные размещения.
+
+Выберите действие.
+━━━━━━━━━━━━━━`,
+    format: 'html',
+    attachments: lr49StudioKeyboard(),
+  });
+}
+
+async function lr49MaybeHandleStudioCallback(update) {
+  const lr49CallbackId = getCallbackId(update);
+  const lr49Payload = getCallbackPayload(update);
+
+  if (!lr49CallbackId || !lr49Payload) return false;
+
+  const p = String(lr49Payload);
+
+  if (
+    p === 'main:posting' ||
+    p === 'studio' ||
+    p === 'post:studio' ||
+    p === 'main:studio' ||
+    p === 'posting'
+  ) {
+    console.log('[v49 studio hard open]', JSON.stringify({ payload: p }));
+    await lr49ShowStudio(lr49CallbackId);
+    return true;
+  }
+
+  return false;
+}
+// ===== LinkRay v49 Studio hard open END =====
+
 app.get('/health', async (_req, res) => {
   try {
     await query('SELECT 1 AS ok');
@@ -5546,6 +5601,9 @@ app.post('/webhook', async (req, res) => {
     const updateType = getUpdateType(update);
     const chatId = getChatId(update);
     const key = getSessionKey(update);
+    // LR49_WEBHOOK_STUDIO_HARD_OPEN_START
+    if (await lr49MaybeHandleStudioCallback(update)) return res.json({ ok: true });
+    // LR49_WEBHOOK_STUDIO_HARD_OPEN_END
     // LR45_HARD_POST_CALLBACK_START
     const lr45CallbackId = getCallbackId(update);
     const lr45Payload = getCallbackPayload(update);
