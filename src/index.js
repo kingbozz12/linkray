@@ -3972,6 +3972,56 @@ async function lr43SendPostControlMenu(key, row, locked) {
 
 
 // ===== LinkRay v44 stable posts START =====
+
+// ===== LinkRay v45 posts menu fix START =====
+async function lr45PostCounts(channelId = null) {
+  const where = ["sp.status::text IN ('scheduled','published')"];
+  const params = [];
+
+  if (channelId) {
+    params.push(Number(channelId));
+    where.push(`sp.channel_id = $${params.length}`);
+  }
+
+  const rows = lr44Rows(await query(`
+    SELECT
+      COUNT(*)::int AS all_count,
+      COUNT(*) FILTER (WHERE sp.status::text = 'scheduled')::int AS scheduled_count,
+      COUNT(*) FILTER (WHERE sp.status::text = 'published')::int AS published_count
+    FROM scheduled_posts sp
+    WHERE ${where.join(' AND ')}
+  `, params));
+
+  const row = rows[0] || {};
+  return {
+    all: Number(row.all_count || 0),
+    scheduled: Number(row.scheduled_count || 0),
+    published: Number(row.published_count || 0),
+  };
+}
+
+function lr45FilterLabel(mode) {
+  if (mode === 'scheduled') return 'отложенные';
+  if (mode === 'published') return 'опубликованные';
+  return 'все посты';
+}
+
+function lr45FilterButtons(mode, channelId = null) {
+  const scheduledPayload = channelId ? `post:channel:${channelId}:scheduled` : 'post:scheduled';
+  const publishedPayload = channelId ? `post:channel:${channelId}:published` : 'post:published';
+  const allPayload = channelId ? `post:channel:${channelId}:all` : 'post:all';
+
+  return [
+    [
+      callbackButton(mode === 'scheduled' ? '✅ Отложенные' : '⏳ Отложенные', scheduledPayload),
+      callbackButton(mode === 'published' ? '✅ Опубликованные' : '🟢 Опубликованные', publishedPayload),
+    ],
+    [
+      callbackButton(mode === 'all' ? '✅ Все посты' : '📋 Все посты', allPayload),
+    ],
+  ];
+}
+// ===== LinkRay v45 posts menu fix END =====
 const LR44_BOT_LINK = 'https://max.ru/se13353901_bot';
 
 function lr44Rows(result) {
@@ -4312,7 +4362,11 @@ function lr44PostListButton(row) {
 }
 
 async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
+  mode = ['all', 'scheduled', 'published'].includes(String(mode)) ? String(mode) : 'all';
+
   const rowsData = await lr44GetPosts(mode, channelId, 12);
+  const counts = await lr45PostCounts(channelId);
+
   let channel = rowsData[0]?.ch || null;
 
   if (channelId && (!channel || !channel.id)) {
@@ -4321,38 +4375,43 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
   }
 
   const buttons = [];
+
   for (const row of rowsData) {
     const sp = row.sp || row;
-    buttons.push([callbackButton(lr44PostListButton(row), `post:open:${sp.id}`)]);
+
+    // queue:post:id оставляем специально:
+    // старые части бота уже знают queue:post, а v44/v45 тоже его перехватывают.
+    buttons.push([callbackButton(lr44PostListButton(row), `queue:post:${sp.id}`)]);
   }
 
-  if (!buttons.length) buttons.push([callbackButton('Постов пока нет', 'post:noop')]);
+  if (!buttons.length) {
+    buttons.push([callbackButton('Постов пока нет', 'post:noop')]);
+  }
 
-  buttons.push([
-    callbackButton('⏳ Отложенные', channelId ? `post:channel:${channelId}:scheduled` : 'post:scheduled'),
-    callbackButton('🟢 Опубликованные', channelId ? `post:channel:${channelId}:published` : 'post:published'),
-  ]);
-  buttons.push([callbackButton('📋 Все посты', channelId ? `post:channel:${channelId}:all` : 'post:all')]);
+  for (const filterRow of lr45FilterButtons(mode, channelId)) {
+    buttons.push(filterRow);
+  }
+
   buttons.push([callbackButton('📡 По каналам', 'post:channels')]);
   buttons.push([callbackButton('⬅️ В Studio', 'main:posting')]);
 
   const title = channel ? lr44ChannelName(channel) : 'Все каналы';
-  const scheduled = rowsData.filter((r) => lr44IsScheduled(r.sp || r)).length;
-  const published = rowsData.filter((r) => lr44IsPublished(r.sp || r)).length;
-  const modeText = mode === 'scheduled' ? 'отложенные' : mode === 'published' ? 'опубликованные' : 'все посты';
-  const dateLine = rowsData.length ? lr44Date(lr44PostDate(rowsData[0].sp || rowsData[0])) : lr44Date(new Date());
+  const dateLine = lr44Date(new Date());
 
   await answerCallback({
     callbackId,
     text: `━━━━━━━━━━━━━━
 🗂 <b>Посты</b>
 
-📣 ${lr44Escape(title)}
+📣 <b>${lr44Escape(title)}</b>
 📅 ${dateLine}
-Фильтр: ${modeText}
 
-⏳ Отложено: ${scheduled}
-✅ Опубликовано: ${published}${rowsData.length ? '' : '\n\nПостов пока нет.'}
+Фильтр: <b>${lr45FilterLabel(mode)}</b>
+
+📋 Всего: ${counts.all}
+⏳ Запланировано: ${counts.scheduled}
+✅ Опубликовано: ${counts.published}
+👁 Показано: ${rowsData.length}${rowsData.length ? '' : '\n\nПостов пока нет.'}
 
 Нажмите на пост, чтобы открыть управление.
 ━━━━━━━━━━━━━━`,
@@ -4360,6 +4419,7 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
     attachments: inlineKeyboard(buttons),
   });
 }
+
 
 async function lr44ShowChannels(callbackId) {
   const rows = await lr44GetChannelsWithCounts();
@@ -4951,7 +5011,13 @@ async function lr44HandleCallbackPayload(payload, callbackId, key) {
   }
 
   if (p.startsWith('post:open:') || p.startsWith('queue:post:')) {
-    const id = Number(p.split(':')[2]);
+    const parts = p.split(':');
+    const id = Number(parts[2]);
+    if (!id) {
+      await answerCallback({ callbackId, text: 'Не смог открыть пост: неверный ID.' });
+      return true;
+    }
+
     await lr44OpenPost(callbackId, key, id);
     return true;
   }
@@ -5184,6 +5250,16 @@ app.post('/webhook', async (req, res) => {
     const updateType = getUpdateType(update);
     const chatId = getChatId(update);
     const key = getSessionKey(update);
+    // LR45_HARD_POST_CALLBACK_START
+    const lr45CallbackId = getCallbackId(update);
+    const lr45Payload = getCallbackPayload(update);
+    if (lr45CallbackId && lr45Payload && (String(lr45Payload).startsWith('post:') || String(lr45Payload).startsWith('queue:'))) {
+      console.log('[v45 hard callback]', JSON.stringify({ payload: lr45Payload, key }));
+      if (await lr44HandleCallbackPayload(lr45Payload, lr45CallbackId, key)) {
+        return res.json({ ok: true });
+      }
+    }
+    // LR45_HARD_POST_CALLBACK_END
     // LR44_TEXT_STATE_ROUTER_START
     if (await lr44HandleTextState(update, key)) return res.json({ ok: true });
     // LR44_TEXT_STATE_ROUTER_END
