@@ -143,6 +143,7 @@ function monthName(d) { return ['января','февраля','марта','а
 function dayName(d) { return ['вс','пн','вт','ср','чт','пт','сб'][d.getDay()] || ''; }
 function timeText(d) { return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
 function dateText(d) { return `${dayName(d)} ${d.getDate()} ${monthName(d)} ${d.getFullYear()} г.`; }
+function dateButtonText(d) { return `${d.getDate()} ${monthName(d)} ${d.getFullYear()}`; }
 function dateTimeText(d) { return `${timeText(d)} · ${dateText(d)}`; }
 function parseDbDate(v) { const d = new Date(v || Date.now()); return Number.isNaN(d.getTime()) ? new Date() : d; }
 
@@ -211,18 +212,90 @@ function applyMarkupToHtml(text, markup = []) {
   }
   return out;
 }
-function firstText(u) { return String(u.message?.body?.text || u.message?.text || u.message?.link?.message?.body?.text || u.message?.forwarded_message?.body?.text || u.message?.forwardedMessage?.body?.text || u.body?.text || u.text || '').trim(); }
-function firstMarkup(u) { const c = [u.message?.body?.markup, u.message?.markup, u.message?.link?.message?.body?.markup, u.message?.forwarded_message?.body?.markup, u.message?.forwardedMessage?.body?.markup, u.body?.markup, u.markup]; return c.find(x => Array.isArray(x) && x.length) || []; }
+function contentTextCandidates(v, found = [], seen = new Set(), path = '') {
+  if (!v || typeof v !== 'object' || seen.has(v)) return found;
+  seen.add(v);
+
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) contentTextCandidates(v[i], found, seen, `${path}.${i}`);
+    return found;
+  }
+
+  const localMarkup =
+    (Array.isArray(v.markup) && v.markup) ||
+    (Array.isArray(v.body?.markup) && v.body.markup) ||
+    (Array.isArray(v.message?.body?.markup) && v.message.body.markup) ||
+    [];
+
+  const addCandidate = (value, markup = localMarkup, scoreBonus = 0) => {
+    const txt = String(value || '').trim();
+    if (!txt) return;
+    const lowPath = String(path).toLowerCase();
+    let score = plain(txt).length + scoreBonus;
+    if (lowPath.includes('forward') || lowPath.includes('link') || lowPath.includes('message') || lowPath.includes('body') || lowPath.includes('content')) score += 200;
+    if (lowPath.includes('chat') || lowPath.includes('sender') || lowPath.includes('user') || lowPath.includes('button')) score -= 200;
+    found.push({ text: txt, markup: Array.isArray(markup) ? markup : [], score });
+  };
+
+  if (typeof v.body?.text === 'string') addCandidate(v.body.text, v.body.markup || localMarkup, 250);
+  if (typeof v.text === 'string') addCandidate(v.text, localMarkup, 200);
+  if (typeof v.caption === 'string') addCandidate(v.caption, localMarkup, 200);
+  if (typeof v.payload?.text === 'string') addCandidate(v.payload.text, v.payload.markup || localMarkup, 150);
+  if (typeof v.content?.text === 'string') addCandidate(v.content.text, v.content.markup || localMarkup, 150);
+
+  for (const [k, child] of Object.entries(v)) {
+    if (child && typeof child === 'object') contentTextCandidates(child, found, seen, `${path}.${k}`);
+  }
+  return found;
+}
+
+function bestContentCandidate(u) {
+  const candidates = contentTextCandidates(u?.message || u);
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0] || { text: '', markup: [], score: 0 };
+}
+
+function firstText(u) {
+  return String(bestContentCandidate(u).text || '').trim();
+}
+
+function firstMarkup(u) {
+  const best = bestContentCandidate(u);
+  if (Array.isArray(best.markup) && best.markup.length) return best.markup;
+
+  const found = [];
+  const seen = new Set();
+  const scan = (v) => {
+    if (!v || typeof v !== 'object' || seen.has(v)) return;
+    seen.add(v);
+    if (Array.isArray(v)) { for (const x of v) scan(x); return; }
+    if (Array.isArray(v.markup) && v.markup.length) found.push(v.markup);
+    if (Array.isArray(v.body?.markup) && v.body.markup.length) found.push(v.body.markup);
+    if (Array.isArray(v.payload?.markup) && v.payload.markup.length) found.push(v.payload.markup);
+    for (const child of Object.values(v)) if (child && typeof child === 'object') scan(child);
+  };
+  scan(u?.message || u);
+  return found[0] || [];
+}
+
 function looksLikeAttachment(v) { if (!v || typeof v !== 'object') return false; const t = String(v.type || v.attachment_type || v.attachmentType || '').toLowerCase(); return ['image','photo','video','file','audio','sticker'].some(x => t.includes(x)); }
 function collectAttachments(v, found = [], seen = new Set()) {
   if (!v || typeof v !== 'object' || found.length >= MAX_PREVIEW_ATTACHMENTS || seen.has(v)) return found;
   seen.add(v);
-  if (Array.isArray(v)) { for (const x of v) collectAttachments(x, found, seen); return found; }
-  if (looksLikeAttachment(v)) found.push(v);
-  for (const k of ['attachments','media','photos','images','videos','files','items']) if (Array.isArray(v[k])) collectAttachments(v[k], found, seen);
-  for (const child of [v.body,v.message,v.forwarded,v.forwarded_message,v.forwardedMessage,v.link,v.content,v.payload,v.post]) collectAttachments(child, found, seen);
+  if (Array.isArray(v)) {
+    for (const x of v) collectAttachments(x, found, seen);
+    return found.slice(0, MAX_PREVIEW_ATTACHMENTS);
+  }
+  if (looksLikeAttachment(v)) {
+    const t = String(v.type || v.attachment_type || v.attachmentType || '').toLowerCase();
+    if (t !== 'inline_keyboard' && !t.includes('keyboard')) found.push(v);
+  }
+  for (const child of Object.values(v)) {
+    if (child && typeof child === 'object') collectAttachments(child, found, seen);
+  }
   return found.slice(0, MAX_PREVIEW_ATTACHMENTS);
 }
+
 function normalizeAttachment(a) {
   if (!a || typeof a !== 'object') return null;
   const type = String(a.type || a.attachment_type || a.attachmentType || '').toLowerCase();
@@ -235,11 +308,14 @@ function normalizeAttachment(a) {
 }
 function normalizeAttachments(list = []) { const out = []; const seen = new Set(); for (const a of list || []) { const n = normalizeAttachment(a); if (!n) continue; const k = JSON.stringify(n); if (seen.has(k)) continue; seen.add(k); out.push(n); } return out; }
 async function hydrateContent(u) {
-  let text = firstText(u); const markup = firstMarkup(u);
-  const attachments = normalizeAttachments(collectAttachments(u.message || u));
-  if (markup.length && text) text = applyMarkupToHtml(text, markup);
-  return { text, format: 'html', markup, attachments, raw: u.message || u };
+  const best = bestContentCandidate(u);
+  let txt = String(best.text || firstText(u) || '').trim();
+  const markup = Array.isArray(best.markup) && best.markup.length ? best.markup : firstMarkup(u);
+  const attachments = normalizeAttachments(collectAttachments(u?.message || u));
+  if (markup.length && txt) txt = applyMarkupToHtml(txt, markup);
+  return { text: txt, format: 'html', markup, attachments, raw: u?.message || u };
 }
+
 
 function parseButtonsInput(input) {
   const rows = [];
@@ -303,15 +379,56 @@ async function showChannelSelect(callbackId, key, draft, multi = false) {
   await cb(callbackId, `━━━━━━━━━━━━━━\n📡 <b>Куда выпустить пост?</b>\n\n${hasContent(draft) ? 'Материал уже принят. Выберите канал.' : 'Выберите канал, затем отправьте пост.'}\n━━━━━━━━━━━━━━`, rows);
 }
 async function askContent(callbackId, key, draft) { await setSession(key, 'wait_post_content', { draft }); const channels = await getChannelsByIds(draft.channelIds); await cb(callbackId, `━━━━━━━━━━━━━━\n📨 <b>Отправьте пост</b>\n\nКаналы:\n${channelsLines(channels)}\n\nМожно отправить текст, фото, видео, файл или пересланный пост.\n━━━━━━━━━━━━━━`, [[callbackButton('⬅️ К каналам', 'post:change_channels')],[callbackButton('❌ Отмена', 'post:cancel')]]); }
-async function showEditor(callbackId, key, draft) {
-  await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
-  const text = `━━━━━━━━━━━━━━\n🧬 <b>Редактор LinkRay</b>\n\nТекст: ${String(draft.content.text || '').trim() ? 'есть' : 'нет'}\nМедиа: ${(draft.content.attachments || []).length ? 'есть' : 'нет'}\nКнопки: ${(draft.buttons || []).length ? 'есть' : 'нет'}\n${draft.isAd ? '💼 Реклама: да' : 'Реклама: нет'}${draft.cpm ? ` · CPM ${draft.cpm} ₽` : ''}\nАвтоподпись: ${draft.isAd ? 'выключена для рекламы' : (draft.signatureEnabled === false ? 'выключена' : 'включена')}\n\nНастройте оформление.\n━━━━━━━━━━━━━━`;
-  const rows = [[callbackButton('✏️ Изменить текст', 'editor:text'), callbackButton('🖼 Медиа', 'editor:media')],[callbackButton('🔘 Добавить кнопку', 'editor:button'), callbackButton('🏷 Автоподпись', 'editor:signature')],[callbackButton(draft.isAd ? '✅ Рекламный пост' : '💼 Рекламный пост', 'editor:ad')]];
+function editorMenuRows(draft) {
+  const rows = [
+    [callbackButton('✏️ Изменить текст', 'editor:text'), callbackButton('🖼 Медиа', 'editor:media')],
+    [callbackButton('🔘 Добавить кнопку', 'editor:button'), callbackButton('🏷 Автоподпись', 'editor:signature')],
+    [callbackButton(draft.isAd ? '✅ Рекламный пост' : '💼 Рекламный пост', 'editor:ad')],
+  ];
   if (draft.isAd) rows.push([callbackButton(draft.cpm ? `💰 CPM ${draft.cpm} ₽` : '💰 CPM не указан', 'editor:cpm')]);
-  rows.push([callbackButton(draft.postId ? '💾 Сохранить пост' : '➡️ Далее', draft.postId ? 'editor:save' : 'editor:next')],[callbackButton('⬅️ Назад', 'post:change_channels'), callbackButton('❌ Отмена', 'post:cancel')]);
-  await cb(callbackId, text, rows);
+  rows.push(
+    [callbackButton(draft.postId ? '💾 Сохранить пост' : '➡️ Далее', draft.postId ? 'editor:save' : 'editor:next')],
+    [callbackButton('⬅️ Назад', 'post:change_channels'), callbackButton('❌ Отмена', 'post:cancel')],
+  );
+  return rows;
 }
-async function sendDraftPreview(chatId, draft) { try { const content = await composePostForChannel(draft, draft.channelIds[0]); await sendMaxMessage({ chatId, ...content }); } catch (e) { console.error('[preview]', e.message || e); await msg(chatId, `⚠️ Не удалось вывести превью: ${escapeHtml(e.message || e)}\n\n${escapeHtml(short(draft.content.text, 900))}`, [], 'html'); } }
+
+function editorMenuText() {
+  return `━━━━━━━━━━━━━━
+🧬 <b>Редактор LinkRay</b>
+
+Пост-превью находится выше.
+При изменении текста, медиа, кнопок или автоподписи превью будет обновляться.
+
+Настройте оформление.
+━━━━━━━━━━━━━━`;
+}
+
+async function showEditor(callbackId, key, draft) {
+  if (hasContent(draft) && Number(key)) {
+    const mid = await sendDraftPreview(Number(key), draft);
+    if (mid) draft.previewMessageId = mid;
+  }
+  await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+  await cb(callbackId, editorMenuText(), editorMenuRows(draft));
+}
+
+async function sendDraftPreview(chatId, draft) {
+  try {
+    const content = await composePostForChannel(draft, draft.channelIds[0]);
+    if (draft.previewMessageId) {
+      try { await editMaxMessage(draft.previewMessageId, content); return draft.previewMessageId; }
+      catch (editError) { console.error('[preview edit failed, sending new]', editError.message || editError); }
+    }
+    const sent = await sendMaxMessage({ chatId, ...content });
+    return extractMessageId(sent);
+  } catch (e) {
+    console.error('[preview]', e.message || e);
+    await msg(chatId, `⚠️ Не удалось вывести превью: ${escapeHtml(e.message || e)}\n\n${escapeHtml(short(draft.content.text, 900))}`, [], 'html');
+    return null;
+  }
+}
+
 
 function parseDuration(input) { const raw = String(input || '').trim().toLowerCase(); if (!raw || raw === 'нет' || raw === '0') return null; const h = raw.match(/^(\d+(?:[.,]\d+)?)\s*(ч|час|часа|часов|h)$/); if (h) return Math.round(Number(h[1].replace(',','.'))*60); const d = raw.match(/^(\d+(?:[.,]\d+)?)\s*(д|дн|день|дня|дней|d)$/); if (d) return Math.round(Number(d[1].replace(',','.'))*1440); const hm = raw.match(/^(\d{1,3})\s*:\s*(\d{1,2})$/); if (hm) return Number(hm[1])*60+Number(hm[2]); const n = raw.match(/^(\d+)$/); if (n) return Number(n[1]); return undefined; }
 function parseSchedule(input) {
@@ -353,84 +470,34 @@ async function afterPublished(chatId, draft, results) { const ok = results.filte
 
 async function postsForDay(mode = 'all', day = null, channelId = null) {
   const safeDay = day || dateKey();
-
   const where = [
     "sp.status::text IN ('scheduled','published')",
     `(sp.publish_at AT TIME ZONE '${MSK_TZ}')::date = $1::date`,
   ];
-
   const params = [safeDay];
-
   if (mode === 'scheduled') where.push("sp.status::text = 'scheduled'");
   if (mode === 'published') where.push("sp.status::text = 'published'");
-
-  if (channelId) {
-    params.push(Number(channelId));
-    where.push(`sp.channel_id = $${params.length}`);
-  }
-
-  return query(`
-    SELECT
-      sp.*,
-      c.title AS channel_title,
-      c.link AS channel_link,
-      c.max_chat_id
-    FROM scheduled_posts sp
-    LEFT JOIN channels c ON c.id = sp.channel_id
-    WHERE ${where.join(' AND ')}
-    ORDER BY sp.publish_at ASC NULLS LAST, sp.id ASC
-  `, params);
+  if (channelId) { params.push(Number(channelId)); where.push(`sp.channel_id = $${params.length}`); }
+  return query(`SELECT sp.*, c.title AS channel_title, c.link AS channel_link, c.max_chat_id FROM scheduled_posts sp LEFT JOIN channels c ON c.id = sp.channel_id WHERE ${where.join(' AND ')} ORDER BY sp.publish_at ASC NULLS LAST, sp.id ASC`, params);
 }
 
 async function countsForDay(day, channelId = null) {
   const safeDay = day || dateKey();
-
   const where = [
     "sp.status::text IN ('scheduled','published')",
     `(sp.publish_at AT TIME ZONE '${MSK_TZ}')::date = $1::date`,
   ];
-
   const params = [safeDay];
-
-  if (channelId) {
-    params.push(Number(channelId));
-    where.push(`sp.channel_id = $${params.length}`);
-  }
-
-  const r = await query(`
-    SELECT
-      COUNT(*)::int AS all_count,
-      COUNT(*) FILTER (WHERE sp.status::text = 'scheduled')::int AS scheduled_count,
-      COUNT(*) FILTER (WHERE sp.status::text = 'published')::int AS published_count
-    FROM scheduled_posts sp
-    WHERE ${where.join(' AND ')}
-  `, params);
-
-  return {
-    all: Number(r[0]?.all_count || 0),
-    scheduled: Number(r[0]?.scheduled_count || 0),
-    published: Number(r[0]?.published_count || 0),
-  };
+  if (channelId) { params.push(Number(channelId)); where.push(`sp.channel_id = $${params.length}`); }
+  const r = await query(`SELECT COUNT(*)::int AS all_count, COUNT(*) FILTER (WHERE sp.status::text = 'scheduled')::int AS scheduled_count, COUNT(*) FILTER (WHERE sp.status::text = 'published')::int AS published_count FROM scheduled_posts sp WHERE ${where.join(' AND ')}`, params);
+  return { all: Number(r[0]?.all_count || 0), scheduled: Number(r[0]?.scheduled_count || 0), published: Number(r[0]?.published_count || 0) };
 }
 
 async function defaultPostDay(mode = 'all') {
-  const where = [
-    "status::text IN ('scheduled','published')",
-    "publish_at IS NOT NULL",
-  ];
-
+  const where = ["status::text IN ('scheduled','published')", "publish_at IS NOT NULL"];
   if (mode === 'scheduled') where.push("status::text = 'scheduled'");
   if (mode === 'published') where.push("status::text = 'published'");
-
-  const r = await query(`
-    SELECT
-      (publish_at AT TIME ZONE '${MSK_TZ}')::date::text AS day_key
-    FROM scheduled_posts
-    WHERE ${where.join(' AND ')}
-    ORDER BY publish_at DESC NULLS LAST, id DESC
-    LIMIT 1
-  `);
-
+  const r = await query(`SELECT (publish_at AT TIME ZONE '${MSK_TZ}')::date::text AS day_key FROM scheduled_posts WHERE ${where.join(' AND ')} ORDER BY publish_at DESC NULLS LAST, id DESC LIMIT 1`);
   return r[0]?.day_key || dateKey();
 }
 
@@ -445,7 +512,7 @@ async function buildPostsView(mode = 'all', day = null, channelId = null) {
   if (!rows.length) rows.push([callbackButton('Постов в этот день нет', 'noop')]);
   rows.push([callbackButton(safeMode==='scheduled'?'🔴 Отложенные':'⏳ Отложенные', filterPayload('scheduled', safeDay, channelId)), callbackButton(safeMode==='published'?'🔴 Опубликованные':'Опубликованные', filterPayload('published', safeDay, channelId))]);
   rows.push([callbackButton(safeMode==='all'?'🔴 Все посты':'📋 Все посты', filterPayload('all', safeDay, channelId))]);
-  rows.push([callbackButton('⬅️ День', filterPayload(safeMode, shiftDay(safeDay,-1), channelId)), callbackButton(`📅 ${dateText(keyToDate(safeDay)).replace(' г.','')}`, 'noop'), callbackButton('День ➡️', filterPayload(safeMode, shiftDay(safeDay,1), channelId))]);
+  rows.push([callbackButton('⬅️ День', filterPayload(safeMode, shiftDay(safeDay,-1), channelId)), callbackButton(`📅 ${dateButtonText(keyToDate(safeDay))}`, 'noop'), callbackButton('День ➡️', filterPayload(safeMode, shiftDay(safeDay,1), channelId))]);
   rows.push([callbackButton('📡 По каналам', 'post:channels')],[callbackButton('⬅️ В Studio', 'main:posting')]);
 
   const title = channelId ? escapeHtml(channelName(await getChannel(channelId))) : 'Все каналы';
@@ -521,8 +588,7 @@ async function handleCallback(update) {
   if (payload === 'schedule:calendar') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '📅 Пока календарь в ручном режиме. Введите дату и время: 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
   if (payload === 'publish:now') { const s = await getSession(key); const draft = safeDraft(s.data); const results = await publishDraftNow(draft, key); await clearSession(key); await answerCallback({ callbackId, notification: 'Публикация выполнена.' }).catch(()=>{}); return afterPublished(chatId, draft, results); }
   if (payload === 'post:all') {
-    await answerCallback({ callbackId, notification: 'Открываю посты...' }).catch(()=>{});
-    return sendPosts(chatId, 'all', await defaultPostDay('all'));
+    return showPosts(callbackId, 'all', await defaultPostDay('all'), null, chatId);
   }
   if (payload === 'post:channels') return showPostChannels(callbackId, chatId);
   if (payload.startsWith('post:filter:')) {
@@ -548,7 +614,7 @@ async function handleMessage(update) {
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню'].includes(n)) { await clearSession(key); return sendMain(chatId); }
   const session = await getSession(key); const draft = safeDraft(session.data);
-  if (session.state === 'wait_post_content') { const content = await hydrateContent(update); draft.content = { ...draft.content, ...content }; await setSession(key, 'edit_draft', { draft }); await sendDraftPreview(chatId, draft); return msg(chatId, `🧬 Настройте оформление поста.`, [[callbackButton('✏️ Изменить текст','editor:text'), callbackButton('🖼 Медиа','editor:media')],[callbackButton('🔘 Добавить кнопку','editor:button'), callbackButton('🏷 Автоподпись','editor:signature')],[callbackButton('➡️ Далее','editor:next')],[callbackButton('❌ Отмена','post:cancel')]]); }
+  if (session.state === 'wait_post_content') { const content = await hydrateContent(update); draft.content = { ...draft.content, ...content }; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
   if (session.state === 'wait_edit_text') { const content = await hydrateContent(update); draft.content.text = content.text || text; draft.content.format = 'html'; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_edit_media') { const content = await hydrateContent(update); if (content.attachments.length) draft.content.attachments = content.attachments; if (content.text) draft.content.text = content.text; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_button') { const parsed = parseButtonsInput(text); if (!parsed.length) return msg(chatId, 'Не понял кнопку. Формат: Название - https://site.ru'); draft.buttons = [...(draft.buttons || []), ...parsed]; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
@@ -561,7 +627,12 @@ async function handleMessage(update) {
   const content = await hydrateContent(update); if (content.text || content.attachments.length) { const d = emptyDraft(); d.content = { ...d.content, ...content }; await setSession(key, 'select_channels', { draft: d }); const channels = await getChannels(); const rs = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `post:single:${c.id}`)]); rs.push([callbackButton('🌐 Все каналы','post:all_channels')],[callbackButton('❌ Отмена','post:cancel')]); return msg(chatId, '📡 Пост принят. Теперь выберите канал для публикации.', rs); }
   return msg(chatId, 'Команда не найдена. Нажмите /start.');
 }
-async function sendStudioEditorMessage(chatId, draft) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>Редактор LinkRay</b>\n\nИзменения приняты.\n━━━━━━━━━━━━━━`, [[callbackButton('✏️ Изменить текст','editor:text'), callbackButton('🖼 Медиа','editor:media')],[callbackButton('🔘 Добавить кнопку','editor:button'), callbackButton('🏷 Автоподпись','editor:signature')],[callbackButton(draft.postId ? '💾 Сохранить пост' : '➡️ Далее', draft.postId ? 'editor:save' : 'editor:next')]]); }
+async function sendStudioEditorMessage(chatId, draft) {
+  const mid = await sendDraftPreview(chatId, draft);
+  if (mid) draft.previewMessageId = mid;
+  return msg(chatId, editorMenuText(), editorMenuRows(draft));
+}
+
 
 app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.json({ ok: true, service: 'linkray-bot', db: true, time: nowIso() }); } catch(e) { res.status(500).json({ ok:false, error: e.message }); } });
 app.post('/webhook', async (req, res) => {
