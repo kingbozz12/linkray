@@ -3913,7 +3913,7 @@ function lr43PostMenuText(row, locked) {
 ${lr41ChannelHtmlLine(ch)}
 
 🕒 <b>Опубликован:</b> ${lr41Time(d)} · ${lr41DateLine(d)}
-✅ <b>Статус:</b> опубликован
+📌 <b>Статус:</b> опубликован
 
 Редактирование недоступно: после публикации прошло больше 24 часов.
 ━━━━━━━━━━━━━━`;
@@ -4152,6 +4152,7 @@ function lr44StatusIcon(sp) {
 }
 
 
+
 function lr44IsAd(sp) {
   const draft = lr44Json(sp.draft, {});
   return Boolean(sp.is_ad || draft.isAd || draft.is_ad || sp.cpm || draft.cpm);
@@ -4231,26 +4232,66 @@ function lr44MediaOnly(attachments = []) {
 
 function lr44ButtonAttachment(buttons = []) {
   if (!Array.isArray(buttons) || !buttons.length) return null;
+
   const rows = [];
+
   for (const row of buttons) {
     const items = Array.isArray(row) ? row : [row];
     const btnRow = [];
+
     for (const b of items) {
       const text = String(b?.text || b?.title || '').trim();
       const url = String(b?.url || b?.link || '').trim();
-      if (text && /^https?:\/\//i.test(url)) btnRow.push(linkButton(text, url));
+
+      if (text && /^https?:\/\//i.test(url)) {
+        btnRow.push(linkButton(text, url));
+      }
     }
+
     if (btnRow.length) rows.push(btnRow);
   }
-  return rows.length ? inlineKeyboard(rows) : null;
+
+  if (!rows.length) return null;
+
+  // ВАЖНО:
+  // inlineKeyboard(rows) возвращает массив attachments.
+  // Внутрь attachments сообщения надо класть один объект, а не массив внутри массива.
+  return inlineKeyboard(rows)[0];
 }
 
+
 function lr44FinalAttachments(media = [], buttons = []) {
-  const out = [...lr44MediaOnly(media)];
+  const out = [];
+
+  for (const item of lr44MediaOnly(media)) {
+    if (!item) continue;
+
+    // защита от старых вложенных массивов attachments
+    if (Array.isArray(item)) {
+      for (const nested of item) {
+        if (nested && typeof nested === 'object') out.push(nested);
+      }
+      continue;
+    }
+
+    out.push(item);
+  }
+
   const kb = lr44ButtonAttachment(buttons);
-  if (kb) out.push(kb);
+
+  if (kb) {
+    if (Array.isArray(kb)) {
+      for (const nested of kb) {
+        if (nested && typeof nested === 'object') out.push(nested);
+      }
+    } else {
+      out.push(kb);
+    }
+  }
+
   return out;
 }
+
 
 function lr44MakeEditorFromPost(row) {
   const sp = row.sp || row;
@@ -4481,14 +4522,104 @@ async function lr44Ack(callbackId, text = 'Открываю...') {
 
 async function lr44SendStoredPostPreview(key, row) {
   const sp = row.sp || row;
-  await sendMaxMessage({
-    chatId: Number(key),
-    text: lr44PostText(sp),
-    format: lr44PostFormat(sp),
-    attachments: lr44FinalAttachments(lr44PostAttachments(sp), lr44PostButtons(sp)),
-    notify: false,
+
+  const text = lr44PostText(sp);
+  const format = lr44PostFormat(sp) || 'html';
+  const media = lr44PostAttachments(sp);
+  const buttons = lr44PostButtons(sp);
+
+  const normalizedMedia =
+    typeof normalizeAttachmentsForSend === 'function'
+      ? normalizeAttachmentsForSend(media)
+      : lr44MediaOnly(media);
+
+  const fullAttachments = lr44FinalAttachments(normalizedMedia, buttons);
+  const mediaOnly = lr44MediaOnly(normalizedMedia);
+  const buttonOnly = lr44ButtonAttachment(buttons);
+
+  const attempts = [];
+
+  if (fullAttachments.length) {
+    attempts.push({
+      name: 'full',
+      body: {
+        chatId: Number(key),
+        text,
+        format,
+        attachments: fullAttachments,
+        notify: false,
+      },
+    });
+  }
+
+  if (mediaOnly.length) {
+    attempts.push({
+      name: 'media_only',
+      body: {
+        chatId: Number(key),
+        text,
+        format,
+        attachments: mediaOnly,
+        notify: false,
+      },
+    });
+  }
+
+  if (buttonOnly) {
+    attempts.push({
+      name: 'button_only',
+      body: {
+        chatId: Number(key),
+        text,
+        format,
+        attachments: [buttonOnly],
+        notify: false,
+      },
+    });
+  }
+
+  attempts.push({
+    name: 'text_html',
+    body: {
+      chatId: Number(key),
+      text,
+      format,
+      attachments: [],
+      notify: false,
+    },
   });
+
+  attempts.push({
+    name: 'text_plain',
+    body: {
+      chatId: Number(key),
+      text: lr44Plain(text),
+      format: 'markdown',
+      attachments: [],
+      notify: false,
+    },
+  });
+
+  let lastError = null;
+
+  for (const attempt of attempts) {
+    try {
+      console.log('[v47 preview attempt]', JSON.stringify({
+        name: attempt.name,
+        format: attempt.body.format,
+        attachments: Array.isArray(attempt.body.attachments) ? attempt.body.attachments.length : 0,
+      }));
+
+      return await sendMaxMessage(attempt.body);
+    } catch (error) {
+      lastError = error;
+      console.error('[v47 preview attempt failed]', attempt.name, error.message || error);
+    }
+  }
+
+  throw lastError || new Error('preview send failed');
 }
+
 
 function lr44PostCardText(row) {
   const sp = row.sp || row;
@@ -4504,7 +4635,7 @@ function lr44PostCardText(row) {
 ↑ Пост находится над этим сообщением ↑
 
 🕒 <b>Опубликован:</b> ${lr44DateTime(d)}
-✅ <b>Статус:</b> опубликован
+📌 <b>Статус:</b> опубликован
 🗑 <b>Автоудаление:</b> ${lr44MinutesText(lr44AutoDelete(sp))}
 
 <b>Канал:</b>
@@ -4521,7 +4652,7 @@ ${isAd ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${
 ↑ Пост находится над этим сообщением ↑
 
 🕒 <b>Опубликован:</b> ${lr44DateTime(d)}
-✅ <b>Статус:</b> опубликован
+📌 <b>Статус:</b> опубликован
 🗑 <b>Автоудаление:</b> ${lr44MinutesText(lr44AutoDelete(sp))}
 ${isAd ? `💰 <b>CPM:</b> ${lr44Cpm(sp) || 'не указан'} ₽\n` : ''}
 <b>Канал:</b>
