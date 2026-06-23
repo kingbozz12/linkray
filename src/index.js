@@ -2800,7 +2800,7 @@ function lr32QueueHeader(mode, channel = null, rows = []) {
 ${dayLine}
 Фильтр: ${modeText}
 ⏳ Запланировано: ${scheduled}
-✅ Опубликовано: ${published}
+📌 Опубликовано: ${published}
 
 Нажмите на пост, чтобы открыть управление.
 ━━━━━━━━━━━━━━`;
@@ -3642,7 +3642,7 @@ async function lr41ShowPosts(callbackId, mode = 'all', channelId = null) {
 📅 ${headerDate}
 
 ⏳ Запланировано: ${scheduled}
-✅ Опубликовано: ${published}
+📌 Опубликовано: ${published}
 Фильтр: ${modeText}${emptyText}
 
 Нажмите на пост, чтобы открыть управление.
@@ -3993,10 +3993,78 @@ async function lr43SendPostControlMenu(key, row, locked) {
 
 // ===== LinkRay v44 stable posts START =====
 
-// ===== LinkRay v45 posts menu fix START =====
-async function lr45PostCounts(channelId = null) {
+// ===== LinkRay v48 day posts plan START =====
+function lr48Pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function lr48DateKey(date = new Date()) {
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return lr48DateKey(new Date());
+  return `${d.getFullYear()}-${lr48Pad2(d.getMonth() + 1)}-${lr48Pad2(d.getDate())}`;
+}
+
+function lr48SafeDateKey(value) {
+  const raw = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return null;
+}
+
+function lr48ShiftDateKey(dayKey, delta) {
+  const safe = lr48SafeDateKey(dayKey) || lr48DateKey(new Date());
+  const [y, m, d] = safe.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + Number(delta || 0));
+  return lr48DateKey(date);
+}
+
+function lr48DateFromKey(dayKey) {
+  const safe = lr48SafeDateKey(dayKey) || lr48DateKey(new Date());
+  const [y, m, d] = safe.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function lr48Payload(mode = 'all', dayKey = null, channelId = null) {
+  const safeMode = ['all', 'scheduled', 'published'].includes(String(mode)) ? String(mode) : 'all';
+  const safeDay = lr48SafeDateKey(dayKey) || lr48DateKey(new Date());
+  const safeChannel = channelId ? Number(channelId) : 0;
+  return `post:filter:${safeMode}:${safeDay}:${safeChannel}`;
+}
+
+async function lr48DefaultDay(mode = 'all', channelId = null) {
+  const safeMode = ['all', 'scheduled', 'published'].includes(String(mode)) ? String(mode) : 'all';
+
   const where = ["sp.status::text IN ('scheduled','published')"];
   const params = [];
+
+  if (safeMode === 'scheduled') where.push("sp.status::text = 'scheduled'");
+  if (safeMode === 'published') where.push("sp.status::text = 'published'");
+
+  if (channelId) {
+    params.push(Number(channelId));
+    where.push(`sp.channel_id = $${params.length}`);
+  }
+
+  const rows = lr44Rows(await query(`
+    SELECT (sp.publish_at AT TIME ZONE 'Europe/Moscow')::date::text AS day_key
+    FROM scheduled_posts sp
+    WHERE ${where.join(' AND ')}
+    ORDER BY sp.publish_at DESC NULLS LAST, sp.id DESC
+    LIMIT 1
+  `, params));
+
+  return rows[0]?.day_key || lr48DateKey(new Date());
+}
+
+async function lr48CountPostsForDay(channelId = null, dayKey = null) {
+  const safeDay = lr48SafeDateKey(dayKey) || lr48DateKey(new Date());
+
+  const where = [
+    "sp.status::text IN ('scheduled','published')",
+    "(sp.publish_at AT TIME ZONE 'Europe/Moscow')::date = $1::date",
+  ];
+
+  const params = [safeDay];
 
   if (channelId) {
     params.push(Number(channelId));
@@ -4013,12 +4081,20 @@ async function lr45PostCounts(channelId = null) {
   `, params));
 
   const row = rows[0] || {};
+
   return {
     all: Number(row.all_count || 0),
     scheduled: Number(row.scheduled_count || 0),
     published: Number(row.published_count || 0),
   };
 }
+// ===== LinkRay v48 day posts plan END =====
+
+// ===== LinkRay v45 posts menu fix START =====
+async function lr45PostCounts(channelId = null, dayKey = null) {
+  return lr48CountPostsForDay(channelId, dayKey);
+}
+
 
 function lr45FilterLabel(mode) {
   if (mode === 'scheduled') return 'отложенные';
@@ -4026,21 +4102,20 @@ function lr45FilterLabel(mode) {
   return 'все посты';
 }
 
-function lr45FilterButtons(mode, channelId = null) {
-  const scheduledPayload = channelId ? `post:channel:${channelId}:scheduled` : 'post:scheduled';
-  const publishedPayload = channelId ? `post:channel:${channelId}:published` : 'post:published';
-  const allPayload = channelId ? `post:channel:${channelId}:all` : 'post:all';
+function lr45FilterButtons(mode, channelId = null, dayKey = null) {
+  const safeDay = lr48SafeDateKey(dayKey) || lr48DateKey(new Date());
 
   return [
     [
-      callbackButton(mode === 'scheduled' ? '🔴 Отложенные' : '⏳ Отложенные', scheduledPayload),
-      callbackButton(mode === 'published' ? '🔴 Опубликованные' : 'Опубликованные', publishedPayload),
+      callbackButton(mode === 'scheduled' ? '🔴 Отложенные' : '⏳ Отложенные', lr48Payload('scheduled', safeDay, channelId)),
+      callbackButton(mode === 'published' ? '🔴 Опубликованные' : 'Опубликованные', lr48Payload('published', safeDay, channelId)),
     ],
     [
-      callbackButton(mode === 'all' ? '🔴 Все посты' : '📋 Все посты', allPayload),
+      callbackButton(mode === 'all' ? '🔴 Все посты' : '📋 Все посты', lr48Payload('all', safeDay, channelId)),
     ],
   ];
 }
+
 
 // ===== LinkRay v45 posts menu fix END =====
 const LR44_BOT_LINK = 'https://max.ru/se13353901_bot';
@@ -4150,6 +4225,7 @@ function lr44StatusIcon(sp) {
   if (status === 'canceled' || status === 'cancelled') return '❌';
   return '📄';
 }
+
 
 
 
@@ -4367,12 +4443,19 @@ function lr44ParseDuration(text) {
   return null;
 }
 
-async function lr44GetPosts(mode = 'all', channelId = null, limit = 12) {
-  const where = ["sp.status::text IN ('scheduled','published')"];
-  const params = [];
+async function lr44GetPosts(mode = 'all', channelId = null, limit = 12, dayKey = null) {
+  const safeMode = ['all', 'scheduled', 'published'].includes(String(mode)) ? String(mode) : 'all';
+  const safeDay = lr48SafeDateKey(dayKey) || await lr48DefaultDay(safeMode, channelId);
 
-  if (mode === 'scheduled') where.push("sp.status::text = 'scheduled'");
-  if (mode === 'published') where.push("sp.status::text = 'published'");
+  const where = [
+    "sp.status::text IN ('scheduled','published')",
+    "(sp.publish_at AT TIME ZONE 'Europe/Moscow')::date = $1::date",
+  ];
+
+  const params = [safeDay];
+
+  if (safeMode === 'scheduled') where.push("sp.status::text = 'scheduled'");
+  if (safeMode === 'published') where.push("sp.status::text = 'published'");
 
   if (channelId) {
     params.push(Number(channelId));
@@ -4386,10 +4469,11 @@ async function lr44GetPosts(mode = 'all', channelId = null, limit = 12) {
     FROM scheduled_posts sp
     LEFT JOIN channels c ON c.id = sp.channel_id
     WHERE ${where.join(' AND ')}
-    ORDER BY sp.publish_at DESC NULLS LAST, sp.id DESC
+    ORDER BY sp.publish_at ASC NULLS LAST, sp.id ASC
     LIMIT $${params.length}
   `, params));
 }
+
 
 async function lr44GetOnePost(id) {
   const rows = lr44Rows(await query(`
@@ -4424,17 +4508,12 @@ function lr44PostListButton(row) {
   return `${ad}${lr44StatusIcon(sp)} ${lr44Time(d)} · ${media}${lr44Short(lr44PostText(sp), 34)}`;
 }
 
-async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
-  mode = ['all', 'scheduled', 'published'].includes(String(mode)) ? String(mode) : 'all';
+async function lr44ShowPosts(callbackId, mode = 'all', channelId = null, dayKey = null) {
+  const safeMode = ['all', 'scheduled', 'published'].includes(String(mode)) ? String(mode) : 'all';
+  const safeDay = lr48SafeDateKey(dayKey) || await lr48DefaultDay(safeMode, channelId);
 
-  const rowsData = await lr44GetPosts(mode, channelId, 12);
-  const counts = typeof lr45PostCounts === 'function'
-    ? await lr45PostCounts(channelId)
-    : {
-        all: rowsData.length,
-        scheduled: rowsData.filter((r) => lr44IsScheduled(r.sp || r)).length,
-        published: rowsData.filter((r) => lr44IsPublished(r.sp || r)).length,
-      };
+  const rowsData = await lr44GetPosts(safeMode, channelId, 18, safeDay);
+  const counts = await lr45PostCounts(channelId, safeDay);
 
   let channel = rowsData[0]?.ch || null;
 
@@ -4451,18 +4530,24 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
   }
 
   if (!buttons.length) {
-    buttons.push([callbackButton('Постов пока нет', 'post:noop')]);
+    buttons.push([callbackButton('Постов в этот день нет', 'post:noop')]);
   }
 
-  for (const filterRow of lr45FilterButtons(mode, channelId)) {
+  for (const filterRow of lr45FilterButtons(safeMode, channelId, safeDay)) {
     buttons.push(filterRow);
   }
+
+  buttons.push([
+    callbackButton('⬅️ День', lr48Payload(safeMode, lr48ShiftDateKey(safeDay, -1), channelId)),
+    callbackButton(`📅 ${lr44Date(lr48DateFromKey(safeDay)).replace(' г.', '')}`, 'post:noop'),
+    callbackButton('День ➡️', lr48Payload(safeMode, lr48ShiftDateKey(safeDay, 1), channelId)),
+  ]);
 
   buttons.push([callbackButton('📡 По каналам', 'post:channels')]);
   buttons.push([callbackButton('⬅️ В Studio', 'main:posting')]);
 
   const title = channel ? lr44ChannelName(channel) : 'Все каналы';
-  const dateLine = lr44Date(new Date());
+  const dateLine = lr44Date(lr48DateFromKey(safeDay));
 
   await answerCallback({
     callbackId,
@@ -4472,12 +4557,12 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
 📣 <b>${lr44Escape(title)}</b>
 📅 ${dateLine}
 
-Фильтр: <b>${lr45FilterLabel(mode)}</b>
+Фильтр: <b>${lr45FilterLabel(safeMode)}</b>
 
-📋 Всего: ${counts.all}
-⏳ Запланировано: ${counts.scheduled}
+📋 Всего за день: ${counts.all}
+⏳ Отложено: ${counts.scheduled}
 📌 Опубликовано: ${counts.published}
-👁 Показано: ${rowsData.length}${rowsData.length ? '' : '\n\nПостов пока нет.'}
+👁 Показано: ${rowsData.length}${rowsData.length ? '' : '\n\nПостов в этот день нет. Листайте дни стрелками ниже.'}
 
 Нажмите на пост, чтобы открыть управление.
 ━━━━━━━━━━━━━━`,
@@ -4488,17 +4573,19 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
 
 
 
+
 async function lr44ShowChannels(callbackId) {
   const rows = await lr44GetChannelsWithCounts();
-  const buttons = [[callbackButton('🌐 Все каналы', 'post:all')]];
+  const day = await lr48DefaultDay('all', null);
+  const buttons = [[callbackButton('🌐 Все каналы', lr48Payload('all', day, null))]];
 
   for (const row of rows) {
     const ch = row.ch || {};
-    buttons.push([callbackButton(`📡 ${lr44ChannelName(ch)} · ⏳${Number(row.scheduled_count || 0)} / ✅${Number(row.published_count || 0)}`, `post:channel:${ch.id}:all`)]);
+    buttons.push([callbackButton(`📡 ${lr44ChannelName(ch)} · ⏳${Number(row.scheduled_count || 0)} / 📌${Number(row.published_count || 0)}`, lr48Payload('all', day, ch.id))]);
   }
 
   if (!rows.length) buttons.push([callbackButton('Каналов пока нет', 'post:noop')]);
-  buttons.push([callbackButton('⬅️ К постам', 'post:all')]);
+  buttons.push([callbackButton('⬅️ К постам', lr48Payload('all', day, null))]);
 
   await answerCallback({
     callbackId,
@@ -4511,6 +4598,7 @@ async function lr44ShowChannels(callbackId) {
     attachments: inlineKeyboard(buttons),
   });
 }
+
 
 async function lr44Ack(callbackId, text = 'Открываю...') {
   try {
@@ -4676,8 +4764,9 @@ ${lr44ChannelLine(ch)}
 
 function lr44PostCardKeyboard(row) {
   const sp = row.sp || row;
+
   if (lr44OlderThan24h(sp)) {
-    return inlineKeyboard([[callbackButton('⬅️ Назад', 'post:all')]]);
+    return inlineKeyboard([[callbackButton('⬅️ Назад', lr48Payload('published', lr48DateKey(lr44PostDate(sp)), sp.channel_id || null))]]);
   }
 
   if (lr44IsPublished(sp)) {
@@ -4685,19 +4774,20 @@ function lr44PostCardKeyboard(row) {
       [callbackButton('✏️ Перейти в редактор', `post:editor:${sp.id}`)],
       [callbackButton(`🗑 Удаление: ${lr44MinutesText(lr44AutoDelete(sp))}`, `post:auto_delete:${sp.id}`)],
       [callbackButton('❌ Удалить из канала', `post:delete_confirm:${sp.id}`)],
-      [callbackButton('⬅️ Назад', 'post:all')],
+      [callbackButton('⬅️ Назад', lr48Payload('published', lr48DateKey(lr44PostDate(sp)), sp.channel_id || null))],
     ]);
   }
 
   return inlineKeyboard([
     [callbackButton('✏️ Перейти в редактор', `post:editor:${sp.id}`)],
-    [callbackButton('🕒 Изменить время', `queue:edit:time:${sp.id}`)],
+    [callbackButton('↪️ Изменить время', `queue:edit:time:${sp.id}`)],
     [callbackButton(`🗑 Удаление: ${lr44MinutesText(lr44AutoDelete(sp))}`, `post:auto_delete:${sp.id}`)],
     [callbackButton('🚀 Опубликовать сейчас', `post:now:${sp.id}`)],
-    [callbackButton('❌ Удалить пост', `post:delete_confirm:${sp.id}`)],
-    [callbackButton('⬅️ Назад', 'post:all')],
+    [callbackButton('❌ Удалить', `post:delete_confirm:${sp.id}`)],
+    [callbackButton('⬅️ Назад', lr48Payload('scheduled', lr48DateKey(lr44PostDate(sp)), sp.channel_id || null))],
   ]);
 }
+
 
 async function lr44OpenPost(callbackId, key, id) {
   const row = await lr44GetOnePost(id);
@@ -5171,23 +5261,34 @@ async function lr44PublishNow(callbackId, id) {
 }
 
 async function lr44HandleCallbackPayload(payload, callbackId, key) {
+  // LR48_DAY_FILTER_HANDLER_START
+  if (p.startsWith('post:filter:')) {
+    const parts = p.split(':');
+    const mode = parts[2] || 'all';
+    const day = lr48SafeDateKey(parts[3]) || await lr48DefaultDay(mode, null);
+    const channelId = Number(parts[4] || 0) || null;
+    await lr44ShowPosts(callbackId, mode, channelId, day);
+    return true;
+  }
+  // LR48_DAY_FILTER_HANDLER_END
+
   const p = String(payload || '');
   if (!p.startsWith('post:') && !p.startsWith('queue:')) return false;
 
   if (p === 'post:noop' || p === 'queue:noop') return true;
 
   if (p === 'post:all' || p === 'queue:all' || p === 'queue:menu') {
-    await lr44ShowPosts(callbackId, 'all');
+    await lr44ShowPosts(callbackId, 'all', null, await lr48DefaultDay('all', null));
     return true;
   }
 
   if (p === 'post:scheduled' || p === 'queue:scheduled') {
-    await lr44ShowPosts(callbackId, 'scheduled');
+    await lr44ShowPosts(callbackId, 'scheduled', null, await lr48DefaultDay('scheduled', null));
     return true;
   }
 
   if (p === 'post:published' || p === 'queue:published') {
-    await lr44ShowPosts(callbackId, 'published');
+    await lr44ShowPosts(callbackId, 'published', null, await lr48DefaultDay('published', null));
     return true;
   }
 
@@ -5200,7 +5301,8 @@ async function lr44HandleCallbackPayload(payload, callbackId, key) {
     const parts = p.split(':');
     const id = Number(parts[2]);
     const mode = parts[3] || 'all';
-    await lr44ShowPosts(callbackId, mode, id);
+    const day = lr48SafeDateKey(parts[4]) || await lr48DefaultDay(mode, id);
+    await lr44ShowPosts(callbackId, mode, id, day);
     return true;
   }
 
