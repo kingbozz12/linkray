@@ -2945,6 +2945,26 @@ async function lr32HandleQueueCallback(payload, callbackId, key) {
 
 
 async function handleCallback(update) {
+  // LR46_EARLY_POST_CALLBACK_START
+  {
+    const lr46CallbackId = getCallbackId(update);
+    const lr46Payload = getCallbackPayload(update);
+    const lr46Key = getSessionKey(update);
+
+    if (
+      lr46CallbackId &&
+      lr46Payload &&
+      (String(lr46Payload).startsWith('post:') || String(lr46Payload).startsWith('queue:'))
+    ) {
+      console.log('[v46 early post callback]', JSON.stringify({ payload: lr46Payload, key: lr46Key }));
+
+      if (await lr44HandleCallbackPayload(lr46Payload, lr46CallbackId, lr46Key)) {
+        return;
+      }
+    }
+  }
+  // LR46_EARLY_POST_CALLBACK_END
+
 
   const callbackId = getCallbackId(update);
   const payload = getCallbackPayload(update);
@@ -4013,14 +4033,15 @@ function lr45FilterButtons(mode, channelId = null) {
 
   return [
     [
-      callbackButton(mode === 'scheduled' ? '✅ Отложенные' : '⏳ Отложенные', scheduledPayload),
-      callbackButton(mode === 'published' ? '✅ Опубликованные' : '🟢 Опубликованные', publishedPayload),
+      callbackButton(mode === 'scheduled' ? '🔴 Отложенные' : '⏳ Отложенные', scheduledPayload),
+      callbackButton(mode === 'published' ? '🔴 Опубликованные' : 'Опубликованные', publishedPayload),
     ],
     [
-      callbackButton(mode === 'all' ? '✅ Все посты' : '📋 Все посты', allPayload),
+      callbackButton(mode === 'all' ? '🔴 Все посты' : '📋 Все посты', allPayload),
     ],
   ];
 }
+
 // ===== LinkRay v45 posts menu fix END =====
 const LR44_BOT_LINK = 'https://max.ru/se13353901_bot';
 
@@ -4123,12 +4144,13 @@ function lr44StatusLabel(sp) {
 
 function lr44StatusIcon(sp) {
   const status = String(sp.status || '').toLowerCase();
-  if (status === 'published') return '✅';
+  if (status === 'published') return '📌';
   if (status === 'scheduled') return '⏳';
   if (status === 'error') return '⚠️';
   if (status === 'canceled' || status === 'cancelled') return '❌';
   return '📄';
 }
+
 
 function lr44IsAd(sp) {
   const draft = lr44Json(sp.draft, {});
@@ -4365,7 +4387,13 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
   mode = ['all', 'scheduled', 'published'].includes(String(mode)) ? String(mode) : 'all';
 
   const rowsData = await lr44GetPosts(mode, channelId, 12);
-  const counts = await lr45PostCounts(channelId);
+  const counts = typeof lr45PostCounts === 'function'
+    ? await lr45PostCounts(channelId)
+    : {
+        all: rowsData.length,
+        scheduled: rowsData.filter((r) => lr44IsScheduled(r.sp || r)).length,
+        published: rowsData.filter((r) => lr44IsPublished(r.sp || r)).length,
+      };
 
   let channel = rowsData[0]?.ch || null;
 
@@ -4378,10 +4406,7 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
 
   for (const row of rowsData) {
     const sp = row.sp || row;
-
-    // queue:post:id оставляем специально:
-    // старые части бота уже знают queue:post, а v44/v45 тоже его перехватывают.
-    buttons.push([callbackButton(lr44PostListButton(row), `queue:post:${sp.id}`)]);
+    buttons.push([callbackButton(lr44PostListButton(row), `post:open:${sp.id}`)]);
   }
 
   if (!buttons.length) {
@@ -4410,7 +4435,7 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
 
 📋 Всего: ${counts.all}
 ⏳ Запланировано: ${counts.scheduled}
-✅ Опубликовано: ${counts.published}
+📌 Опубликовано: ${counts.published}
 👁 Показано: ${rowsData.length}${rowsData.length ? '' : '\n\nПостов пока нет.'}
 
 Нажмите на пост, чтобы открыть управление.
@@ -4419,6 +4444,7 @@ async function lr44ShowPosts(callbackId, mode = 'all', channelId = null) {
     attachments: inlineKeyboard(buttons),
   });
 }
+
 
 
 async function lr44ShowChannels(callbackId) {
@@ -4554,16 +4580,53 @@ async function lr44OpenPost(callbackId, key, id) {
     return;
   }
 
-  await lr44Ack(callbackId, 'Открываю пост...');
-  await lr44SendStoredPostPreview(key, row);
-  await sendMaxMessage({
-    chatId: Number(key),
-    text: lr44PostCardText(row),
-    format: 'html',
-    attachments: lr44PostCardKeyboard(row),
-    notify: false,
-  });
+  const sp = row.sp || row;
+
+  try {
+    await answerCallback({ callbackId, notification: 'Открываю пост...' }).catch(() => {});
+  } catch {}
+
+  let previewOk = false;
+  let previewError = '';
+
+  try {
+    await lr44SendStoredPostPreview(key, row);
+    previewOk = true;
+  } catch (error) {
+    previewError = String(error?.message || error || '');
+    console.error('[v46] post preview send failed:', previewError);
+  }
+
+  const menuText = previewOk
+    ? lr44PostCardText(row)
+    : `${lr44PostCardText(row)}
+
+⚠️ <b>Пост не удалось вывести отдельным сообщением.</b>
+Причина: ${lr44Escape(previewError || 'неизвестная ошибка')}
+
+Текст поста:
+${lr44Escape(lr44Short(lr44PostText(sp), 700))}`;
+
+  // Если превью отправилось, меню отправляем отдельным новым сообщением.
+  // Если превью не отправилось, заменяем текущее окно callback, чтобы пользователь не видел "ничего не произошло".
+  if (previewOk) {
+    await sendMaxMessage({
+      chatId: Number(key),
+      text: menuText,
+      format: 'html',
+      attachments: lr44PostCardKeyboard(row),
+      notify: false,
+    });
+  } else {
+    await answerCallback({
+      callbackId,
+      text: menuText,
+      format: 'html',
+      attachments: lr44PostCardKeyboard(row),
+    });
+  }
 }
+
 
 function lr44EditorText(editor) {
   const hasButtons = Array.isArray(editor.buttons) && editor.buttons.length;
