@@ -431,13 +431,31 @@ async function saveSignature(channelId, content, ownerKey = 'shared') {
   await query(`INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, updated_at) VALUES($1,$2,'Автоподпись',$3,$4,$5::jsonb,true,now()) ON CONFLICT(channel_id, owner_key) DO UPDATE SET text=EXCLUDED.text, format=EXCLUDED.format, markup=EXCLUDED.markup, is_active=true, updated_at=now()`, [Number(channelId), ownerKey, content.text || '', content.format || 'html', JSON.stringify(content.markup || [])]);
 }
 async function setSignatureActive(channelId, active, ownerKey = 'shared') { await query('UPDATE channel_signatures SET is_active=$3, updated_at=now() WHERE channel_id=$1 AND owner_key=$2', [Number(channelId), ownerKey, Boolean(active)]); }
+
+function signatureNoPreviewHtml(html) {
+  return String(html || '').replace(
+    /(^|[\s>])(https?:\/\/[^\s<]+)/gi,
+    (m, prefix, url) => `${prefix}<a href="${attr(url)}">ссылка</a>`
+  );
+}
+
 async function composePostForChannel(draft, channelId) {
   let text = String(draft.content?.text || '');
+
   if (!draft.isAd && draft.signatureEnabled !== false) {
     const sig = await loadSignature(channelId);
-    if (sig?.text) text = `${text}\n\n${sig.text}`;
+
+    if (sig?.text) {
+      const cleanSignature = signatureNoPreviewHtml(sig.text);
+      text = `${text}\n\n${cleanSignature}`;
+    }
   }
-  return { text, format: 'html', attachments: finalAttachments(draft) };
+
+  return {
+    text,
+    format: 'html',
+    attachments: finalAttachments(draft),
+  };
 }
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
@@ -858,6 +876,8 @@ async function handleMessage(update) {
 
     draft.buttons = [...(draft.buttons || []), ...parsed];
 
+    draft.previewMessageId = null; // LR_REFRESH_PREVIEW_AFTER_BUTTON_ADD
+
     await setSession(
       key,
       draft.postId ? 'edit_existing' : 'edit_draft',
@@ -878,7 +898,7 @@ async function handleMessage(update) {
       return sendEditorAsNew(chatId, key, draft);
     }
 
-    return sendStudioEditorMessage(chatId, draft);
+    return sendEditorAsNew(chatId, key, draft);
   }
   if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, content); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
