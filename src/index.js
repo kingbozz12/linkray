@@ -1,3 +1,4 @@
+import * as lrCrypto from 'node:crypto';
 import { mountLinkRayAnalyticsRoutes } from './linkrayAnalyticsRoutes.js';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -554,10 +555,65 @@ async function replaceBareAdUrls(draft, channelId, html) {
   return text;
 }
 
+function reqFingerprint(req, token) {
+  const ip = req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || req.ip || '';
+  const ua = req.headers['user-agent'] || '';
+  return {
+    ipHash: sha256Hex(String(ip).split(',')[0].trim()).slice(0, 32),
+    userAgent: String(ua).slice(0, 400),
+    fingerprint: sha256Hex(`${token}|${String(ip).split(',')[0].trim()}|${ua}`).slice(0, 40),
+  };
+}
+
+
+const LR_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.SITE_URL || process.env.WEBAPP_URL || 'https://linkray.ru').replace(/\/$/, '');
+
+function lrSha256(value) {
+  return lrCrypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function lrTrackingToken(campaignId, channelId, url, label = '') {
+  return lrSha256(`${campaignId}|${channelId}|${url}|${label}`).slice(0, 18);
+}
+
+async function lrEnsureButtonAnalyticsLink({ campaignId, postId = null, channelId = null, targetUrl, label = '' }) {
+  const token = lrTrackingToken(campaignId, channelId, targetUrl, label);
+
+  await query(`CREATE TABLE IF NOT EXISTS analytics_links (
+    token text PRIMARY KEY,
+    campaign_id text NOT NULL,
+    post_id integer,
+    channel_id integer,
+    label text,
+    target_url text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+
+  await query(`ALTER TABLE analytics_links ADD COLUMN IF NOT EXISTS kind text`);
+
+  await query(
+    `INSERT INTO analytics_links(token,campaign_id,post_id,channel_id,label,target_url,kind,created_at)
+     VALUES($1,$2,$3,$4,$5,$6,'button',now())
+     ON CONFLICT(token) DO UPDATE SET
+       campaign_id=EXCLUDED.campaign_id,
+       post_id=COALESCE(EXCLUDED.post_id, analytics_links.post_id),
+       channel_id=EXCLUDED.channel_id,
+       label=EXCLUDED.label,
+       target_url=EXCLUDED.target_url,
+       kind='button'`,
+    [token, String(campaignId), postId, channelId ? Number(channelId) : null, String(label || 'Кнопка'), String(targetUrl)]
+  );
+
+  return `${LR_PUBLIC_BASE_URL}/r/${token}`;
+}
+
 async function trackedButtonsForDraft(draft, channelId) {
   if (!draft?.isAd) return draft?.buttons || [];
 
-  const campaignId = draft.campaignId || draft.reportGroupId || `lr-${Date.now()}`;
+  if (!draft.campaignId) {
+    draft.campaignId = draft.reportGroupId || `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  }
+
   const rows = [];
 
   for (const row of draft.buttons || []) {
@@ -570,15 +626,15 @@ async function trackedButtonsForDraft(draft, channelId) {
 
       if (!title || !/^https?:\/\//i.test(url)) continue;
 
-      const tracked = await ensureAnalyticsLink({
-        campaignId,
+      const tracked = await lrEnsureButtonAnalyticsLink({
+        campaignId: draft.campaignId,
         postId: draft.postId || null,
         channelId,
         targetUrl: url,
         label: title,
       });
 
-      out.push({ ...btn, text: title, url: tracked });
+      out.push({ ...btn, text: title, title, url: tracked, link: tracked });
     }
 
     if (out.length) rows.push(out);
@@ -587,23 +643,14 @@ async function trackedButtonsForDraft(draft, channelId) {
   return rows;
 }
 
-function reqFingerprint(req, token) {
-  const ip = req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || req.ip || '';
-  const ua = req.headers['user-agent'] || '';
-  return {
-    ipHash: sha256Hex(String(ip).split(',')[0].trim()).slice(0, 32),
-    userAgent: String(ua).slice(0, 400),
-    fingerprint: sha256Hex(`${token}|${String(ip).split(',')[0].trim()}|${ua}`).slice(0, 40),
-  };
-}
-
 async function composePostForChannel(draft, channelId) {
   let text = String(draft.content?.text || '');
 
   if (draft.isAd) {
-    if (!draft.campaignId) draft.campaignId = `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    if (!draft.campaignId) {
+      draft.campaignId = draft.reportGroupId || `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    }
 
-    text = await rewriteAdHtmlLinks(draft, channelId, text);
     const buttons = await trackedButtonsForDraft(draft, channelId);
 
     return {
@@ -613,11 +660,15 @@ async function composePostForChannel(draft, channelId) {
     };
   }
 
-  if (!draft.isAd && draft.signatureEnabled !== false) {
+  if (!draft.isAd && draft.signatureEnabled !== false && typeof loadSignature === 'function') {
     const sig = await loadSignature(channelId);
 
     if (sig?.text) {
-      text = `${text}\n\n${sig.text}`;
+      const cleanSignature = typeof signatureNoPreviewHtml === 'function'
+        ? signatureNoPreviewHtml(sig.text)
+        : sig.text;
+
+      text = `${text}\n\n${cleanSignature}`;
     }
   }
 
@@ -949,6 +1000,7 @@ async function editExisting(callbackId, key, id) { const p = await getPost(id); 
 async function saveExisting(callbackId, key, draft) { const post = await getPost(draft.postId); if (!post) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); const content = await composePostForChannel(draft, draft.channelIds[0]); await query(`UPDATE scheduled_posts SET text=$2, format=$3, attachments=$4::jsonb, buttons=$5::jsonb, draft=$6::jsonb, is_ad=$7, cpm=$8, auto_delete_minutes=$9, report_after_hours=$10, updated_at=now() WHERE id=$1`, [draft.postId, content.text, content.format, JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24]); let warn = ''; if (post.status === 'published' && post.published_message_id) { try { await editMaxMessage(post.published_message_id, content); } catch(e) { warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение: ${escapeHtml(e.message || e)}`; } } await clearSession(key); await cb(callbackId, `━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>${warn}\n━━━━━━━━━━━━━━`, [[callbackButton('👁 Открыть пост', `post:open:${draft.postId}`)],[callbackButton('🗂 Посты','post:all')]]); }
 
 async function handleCallback(update) {
+  if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = Number(getChatId(update) || key);
   log('callback', { payload, key });
   if (!callbackId) return;
@@ -1012,7 +1064,102 @@ async function handleCallback(update) {
 async function showChannels(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `channels:refresh:${c.id}`)]); rows.push([callbackButton('🔗 Как добавить канал','post:add_channel')],[callbackButton('⬅️ В меню','main:menu')]); await cb(callbackId, `━━━━━━━━━━━━━━\n📡 <b>Мои каналы</b>\n\n${channels.length ? channels.map((c,i)=>`${i+1}. ${channelLine(c).replace('• ','')}`).join('\n') : 'Каналы пока не найдены.'}\n━━━━━━━━━━━━━━`, rows); }
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
 
+
+// LR_CHANNEL_INBOUND_GUARD_START
+const __lrChannelGuardCache = {
+  ready: false,
+  cols: [],
+};
+
+function __lrGuardRows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function __lrLooksLikeChannelUpdate(update) {
+  const values = [
+    update?.chat?.type,
+    update?.message?.recipient?.type,
+    update?.message?.chat?.type,
+    update?.recipient?.type,
+    update?.body?.recipient?.type,
+    update?.chat_type,
+    update?.chatType,
+  ].map((x) => String(x || '').toLowerCase());
+
+  return values.includes('channel');
+}
+
+async function __lrGetChannelColumns() {
+  if (__lrChannelGuardCache.ready) return __lrChannelGuardCache.cols;
+
+  try {
+    const result = await query(
+      "SELECT column_name FROM information_schema.columns WHERE table_name='channels'"
+    );
+
+    __lrChannelGuardCache.cols = __lrGuardRows(result).map((r) => String(r.column_name || ''));
+  } catch (error) {
+    console.error('[channel guard] columns error:', error.message || error);
+    __lrChannelGuardCache.cols = [];
+  }
+
+  __lrChannelGuardCache.ready = true;
+  return __lrChannelGuardCache.cols;
+}
+
+async function __lrIsKnownChannelChat(chatId) {
+  if (!chatId) return false;
+
+  try {
+    const cols = await __lrGetChannelColumns();
+    const candidates = [
+      'chat_id',
+      'max_chat_id',
+      'channel_chat_id',
+      'external_chat_id',
+      'max_id',
+    ].filter((col) => cols.includes(col));
+
+    if (!candidates.length) return false;
+
+    const where = candidates.map((col, i) => `${col}::text = $${i + 1}`).join(' OR ');
+    const args = candidates.map(() => String(chatId));
+
+    const result = await query(`SELECT 1 FROM channels WHERE ${where} LIMIT 1`, args);
+
+    return __lrGuardRows(result).length > 0;
+  } catch (error) {
+    console.error('[channel guard] lookup error:', error.message || error);
+    return false;
+  }
+}
+
+async function __lrShouldIgnoreInboundChannelUpdate(update) {
+  const chatId = getChatId(update);
+
+  if (!chatId) return false;
+
+  const knownChannel = await __lrIsKnownChannelChat(chatId);
+  const looksChannel = __lrLooksLikeChannelUpdate(update);
+
+  if (knownChannel || looksChannel) {
+    console.log('[channel guard] ignored inbound channel update', JSON.stringify({
+      type: update?.type || '',
+      chatId: String(chatId),
+      knownChannel,
+      looksChannel,
+    }));
+
+    return true;
+  }
+
+  return false;
+}
+// LR_CHANNEL_INBOUND_GUARD_END
+
+
 async function handleMessage(update) {
+  if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const chatId = Number(getChatId(update)); const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) { await clearSession(key); return sendMain(chatId); }
