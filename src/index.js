@@ -607,41 +607,174 @@ async function lrEnsureButtonAnalyticsLink({ campaignId, postId = null, channelI
   return `${LR_PUBLIC_BASE_URL}/r/${token}`;
 }
 
-async function trackedButtonsForDraft(draft, channelId) {
-  if (!draft?.isAd) return draft?.buttons || [];
 
-  if (!draft.campaignId) {
-    draft.campaignId = draft.reportGroupId || `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+async function trackedButtonsForDraft(draft, channelId) {
+  const originalRows = Array.isArray(draft?.buttons) ? draft.buttons : [];
+
+  if (!draft?.isAd || !originalRows.length) {
+    return originalRows;
   }
 
-  const rows = [];
+  await query(`CREATE TABLE IF NOT EXISTS analytics_links (
+    token text PRIMARY KEY,
+    campaign_id text NOT NULL,
+    post_id integer,
+    channel_id integer,
+    label text,
+    target_url text NOT NULL,
+    kind text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
 
-  for (const row of draft.buttons || []) {
-    const items = Array.isArray(row) ? row : [row];
-    const out = [];
+  await query(`CREATE TABLE IF NOT EXISTS analytics_clicks (
+    id bigserial PRIMARY KEY,
+    token text NOT NULL REFERENCES analytics_links(token) ON DELETE CASCADE,
+    campaign_id text NOT NULL,
+    post_id integer,
+    channel_id integer,
+    fingerprint text NOT NULL,
+    ip_hash text,
+    user_agent text,
+    clicked_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
 
-    for (const btn of items) {
-      const title = String(btn?.text || btn?.title || '').trim();
-      const url = String(btn?.url || btn?.link || '').trim();
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_lr_clicks_token_fingerprint
+               ON analytics_clicks(token, fingerprint)`).catch(() => {});
 
-      if (!title || !/^https?:\/\//i.test(url)) continue;
+  await query(`CREATE TABLE IF NOT EXISTS analytics_click_events (
+    id bigserial PRIMARY KEY,
+    token text NOT NULL REFERENCES analytics_links(token) ON DELETE CASCADE,
+    campaign_id text NOT NULL,
+    post_id integer,
+    channel_id integer,
+    fingerprint text,
+    ip_hash text,
+    user_agent text,
+    clicked_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
 
-      const tracked = await lrEnsureButtonAnalyticsLink({
-        campaignId: draft.campaignId,
-        postId: draft.postId || null,
-        channelId,
-        targetUrl: url,
-        label: title,
-      });
+  const base = String(
+    process.env.PUBLIC_BASE_URL ||
+    process.env.SITE_URL ||
+    process.env.WEBAPP_URL ||
+    'https://linkray.ru'
+  ).replace(/\/$/, '');
 
-      out.push({ ...btn, text: title, title, url: tracked, link: tracked });
+  const campaignId = String(
+    draft.campaignId ||
+    draft.reportGroupId ||
+    draft.postId ||
+    lrCrypto.randomUUID()
+  );
+
+  draft.campaignId = campaignId;
+
+  const postId = Number(draft.postId || 0) || null;
+  const chId = Number(channelId || draft.channelIds?.[0] || 0) || null;
+
+  const normalizeButton = (button, rowIndex, buttonIndex) => {
+    const b = { ...(button || {}) };
+
+    const title = String(
+      b.title ||
+      b.text ||
+      b.label ||
+      `Кнопка ${buttonIndex + 1}`
+    ).trim();
+
+    const targetUrl = String(
+      b.originalUrl ||
+      b.targetUrl ||
+      b.url ||
+      b.link ||
+      b.href ||
+      ''
+    ).trim();
+
+    if (!/^https?:\/\//i.test(targetUrl)) {
+      return b;
     }
 
-    if (out.length) rows.push(out);
+    if (targetUrl.includes('/r/') && targetUrl.includes('linkray.ru')) {
+      return b;
+    }
+
+    const token = lrCrypto
+      .createHash('sha256')
+      .update([campaignId, postId || '', chId || '', rowIndex, buttonIndex, title, targetUrl].join('|'))
+      .digest('base64url')
+      .slice(0, 28);
+
+    const trackedUrl = `${base}/r/${token}`;
+
+    b.title = title;
+    b.text = b.text || title;
+    b.label = b.label || title;
+    b.originalUrl = targetUrl;
+    b.targetUrl = targetUrl;
+    b.url = trackedUrl;
+    b.link = trackedUrl;
+    b.href = trackedUrl;
+
+    return {
+      button: b,
+      analytics: {
+        token,
+        campaignId,
+        postId,
+        channelId: chId,
+        label: title,
+        targetUrl,
+      }
+    };
+  };
+
+  const out = [];
+  const analytics = [];
+
+  for (let rowIndex = 0; rowIndex < originalRows.length; rowIndex += 1) {
+    const row = originalRows[rowIndex];
+
+    if (Array.isArray(row)) {
+      const newRow = [];
+
+      for (let buttonIndex = 0; buttonIndex < row.length; buttonIndex += 1) {
+        const result = normalizeButton(row[buttonIndex], rowIndex, buttonIndex);
+        newRow.push(result.button || result);
+
+        if (result.analytics) analytics.push(result.analytics);
+      }
+
+      out.push(newRow);
+    } else {
+      const result = normalizeButton(row, rowIndex, 0);
+      out.push(result.button || result);
+
+      if (result.analytics) analytics.push(result.analytics);
+    }
   }
 
-  return rows;
+  for (const item of analytics) {
+    await query(
+      `INSERT INTO analytics_links(token,campaign_id,post_id,channel_id,label,target_url,kind)
+       VALUES($1,$2,$3,$4,$5,$6,'button')
+       ON CONFLICT(token) DO UPDATE SET
+         campaign_id=EXCLUDED.campaign_id,
+         post_id=EXCLUDED.post_id,
+         channel_id=EXCLUDED.channel_id,
+         label=EXCLUDED.label,
+         target_url=EXCLUDED.target_url,
+         kind='button'`,
+      [item.token, item.campaignId, item.postId, item.channelId, item.label, item.targetUrl]
+    );
+  }
+
+  draft.buttons = out;
+
+  return out;
 }
+
+
 
 async function composePostForChannel(draft, channelId) {
   let text = String(draft.content?.text || '');
@@ -1113,6 +1246,8 @@ async function __lrIsKnownChannelChat(chatId) {
   try {
     const cols = await __lrGetChannelColumns();
     const candidates = [
+      'id',
+      'channel_id',
       'chat_id',
       'max_chat_id',
       'channel_chat_id',

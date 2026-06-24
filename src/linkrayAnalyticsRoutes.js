@@ -168,7 +168,7 @@ function mediaInfo(v) {
   let kind = 'image';
   if (/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) || /video/i.test(type)) kind = 'video';
 
-  return { count, token, url, type, kind };
+  return { count: url ? count : 0, token: url ? token : '', url, type, kind };
 }
 
 function reportStatus(posts) {
@@ -193,6 +193,135 @@ function reportStatus(posts) {
   }
 
   return statuses.includes('published') ? 'published' : 'scheduled';
+}
+
+
+function lrDateRu(value) {
+  if (!value) return '';
+  try {
+    return new Date(value).toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }) + ' МСК';
+  } catch {
+    return String(value || '');
+  }
+}
+
+function lrStatusInfo(posts) {
+  const first = posts?.[0] || {};
+  const status = reportStatus(posts);
+
+  if (status === 'scheduled') {
+    return {
+      key: 'scheduled',
+      icon: '⏳',
+      title: 'Отложен',
+      text: first.publish_at
+        ? 'Публикация запланирована на ' + lrDateRu(first.publish_at)
+        : 'Пост находится в расписании.'
+    };
+  }
+
+  if (status === 'published') {
+    return {
+      key: 'published',
+      icon: '✅',
+      title: 'Опубликован',
+      text: [
+        first.published_at ? 'Опубликован: ' + lrDateRu(first.published_at) : '',
+        'Автоудаление: ' + autoDeleteText(first.auto_delete_minutes),
+        Number(first.report_after_hours || 24) ? 'Отчёт: через ' + Number(first.report_after_hours || 24) + 'ч' : ''
+      ].filter(Boolean).join(' · ')
+    };
+  }
+
+  if (status === 'ended') {
+    return {
+      key: 'ended',
+      icon: '🏁',
+      title: 'Реклама закончилась',
+      text: 'Период рекламного отчёта завершён. Данные остаются доступными рекламодателю.'
+    };
+  }
+
+  if (status === 'deleted') {
+    return {
+      key: 'deleted',
+      icon: '🗑️',
+      title: 'Удалён',
+      text: first.auto_deleted_at
+        ? 'Пост удалён: ' + lrDateRu(first.auto_deleted_at)
+        : 'Пост удалён или отменён.'
+    };
+  }
+
+  return {
+    key: status || 'unknown',
+    icon: '📌',
+    title: 'Статус',
+    text: 'Актуальный статус обновляется автоматически.'
+  };
+}
+
+async function lrBuildViewChart(campaignId, postId, views) {
+  await query(`CREATE TABLE IF NOT EXISTS analytics_view_points (
+    id bigserial PRIMARY KEY,
+    campaign_id text NOT NULL,
+    post_id integer,
+    views integer NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_lr_view_points_campaign
+               ON analytics_view_points(campaign_id, created_at)`).catch(() => {});
+
+  const campaign = String(campaignId || postId || 'unknown');
+  const v = Math.max(0, Math.round(Number(views || 0)));
+
+  const last = rows(await query(
+    `SELECT views FROM analytics_view_points
+     WHERE campaign_id=$1
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [campaign]
+  ).catch(() => []))[0];
+
+  if (!last || Number(last.views) !== v) {
+    await query(
+      `INSERT INTO analytics_view_points(campaign_id, post_id, views)
+       VALUES($1,$2,$3)`,
+      [campaign, Number(postId || 0) || null, v]
+    ).catch(() => {});
+  }
+
+  const points = rows(await query(
+    `SELECT views, created_at
+     FROM analytics_view_points
+     WHERE campaign_id=$1
+     ORDER BY created_at ASC
+     LIMIT 80`,
+    [campaign]
+  ).catch(() => []));
+
+  const values = points.map((x) => Number(x.views || 0));
+  const labels = points.map((x) => {
+    try {
+      return new Date(x.created_at).toLocaleTimeString('ru-RU', {
+        timeZone: 'Europe/Moscow',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return '';
+    }
+  });
+
+  return { values, labels };
 }
 
 function fingerprint(req, token) {
@@ -485,9 +614,15 @@ async function collect(groupId) {
 
   const text = first.text || draft?.content?.text || snap.title || '';
 
+
+  const reportKey = String(first.report_group_id || draft?.campaignId || first.id || id);
+  const liveChart = await lrBuildViewChart(reportKey, first.id, totalViews);
+  const liveStatusInfo = lrStatusInfo(posts);
+
   return {
     id,
     status: reportStatus(posts),
+    statusInfo: liveStatusInfo,
     title: shortText(text),
     post: {
       title: shortText(text),
@@ -510,11 +645,7 @@ async function collect(groupId) {
     channels,
     buttons,
     history,
-    chart: snap.viewsByPeriod || {
-      h1: [0, Math.round(totalViews * 0.15), Math.round(totalViews * 0.35), Math.round(totalViews * 0.6), totalViews],
-      h24: [0, Math.round(totalViews * 0.08), Math.round(totalViews * 0.22), Math.round(totalViews * 0.45), Math.round(totalViews * 0.72), totalViews],
-      h48: [0, Math.round(totalViews * 0.04), Math.round(totalViews * 0.14), Math.round(totalViews * 0.32), Math.round(totalViews * 0.56), Math.round(totalViews * 0.78), totalViews],
-    },
+    chart: liveChart,
   };
 }
 
@@ -772,24 +903,17 @@ th{color:var(--muted)}
   }
 
   function renderStates(){
-    var list = [
-      ['scheduled','⏳ Отложен'],
-      ['published','✅ Опубликован'],
-      ['ended','🏁 Закончилась'],
-      ['deleted','🗑️ Удалён']
-    ];
-    var order = list.map(function(x){ return x[0]; });
-    var active = REPORT.status || 'scheduled';
-    var activeIndex = order.indexOf(active);
-
-    byId('states').innerHTML = list.map(function(x, i){
-      var cls = active === x[0] ? ' active' : (i < activeIndex ? ' done' : '');
-      if(x[0] === 'deleted' && active === 'deleted') cls += ' deleted';
-      return '<div class="state' + cls + '"><span class="dot"></span><span>' + x[1] + '</span></div>';
-    }).join('');
+    var info = REPORT.statusInfo || {};
+    var cls = 'state active ' + safe(info.key || REPORT.status || '');
+    byId('states').innerHTML =
+      '<div class="' + cls + '" style="grid-column:1/-1">' +
+      '<span class="dot"></span>' +
+      '<div><b>' + safe((info.icon || '📌') + ' ' + (info.title || statusLabel(REPORT.status))) + '</b>' +
+      '<div style="color:#9fb8c9;font-size:14px;line-height:1.35;margin-top:4px">' + safe(info.text || '') + '</div>' +
+      '</div></div>';
   }
 
-  function renderStats(){
+function renderStats(){
     var m = REPORT.metrics || {};
     byId('stats').innerHTML =
       '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div><div class="sub">из каналов</div></div>' +
@@ -843,16 +967,25 @@ th{color:var(--muted)}
   }
 
   function renderChart(){
-    var arr = (REPORT.chart && REPORT.chart[PERIOD]) || [];
-    var max = Math.max.apply(null, arr.concat([1]));
+    var chart = REPORT.chart || {};
+    var arr = Array.isArray(chart.values) ? chart.values : [];
+    var labels = Array.isArray(chart.labels) ? chart.labels : [];
+    var box = byId('chart');
 
-    byId('chart').innerHTML = arr.map(function(v){
+    if (arr.length < 2 || new Set(arr.map(function(x){ return Number(x || 0); })).size < 2) {
+      box.innerHTML = '<div style="width:100%;align-self:center;text-align:center;color:#9fb8c9;font-weight:850;line-height:1.45">📈 Динамика появится, когда MAX отдаст несколько обновлений просмотров.<br>Сейчас недостаточно точек для честного графика.</div>';
+      return;
+    }
+
+    var max = Math.max.apply(null, arr.concat([1]));
+    box.innerHTML = arr.map(function(v, i){
       var h = Math.max(8, Math.round(n(v) / max * 100));
-      return '<div class="bar" style="height:' + h + '%"><span>' + fmt.format(n(v)) + '</span></div>';
+      var label = labels[i] || '';
+      return '<div class="bar" style="height:' + h + '%"><span>' + fmt.format(n(v)) + '<br><small>' + safe(label) + '</small></span></div>';
     }).join('');
   }
 
-  function renderChannels(){
+function renderChannels(){
     byId('channelRows').innerHTML = (REPORT.channels || []).map(function(c){
       var first = (c.name || 'К').slice(0,1);
       return '<div class="channelRow">' +
