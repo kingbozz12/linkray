@@ -1,3 +1,4 @@
+import { mountLinkRayAnalyticsRoutes } from './linkrayAnalyticsRoutes.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -17,7 +18,7 @@ import {
   deleteMaxMessage,
 } from './maxClient.js';
 
-const app = express();
+const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = Number(process.env.PORT || 3000);
