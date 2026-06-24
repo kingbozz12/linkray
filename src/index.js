@@ -660,16 +660,17 @@ async function trackedButtonsForDraft(draft, channelId) {
     'https://linkray.ru'
   ).replace(/\/$/, '');
 
+  const postId = Number(draft.postId || draft.id || 0) || null;
+
   const campaignId = String(
+    postId ||
     draft.campaignId ||
     draft.reportGroupId ||
-    draft.postId ||
     lrCrypto.randomUUID()
   );
 
   draft.campaignId = campaignId;
-
-  const postId = Number(draft.postId || 0) || null;
+  draft.reportGroupId = campaignId;
   const chId = Number(channelId || draft.channelIds?.[0] || 0) || null;
 
   const normalizeButton = (button, rowIndex, buttonIndex) => {

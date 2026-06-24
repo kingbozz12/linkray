@@ -531,11 +531,11 @@ async function collect(groupId) {
      FROM analytics_links l
      LEFT JOIN analytics_clicks c ON c.token = l.token
      LEFT JOIN analytics_click_events e ON e.token = l.token
-     WHERE l.campaign_id = ANY($1::text[])
+     WHERE (l.campaign_id = ANY($1::text[]) OR l.post_id = ANY($2::int[]))
        AND l.kind = 'button'
      GROUP BY l.token
      ORDER BY l.created_at ASC`,
-    [ids]
+    [ids, posts.map((p) => Number(p.id || 0)).filter(Boolean)]
   ));
 
   if (!posts.length && links.length) {
@@ -1081,6 +1081,17 @@ function renderChannels(){
   });
 
   renderAll();
+  // LR_LIVE_REFRESH_START
+  setInterval(async function(){
+    try {
+      var r = await fetch(location.pathname + '?json=1&v=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      REPORT = await r.json();
+      renderAll();
+    } catch(e) {}
+  }, 15000);
+  // LR_LIVE_REFRESH_END
+
 })();
 </script>
 </body>
@@ -1097,7 +1108,19 @@ export function mountLinkRayAnalyticsRoutes(app) {
 
       if (!link) return res.status(404).send('LinkRay: ссылка не найдена');
 
-      if (!isPreviewRequest(req)) {
+      const preview = isPreviewRequest(req);
+
+      console.log('[analytics redirect]', JSON.stringify({
+        token,
+        campaignId: link.campaign_id,
+        postId: link.post_id,
+        channelId: link.channel_id,
+        kind: link.kind,
+        preview,
+        ua: String(req.headers['user-agent'] || '').slice(0, 160)
+      }));
+
+      if (!preview) {
         const f = fingerprint(req, token);
 
         await query(
@@ -1112,9 +1135,18 @@ export function mountLinkRayAnalyticsRoutes(app) {
            ON CONFLICT(token, fingerprint) DO NOTHING`,
           [token, link.campaign_id, link.post_id, link.channel_id, f.fingerprint, f.ipHash, f.userAgent]
         );
+
+        console.log('[analytics click counted]', JSON.stringify({
+          token,
+          campaignId: link.campaign_id,
+          postId: link.post_id,
+          fingerprint: f.fingerprint
+        }));
       }
 
-      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       return res.redirect(302, link.target_url);
     } catch (error) {
       console.error('[linkray analytics redirect]', error.message || error);
