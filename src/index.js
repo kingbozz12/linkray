@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import express from 'express';
+import express from 'express'; import crypto from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { query } from './db.js';
 import { startAutopostWorker } from './autopostWorker.js';
@@ -108,6 +108,32 @@ async function ensureDb() {
   await query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_channel ON scheduled_posts(channel_id, publish_at)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_report ON scheduled_posts(is_ad, status, report_sent_at, published_at)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_delete ON scheduled_posts(status, auto_delete_minutes, published_at)`);
+
+  await query(`CREATE TABLE IF NOT EXISTS analytics_links (
+    token text PRIMARY KEY,
+    campaign_id text NOT NULL,
+    post_id integer,
+    channel_id integer,
+    label text,
+    target_url text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+
+  await query(`CREATE TABLE IF NOT EXISTS analytics_clicks (
+    id bigserial PRIMARY KEY,
+    token text NOT NULL REFERENCES analytics_links(token) ON DELETE CASCADE,
+    campaign_id text NOT NULL,
+    post_id integer,
+    channel_id integer,
+    fingerprint text NOT NULL,
+    ip_hash text,
+    user_agent text,
+    clicked_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(token, fingerprint)
+  )`);
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_analytics_clicks_campaign ON analytics_clicks(campaign_id, clicked_at)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_analytics_links_campaign ON analytics_links(campaign_id)`);
 }
 
 function getUpdateType(u) { return u.update_type || u.updateType || u.type || u.event_type || ''; }
@@ -439,15 +465,158 @@ function signatureNoPreviewHtml(html) {
   );
 }
 
+
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function trackingToken(campaignId, channelId, url, label = '') {
+  return sha256Hex(`${campaignId}|${channelId}|${url}|${label}`).slice(0, 18);
+}
+
+async function ensureAnalyticsLink({ campaignId, postId = null, channelId = null, targetUrl, label = '' }) {
+  const token = trackingToken(campaignId, channelId, targetUrl, label);
+
+  await query(
+    `INSERT INTO analytics_links(token,campaign_id,post_id,channel_id,label,target_url,created_at)
+     VALUES($1,$2,$3,$4,$5,$6,now())
+     ON CONFLICT(token) DO UPDATE SET
+       campaign_id=EXCLUDED.campaign_id,
+       post_id=COALESCE(EXCLUDED.post_id, analytics_links.post_id),
+       channel_id=EXCLUDED.channel_id,
+       label=EXCLUDED.label,
+       target_url=EXCLUDED.target_url`,
+    [token, String(campaignId), postId, channelId ? Number(channelId) : null, String(label || ''), String(targetUrl)]
+  );
+
+  return `${PUBLIC_BASE_URL}/r/${token}`;
+}
+
+async function rewriteAdHtmlLinks(draft, channelId, html) {
+  let text = String(html || '');
+  if (!draft?.isAd) return text;
+
+  const campaignId = draft.campaignId || draft.reportGroupId || `lr-${Date.now()}`;
+
+  const anchors = [];
+  text = text.replace(/<a\b([^>]*?)href=(["'])(https?:\/\/[^"']+)\2([^>]*)>([\s\S]*?)<\/a>/gi, (full, before, quote, url, after, label) => {
+    const marker = `___LR_ANCHOR_${anchors.length}___`;
+    anchors.push({ marker, before, quote, url, after, label });
+    return marker;
+  });
+
+  for (const a of anchors) {
+    const tracked = await ensureAnalyticsLink({
+      campaignId,
+      postId: draft.postId || null,
+      channelId,
+      targetUrl: a.url,
+      label: plain(a.label || 'ссылка'),
+    });
+
+    text = text.replace(
+      a.marker,
+      `<a${a.before}href="${attr(tracked)}"${a.after}>${a.label}</a>`
+    );
+  }
+
+  text = await replaceBareAdUrls(draft, channelId, text);
+
+  return text;
+}
+
+async function replaceBareAdUrls(draft, channelId, html) {
+  const campaignId = draft.campaignId || draft.reportGroupId || `lr-${Date.now()}`;
+  const pieces = [];
+  let text = String(html || '');
+
+  text = text.replace(/(^|[\s>])(https?:\/\/[^\s<]+)/gi, (full, prefix, url) => {
+    const cleanUrl = String(url).replace(/[),.;]+$/g, '');
+    const tail = String(url).slice(cleanUrl.length);
+    const marker = `___LR_URL_${pieces.length}___`;
+    pieces.push({ marker, prefix, url: cleanUrl, tail });
+    return `${prefix}${marker}${tail}`;
+  });
+
+  for (const item of pieces) {
+    const tracked = await ensureAnalyticsLink({
+      campaignId,
+      postId: draft.postId || null,
+      channelId,
+      targetUrl: item.url,
+      label: 'ссылка',
+    });
+
+    text = text.replace(item.marker, `<a href="${attr(tracked)}">ссылка</a>`);
+  }
+
+  return text;
+}
+
+async function trackedButtonsForDraft(draft, channelId) {
+  if (!draft?.isAd) return draft?.buttons || [];
+
+  const campaignId = draft.campaignId || draft.reportGroupId || `lr-${Date.now()}`;
+  const rows = [];
+
+  for (const row of draft.buttons || []) {
+    const items = Array.isArray(row) ? row : [row];
+    const out = [];
+
+    for (const btn of items) {
+      const title = String(btn?.text || btn?.title || '').trim();
+      const url = String(btn?.url || btn?.link || '').trim();
+
+      if (!title || !/^https?:\/\//i.test(url)) continue;
+
+      const tracked = await ensureAnalyticsLink({
+        campaignId,
+        postId: draft.postId || null,
+        channelId,
+        targetUrl: url,
+        label: title,
+      });
+
+      out.push({ ...btn, text: title, url: tracked });
+    }
+
+    if (out.length) rows.push(out);
+  }
+
+  return rows;
+}
+
+function reqFingerprint(req, token) {
+  const ip = req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || req.ip || '';
+  const ua = req.headers['user-agent'] || '';
+  return {
+    ipHash: sha256Hex(String(ip).split(',')[0].trim()).slice(0, 32),
+    userAgent: String(ua).slice(0, 400),
+    fingerprint: sha256Hex(`${token}|${String(ip).split(',')[0].trim()}|${ua}`).slice(0, 40),
+  };
+}
+
 async function composePostForChannel(draft, channelId) {
   let text = String(draft.content?.text || '');
+
+  if (draft.isAd) {
+    if (!draft.campaignId) draft.campaignId = `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+
+    text = await rewriteAdHtmlLinks(draft, channelId, text);
+    const buttons = await trackedButtonsForDraft(draft, channelId);
+
+    return {
+      text,
+      format: 'html',
+      attachments: finalAttachments({ ...draft, buttons }),
+    };
+  }
 
   if (!draft.isAd && draft.signatureEnabled !== false) {
     const sig = await loadSignature(channelId);
 
     if (sig?.text) {
-      const cleanSignature = signatureNoPreviewHtml(sig.text);
-      text = `${text}\n\n${cleanSignature}`;
+      text = `${text}\n\n${sig.text}`;
     }
   }
 
@@ -923,22 +1092,180 @@ async function sendEditorAsNew(chatId, key, draft) {
 
 
 
+app.get('/r/:token', async (req, res) => {
+  const token = String(req.params.token || '').trim();
+
+  try {
+    const links = await query('SELECT * FROM analytics_links WHERE token=$1 LIMIT 1', [token]);
+    const link = links[0];
+
+    if (!link) {
+      return res.status(404).send('LinkRay: ссылка не найдена');
+    }
+
+    const fp = reqFingerprint(req, token);
+
+    await query(
+      `INSERT INTO analytics_clicks(token,campaign_id,post_id,channel_id,fingerprint,ip_hash,user_agent,clicked_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,now())
+       ON CONFLICT(token, fingerprint) DO NOTHING`,
+      [token, link.campaign_id, link.post_id, link.channel_id, fp.fingerprint, fp.ipHash, fp.userAgent]
+    );
+
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.redirect(302, link.target_url);
+  } catch (e) {
+    console.error('[analytics redirect]', e.message || e);
+    res.status(500).send('LinkRay redirect error');
+  }
+});
+
 app.get('/analytics/stats/:groupId', async (req, res) => {
   try {
     const groupId = String(req.params.groupId || '');
-    const posts = await query(`
-      SELECT sp.*, c.title AS channel_title, c.link AS channel_link
-      FROM scheduled_posts sp
-      LEFT JOIN channels c ON c.id = sp.channel_id
-      WHERE COALESCE(sp.report_group_id, sp.id::text) = $1
-      ORDER BY sp.id ASC
-    `, [groupId]);
+
+    const posts = await query(
+      `SELECT sp.*, c.title AS channel_title, c.link AS channel_link
+       FROM scheduled_posts sp
+       LEFT JOIN channels c ON c.id = sp.channel_id
+       WHERE COALESCE(sp.report_group_id, sp.id::text) = $1
+       ORDER BY sp.id ASC`,
+      [groupId]
+    );
+
+    const links = await query(
+      `SELECT l.*,
+              COUNT(c.id)::int AS total_clicks,
+              COUNT(DISTINCT c.fingerprint)::int AS unique_clicks
+       FROM analytics_links l
+       LEFT JOIN analytics_clicks c ON c.token = l.token
+       WHERE l.campaign_id = $1
+       GROUP BY l.token
+       ORDER BY l.created_at ASC`,
+      [groupId]
+    );
+
     const snapshot = safeJson(posts[0]?.report_snapshot, {});
-    const total = snapshot.totalViews ?? posts.reduce((sum, p) => sum + Number(safeJson(p.draft, {}).views || p.views || 0), 0);
-    const title = escapeHtml(short(posts[0]?.text || 'Рекламный пост', 120));
-    const rowsHtml = posts.map((p, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(p.channel_title || 'Канал')}</td><td>${escapeHtml(String(p.status || ''))}</td><td>${escapeHtml(formatAutoDelete(p.auto_delete_minutes))}</td></tr>`).join('');
+    const title = escapeHtml(short(posts[0]?.text || snapshot.title || 'Рекламный пост', 120));
+    const textPreview = escapeHtml(plain(posts[0]?.text || snapshot.title || ''));
+    const totalViews = Number(snapshot.totalViews || 0);
+    const uniqueClicks = links.reduce((sum, l) => sum + Number(l.unique_clicks || 0), 0);
+    const totalClicks = links.reduce((sum, l) => sum + Number(l.total_clicks || 0), 0);
+    const ctr = totalViews ? ((uniqueClicks / totalViews) * 100).toFixed(2) : '—';
+    const cpm = Number(posts[0]?.cpm || snapshot.cpm || 0);
+    const cost = totalViews && cpm ? Math.round((totalViews / 1000) * cpm) : null;
+
+    const channelRows = posts.map((p, i) => {
+      const channel = escapeHtml(p.channel_title || 'Канал');
+      const status = escapeHtml(String(p.status || ''));
+      const views = escapeHtml(String(safeJson(p.report_snapshot, {}).views || '—'));
+      const ad = p.is_ad ? '💼' : '';
+      return `<tr>
+        <td>${i + 1}</td>
+        <td>${ad} ${p.channel_link ? `<a href="${attr(p.channel_link)}">${channel}</a>` : channel}</td>
+        <td>${status}</td>
+        <td>${views}</td>
+        <td>${escapeHtml(formatAutoDelete(p.auto_delete_minutes))}</td>
+      </tr>`;
+    }).join('');
+
+    const linkRows = links.map((l, i) => {
+      const label = escapeHtml(l.label || 'ссылка');
+      const target = escapeHtml(l.target_url || '');
+      return `<tr>
+        <td>${i + 1}</td>
+        <td>${label}</td>
+        <td>${Number(l.unique_clicks || 0)}</td>
+        <td>${Number(l.total_clicks || 0)}</td>
+        <td><a href="${attr(l.target_url)}" target="_blank" rel="noopener">открыть</a></td>
+      </tr>`;
+    }).join('');
+
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LinkRay Analytics</title><style>body{font-family:Inter,Arial,sans-serif;background:#07111f;color:#eaf2ff;margin:0;padding:24px}.card{max-width:860px;margin:0 auto;background:linear-gradient(135deg,#10243f,#111827);border:1px solid #233b5f;border-radius:24px;padding:28px;box-shadow:0 20px 80px #0008}h1{margin:0 0 8px;font-size:32px}.muted{color:#9fb3d0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin:22px 0}.metric{background:#0b1728;border:1px solid #243b5a;border-radius:18px;padding:18px}.metric b{font-size:28px}table{width:100%;border-collapse:collapse;margin-top:20px}td,th{padding:12px;border-bottom:1px solid #243b5a;text-align:left}a{color:#7dd3fc}.brand{color:#7dd3fc;font-weight:800}</style></head><body><div class="card"><div class="brand">LinkRay Analytics</div><h1>Сводный отчёт</h1><p class="muted">${title}</p><div class="grid"><div class="metric"><div class="muted">Публикаций</div><b>${posts.length}</b></div><div class="metric"><div class="muted">Просмотры</div><b>${total || '—'}</b></div><div class="metric"><div class="muted">Автоудаление</div><b>${escapeHtml(formatAutoDelete(posts[0]?.auto_delete_minutes))}</b></div></div><table><thead><tr><th>#</th><th>Канал</th><th>Статус</th><th>Удаление</th></tr></thead><tbody>${rowsHtml}</tbody></table><p class="muted">Отчёт сформирован LinkRay. ${snapshot.sentAt ? 'Сформирован: '+escapeHtml(new Date(snapshot.sentAt).toLocaleString('ru-RU'))+'.' : 'Данные просмотров обновляются по доступности MAX API.'}</p></div></body></html>`);
+    res.end(`<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>LinkRay — сводный отчёт</title>
+<style>
+:root{--bg:#07131f;--card:rgba(255,255,255,.09);--card2:rgba(255,255,255,.14);--text:#ecfeff;--muted:#9fb7c8;--accent:#62f0b7;--accent2:#5aa7ff;--danger:#ff5d7d;--line:rgba(255,255,255,.14)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:
+radial-gradient(circle at 15% 0%,rgba(98,240,183,.28),transparent 28%),
+radial-gradient(circle at 80% 10%,rgba(90,167,255,.24),transparent 32%),
+linear-gradient(135deg,#07131f,#0b1728 48%,#101827);color:var(--text)}
+.wrap{max-width:1120px;margin:0 auto;padding:22px 14px 46px}
+.hero{border:1px solid var(--line);border-radius:28px;padding:22px;background:linear-gradient(135deg,rgba(255,255,255,.13),rgba(255,255,255,.05));box-shadow:0 22px 80px rgba(0,0,0,.28);overflow:hidden;position:relative}
+.hero:after{content:"";position:absolute;right:-80px;top:-80px;width:230px;height:230px;border-radius:999px;background:rgba(98,240,183,.22);filter:blur(6px)}
+.brand{display:flex;align-items:center;gap:14px;position:relative;z-index:2}
+.logo{width:62px;height:62px;border-radius:22px;background:linear-gradient(135deg,#56f2b4,#4a94ff);display:grid;place-items:center;box-shadow:0 12px 36px rgba(98,240,183,.25);font-weight:900;color:#06111f}
+.logo span{font-size:24px}
+h1{font-size:clamp(28px,5vw,54px);line-height:1.02;margin:18px 0 8px}
+.sub{color:var(--muted);font-size:16px;line-height:1.5;max-width:760px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}
+.stat{border:1px solid var(--line);border-radius:22px;background:var(--card);padding:16px}
+.stat .k{color:var(--muted);font-size:13px}.stat .v{font-size:28px;font-weight:850;margin-top:6px}
+.panel{border:1px solid var(--line);border-radius:24px;background:rgba(255,255,255,.07);padding:18px;margin-top:14px}
+h2{margin:0 0 12px;font-size:20px}
+.preview{white-space:pre-wrap;color:#d9f7ff;line-height:1.45;background:rgba(0,0,0,.18);border-radius:18px;padding:14px;max-height:260px;overflow:auto}
+table{width:100%;border-collapse:collapse;overflow:hidden;border-radius:16px}
+td,th{border-bottom:1px solid var(--line);padding:12px 10px;text-align:left;font-size:14px}
+th{color:var(--muted);font-weight:650}
+a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
+.badge{display:inline-flex;gap:7px;align-items:center;padding:9px 12px;border-radius:999px;background:rgba(98,240,183,.12);border:1px solid rgba(98,240,183,.22);color:#a9ffd9;font-weight:700}
+.footer{color:var(--muted);font-size:13px;margin-top:18px;text-align:center}
+@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.hero{border-radius:22px;padding:18px}.stat .v{font-size:23px}td,th{font-size:13px;padding:10px 7px}.wrap{padding:12px 10px 32px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="hero">
+    <div class="brand">
+      <div class="logo"><span>LR</span></div>
+      <div>
+        <div class="badge">🧬 LinkRay Analytics</div>
+        <div class="sub">Сводный отчёт по рекламному размещению в MAX</div>
+      </div>
+    </div>
+    <h1>${title}</h1>
+    <p class="sub">Пост, каналы, просмотры, уникальные клики, все переходы, CTR и расчёт по CPM собраны в одном адаптивном отчёте.</p>
+    <div class="grid">
+      <div class="stat"><div class="k">Публикаций</div><div class="v">${posts.length}</div></div>
+      <div class="stat"><div class="k">Просмотры</div><div class="v">${totalViews || '—'}</div></div>
+      <div class="stat"><div class="k">Уникальные клики</div><div class="v">${uniqueClicks}</div></div>
+      <div class="stat"><div class="k">CTR</div><div class="v">${ctr}${ctr === '—' ? '' : '%'}</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>📝 Пост</h2>
+    <div class="preview">${textPreview || 'Текст поста недоступен'}</div>
+  </section>
+
+  <section class="panel">
+    <h2>📊 Итоги</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Все клики</div><div class="v">${totalClicks}</div></div>
+      <div class="stat"><div class="k">CPM</div><div class="v">${cpm || '—'}</div></div>
+      <div class="stat"><div class="k">Стоимость</div><div class="v">${cost === null ? '—' : `${cost} ₽`}</div></div>
+      <div class="stat"><div class="k">Автоудаление</div><div class="v">${escapeHtml(formatAutoDelete(posts[0]?.auto_delete_minutes))}</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>📌 Публикации по каналам</h2>
+    <table><thead><tr><th>#</th><th>Канал</th><th>Статус</th><th>Просмотры</th><th>Удаление</th></tr></thead><tbody>${channelRows || '<tr><td colspan="5">Публикаций пока нет</td></tr>'}</tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>🔗 Переходы по ссылкам и кнопкам</h2>
+    <table><thead><tr><th>#</th><th>Элемент</th><th>Уникальные</th><th>Все</th><th>Цель</th></tr></thead><tbody>${linkRows || '<tr><td colspan="5">Переходов пока нет</td></tr>'}</tbody></table>
+  </section>
+
+  <div class="footer">Сформировано LinkRay · ${escapeHtml(new Date().toLocaleString('ru-RU'))}</div>
+</div>
+</body>
+</html>`);
   } catch (e) {
     res.status(500).send(`Report error: ${escapeHtml(e.message || e)}`);
   }

@@ -219,6 +219,28 @@ async function deleteExpired() {
   }
 }
 
+
+async function getClicksForGroup(groupId) {
+  try {
+    const rows = await query(
+      `SELECT
+         COUNT(*)::int AS total_clicks,
+         COUNT(DISTINCT fingerprint)::int AS unique_clicks
+       FROM analytics_clicks
+       WHERE campaign_id = $1`,
+      [String(groupId)]
+    );
+
+    return {
+      totalClicks: Number(rows[0]?.total_clicks || 0),
+      uniqueClicks: Number(rows[0]?.unique_clicks || 0),
+    };
+  } catch (e) {
+    console.error('[autopost] clicks unavailable:', e.message || e);
+    return { totalClicks: 0, uniqueClicks: 0 };
+  }
+}
+
 async function sendDueReports() {
   const groups = await query(`
     SELECT
@@ -243,32 +265,46 @@ async function sendDueReports() {
 
   for (const group of groups) {
     try {
-      const posts = await query(`
-        SELECT sp.*, c.max_chat_id, c.title AS channel_title, c.link AS channel_link
-        FROM scheduled_posts sp
-        LEFT JOIN channels c ON c.id = sp.channel_id
-        WHERE COALESCE(sp.report_group_id, sp.id::text) = $1
-          AND sp.created_by_max_user_id = $2
-        ORDER BY sp.id ASC
-      `, [group.group_id, group.created_by_max_user_id]);
+      const posts = await query(
+        `SELECT sp.*, c.max_chat_id, c.title AS channel_title, c.link AS channel_link
+         FROM scheduled_posts sp
+         LEFT JOIN channels c ON c.id = sp.channel_id
+         WHERE COALESCE(sp.report_group_id, sp.id::text) = $1
+           AND sp.created_by_max_user_id = $2
+         ORDER BY sp.id ASC`,
+        [group.group_id, group.created_by_max_user_id]
+      );
 
-      const lines = [];
       let totalViews = 0;
       let knownViews = 0;
       const snapshotPosts = [];
+      const lines = [];
 
       for (let i = 0; i < posts.length; i++) {
         const p = posts[i];
         const views = await getViewsForPost(p);
+
         if (views !== null) {
           totalViews += views;
           knownViews += 1;
         }
-        snapshotPosts.push({ id: p.id, channel: p.channel_title || 'Канал', link: p.channel_link || null, views });
-        const channel = p.channel_link ? `<a href="${p.channel_link}">${escapeHtml(p.channel_title || 'Канал')}</a>` : escapeHtml(p.channel_title || 'Канал');
-        lines.push(`${i + 1}) <b>Канал:</b> ${channel}\n👀 <b>Просмотры:</b> ${views === null ? 'пока недоступны' : views}\n🔗 Ссылка на пост`);
+
+        snapshotPosts.push({
+          id: p.id,
+          channel: p.channel_title || 'Канал',
+          link: p.channel_link || null,
+          views,
+        });
+
+        const channel = p.channel_link
+          ? `<a href="${p.channel_link}">${escapeHtml(p.channel_title || 'Канал')}</a>`
+          : escapeHtml(p.channel_title || 'Канал');
+
+        lines.push(`${i + 1}) <b>Канал:</b> ${channel}
+👀 <b>Просмотры:</b> ${views === null ? 'пока недоступны' : views}`);
       }
 
+      const clicks = await getClicksForGroup(group.group_id);
       const cpm = Number(group.cpm || 0);
       const cost = cpm && knownViews ? Math.round((totalViews / 1000) * cpm) : null;
       const url = reportUrl(group.group_id);
@@ -279,8 +315,17 @@ async function sendDueReports() {
 📊 <b>Сводный отчёт LinkRay</b>
 «${escapeHtml(title)}»
 
-🕒 <b>Опубликовано:</b> ${published.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit' })} МСК
+<b>Опубликовано:</b> ${published.toLocaleString('ru-RU', {
+        timeZone: 'Europe/Moscow',
+        day: '2-digit',
+        month: 'long',
+        hour: '2-digit',
+        minute: '2-digit'
+      })} МСК
+
 👀 <b>Общие просмотры:</b> ${knownViews ? totalViews : 'пока недоступны'}
+🔗 <b>Уникальные клики:</b> ${clicks.uniqueClicks}
+🧲 <b>Все клики:</b> ${clicks.totalClicks}
 ⏱ <b>Подсчёт:</b> ${group.report_after_hours || 24}ч
 🗑 <b>Удаление:</b> ${formatAutoDelete(group.auto_delete_minutes)}
 📣 <b>Каналы:</b> ${posts.length}
@@ -290,38 +335,61 @@ ${cost !== null ? `💰 <b>Стоимость по CPM:</b> ${cost} ₽\n` : ''}
 
 ${lines.join('\n\n')}
 
-🔗 <b>Красивая ссылка отчёта:</b>
+🌐 <b>Красивый отчёт:</b>
 <a href="${url}">${url}</a>
+
 ━━━━━━━━━━━━━━
 ✨ <a href="${BOT_LINK}">LinkRay</a> — отчёты по рекламным размещениям в MAX`;
 
-      const snapshot = { groupId: group.group_id, title, totalViews: knownViews ? totalViews : null, knownViews, cpm: group.cpm, cost, autoDeleteMinutes: group.auto_delete_minutes, reportUrl: url, posts: snapshotPosts, sentAt: new Date().toISOString() };
+      const snapshot = {
+        groupId: group.group_id,
+        title,
+        totalViews: knownViews ? totalViews : null,
+        knownViews,
+        clicks,
+        cpm: group.cpm,
+        cost,
+        autoDeleteMinutes: group.auto_delete_minutes,
+        reportUrl: url,
+        posts: snapshotPosts,
+        sentAt: new Date().toISOString(),
+      };
 
       const owner = String(group.created_by_max_user_id || '').trim();
-      const target = /^-?\d+$/.test(owner) ? { chatId: Number(owner) } : { userId: owner };
       const sent = await sendMaxMessage({
-        ...target,
+        chatId: Number(owner),
         text: reportText,
         format: 'html',
-        attachments: inlineKeyboard([[callbackLinkButton('📊 Открыть красивый отчёт', url)]])
+        attachments: inlineKeyboard([[linkButton('📊 Открыть красивый отчёт', url)]])
       });
 
-      await query(`
-        UPDATE scheduled_posts
-        SET report_sent_at=now(), report_message_id=$3, report_error_message=NULL, report_snapshot=$4::jsonb, updated_at=now()
-        WHERE COALESCE(report_group_id, id::text) = $1
-          AND created_by_max_user_id = $2
-      `, [group.group_id, group.created_by_max_user_id, extractMessageId(sent), JSON.stringify(snapshot)]);
+      await query(
+        `UPDATE scheduled_posts
+         SET report_sent_at=now(),
+             report_message_id=$3,
+             report_error_message=NULL,
+             report_snapshot=$4::jsonb,
+             updated_at=now()
+         WHERE COALESCE(report_group_id, id::text) = $1
+           AND created_by_max_user_id = $2`,
+        [group.group_id, group.created_by_max_user_id, extractMessageId(sent), JSON.stringify(snapshot)]
+      );
 
-      console.log('[autopost] report sent', JSON.stringify({ group: group.group_id, posts: posts.length }));
+      console.log('[autopost] report sent', JSON.stringify({
+        group: group.group_id,
+        posts: posts.length,
+        clicks,
+      }));
     } catch (error) {
       console.error('[autopost] report failed:', group.group_id, error.message || error);
-      await query(`
-        UPDATE scheduled_posts
-        SET report_error_message=$3, updated_at=now()
-        WHERE COALESCE(report_group_id, id::text) = $1
-          AND created_by_max_user_id = $2
-      `, [group.group_id, group.created_by_max_user_id, String(error.message || error)]).catch(() => {});
+
+      await query(
+        `UPDATE scheduled_posts
+         SET report_error_message=$3, updated_at=now()
+         WHERE COALESCE(report_group_id, id::text) = $1
+           AND created_by_max_user_id = $2`,
+        [group.group_id, group.created_by_max_user_id, String(error.message || error)]
+      ).catch(() => {});
     }
   }
 }
