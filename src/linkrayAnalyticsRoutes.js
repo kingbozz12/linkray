@@ -4,7 +4,7 @@ import { query } from './db.js';
 
 const LINKRAY_BOT_LINK = 'https://max.ru/se13353901_bot';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.SITE_URL || process.env.WEBAPP_URL || 'https://linkray.ru').replace(/\/$/, '');
-const LOGO = "data:image/webp;base64,UklGRpgMAABXRUJQVlA4IIwMAADQNACdASqgAKAAPpFEmkolo6IkpxXbkLASCUDfA09kLQ1+X/I0G92q+z6Qtu7zxfnUb8X6JvTMT+7pKiZOgz2twdgj4VaX2a15fvr4uCMDvBuorX/QNq4nqMcSos4rIVqNLn7YzgXsfGP8238o/qOphAD+JhkEiXJ+/7uwUa4yRo+v+Rg+1fQVsG6wFkRXJia10LEBPniIq/F4M6hnWRAAGDNNpxVhXxwQJlm/+6auZ1hLrvZKlG3Fr/RrFqwcOcPl1rtQTnDIQlHlQXjVplA8r8HzVb8UM54TEP+kX0r4Ylmf/LHKTuY9LztyKz4b1gnTr9huVCfj3zOrIcP/R+WbqA+vew+MMlFn5ok35aF2lNgY3LOH2hdESASwNxYrmzIxyNRQgibOF61I0Kpw2gqk2W1hgQ5yeTcE4XWB3+sUgqJs16P78+MtUx7fyRaAeu4B+0fR8ChZawKq6K/xOWid76G79xL80IHQ1hZHvhPRB+lRUVM7dkTe+AHY7S8bzrVP2Bv0F3uykKzNVvTwTqxy3/I9A2zR0bqII6DB7/eTnJ3v13i7hmx8jG3sg3C+Sm1+/6vbo/iMjdrVLx+cJd7IYJpFyT2iQtlMkEKDUyy6VEAd/pLh+vWjwgKZQ5eC7StKhKgY9PhxNCH+C3mPw1vJ7zL03x+/Vc+TOC4u5k44VjRImEYT4FFRhkPi/QAjQ7ZGcOOl+4ZzsvDBqGCIY+OjXfVd7Yf6BRbWP7M3jPpRN5eB8sX6kVwT6RV6gw2mc8MJaQTNv2T6sa1A3AA==";
+const LOGO = "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20512%20512%27%3E%0A%3Cdefs%3E%0A%3ClinearGradient%20id%3D%27bg%27%20x1%3D%270%27%20x2%3D%271%27%20y1%3D%271%27%20y2%3D%270%27%3E%0A%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23102b65%27/%3E%3Cstop%20offset%3D%27.55%27%20stop-color%3D%27%2320d6c1%27/%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%237cff9f%27/%3E%0A%3C/linearGradient%3E%0A%3ClinearGradient%20id%3D%27shield%27%20x1%3D%270%27%20x2%3D%271%27%3E%0A%3Cstop%20stop-color%3D%27%23e9ffff%27/%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%2366f2b5%27/%3E%0A%3C/linearGradient%3E%0A%3Cfilter%20id%3D%27glow%27%3E%3CfeGaussianBlur%20stdDeviation%3D%277%27%20result%3D%27b%27/%3E%3CfeMerge%3E%3CfeMergeNode%20in%3D%27b%27/%3E%3CfeMergeNode%20in%3D%27SourceGraphic%27/%3E%3C/feMerge%3E%3C/filter%3E%0A%3C/defs%3E%0A%3Crect%20width%3D%27512%27%20height%3D%27512%27%20rx%3D%27130%27%20fill%3D%27url%28%23bg%29%27/%3E%0A%3Ccircle%20cx%3D%27256%27%20cy%3D%27256%27%20r%3D%27205%27%20fill%3D%27none%27%20stroke%3D%27rgba%28255%2C255%2C255%2C.35%29%27%20stroke-width%3D%2712%27/%3E%0A%3Cpath%20d%3D%27M256%2098l121%2049v83c0%2082-49%20145-121%20180-72-35-121-98-121-180v-83z%27%20fill%3D%27url%28%23shield%29%27%20stroke%3D%27%230e3976%27%20stroke-width%3D%2713%27/%3E%0A%3Cpath%20d%3D%27M128%20307c87-6%20165-50%20238-142%27%20fill%3D%27none%27%20stroke%3D%27%2366f2b5%27%20stroke-width%3D%2731%27%20stroke-linecap%3D%27round%27%20filter%3D%27url%28%23glow%29%27/%3E%0A%3Cpath%20d%3D%27M304%20145l72%2011-8%2072%27%20fill%3D%27none%27%20stroke%3D%27%2366f2b5%27%20stroke-width%3D%2731%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20filter%3D%27url%28%23glow%29%27/%3E%0A%3Ccircle%20cx%3D%27256%27%20cy%3D%27256%27%20r%3D%2748%27%20fill%3D%27none%27%20stroke%3D%27%230e3976%27%20stroke-width%3D%2718%27/%3E%0A%3Crect%20x%3D%27220%27%20y%3D%27310%27%20width%3D%2772%27%20height%3D%2760%27%20rx%3D%2715%27%20fill%3D%27%230e3976%27/%3E%0A%3Cpath%20d%3D%27M234%20310v-24c0-28%2044-28%2044%200v24%27%20fill%3D%27none%27%20stroke%3D%27%230e3976%27%20stroke-width%3D%2716%27%20stroke-linecap%3D%27round%27/%3E%0A%3Cpath%20d%3D%27M304%20302h23v-62h17v62h23v-96h17v96%27%20stroke%3D%27%230e3976%27%20stroke-width%3D%2714%27%20stroke-linecap%3D%27round%27/%3E%0A%3C/svg%3E";
 
 const rows = (r) => Array.isArray(r) ? r : (r?.rows || []);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -558,6 +558,15 @@ input{width:100%;border:1px solid var(--line);background:rgba(0,0,0,.20);color:v
 </div>
 <h1 id="reportTitle"></h1>
 <p class="lead">Отчёт обновляется автоматически: статус поста, текст, кнопки, время удаления, просмотры MAX, клики кнопок и CPM берутся из актуальных данных.</p>
+<div class="lr-promo">
+  <img class="lr-promo-logo" id="promoLogo" alt="LinkRay">
+  <div>
+    <div class="lr-promo-title">🚀 LinkRay — живые отчёты для рекламодателей в MAX</div>
+    <div class="lr-promo-text">Постинг, закупы, просмотры MAX, уникальные клики по кнопкам, CPM, автоудаление и история размещения — в одном красивом отчёте.</div>
+  </div>
+  <a class="lr-promo-btn" href="https://max.ru/se13353901_bot" target="_blank" rel="noopener noreferrer">Открыть LinkRay</a>
+</div>
+
 <div class="toolbar">
 <button class="tab active" data-view="overview">Обзор</button>
 <button class="tab" data-view="channels">Каналы</button>
@@ -695,21 +704,21 @@ function renderStats() {
 }
 
 function renderPost() {
-  const logoEl = document.getElementById('logo');
+  var logoEl = document.getElementById('logo');
   if (logoEl) logoEl.src = REPORT.logo;
 
-  const promoLogo = document.getElementById('promoLogo');
+  var promoLogo = document.getElementById('promoLogo');
   if (promoLogo) promoLogo.src = REPORT.logo;
 
   document.getElementById('reportTitle').textContent = REPORT.title || 'LinkRay Analytics';
   document.getElementById('postTitle').textContent = REPORT.post.title || 'Рекламный пост';
 
-  const textBox = document.getElementById('postText');
-  const postHtml = REPORT.post.textHtml || html(REPORT.post.text || '').replace(/\n/g, '<br>');
+  var textBox = document.getElementById('postText');
+  var postHtml = REPORT.post.textHtml || html(REPORT.post.text || '').replace(/\n/g, '<br>');
   textBox.innerHTML = postHtml || '<span style="color:#9eb7c9">Текст поста пока недоступен</span>';
 
-  const mediaBox = document.getElementById('postMedia');
-  const media = REPORT.post.mediaInfo || {};
+  var mediaBox = document.getElementById('postMedia');
+  var media = REPORT.post.mediaInfo || {};
   mediaBox.classList.remove('has-media', 'no-url', 'empty');
   mediaBox.innerHTML = '';
 
@@ -717,37 +726,39 @@ function renderPost() {
     mediaBox.classList.add('has-media');
 
     if (media.kind === 'video') {
-      const video = document.createElement('video');
+      var video = document.createElement('video');
       video.src = media.url;
       video.controls = true;
       video.muted = true;
       video.playsInline = true;
-      video.onerror = () => {
+      video.onerror = function() {
         mediaBox.classList.remove('has-media');
         mediaBox.classList.add('no-url');
         mediaBox.innerHTML = '<div>🖼️ Медиа поста есть<br><small>MAX не отдал публичный доступ к файлу</small></div>';
       };
       mediaBox.appendChild(video);
     } else {
-      const img = document.createElement('img');
+      var img = document.createElement('img');
       img.src = media.url;
       img.alt = 'Медиа поста';
-      img.onerror = () => {
+      img.onerror = function() {
         mediaBox.classList.remove('has-media');
         mediaBox.classList.add('no-url');
         mediaBox.innerHTML = '<div>🖼️ Медиа поста есть<br><small>MAX не отдал публичный доступ к файлу</small></div>';
       };
       mediaBox.appendChild(img);
     }
-  } else if ((REPORT.post.media || '').toLowerCase().includes('медиа')) {
+  } else if ((REPORT.post.media || '').toLowerCase().indexOf('медиа') !== -1 || Number(media.count || 0) > 0) {
     mediaBox.classList.add('no-url');
-    mediaBox.innerHTML = '<div>🖼️ Медиа поста есть<br><small>Пока нет публичной ссылки MAX для показа в веб-отчёте</small></div>';
+    mediaBox.innerHTML = '<div>🖼️ Медиа поста есть<br><small>Сейчас в базе MAX хранится token, не публичная ссылка. Для новых постов добавим сохранение preview URL.</small></div>';
   } else {
     mediaBox.classList.add('empty');
   }
 
   document.getElementById('postButtons').innerHTML = (REPORT.post.buttons || [])
-    .map(b => '<button class="post-btn" type="button">' + html(b.title || 'Кнопка') + '</button>')
+    .map(function(b) {
+      return '<button class="post-btn" type="button">' + html(b.title || 'Кнопка') + '</button>';
+    })
     .join('');
 }
 
