@@ -4,7 +4,7 @@ import { query } from './db.js';
 
 const LINKRAY_BOT_LINK = 'https://max.ru/se13353901_bot';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.SITE_URL || process.env.WEBAPP_URL || 'https://linkray.ru').replace(/\/$/, '');
-const LOGO = "data:image/webp;base64,UklGRkAmAABXRUJQVlA4IDQmAACw0wCdASqkAaQBPpVIn0ulpC2qJNPaIbASiWVu9ocWBADrGGWbeuVzr5F1S26pYg9BZ39MYGQ/v72h9vhf28AD+9fwhC0f7cSOVJjgZx3D6EaXcZmnT4xrs9tK8rGQ/t3BiWQDf+miLKE78gC87P8+Pz3hB3oTr1z7+8z8ntH8fH/QqP0C5mg3DlwBtrcI3rscyJh4n7WJHP5v3gT5lM0blS9dx+I7m3ye4TzkSmqK90ZpG0b7MklVT5KDzW3wY+r0/npfXJbhldVpxs/WLi8zmS5aKx4V66HTvKJQl3rwx8ZBhcU3W4I1BJo+vTFZc9HtwDG5xvPYEGjS0RO3vCgOe5Q/nXoLr4C9wucELyLWyF8nfbfXYgZoJ4g1+DLvdfuT7fQy88/3Jr9gk6l1p0wifIpLQi2HFUlCzMviPD2tLbpX/8nn7f8ED3ZigAA=";
+const LOGO = "data:image/webp;base64,UklGRpgMAABXRUJQVlA4IIwMAADQNACdASqgAKAAPpFEmkolo6IkpxXbkLASCUDfA09kLQ1+X/I0G92q+z6Qtu7zxfnUb8X6JvTMT+7pKiZOgz2twdgj4VaX2a15fvr4uCMDvBuorX/QNq4nqMcSos4rIVqNLn7YzgXsfGP8238o/qOphAD+JhkEiXJ+/7uwUa4yRo+v+Rg+1fQVsG6wFkRXJia10LEBPniIq/F4M6hnWRAAGDNNpxVhXxwQJlm/+6auZ1hLrvZKlG3Fr/RrFqwcOcPl1rtQTnDIQlHlQXjVplA8r8HzVb8UM54TEP+kX0r4Ylmf/LHKTuY9LztyKz4b1gnTr9huVCfj3zOrIcP/R+WbqA+vew+MMlFn5ok35aF2lNgY3LOH2hdESASwNxYrmzIxyNRQgibOF61I0Kpw2gqk2W1hgQ5yeTcE4XWB3+sUgqJs16P78+MtUx7fyRaAeu4B+0fR8ChZawKq6K/xOWid76G79xL80IHQ1hZHvhPRB+lRUVM7dkTe+AHY7S8bzrVP2Bv0F3uykKzNVvTwTqxy3/I9A2zR0bqII6DB7/eTnJ3v13i7hmx8jG3sg3C+Sm1+/6vbo/iMjdrVLx+cJd7IYJpFyT2iQtlMkEKDUyy6VEAd/pLh+vWjwgKZQ5eC7StKhKgY9PhxNCH+C3mPw1vJ7zL03x+/Vc+TOC4u5k44VjRImEYT4FFRhkPi/QAjQ7ZGcOOl+4ZzsvDBqGCIY+OjXfVd7Yf6BRbWP7M3jPpRN5eB8sX6kVwT6RV6gw2mc8MJaQTNv2T6sa1A3AA==";
 
 const rows = (r) => Array.isArray(r) ? r : (r?.rows || []);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -442,6 +442,21 @@ h1{font-size:clamp(29px,5.4vw,56px);line-height:1.03;margin:23px 0 10px;position
 .post-text a{color:#87f5d0;text-decoration:underline;text-underline-offset:3px;font-weight:850}
 @media(max-width:720px){.promo-card{grid-template-columns:auto 1fr}.promo-btn{grid-column:1/-1;width:100%}}
 
+
+.lr-promo{position:relative;z-index:2;margin:18px 0 14px;border:1px solid rgba(104,244,184,.30);border-radius:24px;padding:16px;background:linear-gradient(135deg,rgba(104,244,184,.18),rgba(105,169,255,.12));display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center}
+.lr-promo-logo{width:64px;height:64px;border-radius:20px;object-fit:cover;box-shadow:0 12px 34px rgba(104,244,184,.26);border:1px solid rgba(255,255,255,.22)}
+.lr-promo-title{font-size:18px;font-weight:950}
+.lr-promo-text{color:#bdd7e3;font-size:14px;line-height:1.45;margin-top:4px}
+.lr-promo-btn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;color:#06131f;background:linear-gradient(135deg,#68f4b8,#69a9ff);font-weight:950;border-radius:16px;padding:12px 15px;box-shadow:0 14px 34px rgba(104,244,184,.20);white-space:nowrap}
+.post-media{min-height:0;height:auto;max-height:none}
+.post-media.has-media{height:auto;min-height:0;padding:0;background:#081421}
+.post-media.has-media img,.post-media.has-media video{width:100%;max-height:520px;object-fit:contain;display:block;background:#071421}
+.post-media.no-url{height:auto;min-height:96px;display:flex;align-items:center;justify-content:center;text-align:center;color:#dff7ff;background:linear-gradient(135deg,rgba(104,244,184,.16),rgba(105,169,255,.13)),#102033;padding:24px}
+.post-media.empty{display:none}
+.post-text a{color:#87f5d0;text-decoration:underline;text-underline-offset:3px;font-weight:850}
+.post-text{font-size:16px;color:#d9edf7;line-height:1.48}
+@media(max-width:720px){.lr-promo{grid-template-columns:auto 1fr}.lr-promo-btn{grid-column:1/-1;width:100%}}
+
 .toolbar{display:flex;gap:10px;flex-wrap:wrap;position:relative;z-index:2;margin-top:16px}
 .tab{border:1px solid var(--line);background:rgba(255,255,255,.08);color:var(--text);padding:11px 14px;border-radius:16px;font-weight:850;font-size:14px;cursor:pointer}
 .tab.active{background:linear-gradient(135deg,rgba(104,244,184,.27),rgba(105,169,255,.18));border-color:rgba(104,244,184,.36)}
@@ -680,29 +695,60 @@ function renderStats() {
 }
 
 function renderPost() {
-  document.getElementById('logo').src = REPORT.logo;
+  const logoEl = document.getElementById('logo');
+  if (logoEl) logoEl.src = REPORT.logo;
+
   const promoLogo = document.getElementById('promoLogo');
   if (promoLogo) promoLogo.src = REPORT.logo;
-  document.getElementById('reportTitle').textContent = REPORT.title;
-  document.getElementById('postTitle').textContent = REPORT.post.title;
-  document.getElementById('postText').innerHTML = REPORT.post.textHtml || html(REPORT.post.text || 'Текст поста недоступен').replace(/\n/g, '<br>');
+
+  document.getElementById('reportTitle').textContent = REPORT.title || 'LinkRay Analytics';
+  document.getElementById('postTitle').textContent = REPORT.post.title || 'Рекламный пост';
+
+  const textBox = document.getElementById('postText');
+  const postHtml = REPORT.post.textHtml || html(REPORT.post.text || '').replace(/\n/g, '<br>');
+  textBox.innerHTML = postHtml || '<span style="color:#9eb7c9">Текст поста пока недоступен</span>';
+
   const mediaBox = document.getElementById('postMedia');
   const media = REPORT.post.mediaInfo || {};
-  mediaBox.classList.remove('has-media', 'no-url');
+  mediaBox.classList.remove('has-media', 'no-url', 'empty');
+  mediaBox.innerHTML = '';
 
   if (media.url) {
     mediaBox.classList.add('has-media');
 
     if (media.kind === 'video') {
-      mediaBox.innerHTML = '<video src="' + html(media.url) + '" controls muted playsinline></video>';
+      const video = document.createElement('video');
+      video.src = media.url;
+      video.controls = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.onerror = () => {
+        mediaBox.classList.remove('has-media');
+        mediaBox.classList.add('no-url');
+        mediaBox.innerHTML = '<div>🖼️ Медиа поста есть<br><small>MAX не отдал публичный доступ к файлу</small></div>';
+      };
+      mediaBox.appendChild(video);
     } else {
-      mediaBox.innerHTML = '<img src="' + html(media.url) + '" alt="Медиа поста">';
+      const img = document.createElement('img');
+      img.src = media.url;
+      img.alt = 'Медиа поста';
+      img.onerror = () => {
+        mediaBox.classList.remove('has-media');
+        mediaBox.classList.add('no-url');
+        mediaBox.innerHTML = '<div>🖼️ Медиа поста есть<br><small>MAX не отдал публичный доступ к файлу</small></div>';
+      };
+      mediaBox.appendChild(img);
     }
-  } else {
+  } else if ((REPORT.post.media || '').toLowerCase().includes('медиа')) {
     mediaBox.classList.add('no-url');
-    mediaBox.textContent = REPORT.post.media || 'Без медиа';
+    mediaBox.innerHTML = '<div>🖼️ Медиа поста есть<br><small>Пока нет публичной ссылки MAX для показа в веб-отчёте</small></div>';
+  } else {
+    mediaBox.classList.add('empty');
   }
-  document.getElementById('postButtons').innerHTML = (REPORT.post.buttons || []).map(b => \`<button class="post-btn">\${html(b.title || 'Кнопка')}</button>\`).join('');
+
+  document.getElementById('postButtons').innerHTML = (REPORT.post.buttons || [])
+    .map(b => '<button class="post-btn" type="button">' + html(b.title || 'Кнопка') + '</button>')
+    .join('');
 }
 
 function renderQuick() {
