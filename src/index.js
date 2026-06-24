@@ -832,7 +832,54 @@ async function handleMessage(update) {
   if (session.state === 'wait_post_content') { const content = await hydrateContent(update); draft.content = { ...draft.content, ...content }; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
   if (session.state === 'wait_edit_text') { const content = await hydrateContent(update); draft.content.text = content.text || text; draft.content.format = 'html'; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_edit_media') { const content = await hydrateContent(update); if (content.attachments.length) draft.content.attachments = content.attachments; if (content.text) draft.content.text = content.text; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
-  if (session.state === 'wait_button') { const parsed = parseButtonsInput(text); if (!parsed.length) return msg(chatId, 'Не понял кнопку. Формат: Название - https://site.ru'); draft.buttons = [...(draft.buttons || []), ...parsed]; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
+  if (session.state === 'wait_button') {
+    const parsed = parseButtonsInput(text);
+
+    console.log('[wait_button fixed preview] input', JSON.stringify({
+      key,
+      text,
+      parsedRows: parsed.length,
+    }));
+
+    if (!parsed.length) {
+      await setSession(key, 'wait_button', { draft });
+
+      return msg(
+        chatId,
+        `Не понял кнопку.
+
+Формат:
+Название - https://site.ru
+
+Пример:
+Тест - https://max.ru/join/...`
+      );
+    }
+
+    draft.buttons = [...(draft.buttons || []), ...parsed];
+
+    await setSession(
+      key,
+      draft.postId ? 'edit_existing' : 'edit_draft',
+      { draft }
+    );
+
+    console.log('[wait_button fixed preview] added', JSON.stringify({
+      key,
+      added: parsed.length,
+      total: draft.buttons.length,
+      signatureEnabled: draft.signatureEnabled !== false,
+      channels: draft.channelIds?.length || 0,
+    }));
+
+    // После добавления кнопки заново отправляем пост-превью сверху,
+    // уже с кнопкой и автоподписью, потом меню редактора.
+    if (typeof sendEditorAsNew === 'function') {
+      return sendEditorAsNew(chatId, key, draft);
+    }
+
+    return sendStudioEditorMessage(chatId, draft);
+  }
   if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, content); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('➡️ К выпуску','editor:next')]]); }
