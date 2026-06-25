@@ -753,7 +753,7 @@ function lrSignatureForPostFormat(value, format = 'html') {
   }
 
   return typeof signatureNoPreviewHtml === 'function'
-    ? lrSignatureForPostFormat(source, format || content?.format || draft?.content?.format || 'html').replace(/<\/b>/gi, '').replace(/<b>(?![\s\S]*<\/b>)/gi, '')
+    ? lrSignatureForPostFormat(source, ((typeof format !== 'undefined' && format) || (typeof content !== 'undefined' && content?.format) || (typeof draft !== 'undefined' && draft?.content?.format) || 'html')).replace(/<\/b>/gi, '').replace(/<b>(?![\s\S]*<\/b>)/gi, '')
     : source.replace(/<\/b>/gi, '').replace(/<b>(?![\s\S]*<\/b>)/gi, '');
 }
 // LR_SIGNATURE_FORMAT_SAFE_END
@@ -1098,7 +1098,7 @@ async function composePostForChannel(draft, channelId) {
 
     if (sig?.text) {
       const cleanSignature = typeof signatureNoPreviewHtml === 'function'
-        ? lrSignatureForPostFormat(sig.text, format || content?.format || draft?.content?.format || 'html')
+        ? lrSignatureForPostFormat(sig.text, ((typeof format !== 'undefined' && format) || (typeof content !== 'undefined' && content?.format) || (typeof draft !== 'undefined' && draft?.content?.format) || 'html'))
         : sig.text;
 
       text = `${text}\n\n${cleanSignature}`;
