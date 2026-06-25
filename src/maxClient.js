@@ -177,7 +177,7 @@ async function fetchJson(url, options) {
   return data;
 }
 
-export async function sendMaxMessage({ chatId, userId, text = '', format = 'html', attachments = [] }) {
+export async function sendMaxMessage({ chatId, userId, text = '', format = 'html', markup = [], attachments = [] }) {
   const url = new URL(`${MAX_API_URL}/messages`);
   if (chatId) url.searchParams.set('chat_id', String(chatId));
   else if (userId) url.searchParams.set('user_id', String(userId));
@@ -187,6 +187,7 @@ export async function sendMaxMessage({ chatId, userId, text = '', format = 'html
     text: String(text || ''),
     format: format || 'html',
     attachments: cleanAttachments(attachments),
+    ...(Array.isArray(markup) && markup.length ? { markup } : {}),
   };
 
   return fetchJson(url, { method: 'POST', headers: headers(true), body: JSON.stringify(lrNoPreviewPayload(body)) });
@@ -245,13 +246,13 @@ export async function getMaxMessage(messageId, params = {}) {
   throw lastError || new Error('MAX API error while reading message');
 }
 
-export async function editMaxMessage(messageId, { text = '', format = 'html', attachments = [] } = {}) {
+export async function editMaxMessage(messageId, { text = '', format = 'html', markup = [], attachments = [] } = {}) {
   const url = new URL(`${MAX_API_URL}/messages`);
   url.searchParams.set('message_id', String(messageId));
   return fetchJson(url, {
     method: 'PUT',
     headers: headers(true),
-    body: JSON.stringify(lrNoPreviewPayload({ text: String(text || ''), format: format || 'html', attachments: cleanAttachments(attachments) })),
+    body: JSON.stringify(lrNoPreviewPayload({ text: String(text || ''), format: format || 'html', ...(Array.isArray(markup) && markup.length ? { markup } : {}), attachments: cleanAttachments(attachments) })),
   });
 }
 
