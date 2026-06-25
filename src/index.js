@@ -814,17 +814,17 @@ async function composePostForChannel(draft, channelId) {
 }
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
-function mainMenuRows() { return [[callbackButton('🧬 LinkRay Studio', 'main:posting')],[callbackButton('📡 Каналы', 'channels:list')],[callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]]; }
+function mainMenuRows() { return [[callbackButton('🧬 LinkRay Studio', 'main:posting')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]]; }
 async function showMainCallback(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
 async function sendMain(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
-function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('📡 Каналы', 'channels:list')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
+function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
 async function showStudio(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nСобирайте посты, планируйте публикации и управляйте рекламными размещениями.\n━━━━━━━━━━━━━━`, studioRows()); }
 async function sendStudio(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━`, studioRows()); }
 
 async function showChannelSelect(callbackId, key, draft, multi = false) {
   const channels = await getChannels();
   if (!channels.length) {
-    await cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и откройте «Каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('📡 Мои каналы', 'channels:list')],[callbackButton('⬅️ В Studio', 'main:posting')]]);
+    await cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и откройте «Каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В Studio', 'main:posting')]]);
     return;
   }
   const rows = [];
@@ -1134,14 +1134,18 @@ async function editExisting(callbackId, key, id) { const p = await getPost(id); 
 async function saveExisting(callbackId, key, draft) { const post = await getPost(draft.postId); if (!post) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); const content = await composePostForChannel(draft, draft.channelIds[0]); await query(`UPDATE scheduled_posts SET text=$2, format=$3, attachments=$4::jsonb, buttons=$5::jsonb, draft=$6::jsonb, is_ad=$7, cpm=$8, auto_delete_minutes=$9, report_after_hours=$10, updated_at=now() WHERE id=$1`, [draft.postId, content.text, content.format, JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24]); let warn = ''; if (post.status === 'published' && post.published_message_id) { try { await editMaxMessage(post.published_message_id, content); } catch(e) { warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение: ${escapeHtml(e.message || e)}`; } } await clearSession(key); await cb(callbackId, `━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>${warn}\n━━━━━━━━━━━━━━`, [[callbackButton('👁 Открыть пост', `post:open:${draft.postId}`)],[callbackButton('🗂 Посты','post:all')]]); }
 
 async function handleCallback(update) {
+  __lrStartChannelNotifyTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = Number(getChatId(update) || key);
+  await __lrRememberPrivateChat(chatId);
+  await __lrNotifyNewChannels(chatId);
+
   log('callback', { payload, key });
   if (!callbackId) return;
   if (payload === 'noop') return;
   if (payload === 'main:menu') return showMainCallback(callbackId);
   if (payload === 'main:posting') return showStudio(callbackId);
-  if (payload === 'channels:list') return showChannels(callbackId, chatId);
+  if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
   if (payload === 'reports:menu') return cb(callbackId, '📊 Отчёты скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'fraud:menu') return cb(callbackId, '🛡 Антифрод скоро будет здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
@@ -1152,7 +1156,7 @@ async function handleCallback(update) {
   if (payload === 'post:all_channels') { const s = await getSession(key); const draft = safeDraft(s.data); draft.channelIds = (await getChannels()).map(c=>Number(c.id)); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
   if (payload === 'post:channels_next') { const s = await getSession(key); const draft = safeDraft(s.data); if (!draft.channelIds.length) return cb(callbackId, 'Выберите хотя бы один канал.', [[callbackButton('⬅️ Назад','post:multi')]]); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
   if (payload === 'post:change_channels') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), false); }
-  if (payload === 'post:add_channel') return cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и нажмите «Мои каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('📡 Мои каналы','channels:list')],[callbackButton('⬅️ Назад','post:create')]]);
+  if (payload === 'post:add_channel') return cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и нажмите «Мои каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ Назад','post:create')]]);
   if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:media') { const s = await getSession(key); await setSession(key, 'wait_edit_media', s.data); return cb(callbackId, '🖼 Отправьте новое фото, видео или файл.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:button') { const s = await getSession(key); await setSession(key, 'wait_button', s.data); return cb(callbackId, '🔘 Формат кнопки:\n<code>Название - https://site.ru</code>\nНесколько в строке через |', [[callbackButton('⬅️ Назад','editor:back')]]); }
@@ -1195,38 +1199,21 @@ async function handleCallback(update) {
   await cb(callbackId, 'Команда пока не обработана.', [[callbackButton('🏠 В меню','main:menu')]]);
 }
 
-async function showChannels(callbackId, chatId) {
-  const channels = await getChannels();
+async function showChannels(callbackId) {
+  return cb(callbackId, `━━━━━━━━━━━━
+🔗 <b>Добавить канал</b>
 
-  const text = `━━━━━━━━━━━━
-📡 <b>Мои каналы</b>
+1. Откройте канал в MAX.
+2. Добавьте LinkRay в администраторы.
+3. Выдайте право публикации.
+4. Канал автоматически сохранится в базе LinkRay.
 
-${
-  channels.length
-    ? channels.map((c, i) => `${i + 1}. ${channelLine(c).replace('• ', '')}`).join('\n')
-    : 'Каналы пока не найдены.'
-}
-━━━━━━━━━━━━`;
-
-  const rows = [
+После добавления бот пришлёт сообщение:
+✅ Канал добавлен в LinkRay
+━━━━━━━━━━━━`, [
     [callbackButton('🔗 Как добавить канал', 'post:add_channel')],
     [callbackButton('⬅️ В меню', 'main:menu')]
-  ];
-
-  if (chatId) {
-    await cb(callbackId, '📡 Список каналов отправлен ниже.', [
-      [callbackButton('⬅️ В меню', 'main:menu')]
-    ]);
-
-    return sendMessage(chatId, {
-      text,
-      buttons: rows,
-      disable_link_preview: false,
-      disableLinkPreview: false
-    });
-  }
-
-  return cb(callbackId, text, rows);
+  ]);
 }
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
 
@@ -1326,9 +1313,173 @@ async function __lrShouldIgnoreInboundChannelUpdate(update) {
 // LR_CHANNEL_INBOUND_GUARD_END
 
 
+
+// LR_CHANNEL_AUTO_NOTIFY_START
+let __lrChannelNotifyTimerStarted = false;
+
+async function __lrEnsureChannelNotifyTables() {
+  await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+    key text PRIMARY KEY,
+    value text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS lr_channel_notify_state (
+    channel_key text PRIMARY KEY,
+    channel_name text,
+    notified_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+}
+
+function __lrChannelKey(c) {
+  return String(
+    c?.id ??
+    c?.channel_id ??
+    c?.chat_id ??
+    c?.max_id ??
+    c?.title ??
+    c?.name ??
+    ''
+  ).trim();
+}
+
+function __lrChannelTitle(c) {
+  try {
+    return String(channelName(c) || c?.title || c?.name || 'Канал').replace(/<[^>]+>/g, '').trim();
+  } catch {
+    return String(c?.title || c?.name || 'Канал').replace(/<[^>]+>/g, '').trim();
+  }
+}
+
+async function __lrRememberPrivateChat(chatId) {
+  if (!chatId) return;
+
+  const id = String(chatId);
+
+  await __lrEnsureChannelNotifyTables();
+
+  await query(
+    `INSERT INTO lr_bot_state(key, value, updated_at)
+     VALUES('last_private_chat_id', $1, now())
+     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+    [id]
+  ).catch(() => {});
+}
+
+async function __lrLastPrivateChat() {
+  await __lrEnsureChannelNotifyTables();
+
+  const r = await query(
+    `SELECT value FROM lr_bot_state WHERE key='last_private_chat_id' LIMIT 1`
+  ).catch(() => []);
+
+  const rows = Array.isArray(r) ? r : (r?.rows || []);
+
+  return rows[0]?.value || '';
+}
+
+async function __lrInitChannelNotifyState(channels) {
+  const r = await query(
+    `SELECT value FROM lr_bot_state WHERE key='channel_notify_initialized' LIMIT 1`
+  ).catch(() => []);
+
+  const rows = Array.isArray(r) ? r : (r?.rows || []);
+
+  if (rows[0]?.value === '1') return true;
+
+  for (const c of channels) {
+    const key = __lrChannelKey(c);
+    if (!key) continue;
+
+    await query(
+      `INSERT INTO lr_channel_notify_state(channel_key, channel_name)
+       VALUES($1,$2)
+       ON CONFLICT(channel_key) DO NOTHING`,
+      [key, __lrChannelTitle(c)]
+    ).catch(() => {});
+  }
+
+  await query(
+    `INSERT INTO lr_bot_state(key, value, updated_at)
+     VALUES('channel_notify_initialized','1',now())
+     ON CONFLICT(key) DO UPDATE SET value='1', updated_at=now()`
+  ).catch(() => {});
+
+  return false;
+}
+
+async function __lrNotifyNewChannels(targetChatId = '') {
+  try {
+    await __lrEnsureChannelNotifyTables();
+
+    const channels = await getChannels();
+
+    const initialized = await __lrInitChannelNotifyState(channels);
+
+    if (!initialized) return;
+
+    const chatId = String(targetChatId || await __lrLastPrivateChat() || '').trim();
+
+    if (!chatId) return;
+
+    for (const c of channels) {
+      const key = __lrChannelKey(c);
+      const title = __lrChannelTitle(c);
+
+      if (!key) continue;
+
+      const r = await query(
+        `SELECT 1 FROM lr_channel_notify_state WHERE channel_key=$1 LIMIT 1`,
+        [key]
+      ).catch(() => []);
+
+      const found = Array.isArray(r) ? r : (r?.rows || []);
+
+      if (found.length) continue;
+
+      await query(
+        `INSERT INTO lr_channel_notify_state(channel_key, channel_name)
+         VALUES($1,$2)
+         ON CONFLICT(channel_key) DO NOTHING`,
+        [key, title]
+      ).catch(() => {});
+
+      await sendMessage(chatId, {
+        text: `✅ <b>Канал добавлен в LinkRay</b>\n\n${title}\n\nТеперь канал сохранён в базе и будет доступен при создании/публикации постов.`,
+        buttons: [
+          [callbackButton('🔗 Добавить ещё канал', 'post:add_channel')],
+          [callbackButton('⬅️ В меню', 'main:menu')]
+        ]
+      }).catch((error) => {
+        console.error('[channel notify] send failed:', error.message || error);
+      });
+    }
+  } catch (error) {
+    console.error('[channel notify] failed:', error.message || error);
+  }
+}
+
+function __lrStartChannelNotifyTimer() {
+  if (__lrChannelNotifyTimerStarted) return;
+
+  __lrChannelNotifyTimerStarted = true;
+
+  setInterval(() => {
+    __lrNotifyNewChannels().catch((error) => {
+      console.error('[channel notify timer]', error.message || error);
+    });
+  }, 30000);
+}
+// LR_CHANNEL_AUTO_NOTIFY_END
+
+
 async function handleMessage(update) {
+  __lrStartChannelNotifyTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
-  const chatId = Number(getChatId(update)); const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
+  const chatId = Number(getChatId(update));
+  await __lrRememberPrivateChat(chatId);
+  await __lrNotifyNewChannels(chatId);
+ const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) { await clearSession(key); return sendMain(chatId); }
   const session = await getSession(key); const draft = safeDraft(session.data);
