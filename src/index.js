@@ -548,7 +548,7 @@ function lrApplyBlockMarkdown(type, part) {
 
   if (!clean) return clean;
 
-  if (type.includes('quote') || type.includes('blockquote')) {
+  if (type.includes('quote') || type.includes('blockquote') || type.includes('quotation') || type.includes('quoted')) {
     return clean
       .split('\n')
       .map((line) => line.trim() ? `> ${line}` : '>')
@@ -572,7 +572,7 @@ function lrApplyInlineMarkdown(type, part, mark) {
   if (!value) return value;
 
   if (type.includes('bold') || type.includes('strong')) return `**${value}**`;
-  if (type.includes('italic') || type.includes('emphasis') || type === 'em') return `_${value}_`;
+  if (type.includes('italic') || type.includes('emphasis') || type.includes('emphasiz') || type === 'em') return `_${value}_`;
   if (type.includes('underline') || type === 'ins') return `++${value}++`;
   if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return `~~${value}~~`;
   if (type.includes('mono') || type.includes('inline_code') || type === 'code') return '`' + value.replace(/`/g, 'ʼ') + '`';
@@ -623,6 +623,8 @@ function lrMaxMarkupToMarkdown(text, markup = []) {
     if (
       item.type.includes('quote') ||
       item.type.includes('blockquote') ||
+      item.type.includes('quotation') ||
+      item.type.includes('quoted') ||
       item.type.includes('heading') ||
       item.type.includes('header') ||
       item.type.includes('title') ||
@@ -742,14 +744,33 @@ function lrSignatureToMarkdown(value) {
   // Убираем любые оставшиеся хвосты HTML, включая сломанный </b>.
   text = lrStripTags(text);
 
-  return text.trim();
+  return lrCleanMarkdownLinkLabels(text.trim());
+}
+
+
+function lrCleanMarkdownLinkLabels(value) {
+  return String(value || '').replace(
+    /\[([^\]\n]+)\]\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/gi,
+    (_, label, url) => {
+      const clean = String(label || '')
+        .replace(/\*\*/g, '')
+        .replace(/__/g, '')
+        .replace(/\+\+/g, '')
+        .replace(/~~/g, '')
+        .replace(/\^\^/g, '')
+        .replace(/`/g, '')
+        .trim();
+
+      return `[${clean || url}](${url})`;
+    }
+  );
 }
 
 function lrSignatureForPostFormat(value, format = 'html') {
   const source = String(value || '');
 
   if (String(format || '').toLowerCase() === 'markdown') {
-    return lrSignatureToMarkdown(source);
+    return lrCleanMarkdownLinkLabels(lrSignatureToMarkdown(source));
   }
 
   return typeof signatureNoPreviewHtml === 'function'
