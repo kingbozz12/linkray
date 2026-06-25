@@ -1195,7 +1195,26 @@ async function handleCallback(update) {
   await cb(callbackId, 'Команда пока не обработана.', [[callbackButton('🏠 В меню','main:menu')]]);
 }
 
-async function showChannels(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `channels:refresh:${c.id}`)]); rows.push([callbackButton('🔗 Как добавить канал','post:add_channel')],[callbackButton('⬅️ В меню','main:menu')]); await cb(callbackId, `━━━━━━━━━━━━━━\n📡 <b>Мои каналы</b>\n\n${channels.length ? channels.map((c,i)=>`${i+1}. ${channelLine(c).replace('• ','')}`).join('\n') : 'Каналы пока не найдены.'}\n━━━━━━━━━━━━━━`, rows); }
+async function showChannels(callbackId) {
+  const channels = await getChannels();
+
+  const text = `━━━━━━━━━━━━
+📡 <b>Мои каналы</b>
+
+${
+  channels.length
+    ? channels.map((c, i) => `${i + 1}. ${channelLine(c).replace('• ', '')}`).join('\n')
+    : 'Каналы пока не найдены.'
+}
+━━━━━━━━━━━━`;
+
+  const rows = [
+    [callbackButton('🔗 Как добавить канал', 'post:add_channel')],
+    [callbackButton('⬅️ В меню', 'main:menu')]
+  ];
+
+  await cb(callbackId, text, rows);
+}
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
 
 
