@@ -574,7 +574,7 @@ function lrApplyInlineMarkdown(type, part, mark) {
   if (type.includes('bold') || type.includes('strong')) return `**${value}**`;
   if (type.includes('italic') || type.includes('emphasis') || type === 'em') return `_${value}_`;
   if (type.includes('underline') || type === 'ins') return `++${value}++`;
-  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return `~~${value}~~`;
+  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return `~${value}~`;
   if (type.includes('mono') || type.includes('inline_code') || type === 'code') return '`' + value.replace(/`/g, 'ʼ') + '`';
   if (type.includes('mark') || type.includes('highlight')) return `^^${value}^^`;
   if ((type.includes('link') || type.includes('url')) && url) return `[${value}](${url})`;
