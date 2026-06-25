@@ -203,6 +203,38 @@ function lrForceMaxFormat(text, current = 'html') {
 // LR_FORCE_MAX_FORMAT_END
 
 
+
+// LR_HARD_FORCE_MAX_FORMAT_START
+function lrHardLooksHtml(text) {
+  return /<\/?(b|strong|i|em|u|ins|s|strike|del|a|blockquote|h[1-6]|code|pre|mark)\b/i.test(String(text || ''));
+}
+
+function lrHardLooksMarkdown(text) {
+  const value = String(text || '');
+
+  return (
+    /(^|\n)\s{0,3}#{1,6}\s+\S/.test(value) ||
+    /(^|\n)\s{0,3}>\s+\S/.test(value) ||
+    /```[\s\S]*?```/.test(value) ||
+    /`[^`\n]+`/.test(value) ||
+    /\*\*[\s\S]+?\*\*/.test(value) ||
+    /__[\s\S]+?__/.test(value) ||
+    /~~[\s\S]+?~~/.test(value) ||
+    /\+\+[\s\S]+?\+\+/.test(value) ||
+    /\^\^[\s\S]+?\^\^/.test(value) ||
+    /\[[^\]\n]+\]\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/i.test(value)
+  );
+}
+
+function lrHardFormat(text, fallback = 'html') {
+  const value = String(text || '');
+  if (lrHardLooksHtml(value)) return 'html';
+  if (lrHardLooksMarkdown(value)) return 'markdown';
+  return fallback || 'html';
+}
+// LR_HARD_FORCE_MAX_FORMAT_END
+
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
@@ -218,12 +250,18 @@ export async function sendMaxMessage({ chatId, userId, text = '', format = 'html
   else if (userId) url.searchParams.set('user_id', String(userId));
   else throw new Error('chatId or userId is required');
 
+  const outgoingText = String(text || '');
+  const outgoingFormat = lrHardFormat(outgoingText, format || 'html');
   const body = {
-    text: String(text || ''),
-    format: lrForceMaxFormat(text, format || 'html'),
+    text: outgoingText,
+    format: outgoingFormat,
     attachments: cleanAttachments(attachments),
-    ...(Array.isArray(markup) && markup.length ? { markup } : {}),
   };
+
+  console.log('[max-send-format]', JSON.stringify({
+    format: body.format,
+    text_preview: outgoingText.slice(0, 120)
+  }));
 
   return fetchJson(url, { method: 'POST', headers: headers(true), body: JSON.stringify(lrNoPreviewPayload(body)) });
 }
@@ -287,7 +325,11 @@ export async function editMaxMessage(messageId, { text = '', format = 'html', ma
   return fetchJson(url, {
     method: 'PUT',
     headers: headers(true),
-    body: JSON.stringify(lrNoPreviewPayload({ text: String(text || ''), format: format || 'html', ...(Array.isArray(markup) && markup.length ? { markup } : {}), attachments: cleanAttachments(attachments) })),
+    body: JSON.stringify(lrNoPreviewPayload({
+      text: String(text || ''),
+      format: lrHardFormat(text, format || 'html'),
+      attachments: cleanAttachments(attachments)
+    })),
   });
 }
 
