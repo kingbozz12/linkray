@@ -22,6 +22,21 @@ import {
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
+// LR_CHANNEL_DB_SYNC_MIDDLEWARE_START
+app.use(async (req, res, next) => {
+  try {
+    if (req.method === 'POST' && req.body && typeof req.body === 'object') {
+      await __lrHandleChannelDbSyncUpdate(req.body);
+    }
+  } catch (error) {
+    console.error('[channel db sync middleware]', error.message || error);
+  }
+
+  next();
+});
+// LR_CHANNEL_DB_SYNC_MIDDLEWARE_END
+
+
 const PORT = Number(process.env.PORT || 3000);
 const BOT_LINK = process.env.BOT_LINK || 'https://max.ru/se13353901_bot';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.SITE_URL || process.env.WEBAPP_URL || 'https://linkray.ru').replace(/\/$/, '');
@@ -1134,10 +1149,14 @@ async function editExisting(callbackId, key, id) { const p = await getPost(id); 
 async function saveExisting(callbackId, key, draft) { const post = await getPost(draft.postId); if (!post) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); const content = await composePostForChannel(draft, draft.channelIds[0]); await query(`UPDATE scheduled_posts SET text=$2, format=$3, attachments=$4::jsonb, buttons=$5::jsonb, draft=$6::jsonb, is_ad=$7, cpm=$8, auto_delete_minutes=$9, report_after_hours=$10, updated_at=now() WHERE id=$1`, [draft.postId, content.text, content.format, JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24]); let warn = ''; if (post.status === 'published' && post.published_message_id) { try { await editMaxMessage(post.published_message_id, content); } catch(e) { warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение: ${escapeHtml(e.message || e)}`; } } await clearSession(key); await cb(callbackId, `━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>${warn}\n━━━━━━━━━━━━━━`, [[callbackButton('👁 Открыть пост', `post:open:${draft.postId}`)],[callbackButton('🗂 Посты','post:all')]]); }
 
 async function handleCallback(update) {
-  __lrStartChannelNotifyTimer();
+  __lrStartChannelDbSyncTimer();
+  __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = Number(getChatId(update) || key);
-  await __lrRememberPrivateChat(chatId);
+  await __lrRememberPrivateChatId(chatId);
+  await __lrNotifyNewChannels(chatId);
+
+  await __lrRememberPrivateChatId(chatId);
   await __lrNotifyNewChannels(chatId);
 
   log('callback', { payload, key });
@@ -1211,7 +1230,7 @@ async function showChannels(callbackId) {
 После добавления бот пришлёт сообщение:
 ✅ Канал добавлен в LinkRay
 ━━━━━━━━━━━━`, [
-    [callbackButton('🔗 Как добавить канал', 'post:add_channel')],
+    [callbackButton('🔗 Добавить канал', 'post:add_channel')],
     [callbackButton('⬅️ В меню', 'main:menu')]
   ]);
 }
@@ -1314,94 +1333,300 @@ async function __lrShouldIgnoreInboundChannelUpdate(update) {
 
 
 
-// LR_CHANNEL_AUTO_NOTIFY_START
-let __lrChannelNotifyTimerStarted = false;
 
-async function __lrEnsureChannelNotifyTables() {
+
+
+
+
+// LR_CHANNEL_DB_SYNC_START
+let __lrChannelDbSyncStarted = false;
+
+function __lrDbRows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+async function __lrEnsureChannelDbSyncTables() {
   await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
     key text PRIMARY KEY,
     value text,
     updated_at timestamptz NOT NULL DEFAULT now()
   )`).catch(() => {});
 
-  await query(`CREATE TABLE IF NOT EXISTS lr_channel_notify_state (
+  await query(`CREATE TABLE IF NOT EXISTS lr_channel_seen_state (
     channel_key text PRIMARY KEY,
     channel_name text,
-    notified_at timestamptz NOT NULL DEFAULT now()
+    seen_at timestamptz NOT NULL DEFAULT now(),
+    notified_at timestamptz
   )`).catch(() => {});
 }
 
-function __lrChannelKey(c) {
+function __lrChannelKeyFromRow(c) {
   return String(
     c?.id ??
     c?.channel_id ??
     c?.chat_id ??
     c?.max_id ??
+    c?.max_chat_id ??
+    c?.external_chat_id ??
     c?.title ??
     c?.name ??
     ''
   ).trim();
 }
 
-function __lrChannelTitle(c) {
+function __lrChannelTitleFromRow(c) {
   try {
-    return String(channelName(c) || c?.title || c?.name || 'Канал').replace(/<[^>]+>/g, '').trim();
+    return String(channelName(c) || c?.title || c?.name || 'Канал')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   } catch {
-    return String(c?.title || c?.name || 'Канал').replace(/<[^>]+>/g, '').trim();
+    return String(c?.title || c?.name || 'Канал')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 }
 
-async function __lrRememberPrivateChat(chatId) {
+async function __lrRememberPrivateChatId(chatId) {
   if (!chatId) return;
 
-  const id = String(chatId);
-
-  await __lrEnsureChannelNotifyTables();
+  await __lrEnsureChannelDbSyncTables();
 
   await query(
     `INSERT INTO lr_bot_state(key, value, updated_at)
      VALUES('last_private_chat_id', $1, now())
      ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
-    [id]
+    [String(chatId)]
   ).catch(() => {});
 }
 
-async function __lrLastPrivateChat() {
-  await __lrEnsureChannelNotifyTables();
+async function __lrGetLastPrivateChatId() {
+  await __lrEnsureChannelDbSyncTables();
 
-  const r = await query(
+  const result = await query(
     `SELECT value FROM lr_bot_state WHERE key='last_private_chat_id' LIMIT 1`
   ).catch(() => []);
 
-  const rows = Array.isArray(r) ? r : (r?.rows || []);
-
-  return rows[0]?.value || '';
+  return __lrDbRows(result)[0]?.value || '';
 }
 
-async function __lrInitChannelNotifyState(channels) {
-  const r = await query(
-    `SELECT value FROM lr_bot_state WHERE key='channel_notify_initialized' LIMIT 1`
+async function __lrKnownChannelColumns() {
+  const result = await query(
+    `SELECT column_name FROM information_schema.columns WHERE table_name='channels'`
   ).catch(() => []);
 
-  const rows = Array.isArray(r) ? r : (r?.rows || []);
+  return __lrDbRows(result).map((r) => String(r.column_name || ''));
+}
 
-  if (rows[0]?.value === '1') return true;
+function __lrCollectChannelIds(update) {
+  const found = new Set();
+
+  function walk(value, parentKey = '') {
+    if (value === null || value === undefined) return;
+
+    if (typeof value === 'string' || typeof value === 'number') {
+      const raw = String(value).trim();
+      const ctx = String(parentKey || '').toLowerCase();
+
+      if (!raw) return;
+
+      if (
+        /chat|channel|max/.test(ctx) &&
+        !/user|owner|author|sender/.test(ctx) &&
+        (raw.length >= 2)
+      ) {
+        found.add(raw);
+      }
+
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const x of value) walk(x, parentKey);
+      return;
+    }
+
+    if (typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        const key = String(k || '').toLowerCase();
+        const nextParent = parentKey ? `${parentKey}.${key}` : key;
+
+        if (
+          (key === 'id' || key.endsWith('_id') || key.includes('chat') || key.includes('channel') || key.includes('max')) &&
+          !key.includes('user') &&
+          !key.includes('owner') &&
+          !key.includes('author') &&
+          !key.includes('sender')
+        ) {
+          walk(v, nextParent);
+        } else if (typeof v === 'object') {
+          walk(v, nextParent);
+        }
+      }
+    }
+  }
+
+  walk(update);
+
+  return [...found].filter((x) => x && x !== '0');
+}
+
+function __lrIsChannelRemoveUpdate(update) {
+  const type = String(update?.type || update?.update_type || update?.event_type || '').toLowerCase();
+
+  if (!type) return false;
+
+  if (
+    type === 'message_created' ||
+    type === 'message_callback' ||
+    type === 'message_edited' ||
+    type === 'message_removed' ||
+    type === 'message_deleted'
+  ) {
+    return false;
+  }
+
+  const body = JSON.stringify(update || {}).toLowerCase();
+
+  const typeHit =
+    type.includes('bot_removed') ||
+    type.includes('bot_deleted') ||
+    type.includes('bot_left') ||
+    type.includes('bot_kicked') ||
+    type.includes('chat_member') ||
+    type.includes('member_removed') ||
+    type.includes('channel_removed') ||
+    type.includes('channel_deleted') ||
+    type.includes('chat_removed') ||
+    type.includes('chat_deleted');
+
+  const statusHit =
+    body.includes('"status":"removed"') ||
+    body.includes('"status":"left"') ||
+    body.includes('"status":"kicked"') ||
+    body.includes('"status":"deleted"') ||
+    body.includes('"new_status":"removed"') ||
+    body.includes('"new_status":"left"') ||
+    body.includes('"new_status":"kicked"');
+
+  const hasContext =
+    body.includes('channel') ||
+    body.includes('chat') ||
+    body.includes('member') ||
+    body.includes('bot');
+
+  return (typeHit || statusHit) && hasContext;
+}
+
+async function __lrDeleteChannelByUpdate(update) {
+  if (!__lrIsChannelRemoveUpdate(update)) return false;
+
+  const ids = __lrCollectChannelIds(update);
+
+  if (!ids.length) {
+    console.log('[channel db sync] remove update without ids', JSON.stringify({
+      type: update?.type || update?.update_type || update?.event_type || '',
+    }));
+    return false;
+  }
+
+  const allCols = await __lrKnownChannelColumns();
+
+  const cols = [
+    'id',
+    'channel_id',
+    'chat_id',
+    'max_id',
+    'max_chat_id',
+    'external_chat_id',
+    'channel_chat_id'
+  ].filter((col) => allCols.includes(col));
+
+  if (!cols.length) {
+    console.log('[channel db sync] no known id columns in channels table');
+    return false;
+  }
+
+  const where = cols.map((col) => `${col}::text = ANY($1::text[])`).join(' OR ');
+
+  const deletedResult = await query(
+    `DELETE FROM channels WHERE ${where} RETURNING *`,
+    [ids]
+  ).catch((error) => {
+    console.error('[channel db sync] delete failed:', error.message || error);
+    return [];
+  });
+
+  const deleted = __lrDbRows(deletedResult);
+
+  if (!deleted.length) {
+    console.log('[channel db sync] remove update matched no channels', JSON.stringify({
+      type: update?.type || update?.update_type || update?.event_type || '',
+      ids,
+    }));
+    return false;
+  }
+
+  await __lrEnsureChannelDbSyncTables();
+
+  for (const ch of deleted) {
+    const key = __lrChannelKeyFromRow(ch);
+    if (key) {
+      await query(
+        `DELETE FROM lr_channel_seen_state WHERE channel_key=$1`,
+        [key]
+      ).catch(() => {});
+    }
+  }
+
+  const chatId = await __lrGetLastPrivateChatId();
+  const names = deleted.map(__lrChannelTitleFromRow).join('\n');
+
+  if (chatId) {
+    await sendMessage(chatId, {
+      text: `🗑️ <b>Канал удалён из LinkRay</b>\n\n${names}\n\nБот больше не администратор этого канала, поэтому канал удалён из базы.`,
+      buttons: [
+        [callbackButton('🔗 Добавить канал', 'post:add_channel')],
+        [callbackButton('⬅️ В меню', 'main:menu')]
+      ]
+    }).catch((error) => {
+      console.error('[channel db sync] notify delete failed:', error.message || error);
+    });
+  }
+
+  console.log('[channel db sync] deleted channels after bot removal', JSON.stringify({
+    ids,
+    deleted: deleted.map((x) => __lrChannelKeyFromRow(x)),
+  }));
+
+  return true;
+}
+
+async function __lrInitSeenChannelsIfNeeded(channels) {
+  await __lrEnsureChannelDbSyncTables();
+
+  const result = await query(
+    `SELECT value FROM lr_bot_state WHERE key='channel_seen_initialized' LIMIT 1`
+  ).catch(() => []);
+
+  if (__lrDbRows(result)[0]?.value === '1') return true;
 
   for (const c of channels) {
-    const key = __lrChannelKey(c);
+    const key = __lrChannelKeyFromRow(c);
     if (!key) continue;
 
     await query(
-      `INSERT INTO lr_channel_notify_state(channel_key, channel_name)
-       VALUES($1,$2)
+      `INSERT INTO lr_channel_seen_state(channel_key, channel_name, notified_at)
+       VALUES($1,$2,now())
        ON CONFLICT(channel_key) DO NOTHING`,
-      [key, __lrChannelTitle(c)]
+      [key, __lrChannelTitleFromRow(c)]
     ).catch(() => {});
   }
 
   await query(
     `INSERT INTO lr_bot_state(key, value, updated_at)
-     VALUES('channel_notify_initialized','1',now())
+     VALUES('channel_seen_initialized','1',now())
      ON CONFLICT(key) DO UPDATE SET value='1', updated_at=now()`
   ).catch(() => {});
 
@@ -1410,74 +1635,84 @@ async function __lrInitChannelNotifyState(channels) {
 
 async function __lrNotifyNewChannels(targetChatId = '') {
   try {
-    await __lrEnsureChannelNotifyTables();
+    await __lrEnsureChannelDbSyncTables();
 
     const channels = await getChannels();
 
-    const initialized = await __lrInitChannelNotifyState(channels);
+    const initialized = await __lrInitSeenChannelsIfNeeded(channels);
 
     if (!initialized) return;
 
-    const chatId = String(targetChatId || await __lrLastPrivateChat() || '').trim();
+    const chatId = String(targetChatId || await __lrGetLastPrivateChatId() || '').trim();
 
     if (!chatId) return;
 
     for (const c of channels) {
-      const key = __lrChannelKey(c);
-      const title = __lrChannelTitle(c);
+      const key = __lrChannelKeyFromRow(c);
+      const title = __lrChannelTitleFromRow(c);
 
       if (!key) continue;
 
-      const r = await query(
-        `SELECT 1 FROM lr_channel_notify_state WHERE channel_key=$1 LIMIT 1`,
+      const exists = __lrDbRows(await query(
+        `SELECT 1 FROM lr_channel_seen_state WHERE channel_key=$1 LIMIT 1`,
         [key]
-      ).catch(() => []);
+      ).catch(() => []));
 
-      const found = Array.isArray(r) ? r : (r?.rows || []);
-
-      if (found.length) continue;
+      if (exists.length) continue;
 
       await query(
-        `INSERT INTO lr_channel_notify_state(channel_key, channel_name)
-         VALUES($1,$2)
+        `INSERT INTO lr_channel_seen_state(channel_key, channel_name, notified_at)
+         VALUES($1,$2,now())
          ON CONFLICT(channel_key) DO NOTHING`,
         [key, title]
       ).catch(() => {});
 
       await sendMessage(chatId, {
-        text: `✅ <b>Канал добавлен в LinkRay</b>\n\n${title}\n\nТеперь канал сохранён в базе и будет доступен при создании/публикации постов.`,
+        text: `✅ <b>Канал добавлен в LinkRay</b>\n\n${title}\n\nКанал сохранён в базе и будет доступен для публикаций.`,
         buttons: [
           [callbackButton('🔗 Добавить ещё канал', 'post:add_channel')],
           [callbackButton('⬅️ В меню', 'main:menu')]
         ]
       }).catch((error) => {
-        console.error('[channel notify] send failed:', error.message || error);
+        console.error('[channel db sync] notify add failed:', error.message || error);
       });
     }
   } catch (error) {
-    console.error('[channel notify] failed:', error.message || error);
+    console.error('[channel db sync] notify new failed:', error.message || error);
   }
 }
 
-function __lrStartChannelNotifyTimer() {
-  if (__lrChannelNotifyTimerStarted) return;
+async function __lrHandleChannelDbSyncUpdate(update) {
+  try {
+    await __lrDeleteChannelByUpdate(update);
+  } catch (error) {
+    console.error('[channel db sync] update failed:', error.message || error);
+  }
+}
 
-  __lrChannelNotifyTimerStarted = true;
+function __lrStartChannelDbSyncTimer() {
+  if (__lrChannelDbSyncStarted) return;
+
+  __lrChannelDbSyncStarted = true;
 
   setInterval(() => {
     __lrNotifyNewChannels().catch((error) => {
-      console.error('[channel notify timer]', error.message || error);
+      console.error('[channel db sync timer]', error.message || error);
     });
   }, 30000);
 }
-// LR_CHANNEL_AUTO_NOTIFY_END
+// LR_CHANNEL_DB_SYNC_END
 
 
 async function handleMessage(update) {
-  __lrStartChannelNotifyTimer();
+  __lrStartChannelDbSyncTimer();
+  __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const chatId = Number(getChatId(update));
-  await __lrRememberPrivateChat(chatId);
+  await __lrRememberPrivateChatId(chatId);
+  await __lrNotifyNewChannels(chatId);
+
+  await __lrRememberPrivateChatId(chatId);
   await __lrNotifyNewChannels(chatId);
  const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
