@@ -496,6 +496,10 @@ function lrMarkupType(mark) {
     mark?.format ||
     mark?.markup_type ||
     mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    mark?.block_type ||
+    mark?.blockType ||
     ''
   ).toLowerCase();
 }
@@ -548,7 +552,7 @@ function lrApplyBlockMarkdown(type, part) {
 
   if (!clean) return clean;
 
-  if (type.includes('quote') || type.includes('blockquote') || type.includes('quotation') || type.includes('quoted')) {
+  if (type.includes('quote') || type.includes('blockquote') || type.includes('quotation') || type.includes('quoted') || type.includes('cite') || type.includes('quotation') || type.includes('quoted')) {
     return clean
       .split('\n')
       .map((line) => line.trim() ? `> ${line}` : '>')
@@ -625,6 +629,9 @@ function lrMaxMarkupToMarkdown(text, markup = []) {
       item.type.includes('blockquote') ||
       item.type.includes('quotation') ||
       item.type.includes('quoted') ||
+      item.type.includes('cite') ||
+      item.type.includes('quotation') ||
+      item.type.includes('quoted') ||
       item.type.includes('heading') ||
       item.type.includes('header') ||
       item.type.includes('title') ||
@@ -653,10 +660,134 @@ function lrDebugMarkupTypes(markup = []) {
 // LR_NATIVE_MAX_MARKUP_END
 
 
+
+// LR_DEEP_NATIVE_MARKUP_START
+function lrDeepNativeMarkupType(mark) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    mark?.block_type ||
+    mark?.blockType ||
+    ''
+  ).toLowerCase();
+}
+
+function lrLooksLikeNativeMarkupItem(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+
+  const type = lrDeepNativeMarkupType(item);
+
+  if (!type) return false;
+
+  const hasRange =
+    item.from !== undefined ||
+    item.start !== undefined ||
+    item.offset !== undefined ||
+    item.position !== undefined ||
+    item.index !== undefined ||
+    item.to !== undefined ||
+    item.end !== undefined ||
+    item.length !== undefined ||
+    item.len !== undefined ||
+    item.size !== undefined;
+
+  const supported =
+    type.includes('heading') ||
+    type.includes('header') ||
+    type.includes('title') ||
+    type.includes('strong') ||
+    type.includes('bold') ||
+    type.includes('emphas') ||
+    type.includes('italic') ||
+    type.includes('underline') ||
+    type.includes('mono') ||
+    type.includes('code') ||
+    type.includes('strike') ||
+    type.includes('through') ||
+    type.includes('link') ||
+    type.includes('url') ||
+    type.includes('quote') ||
+    type.includes('blockquote') ||
+    type.includes('quotation') ||
+    type.includes('quoted') ||
+    type.includes('cite') ||
+    /^h[1-6]$/.test(type);
+
+  return supported && hasRange;
+}
+
+function lrCollectNativeMarkupDeep(root) {
+  const out = [];
+  const seen = new WeakSet();
+
+  function walk(value) {
+    if (!value || typeof value !== 'object') return;
+
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (lrLooksLikeNativeMarkupItem(item)) out.push(item);
+        walk(item);
+      }
+      return;
+    }
+
+    for (const key of Object.keys(value)) {
+      const child = value[key];
+
+      if (
+        key === 'markup' ||
+        key === 'markups' ||
+        key === 'entities' ||
+        key === 'text_entities' ||
+        key === 'textEntities' ||
+        key === 'formatting' ||
+        key === 'formats' ||
+        key === 'blocks' ||
+        key === 'spans'
+      ) {
+        walk(child);
+      } else if (child && typeof child === 'object') {
+        walk(child);
+      }
+    }
+  }
+
+  walk(root);
+
+  const uniq = [];
+  const keys = new Set();
+
+  for (const item of out) {
+    const key = JSON.stringify([
+      lrDeepNativeMarkupType(item),
+      item.from ?? item.start ?? item.offset ?? item.position ?? item.index ?? 0,
+      item.to ?? item.end ?? item.length ?? item.len ?? item.size ?? 0,
+      item.url ?? item.href ?? item.link ?? item?.payload?.url ?? ''
+    ]);
+
+    if (keys.has(key)) continue;
+    keys.add(key);
+    uniq.push(item);
+  }
+
+  return uniq;
+}
+// LR_DEEP_NATIVE_MARKUP_END
+
+
 async function hydrateContent(u) {
   const best = bestContentCandidate(u) || {};
   const rawText = String(best.text || firstText(u) || '').trim();
-  const markup = Array.isArray(best.markup) && best.markup.length ? best.markup : firstMarkup(u);
+  const deepMarkup = lrCollectNativeMarkupDeep(u); const markup = Array.isArray(best.markup) && best.markup.length ? best.markup : (deepMarkup.length ? deepMarkup : firstMarkup(u));
   const attachments = normalizeAttachments(collectAttachments(u?.message || u));
 
   lrDebugMarkupTypes(markup);

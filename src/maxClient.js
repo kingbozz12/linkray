@@ -341,6 +341,33 @@ function lrOutgoingTextAndFormat(text, fallback = 'html') {
 // LR_MIXED_MARKUP_TO_MARKDOWN_END
 
 
+
+// LR_CLEAN_LINK_LABELS_START
+function lrCleanLinkLabelMarkdown(label) {
+  return String(label || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .replace(/\+\+/g, '')
+    .replace(/~~/g, '')
+    .replace(/\^\^/g, '')
+    .replace(/`/g, '')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+}
+
+function lrCleanAllMarkdownLinkLabels(text) {
+  return String(text || '').replace(
+    /\[([^\]\n]+)\]\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/gi,
+    (_, label, url) => `[${lrCleanLinkLabelMarkdown(label) || url}](${url})`
+  );
+}
+// LR_CLEAN_LINK_LABELS_END
+
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
@@ -357,7 +384,7 @@ export async function sendMaxMessage({ chatId, userId, text = '', format = 'html
   else throw new Error('chatId or userId is required');
 
   const normalizedOutgoing = lrOutgoingTextAndFormat(text, format || 'html');
-  const outgoingText = normalizedOutgoing.text;
+  const outgoingText = lrCleanAllMarkdownLinkLabels(normalizedOutgoing.text);
   const outgoingFormat = normalizedOutgoing.format;
   const body = {
     text: outgoingText,
@@ -433,7 +460,7 @@ export async function editMaxMessage(messageId, { text = '', format = 'html', ma
     method: 'PUT',
     headers: headers(true),
     body: JSON.stringify(lrNoPreviewPayload({
-      text: lrOutgoingTextAndFormat(text, format || 'html').text,
+      text: lrCleanAllMarkdownLinkLabels(lrOutgoingTextAndFormat(text, format || 'html').text),
       format: lrOutgoingTextAndFormat(text, format || 'html').format,
       attachments: cleanAttachments(attachments)
     })),
