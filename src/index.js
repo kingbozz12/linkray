@@ -8,6 +8,49 @@ import express from 'express'; import crypto from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { query } from './db.js';
 import { startAutopostWorker } from './autopostWorker.js';
+
+// LR_EDITOR_POST_FORMAT_START
+function lrDetectEditorPostFormat(text) {
+  const value = String(text || '');
+
+  if (!value.trim()) return 'html';
+
+  if (/<\/?(b|strong|i|em|u|ins|s|strike|del|a|blockquote|h[1-6]|code|pre|mark)\b/i.test(value)) {
+    return 'html';
+  }
+
+  if (
+    /(^|\n)\s{0,3}#{1,6}\s+\S/.test(value) ||
+    /(^|\n)\s{0,3}>\s+\S/.test(value) ||
+    /(^|\n)\s{0,3}([-*+]\s+|\d+\.\s+)\S/.test(value) ||
+    /```[\s\S]*?```/.test(value) ||
+    /`[^`\n]+`/.test(value) ||
+    /\*\*[\s\S]+?\*\*/.test(value) ||
+    /__[\s\S]+?__/.test(value) ||
+    /~~[\s\S]+?~~/.test(value) ||
+    /\+\+[\s\S]+?\+\+/.test(value) ||
+    /\^\^[\s\S]+?\^\^/.test(value) ||
+    /\[[^\]\n]+\]\((https?:\/\/[^)\s]+)\)/i.test(value) ||
+    /\[[^\]\n]+\]\(max:\/\/user\/\d+\)/i.test(value)
+  ) {
+    return 'markdown';
+  }
+
+  return 'html';
+}
+
+function lrApplyEditorPostFormat(draft, content = {}) {
+  if (!draft.content) draft.content = {};
+
+  const text = String(draft.content.text || content.text || '');
+
+  draft.content.format = content.format || lrDetectEditorPostFormat(text) || draft.content.format || 'html';
+
+  return draft;
+}
+// LR_EDITOR_POST_FORMAT_END
+
+
 import {
   sendMaxMessage,
   answerCallback,
@@ -1719,9 +1762,9 @@ async function handleMessage(update) {
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) { await clearSession(key); return sendMain(chatId); }
   const session = await getSession(key); const draft = safeDraft(session.data);
-  if (session.state === 'wait_post_content') { const content = await hydrateContent(update); draft.content = { ...draft.content, ...content }; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
-  if (session.state === 'wait_edit_text') { const content = await hydrateContent(update); draft.content.text = content.text || text; draft.content.format = 'html'; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
-  if (session.state === 'wait_edit_media') { const content = await hydrateContent(update); if (content.attachments.length) draft.content.attachments = content.attachments; if (content.text) draft.content.text = content.text; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
+  if (session.state === 'wait_post_content') { const content = await hydrateContent(update); draft.content = { ...draft.content, ...content }; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
+  if (session.state === 'wait_edit_text') { const content = await hydrateContent(update); draft.content.text = content.text || text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
+  if (session.state === 'wait_edit_media') { const content = await hydrateContent(update); if (content.attachments.length) draft.content.attachments = content.attachments; if (content.text) draft.content.text = content.text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
   if (session.state === 'wait_button') {
     const parsed = parseButtonsInput(text);
 
