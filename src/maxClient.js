@@ -268,6 +268,79 @@ function lrSafeOutgoingFormat(text, fallback = 'html') {
 // LR_SAFE_OUTGOING_FORMAT_END
 
 
+
+// LR_MIXED_MARKUP_TO_MARKDOWN_START
+function lrStripInlineHtml(value) {
+  return String(value || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function lrNormalizeMixedMarkupToMarkdown(text) {
+  let value = String(text || '');
+
+  // HTML-ссылка внутри markdown-текста -> markdown-ссылка.
+  value = value.replace(
+    /<a\b[^>]*href=(["'])(https?:\/\/[^"']+|max:\/\/user\/\d+)\1[^>]*>([\s\S]*?)<\/a>/gi,
+    (_, __, url, label) => `[${lrStripInlineHtml(label).trim() || url}](${url})`
+  );
+
+  // Если MAX прислал ссылку как:
+  // [Ссылка]
+  // (https://...)
+  value = value.replace(
+    /\[([^\]\n]+)\]\s*\n\s*\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/gi,
+    '[$1]($2)'
+  );
+
+  // Остальные HTML-теги, если вдруг смешались с markdown.
+  value = value
+    .replace(/<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/gi, (_, x) => `# ${lrStripInlineHtml(x).trim()}`)
+    .replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, x) => {
+      return lrStripInlineHtml(x).split('\n').map(line => line.trim() ? `> ${line}` : '>').join('\n');
+    })
+    .replace(/<(b|strong)\b[^>]*>([\s\S]*?)<\/(b|strong)>/gi, (_, __, x) => `**${lrStripInlineHtml(x)}**`)
+    .replace(/<(i|em)\b[^>]*>([\s\S]*?)<\/(i|em)>/gi, (_, __, x) => `_${lrStripInlineHtml(x)}_`)
+    .replace(/<(u|ins)\b[^>]*>([\s\S]*?)<\/(u|ins)>/gi, (_, __, x) => `++${lrStripInlineHtml(x)}++`)
+    .replace(/<(s|strike|del)\b[^>]*>([\s\S]*?)<\/(s|strike|del)>/gi, (_, __, x) => `~${lrStripInlineHtml(x)}~`)
+    .replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_, x) => '`' + lrStripInlineHtml(x).replace(/`/g, 'ʼ') + '`')
+    .replace(/<mark\b[^>]*>([\s\S]*?)<\/mark>/gi, (_, x) => `^^${lrStripInlineHtml(x)}^^`);
+
+  return value;
+}
+
+function lrLooksMarkdownAfterNormalize(text) {
+  const value = String(text || '');
+
+  return (
+    /(^|\n)\s{0,3}#{1,6}\s+\S/.test(value) ||
+    /(^|\n)\s{0,3}>\s+\S/.test(value) ||
+    /\*\*[\s\S]+?\*\*/.test(value) ||
+    /__[\s\S]+?__/.test(value) ||
+    /~[^~\n][\s\S]*?[^~\n]~/.test(value) ||
+    /\+\+[\s\S]+?\+\+/.test(value) ||
+    /\^\^[\s\S]+?\^\^/.test(value) ||
+    /`[^`\n]+`/.test(value) ||
+    /```[\s\S]*?```/.test(value) ||
+    /\[[^\]\n]+\]\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/i.test(value)
+  );
+}
+
+function lrOutgoingTextAndFormat(text, fallback = 'html') {
+  const normalized = lrNormalizeMixedMarkupToMarkdown(text);
+
+  if (lrLooksMarkdownAfterNormalize(normalized)) {
+    return { text: normalized, format: 'markdown' };
+  }
+
+  return { text: String(text || ''), format: fallback || 'html' };
+}
+// LR_MIXED_MARKUP_TO_MARKDOWN_END
+
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
@@ -283,8 +356,9 @@ export async function sendMaxMessage({ chatId, userId, text = '', format = 'html
   else if (userId) url.searchParams.set('user_id', String(userId));
   else throw new Error('chatId or userId is required');
 
-  const outgoingText = String(text || '');
-  const outgoingFormat = lrSafeOutgoingFormat(outgoingText, format || 'html');
+  const normalizedOutgoing = lrOutgoingTextAndFormat(text, format || 'html');
+  const outgoingText = normalizedOutgoing.text;
+  const outgoingFormat = normalizedOutgoing.format;
   const body = {
     text: outgoingText,
     format: outgoingFormat,
@@ -359,8 +433,8 @@ export async function editMaxMessage(messageId, { text = '', format = 'html', ma
     method: 'PUT',
     headers: headers(true),
     body: JSON.stringify(lrNoPreviewPayload({
-      text: String(text || ''),
-      format: lrSafeOutgoingFormat(String(text || ''), format || 'html'),
+      text: lrOutgoingTextAndFormat(text, format || 'html').text,
+      format: lrOutgoingTextAndFormat(text, format || 'html').format,
       attachments: cleanAttachments(attachments)
     })),
   });
