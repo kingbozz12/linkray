@@ -168,6 +168,41 @@ export function inlineKeyboard(rows = []) {
   return [{ type: 'inline_keyboard', payload: { buttons: rows } }];
 }
 
+
+// LR_FORCE_MAX_FORMAT_START
+function lrLooksLikeHtml(text) {
+  return /<\/?(b|strong|i|em|u|ins|s|strike|del|a|blockquote|h[1-6]|code|pre|mark)\b/i.test(String(text || ''));
+}
+
+function lrLooksLikeMarkdown(text) {
+  const value = String(text || '');
+
+  return (
+    /(^|\n)\s{0,3}#{1,6}\s+\S/.test(value) ||
+    /(^|\n)\s{0,3}>\s+\S/.test(value) ||
+    /(^|\n)\s{0,3}([-*+]\s+|\d+\.\s+)\S/.test(value) ||
+    /```[\s\S]*?```/.test(value) ||
+    /`[^`\n]+`/.test(value) ||
+    /\*\*[\s\S]+?\*\*/.test(value) ||
+    /__[\s\S]+?__/.test(value) ||
+    /~~[\s\S]+?~~/.test(value) ||
+    /\+\+[\s\S]+?\+\+/.test(value) ||
+    /\^\^[\s\S]+?\^\^/.test(value) ||
+    /\[[^\]\n]+\]\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/i.test(value)
+  );
+}
+
+function lrForceMaxFormat(text, current = 'html') {
+  const value = String(text || '');
+
+  if (lrLooksLikeHtml(value)) return 'html';
+  if (lrLooksLikeMarkdown(value)) return 'markdown';
+
+  return current || 'html';
+}
+// LR_FORCE_MAX_FORMAT_END
+
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
@@ -185,7 +220,7 @@ export async function sendMaxMessage({ chatId, userId, text = '', format = 'html
 
   const body = {
     text: String(text || ''),
-    format: format || 'html',
+    format: lrForceMaxFormat(text, format || 'html'),
     attachments: cleanAttachments(attachments),
     ...(Array.isArray(markup) && markup.length ? { markup } : {}),
   };
@@ -200,7 +235,7 @@ export async function answerCallback({ callbackId, text = '', format = 'html', a
   const clean = cleanAttachments(attachments);
   const attempts = [];
   if (notification) attempts.push({ notification: String(notification) });
-  attempts.push({ message: { text: String(text || ''), format: format || 'html', attachments: clean } });
+  attempts.push({ message: { text: String(text || ''), format: lrForceMaxFormat(text, format || 'html'), attachments: clean } });
   attempts.push({ text: String(text || ''), format: format || 'html', attachments: clean });
 
   let lastError = null;
