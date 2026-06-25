@@ -1,3 +1,25 @@
+
+// LR_DISABLE_LINK_PREVIEW_START
+function lrNoPreviewPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+
+  const patched = { ...payload };
+
+  patched.disable_link_preview = true;
+  patched.disableLinkPreview = true;
+
+  if (patched.message && typeof patched.message === 'object' && !Array.isArray(patched.message)) {
+    patched.message = {
+      ...patched.message,
+      disable_link_preview: true,
+      disableLinkPreview: true,
+    };
+  }
+
+  return patched;
+}
+// LR_DISABLE_LINK_PREVIEW_END
+
 const MAX_API_URL = process.env.MAX_API_URL || process.env.MAX_BASE_URL || 'https://platform-api.max.ru';
 
 function token() {
@@ -20,7 +42,7 @@ function cleanAttachments(attachments = []) {
       continue;
     }
     if (typeof item !== 'object') continue;
-    const key = JSON.stringify(item);
+    const key = JSON.stringify(lrNoPreviewPayload(item));
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(item);
@@ -44,7 +66,7 @@ async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
   if (!response.ok || data?.success === false) {
-    throw new Error(`MAX API error ${response.status}: ${JSON.stringify(data)}`);
+    throw new Error(`MAX API error ${response.status}: ${JSON.stringify(lrNoPreviewPayload(data))}`);
   }
   return data;
 }
@@ -61,7 +83,7 @@ export async function sendMaxMessage({ chatId, userId, text = '', format = 'html
     attachments: cleanAttachments(attachments),
   };
 
-  return fetchJson(url, { method: 'POST', headers: headers(true), body: JSON.stringify(body) });
+  return fetchJson(url, { method: 'POST', headers: headers(true), body: JSON.stringify(lrNoPreviewPayload(body)) });
 }
 
 export async function answerCallback({ callbackId, text = '', format = 'html', attachments = [], notification = '' }) {
@@ -77,7 +99,7 @@ export async function answerCallback({ callbackId, text = '', format = 'html', a
   let lastError = null;
   for (const body of attempts) {
     try {
-      return await fetchJson(url, { method: 'POST', headers: headers(true), body: JSON.stringify(body) });
+      return await fetchJson(url, { method: 'POST', headers: headers(true), body: JSON.stringify(lrNoPreviewPayload(body)) });
     } catch (error) {
       lastError = error;
     }
@@ -123,7 +145,7 @@ export async function editMaxMessage(messageId, { text = '', format = 'html', at
   return fetchJson(url, {
     method: 'PUT',
     headers: headers(true),
-    body: JSON.stringify({ text: String(text || ''), format: format || 'html', attachments: cleanAttachments(attachments) }),
+    body: JSON.stringify(lrNoPreviewPayload({ text: String(text || ''), format: format || 'html', attachments: cleanAttachments(attachments) })),
   });
 }
 
