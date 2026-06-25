@@ -1435,7 +1435,6 @@ app.get('/analytics/stats/:groupId', async (req, res) => {
     const totalViews = Number(snapshot.totalViews || 0);
     const uniqueClicks = links.reduce((sum, l) => sum + Number(l.unique_clicks || 0), 0);
     const totalClicks = links.reduce((sum, l) => sum + Number(l.total_clicks || 0), 0);
-    const ctr = totalViews ? ((uniqueClicks / totalViews) * 100).toFixed(2) : '—';
     const cpm = Number(posts[0]?.cpm || snapshot.cpm || 0);
     const cost = totalViews && cpm ? Math.round((totalViews / 1000) * cpm) : null;
 
@@ -1512,12 +1511,10 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
       </div>
     </div>
     <h1>${title}</h1>
-    <p class="sub">Пост, каналы, просмотры, просмотры MAX, все переходы, CTR и расчёт по CPM собраны в одном адаптивном отчёте.</p>
     <div class="grid">
       <div class="stat"><div class="k">Публикаций</div><div class="v">${posts.length}</div></div>
       <div class="stat"><div class="k">Просмотры</div><div class="v">${totalViews || '—'}</div></div>
       <div class="stat"><div class="k">Просмотры MAX</div><div class="v">${uniqueClicks}</div></div>
-      <div class="stat"><div class="k">CTR</div><div class="v">${ctr}${ctr === '—' ? '' : '%'}</div></div>
     </div>
   </section>
 
@@ -1529,7 +1526,7 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
   <section class="panel">
     <h2>📊 Итоги</h2>
     <div class="grid">
-      <div class="stat"><div class="k">Все клики</div><div class="v">${totalClicks}</div></div>
+      <div class="stat"><div class="k">Служебные данные</div><div class="v">${totalClicks}</div></div>
       <div class="stat"><div class="k">CPM</div><div class="v">${cpm || '—'}</div></div>
       <div class="stat"><div class="k">Стоимость</div><div class="v">${cost === null ? '—' : `${cost} ₽`}</div></div>
       <div class="stat"><div class="k">Автоудаление</div><div class="v">${escapeHtml(formatAutoDelete(posts[0]?.auto_delete_minutes))}</div></div>

@@ -1118,7 +1118,7 @@ function renderChannels(){
       return '<div class="channelRow" style="grid-template-columns:2fr 1fr 1fr">' +
         '<div class="chName"><div class="avatar">' + safe(first) + '</div><div>' + safe(c.name || 'Канал') + '</div></div>' +
         '<div class="metric"><span class="cellLabel">Просмотры</span><b>' + fmt.format(n(c.views)) + '</b><span>MAX</span></div>' +
-        '<div class="metric"><span class="cellLabel">Стоимость</span><b>' + fmt.format(n(c.cost)) + '₽</b><span>views × CPM / 1000</span></div>' +
+        '<div class="metric"><span class="cellLabel">Стоимость</span><b>' + fmt.format(n(c.cost)) + '₽</b><span>просмотры × CPM / 1000</span></div>' +
       '</div>';
     }).join('') || '<div class="notice">Каналов для отчёта пока нет.</div>';
   };
