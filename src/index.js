@@ -574,7 +574,7 @@ function lrApplyInlineMarkdown(type, part, mark) {
   if (type.includes('bold') || type.includes('strong')) return `**${value}**`;
   if (type.includes('italic') || type.includes('emphasis') || type === 'em') return `_${value}_`;
   if (type.includes('underline') || type === 'ins') return `++${value}++`;
-  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return `~${value}~`;
+  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return `~~${value}~~`;
   if (type.includes('mono') || type.includes('inline_code') || type === 'code') return '`' + value.replace(/`/g, 'ʼ') + '`';
   if (type.includes('mark') || type.includes('highlight')) return `^^${value}^^`;
   if ((type.includes('link') || type.includes('url')) && url) return `[${value}](${url})`;
@@ -710,6 +710,54 @@ async function saveSignature(channelId, content, ownerKey = 'shared') {
   await query(`INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, updated_at) VALUES($1,$2,'Автоподпись',$3,$4,$5::jsonb,true,now()) ON CONFLICT(channel_id, owner_key) DO UPDATE SET text=EXCLUDED.text, format=EXCLUDED.format, markup=EXCLUDED.markup, is_active=true, updated_at=now()`, [Number(channelId), ownerKey, content.text || '', content.format || 'html', JSON.stringify(content.markup || [])]);
 }
 async function setSignatureActive(channelId, active, ownerKey = 'shared') { await query('UPDATE channel_signatures SET is_active=$3, updated_at=now() WHERE channel_id=$1 AND owner_key=$2', [Number(channelId), ownerKey, Boolean(active)]); }
+
+
+// LR_SIGNATURE_FORMAT_SAFE_START
+function lrDecodeBasicHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function lrStripTags(value) {
+  return lrDecodeBasicHtmlEntities(String(value || '').replace(/<[^>]*>/g, ''));
+}
+
+function lrSignatureToMarkdown(value) {
+  let text = String(value || '');
+
+  text = text
+    .replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+|max:\/\/user\/\d+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => `[${lrStripTags(label).trim() || url}](${url})`)
+    .replace(/<(b|strong)\b[^>]*>([\s\S]*?)<\/(b|strong)>/gi, (_, __, inner) => `**${lrStripTags(inner)}**`)
+    .replace(/<(i|em)\b[^>]*>([\s\S]*?)<\/(i|em)>/gi, (_, __, inner) => `_${lrStripTags(inner)}_`)
+    .replace(/<(u|ins)\b[^>]*>([\s\S]*?)<\/(u|ins)>/gi, (_, __, inner) => `++${lrStripTags(inner)}++`)
+    .replace(/<(s|strike|del)\b[^>]*>([\s\S]*?)<\/(s|strike|del)>/gi, (_, __, inner) => `~~${lrStripTags(inner)}~~`)
+    .replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_, inner) => '`' + lrStripTags(inner).replace(/`/g, 'ʼ') + '`')
+    .replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, inner) => lrStripTags(inner).split('\n').map(line => line.trim() ? `> ${line}` : '>').join('\n'))
+    .replace(/<br\s*\/?>/gi, '\n');
+
+  // Убираем любые оставшиеся хвосты HTML, включая сломанный </b>.
+  text = lrStripTags(text);
+
+  return text.trim();
+}
+
+function lrSignatureForPostFormat(value, format = 'html') {
+  const source = String(value || '');
+
+  if (String(format || '').toLowerCase() === 'markdown') {
+    return lrSignatureToMarkdown(source);
+  }
+
+  return typeof signatureNoPreviewHtml === 'function'
+    ? lrSignatureForPostFormat(source, format || content?.format || draft?.content?.format || 'html').replace(/<\/b>/gi, '').replace(/<b>(?![\s\S]*<\/b>)/gi, '')
+    : source.replace(/<\/b>/gi, '').replace(/<b>(?![\s\S]*<\/b>)/gi, '');
+}
+// LR_SIGNATURE_FORMAT_SAFE_END
+
 
 function signatureNoPreviewHtml(html) {
   return String(html || '').replace(
@@ -1050,7 +1098,7 @@ async function composePostForChannel(draft, channelId) {
 
     if (sig?.text) {
       const cleanSignature = typeof signatureNoPreviewHtml === 'function'
-        ? signatureNoPreviewHtml(sig.text)
+        ? lrSignatureForPostFormat(sig.text, format || content?.format || draft?.content?.format || 'html')
         : sig.text;
 
       text = `${text}\n\n${cleanSignature}`;
