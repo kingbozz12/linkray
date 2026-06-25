@@ -481,13 +481,176 @@ function normalizeAttachment(a) {
   return null;
 }
 function normalizeAttachments(list = []) { const out = []; const seen = new Set(); for (const a of list || []) { const n = normalizeAttachment(a); if (!n) continue; const k = JSON.stringify(n); if (seen.has(k)) continue; seen.add(k); out.push(n); } return out; }
+
+// LR_NATIVE_MAX_MARKUP_START
+function lrNativeEscapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrNativeAttr(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrMarkupType(mark) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    ''
+  ).toLowerCase();
+}
+
+function lrMarkupStart(mark) {
+  const n = Number(
+    mark?.from ??
+    mark?.start ??
+    mark?.offset ??
+    mark?.position ??
+    mark?.index ??
+    0
+  );
+  return Number.isFinite(n) ? Math.max(0, n) : 0;
+}
+
+function lrMarkupEnd(mark, textLength) {
+  const start = lrMarkupStart(mark);
+  const directEnd = Number(mark?.to ?? mark?.end);
+  if (Number.isFinite(directEnd)) return Math.max(start, Math.min(textLength, directEnd));
+
+  const len = Number(mark?.length ?? mark?.len ?? mark?.size ?? 0);
+  if (Number.isFinite(len) && len > 0) return Math.max(start, Math.min(textLength, start + len));
+
+  return start;
+}
+
+function lrMarkupUrl(mark) {
+  return String(
+    mark?.url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+   url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+    mark?.payload?.link ||
+    ''
+  );
+}
+
+function lrMarkupTags(mark) {
+  const type = lrMarkupType(mark);
+  const url = lrMarkupUrl(mark);
+
+  if (type.includes('bold') || type.includes('strong')) return ['<b>', '</b>'];
+  if (type.includes('italic') || type.includes('emphasis') || type === 'em') return ['<i>', '</i>'];
+  if (type.includes('underline') || type === 'ins') return ['<u>', '</u>'];
+  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return ['<s>', '</s>'];
+  if (type.includes('mono') || type.includes('inline_code') || type === 'code') return ['<code>', '</code>'];
+  if (type.includes('pre')) return ['<pre>', '</pre>'];
+  if (type.includes('quote') || type.includes('blockquote')) return ['<blockquote>', '</blockquote>'];
+  if (type.includes('heading') || type.includes('header') || type.includes('title') || /^h[1-6]$/.test(type)) return ['<h2>', '</h2>'];
+  if (type.includes('mark') || type.includes('highlight')) return ['<mark>', '</mark>'];
+  if ((type.includes('link') || type.includes('url')) && url) return [`<a href="${lrNativeAttr(url)}">`, '</a>'];
+
+  return null;
+}
+
+function lrMaxMarkupToHtml(text, markup = []) {
+  const source = String(text || '');
+
+  if (!source) return '';
+
+  const list = Array.isArray(markup) ? markup : [];
+
+  if (!list.length) {
+    return lrNativeEscapeHtml(source);
+  }
+
+  const opens = new Map();
+  const closes = new Map();
+  let applied = 0;
+
+  for (const mark of list) {
+    const start = lrMarkupStart(mark);
+    const end = lrMarkupEnd(mark, source.length);
+    const tags = lrMarkupTags(mark);
+
+    if (!tags || end <= start || start >= source.length) {
+      continue;
+    }
+
+    if (!opens.has(start)) opens.set(start, []);
+    if (!closes.has(end)) closes.set(end, []);
+
+    opens.get(start).push({ open: tags[0], close: tags[1], start, end });
+    closes.get(end).push({ open: tags[0], close: tags[1], start, end });
+    applied += 1;
+  }
+
+  if (!applied) {
+    return lrNativeEscapeHtml(source);
+  }
+
+  let out = '';
+
+  for (let i = 0; i <= source.length; i++) {
+    if (closes.has(i)) {
+      const arr = closes.get(i).sort((a, b) => b.start - a.start);
+      for (const item of arr) out += item.close;
+    }
+
+    if (opens.has(i)) {
+      const arr = opens.get(i).sort((a, b) => b.end - a.end);
+      for (const item of arr) out += item.open;
+    }
+
+    if (i < source.length) {
+      out += lrNativeEscapeHtml(source[i]);
+    }
+  }
+
+  return out;
+}
+
+function lrDebugMarkupTypes(markup = []) {
+  try {
+    const types = [...new Set((Array.isArray(markup) ? markup : []).map(lrMarkupType).filter(Boolean))];
+    if (types.length) console.log('[native-max-markup] types:', JSON.stringify(types));
+  } catch {}
+}
+// LR_NATIVE_MAX_MARKUP_END
+
+
 async function hydrateContent(u) {
   const best = bestContentCandidate(u);
-  let txt = String(best.text || firstText(u) || '').trim();
+  const rawText = String(best.text || firstText(u) || '').trim();
   const markup = Array.isArray(best.markup) && best.markup.length ? best.markup : firstMarkup(u);
   const attachments = normalizeAttachments(collectAttachments(u?.message || u));
-  if (markup.length && txt) txt = applyMarkupToHtml(txt, markup);
-  return { text: txt, format: 'html', markup, attachments, raw: u?.message || u };
+
+  lrDebugMarkupTypes(markup);
+
+  const htmlText = lrMaxMarkupToHtml(rawText, markup);
+
+  return {
+    text: htmlText,
+    format: 'html',
+    markup,
+    attachments,
+    raw: u?.message || u
+  };
 }
 
 
