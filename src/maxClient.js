@@ -5,6 +5,7 @@ function lrNoPreviewPayload(payload) {
 
   const patched = { ...payload };
 
+  // В MAX: false = не генерировать preview ссылок.
   patched.disable_link_preview = false;
   patched.disableLinkPreview = false;
 

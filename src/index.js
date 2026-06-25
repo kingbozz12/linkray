@@ -1141,7 +1141,7 @@ async function handleCallback(update) {
   if (payload === 'noop') return;
   if (payload === 'main:menu') return showMainCallback(callbackId);
   if (payload === 'main:posting') return showStudio(callbackId);
-  if (payload === 'channels:list') return showChannels(callbackId);
+  if (payload === 'channels:list') return showChannels(callbackId, chatId);
   if (payload === 'reports:menu') return cb(callbackId, '📊 Отчёты скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'fraud:menu') return cb(callbackId, '🛡 Антифрод скоро будет здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
@@ -1195,7 +1195,7 @@ async function handleCallback(update) {
   await cb(callbackId, 'Команда пока не обработана.', [[callbackButton('🏠 В меню','main:menu')]]);
 }
 
-async function showChannels(callbackId) {
+async function showChannels(callbackId, chatId) {
   const channels = await getChannels();
 
   const text = `━━━━━━━━━━━━
@@ -1213,7 +1213,20 @@ ${
     [callbackButton('⬅️ В меню', 'main:menu')]
   ];
 
-  await cb(callbackId, text, rows);
+  if (chatId) {
+    await cb(callbackId, '📡 Список каналов отправлен ниже.', [
+      [callbackButton('⬅️ В меню', 'main:menu')]
+    ]);
+
+    return sendMessage(chatId, {
+      text,
+      buttons: rows,
+      disable_link_preview: false,
+      disableLinkPreview: false
+    });
+  }
+
+  return cb(callbackId, text, rows);
 }
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
 
