@@ -1,4 +1,109 @@
 
+// LR_MAX_TEXT_FORMAT_START
+function lrDetectMaxTextFormat(text) {
+  const value = String(text || '');
+
+  if (!value.trim()) return null;
+
+  // HTML: <b>, <i>, <a href>, <blockquote>, <h1>, <code>, <pre> и т.д.
+  if (/<\/?(b|strong|i|em|u|s|strike|del|a|blockquote|quote|h[1-6]|code|pre|br|p|ul|ol|li|span)\b/i.test(value)) {
+    return 'html';
+  }
+
+  // Markdown: **жирный**, _курсив_, [ссылка](url), > цитата, # заголовок, списки, код.
+  if (
+    /(^|\n)\s{0,3}(#{1,6}\s+)/.test(value) ||
+    /(^|\n)\s{0,3}>\s+/.test(value) ||
+    /(^|\n)\s{0,3}([-*+]\s+|\d+\.\s+)/.test(value) ||
+    /```[\s\S]*?```/.test(value) ||
+    /`[^`\n]+`/.test(value) ||
+    /\*\*[^*\n][\s\S]*?[^*\n]\*\*/.test(value) ||
+    /__[^_\n][\s\S]*?[^_\n]__/.test(value) ||
+    /(^|[^*])\*[^*\n][^*\n]*[^*\n]\*([^*]|$)/.test(value) ||
+    /(^|[^_])_[^_\n][^_\n]*[^_\n]_([^_]|$)/.test(value) ||
+    /\[[^\]\n]+\]\((https?:\/\/[^)\s]+)\)/i.test(value)
+  ) {
+    return 'markdown';
+  }
+
+  return null;
+}
+
+function lrDecorateMaxTextPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+
+  let changed = false;
+  const next = { ...payload };
+
+  if (typeof next.text === 'string' && next.text.trim() && !next.format) {
+    const format = lrDetectMaxTextFormat(next.text);
+    if (format) {
+      next.format = format;
+      changed = true;
+    }
+  }
+
+  if (next.message && typeof next.message === 'object' && !Array.isArray(next.message)) {
+    const decorated = lrDecorateMaxTextPayload(next.message);
+    if (decorated !== next.message) {
+      next.message = decorated;
+      changed = true;
+    }
+  }
+
+  return changed ? next : payload;
+}
+
+function lrPatchMaxTextFormatFetch() {
+  if (globalThis.__lrMaxTextFormatFetchPatched) return;
+  if (typeof globalThis.fetch !== 'function') return;
+
+  const originalFetch = globalThis.fetch.bind(globalThis);
+
+  globalThis.fetch = async function lrMaxTextFormatFetch(input, init = {}) {
+    try {
+      const url = typeof input === 'string'
+        ? input
+        : String(input?.url || '');
+
+      const method = String(init?.method || 'GET').toUpperCase();
+
+      if (
+        /\/messages(\?|$)/.test(url) &&
+        (method === 'POST' || method === 'PUT' || method === 'PATCH') &&
+        typeof init?.body === 'string' &&
+        init.body.trim().startsWith('{')
+      ) {
+        const parsed = JSON.parse(init.body);
+        const decorated = lrDecorateMaxTextPayload(parsed);
+
+        if (decorated !== parsed) {
+          init = {
+            ...init,
+            body: JSON.stringify(decorated),
+          };
+
+          console.log('[max-text-format] enabled:', JSON.stringify({
+            url: url.replace(/access_token=[^&]+/g, 'access_token=***'),
+            format: decorated.format || decorated.message?.format || null,
+          }));
+        }
+      }
+    } catch (error) {
+      console.log('[max-text-format] skipped:', error.message || error);
+    }
+
+    return originalFetch(input, init);
+  };
+
+  globalThis.__lrMaxTextFormatFetchPatched = true;
+}
+
+lrPatchMaxTextFormatFetch();
+// LR_MAX_TEXT_FORMAT_END
+
+
+
 // LR_DISABLE_LINK_PREVIEW_START
 function lrNoPreviewPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
