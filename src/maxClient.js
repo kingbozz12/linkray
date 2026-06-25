@@ -235,6 +235,39 @@ function lrHardFormat(text, fallback = 'html') {
 // LR_HARD_FORCE_MAX_FORMAT_END
 
 
+
+// LR_SAFE_OUTGOING_FORMAT_START
+function lrSafeOutgoingFormat(text, fallback = 'html') {
+  const value = String(text || '');
+
+  if (!value.trim()) return fallback || 'html';
+
+  // Если пользователь сам ввёл HTML — отправляем как html.
+  if (/<\/?(b|strong|i|em|u|ins|s|strike|del|a|blockquote|h[1-6]|code|pre|mark)\b/i.test(value)) {
+    return 'html';
+  }
+
+  // Если текст похож на MAX Markdown — отправляем как markdown.
+  if (
+    /(^|\n)\s{0,3}#{1,6}\s+\S/.test(value) ||
+    /(^|\n)\s{0,3}>\s+\S/.test(value) ||
+    /\*\*[\s\S]+?\*\*/.test(value) ||
+    /__[\s\S]+?__/.test(value) ||
+    /~~[\s\S]+?~~/.test(value) ||
+    /\+\+[\s\S]+?\+\+/.test(value) ||
+    /\^\^[\s\S]+?\^\^/.test(value) ||
+    /`[^`\n]+`/.test(value) ||
+    /```[\s\S]*?```/.test(value) ||
+    /\[[^\]\n]+\]\s*\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/i.test(value)
+  ) {
+    return 'markdown';
+  }
+
+  return fallback || 'html';
+}
+// LR_SAFE_OUTGOING_FORMAT_END
+
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
@@ -251,7 +284,7 @@ export async function sendMaxMessage({ chatId, userId, text = '', format = 'html
   else throw new Error('chatId or userId is required');
 
   const outgoingText = String(text || '');
-  const outgoingFormat = lrHardFormat(outgoingText, format || 'html');
+  const outgoingFormat = lrSafeOutgoingFormat(outgoingText, format || 'html');
   const body = {
     text: outgoingText,
     format: outgoingFormat,
@@ -273,7 +306,7 @@ export async function answerCallback({ callbackId, text = '', format = 'html', a
   const clean = cleanAttachments(attachments);
   const attempts = [];
   if (notification) attempts.push({ notification: String(notification) });
-  attempts.push({ message: { text: String(text || ''), format: lrForceMaxFormat(text, format || 'html'), attachments: clean } });
+  attempts.push({ message: { text: String(text || ''), format: lrSafeOutgoingFormat(String(text || ''), format || 'html'), attachments: clean } });
   attempts.push({ text: String(text || ''), format: format || 'html', attachments: clean });
 
   let lastError = null;
@@ -327,7 +360,7 @@ export async function editMaxMessage(messageId, { text = '', format = 'html', ma
     headers: headers(true),
     body: JSON.stringify(lrNoPreviewPayload({
       text: String(text || ''),
-      format: lrHardFormat(text, format || 'html'),
+      format: lrSafeOutgoingFormat(String(text || ''), format || 'html'),
       attachments: cleanAttachments(attachments)
     })),
   });
