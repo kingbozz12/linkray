@@ -1,3 +1,4 @@
+import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
 import { mountLinkRayAnalyticsRoutes } from './linkrayAnalyticsRoutes.js';
 import dotenv from 'dotenv';
