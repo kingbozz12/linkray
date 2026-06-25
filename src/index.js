@@ -1512,11 +1512,11 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
       </div>
     </div>
     <h1>${title}</h1>
-    <p class="sub">Пост, каналы, просмотры, уникальные клики, все переходы, CTR и расчёт по CPM собраны в одном адаптивном отчёте.</p>
+    <p class="sub">Пост, каналы, просмотры, просмотры MAX, все переходы, CTR и расчёт по CPM собраны в одном адаптивном отчёте.</p>
     <div class="grid">
       <div class="stat"><div class="k">Публикаций</div><div class="v">${posts.length}</div></div>
       <div class="stat"><div class="k">Просмотры</div><div class="v">${totalViews || '—'}</div></div>
-      <div class="stat"><div class="k">Уникальные клики</div><div class="v">${uniqueClicks}</div></div>
+      <div class="stat"><div class="k">Просмотры MAX</div><div class="v">${uniqueClicks}</div></div>
       <div class="stat"><div class="k">CTR</div><div class="v">${ctr}${ctr === '—' ? '' : '%'}</div></div>
     </div>
   </section>

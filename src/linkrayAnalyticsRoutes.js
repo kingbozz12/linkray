@@ -595,7 +595,7 @@ async function collect(groupId) {
       views,
       clicks,
       ctr: views ? Number(((clicks / views) * 100).toFixed(2)) : 0,
-      cost: Math.round((views / 1000) * cpm),
+      cost: Math.round((views * cpm) / 1000),
     };
   });
 
@@ -603,7 +603,7 @@ async function collect(groupId) {
   const uniqueClicks = buttons.reduce((sum, b) => sum + Number(b.unique || 0), 0);
   const totalClicks = buttons.reduce((sum, b) => sum + Number(b.total || 0), 0);
   const cpm = Number(first.cpm || snap.cpm || 0);
-  const cost = Math.round((totalViews / 1000) * cpm);
+  const cost = Math.round((totalViews * cpm) / 1000);
 
   const history = [];
 
@@ -905,8 +905,8 @@ function renderStats(){
     var m = REPORT.metrics || {};
     byId('stats').innerHTML =
       '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div><div class="sub">из каналов</div></div>' +
-      '<div class="stat"><div class="label">Уникальные показатели</div><div class="value">' + fmt.format(n(m.uniqueClicks)) + '</div><div class="sub">1 человек = 1 клик</div></div>' +
-      '<div class="stat"><div class="label">CTR по кнопкам</div><div class="value">' + n(m.ctr).toFixed(2) + '%</div><div class="sub">клики / просмотры</div></div>' +
+      '<div class="stat"><div class="label">Уникальные показатели</div><div class="value">' + fmt.format(n(m.uniqueClicks)) + '</div><div class="sub">по данным MAX</div></div>' +
+      '<div class="stat"><div class="label">Стоимость по CPM</div><div class="value">' + n(m.ctr).toFixed(2) + '%</div><div class="sub">по просмотрам MAX</div></div>' +
       '<div class="stat"><div class="label">Стоимость по CPM</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div><div class="sub">CPM ' + fmt.format(n(m.cpm)) + '₽</div></div>';
   }
 
@@ -950,8 +950,8 @@ function renderStats(){
     byId('quick').innerHTML =
       '<div class="stat"><div class="label">Статус</div><div class="value" style="font-size:22px">' + statusLabel(REPORT.status) + '</div><div class="sub">живой</div></div>' +
       '<div class="stat"><div class="label">Автоудаление</div><div class="value" style="font-size:22px">' + safe(m.autoDelete || '—') + '</div><div class="sub">актуально</div></div>' +
-      '<div class="stat"><div class="label">Повторы кликов</div><div class="value">' + fmt.format(n(m.repeatClicks)) + '</div><div class="sub">не входят в уникальные</div></div>' +
-      '<div class="stat"><div class="label">Все нажатия</div><div class="value">' + fmt.format(n(m.totalClicks)) + '</div><div class="sub">сырые события</div></div>';
+      '<div class="stat"><div class="label">Служебные данные</div><div class="value">' + fmt.format(n(m.repeatClicks)) + '</div><div class="sub">не показываются</div></div>' +
+      '<div class="stat"><div class="label">Служебные события</div><div class="value">' + fmt.format(n(m.totalClicks)) + '</div><div class="sub">сырые события</div></div>';
   }
 
   function renderChart(){
@@ -980,7 +980,7 @@ function renderChannels(){
         '<div class="chName"><div class="avatar">' + safe(first) + '</div><div>' + safe(c.name || 'Канал') + '</div></div>' +
         '<div class="metric"><span class="cellLabel">Просмотры</span><b>' + fmt.format(n(c.views)) + '</b></div>' +
         '<div class="metric"><span class="cellLabel">Клики</span><b>' + fmt.format(n(c.clicks)) + '</b></div>' +
-        '<div class="metric"><span class="cellLabel">CTR</span><b>' + n(c.ctr).toFixed(2) + '%</b></div>' +
+        '<div class="metric"><span class="cellLabel">Стоимость</span><b>' + n(c.ctr).toFixed(2) + '%</b></div>' +
         '<div class="metric"><span class="cellLabel">Стоимость</span><b>' + fmt.format(n(c.cost)) + '₽</b></div>' +
       '</div>';
     }).join('') || '<div class="notice">Каналов для отчёта пока нет.</div>';
@@ -1003,7 +1003,7 @@ function renderChannels(){
       '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div></div>' +
       '<div class="stat"><div class="label">CPM</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div></div>' +
       '<div class="stat"><div class="label">Стоимость</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div></div>' +
-      '<div class="stat"><div class="label">CTR кнопок</div><div class="value">' + n(m.ctr).toFixed(2) + '%</div></div>';
+      '<div class="stat"><div class="label">Стоимость по CPM</div><div class="value">' + n(m.ctr).toFixed(2) + '%</div></div>';
   }
 
   function renderHistory(){
@@ -1018,9 +1018,9 @@ function renderChannels(){
     var worst = channels.slice().sort(function(a,b){ return n(a.ctr) - n(b.ctr); })[0];
 
     byId('insightRows').innerHTML =
-      '<div class="insight">🔥 Лучший канал по CTR: <b>' + safe(best ? best.name : 'пока нет данных') + '</b>.</div>' +
+      '<div class="insight">🔥 Лучший канал по Стоимость: <b>' + safe(best ? best.name : 'пока нет данных') + '</b>.</div>' +
       '<div class="insight">⚠️ Самый слабый отклик: <b>' + safe(worst ? worst.name : 'пока нет данных') + '</b>.</div>' +
-      '<div class="insight">🛡️ Уникальные клики считаются строго: один человек по одной кнопке — один клик.</div>' +
+      '<div class="insight">🛡️ Просмотры MAX считаются строго: один человек по одной кнопке — один клик.</div>' +
       '<div class="insight">♻️ Если пост редактируется, отчёт берёт актуальные текст, кнопки, CPM, автоудаление и статус.</div>';
   }
 
@@ -1075,7 +1075,7 @@ function renderChannels(){
       var r = await fetch(location.pathname + '?json=1&v=' + Date.now(), { cache: 'no-store' });
       if (!r.ok) return;
       REPORT = await r.json();
-      
+  
   // LR_NO_CLICKS_REPORT_START
   var __lrClickTab = document.querySelector('.tab[data-view="buttons"]');
   if (__lrClickTab) __lrClickTab.remove();
@@ -1083,14 +1083,16 @@ function renderChannels(){
   var __lrButtonsView = document.getElementById('buttons');
   if (__lrButtonsView) __lrButtonsView.remove();
 
-  renderButtons = function(){};
+  if (typeof renderButtons === 'function') {
+    renderButtons = function(){};
+  }
 
   renderStats = function(){
     var m = REPORT.metrics || {};
     byId('stats').innerHTML =
-      '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div><div class="sub">из каналов</div></div>' +
+      '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div><div class="sub">считываются из MAX</div></div>' +
       '<div class="stat"><div class="label">CPM</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div><div class="sub">цена за 1000 просмотров</div></div>' +
-      '<div class="stat"><div class="label">Стоимость</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div><div class="sub">просмотры / 1000 × CPM</div></div>' +
+      '<div class="stat"><div class="label">Стоимость по CPM</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div><div class="sub">просмотры × CPM / 1000</div></div>' +
       '<div class="stat"><div class="label">Автоудаление</div><div class="value" style="font-size:26px">' + safe(m.autoDelete || '—') + '</div><div class="sub">актуально</div></div>';
   };
 
@@ -1105,7 +1107,7 @@ function renderChannels(){
 
     byId('quick').innerHTML =
       '<div class="stat"><div class="label">Статус</div><div class="value" style="font-size:22px">' + statusLabel(REPORT.status) + '</div><div class="sub">живой</div></div>' +
-      '<div class="stat"><div class="label">Автоудаление</div><div class="value" style="font-size:22px">' + safe(m.autoDelete || '—') + '</div><div class="sub">по настройке поста</div></div>' +
+      '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div><div class="sub">из MAX</div></div>' +
       '<div class="stat"><div class="label">CPM</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div><div class="sub">за 1000 просмотров</div></div>' +
       '<div class="stat"><div class="label">Обновлено</div><div class="value" style="font-size:18px">' + safe(upd) + '</div><div class="sub">автоматически</div></div>';
   };
@@ -1116,7 +1118,7 @@ function renderChannels(){
       return '<div class="channelRow" style="grid-template-columns:2fr 1fr 1fr">' +
         '<div class="chName"><div class="avatar">' + safe(first) + '</div><div>' + safe(c.name || 'Канал') + '</div></div>' +
         '<div class="metric"><span class="cellLabel">Просмотры</span><b>' + fmt.format(n(c.views)) + '</b><span>MAX</span></div>' +
-        '<div class="metric"><span class="cellLabel">Стоимость</span><b>' + fmt.format(n(c.cost)) + '₽</b><span>по CPM</span></div>' +
+        '<div class="metric"><span class="cellLabel">Стоимость</span><b>' + fmt.format(n(c.cost)) + '₽</b><span>views × CPM / 1000</span></div>' +
       '</div>';
     }).join('') || '<div class="notice">Каналов для отчёта пока нет.</div>';
   };
@@ -1125,9 +1127,9 @@ function renderChannels(){
     var m = REPORT.metrics || {};
     byId('cpmRows').innerHTML =
       '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div></div>' +
-      '<div class="stat"><div class="label">CPM</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div></div>' +
+      '<div class="stat"><div class="label">CPM пользователя</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div></div>' +
       '<div class="stat"><div class="label">Стоимость</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div></div>' +
-      '<div class="stat"><div class="label">Формула</div><div class="value" style="font-size:18px">views / 1000 × CPM</div></div>';
+      '<div class="stat"><div class="label">Формула</div><div class="value" style="font-size:18px">просмотры × CPM / 1000</div></div>';
   };
 
   renderInsights = function(){
@@ -1139,7 +1141,7 @@ function renderChannels(){
     byId('insightRows').innerHTML =
       '<div class="insight">👁️ Больше всего просмотров дал канал: <b>' + safe(bestViews ? bestViews.name : 'пока нет данных') + '</b>.</div>' +
       '<div class="insight">💰 Самая большая стоимость по CPM у канала: <b>' + safe(bestCost ? bestCost.name : 'пока нет данных') + '</b>.</div>' +
-      '<div class="insight">📌 Итоговая стоимость считается только по просмотрам MAX: <b>' + fmt.format(n(m.cost)) + '₽</b>.</div>' +
+      '<div class="insight">📌 Итоговая стоимость: <b>' + fmt.format(n(m.views)) + ' × ' + fmt.format(n(m.cpm)) + '₽ / 1000 = ' + fmt.format(n(m.cost)) + '₽</b>.</div>' +
       '<div class="insight">♻️ Если пост редактируется, отчёт берёт актуальные текст, медиа, CPM, автоудаление и статус.</div>';
   };
   // LR_NO_CLICKS_REPORT_END
