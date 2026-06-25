@@ -781,13 +781,13 @@ th{color:var(--muted)}
       <button class="action blue" id="refreshBtn">🔄 Обновить</button>
     </div>
 
-    <div class="lead">Отчёт обновляется автоматически: статус поста, текст, кнопки, время удаления, просмотры MAX, клики кнопок и CPM берутся из актуальных данных.</div>
+    <div class="lead">Отчёт обновляется автоматически: статус поста, текст, кнопки, время удаления, просмотры MAX и CPM берутся из актуальных данных.</div>
 
     <div class="promo">
       <svg class="miniLogo" viewBox="0 0 512 512" aria-label="LinkRay"><rect width="512" height="512" rx="130" fill="url(#g1)"/><circle cx="256" cy="256" r="205" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="12"/><path d="M256 98l121 49v83c0 82-49 145-121 180-72-35-121-98-121-180v-83z" fill="#e9ffff" stroke="#0e3976" stroke-width="13"/><path d="M128 307c87-6 165-50 238-142" fill="none" stroke="#66f2b5" stroke-width="31" stroke-linecap="round"/><path d="M304 145l72 11-8 72" fill="none" stroke="#66f2b5" stroke-width="31" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <div>
         <div class="promo-title">🚀 LinkRay — живые отчёты для рекламодателей в MAX</div>
-        <div class="promo-text">Постинг, закупы, просмотры MAX, уникальные клики по кнопкам, CPM, автоудаление и история размещения — в одном красивом отчёте.</div>
+        <div class="promo-text">Постинг, закупы, просмотры MAX, CPM, автоудаление и история размещения — в одном красивом отчёте.</div>
       </div>
       <a class="promo-btn" href="${BOT_LINK}" target="_blank" rel="noopener noreferrer">Открыть LinkRay</a>
     </div>
@@ -795,7 +795,6 @@ th{color:var(--muted)}
     <div class="tabs">
       <button class="tab active" data-view="overview">Обзор</button>
       <button class="tab" data-view="channels">Каналы</button>
-      <button class="tab" data-view="buttons">Кнопки</button>
       <button class="tab" data-view="cpm">CPM</button>
       <button class="tab" data-view="history">История</button>
       <button class="tab" data-view="insights">Выводы</button>
@@ -841,17 +840,6 @@ th{color:var(--muted)}
     <section class="panel">
       <h2>📌 Публикации по каналам</h2>
       <div class="channelRows" id="channelRows"></div>
-    </section>
-  </main>
-
-  <main id="buttons" class="view">
-    <section class="panel">
-      <h2>🔘 Клики только по кнопкам</h2>
-      <div class="notice">Ссылки в тексте поста не считаются кликами. Уникальный клик: один человек по одной кнопке засчитывается один раз.</div>
-      <table>
-        <thead><tr><th>Кнопка</th><th>Уникальные</th><th>Все нажатия</th><th>Повторы</th><th>Доля</th></tr></thead>
-        <tbody id="buttonRows"></tbody>
-      </table>
     </section>
   </main>
 
@@ -917,7 +905,7 @@ function renderStats(){
     var m = REPORT.metrics || {};
     byId('stats').innerHTML =
       '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div><div class="sub">из каналов</div></div>' +
-      '<div class="stat"><div class="label">Уникальные клики кнопок</div><div class="value">' + fmt.format(n(m.uniqueClicks)) + '</div><div class="sub">1 человек = 1 клик</div></div>' +
+      '<div class="stat"><div class="label">Уникальные показатели</div><div class="value">' + fmt.format(n(m.uniqueClicks)) + '</div><div class="sub">1 человек = 1 клик</div></div>' +
       '<div class="stat"><div class="label">CTR по кнопкам</div><div class="value">' + n(m.ctr).toFixed(2) + '%</div><div class="sub">клики / просмотры</div></div>' +
       '<div class="stat"><div class="label">Стоимость по CPM</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div><div class="sub">CPM ' + fmt.format(n(m.cpm)) + '₽</div></div>';
   }
@@ -1087,7 +1075,76 @@ function renderChannels(){
       var r = await fetch(location.pathname + '?json=1&v=' + Date.now(), { cache: 'no-store' });
       if (!r.ok) return;
       REPORT = await r.json();
-      renderAll();
+      
+  // LR_NO_CLICKS_REPORT_START
+  var __lrClickTab = document.querySelector('.tab[data-view="buttons"]');
+  if (__lrClickTab) __lrClickTab.remove();
+
+  var __lrButtonsView = document.getElementById('buttons');
+  if (__lrButtonsView) __lrButtonsView.remove();
+
+  renderButtons = function(){};
+
+  renderStats = function(){
+    var m = REPORT.metrics || {};
+    byId('stats').innerHTML =
+      '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div><div class="sub">из каналов</div></div>' +
+      '<div class="stat"><div class="label">CPM</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div><div class="sub">цена за 1000 просмотров</div></div>' +
+      '<div class="stat"><div class="label">Стоимость</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div><div class="sub">просмотры / 1000 × CPM</div></div>' +
+      '<div class="stat"><div class="label">Автоудаление</div><div class="value" style="font-size:26px">' + safe(m.autoDelete || '—') + '</div><div class="sub">актуально</div></div>';
+  };
+
+  renderQuick = function(){
+    var m = REPORT.metrics || {};
+    var upd = '';
+    try {
+      upd = new Date(m.updatedAt || Date.now()).toLocaleString('ru-RU');
+    } catch(e) {
+      upd = 'сейчас';
+    }
+
+    byId('quick').innerHTML =
+      '<div class="stat"><div class="label">Статус</div><div class="value" style="font-size:22px">' + statusLabel(REPORT.status) + '</div><div class="sub">живой</div></div>' +
+      '<div class="stat"><div class="label">Автоудаление</div><div class="value" style="font-size:22px">' + safe(m.autoDelete || '—') + '</div><div class="sub">по настройке поста</div></div>' +
+      '<div class="stat"><div class="label">CPM</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div><div class="sub">за 1000 просмотров</div></div>' +
+      '<div class="stat"><div class="label">Обновлено</div><div class="value" style="font-size:18px">' + safe(upd) + '</div><div class="sub">автоматически</div></div>';
+  };
+
+  renderChannels = function(){
+    byId('channelRows').innerHTML = (REPORT.channels || []).map(function(c){
+      var first = (c.name || 'К').slice(0,1);
+      return '<div class="channelRow" style="grid-template-columns:2fr 1fr 1fr">' +
+        '<div class="chName"><div class="avatar">' + safe(first) + '</div><div>' + safe(c.name || 'Канал') + '</div></div>' +
+        '<div class="metric"><span class="cellLabel">Просмотры</span><b>' + fmt.format(n(c.views)) + '</b><span>MAX</span></div>' +
+        '<div class="metric"><span class="cellLabel">Стоимость</span><b>' + fmt.format(n(c.cost)) + '₽</b><span>по CPM</span></div>' +
+      '</div>';
+    }).join('') || '<div class="notice">Каналов для отчёта пока нет.</div>';
+  };
+
+  renderCpm = function(){
+    var m = REPORT.metrics || {};
+    byId('cpmRows').innerHTML =
+      '<div class="stat"><div class="label">Просмотры MAX</div><div class="value">' + fmt.format(n(m.views)) + '</div></div>' +
+      '<div class="stat"><div class="label">CPM</div><div class="value">' + fmt.format(n(m.cpm)) + '₽</div></div>' +
+      '<div class="stat"><div class="label">Стоимость</div><div class="value">' + fmt.format(n(m.cost)) + '₽</div></div>' +
+      '<div class="stat"><div class="label">Формула</div><div class="value" style="font-size:18px">views / 1000 × CPM</div></div>';
+  };
+
+  renderInsights = function(){
+    var channels = (REPORT.channels || []).slice().filter(function(c){ return n(c.views) > 0; });
+    var bestViews = channels.slice().sort(function(a,b){ return n(b.views) - n(a.views); })[0];
+    var bestCost = channels.slice().sort(function(a,b){ return n(b.cost) - n(a.cost); })[0];
+    var m = REPORT.metrics || {};
+
+    byId('insightRows').innerHTML =
+      '<div class="insight">👁️ Больше всего просмотров дал канал: <b>' + safe(bestViews ? bestViews.name : 'пока нет данных') + '</b>.</div>' +
+      '<div class="insight">💰 Самая большая стоимость по CPM у канала: <b>' + safe(bestCost ? bestCost.name : 'пока нет данных') + '</b>.</div>' +
+      '<div class="insight">📌 Итоговая стоимость считается только по просмотрам MAX: <b>' + fmt.format(n(m.cost)) + '₽</b>.</div>' +
+      '<div class="insight">♻️ Если пост редактируется, отчёт берёт актуальные текст, медиа, CPM, автоудаление и статус.</div>';
+  };
+  // LR_NO_CLICKS_REPORT_END
+
+  renderAll();
     } catch(e) {}
   }, 15000);
   // LR_LIVE_REFRESH_END
