@@ -482,22 +482,12 @@ function normalizeAttachment(a) {
 }
 function normalizeAttachments(list = []) { const out = []; const seen = new Set(); for (const a of list || []) { const n = normalizeAttachment(a); if (!n) continue; const k = JSON.stringify(n); if (seen.has(k)) continue; seen.add(k); out.push(n); } return out; }
 
+
+
+
+
+
 // LR_NATIVE_MAX_MARKUP_START
-function lrNativeEscapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function lrNativeAttr(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
 function lrMarkupType(mark) {
   return String(
     mark?.type ||
@@ -519,16 +509,24 @@ function lrMarkupStart(mark) {
     mark?.index ??
     0
   );
+
   return Number.isFinite(n) ? Math.max(0, n) : 0;
 }
 
 function lrMarkupEnd(mark, textLength) {
   const start = lrMarkupStart(mark);
+
   const directEnd = Number(mark?.to ?? mark?.end);
-  if (Number.isFinite(directEnd)) return Math.max(start, Math.min(textLength, directEnd));
+
+  if (Number.isFinite(directEnd)) {
+    return Math.max(start, Math.min(textLength, directEnd));
+  }
 
   const len = Number(mark?.length ?? mark?.len ?? mark?.size ?? 0);
-  if (Number.isFinite(len) && len > 0) return Math.max(start, Math.min(textLength, start + len));
+
+  if (Number.isFinite(len) && len > 0) {
+    return Math.max(start, Math.min(textLength, start + len));
+  }
 
   return start;
 }
@@ -540,109 +538,140 @@ function lrMarkupUrl(mark) {
     mark?.link ||
     mark?.payload?.url ||
     mark?.payload?.href ||
-   url ||
-    mark?.href ||
-    mark?.link ||
-    mark?.payload?.url ||
-    mark?.payload?.href ||
     mark?.payload?.link ||
     ''
   );
 }
 
-function lrMarkupTags(mark) {
-  const type = lrMarkupType(mark);
-  const url = lrMarkupUrl(mark);
+function lrApplyBlockMarkdown(type, part) {
+  const clean = String(part || '');
 
-  if (type.includes('bold') || type.includes('strong')) return ['<b>', '</b>'];
-  if (type.includes('italic') || type.includes('emphasis') || type === 'em') return ['<i>', '</i>'];
-  if (type.includes('underline') || type === 'ins') return ['<u>', '</u>'];
-  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return ['<s>', '</s>'];
-  if (type.includes('mono') || type.includes('inline_code') || type === 'code') return ['<code>', '</code>'];
-  if (type.includes('pre')) return ['<pre>', '</pre>'];
-  if (type.includes('quote') || type.includes('blockquote')) return ['<blockquote>', '</blockquote>'];
-  if (type.includes('heading') || type.includes('header') || type.includes('title') || /^h[1-6]$/.test(type)) return ['<h2>', '</h2>'];
-  if (type.includes('mark') || type.includes('highlight')) return ['<mark>', '</mark>'];
-  if ((type.includes('link') || type.includes('url')) && url) return [`<a href="${lrNativeAttr(url)}">`, '</a>'];
+  if (!clean) return clean;
 
-  return null;
+  if (type.includes('quote') || type.includes('blockquote')) {
+    return clean
+      .split('\n')
+      .map((line) => line.trim() ? `> ${line}` : '>')
+      .join('\n');
+  }
+
+  if (type.includes('heading') || type.includes('header') || type.includes('title') || /^h[1-6]$/.test(type)) {
+    return clean
+      .split('\n')
+      .map((line) => line.trim() ? `# ${line}` : line)
+      .join('\n');
+  }
+
+  return clean;
 }
 
-function lrMaxMarkupToHtml(text, markup = []) {
+function lrApplyInlineMarkdown(type, part, mark) {
+  const value = String(part || '');
+  const url = lrMarkupUrl(mark);
+
+  if (!value) return value;
+
+  if (type.includes('bold') || type.includes('strong')) return `**${value}**`;
+  if (type.includes('italic') || type.includes('emphasis') || type === 'em') return `_${value}_`;
+  if (type.includes('underline') || type === 'ins') return `++${value}++`;
+  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return `~~${value}~~`;
+  if (type.includes('mono') || type.includes('inline_code') || type === 'code') return '`' + value.replace(/`/g, 'ʼ') + '`';
+  if (type.includes('mark') || type.includes('highlight')) return `^^${value}^^`;
+  if ((type.includes('link') || type.includes('url')) && url) return `[${value}](${url})`;
+
+  return value;
+}
+
+function lrMaxMarkupToMarkdown(text, markup = []) {
   const source = String(text || '');
 
   if (!source) return '';
 
   const list = Array.isArray(markup) ? markup : [];
 
-  if (!list.length) {
-    return lrNativeEscapeHtml(source);
-  }
+  if (!list.length) return source;
 
-  const opens = new Map();
-  const closes = new Map();
-  let applied = 0;
+  const normalized = [];
 
   for (const mark of list) {
+    const type = lrMarkupType(mark);
     const start = lrMarkupStart(mark);
     const end = lrMarkupEnd(mark, source.length);
-    const tags = lrMarkupTags(mark);
 
-    if (!tags || end <= start || start >= source.length) {
-      continue;
-    }
+    if (!type || end <= start || start >= source.length) continue;
 
-    if (!opens.has(start)) opens.set(start, []);
-    if (!closes.has(end)) closes.set(end, []);
-
-    opens.get(start).push({ open: tags[0], close: tags[1], start, end });
-    closes.get(end).push({ open: tags[0], close: tags[1], start, end });
-    applied += 1;
+    normalized.push({ mark, type, start, end });
   }
 
-  if (!applied) {
-    return lrNativeEscapeHtml(source);
+  if (!normalized.length) return source;
+
+  // Сначала применяем самые поздние диапазоны, чтобы индексы не съехали.
+  normalized.sort((a, b) => {
+    if (b.start !== a.start) return b.start - a.start;
+    return a.end - b.end;
+  });
+
+  let result = source;
+
+  for (const item of normalized) {
+    const before = result.slice(0, item.start);
+    const part = result.slice(item.start, item.end);
+    const after = result.slice(item.end);
+
+    let replaced = part;
+
+    if (
+      item.type.includes('quote') ||
+      item.type.includes('blockquote') ||
+      item.type.includes('heading') ||
+      item.type.includes('header') ||
+      item.type.includes('title') ||
+      /^h[1-6]$/.test(item.type)
+    ) {
+      replaced = lrApplyBlockMarkdown(item.type, part);
+    } else {
+      replaced = lrApplyInlineMarkdown(item.type, part, item.mark);
+    }
+
+    result = before + replaced + after;
   }
 
-  let out = '';
-
-  for (let i = 0; i <= source.length; i++) {
-    if (closes.has(i)) {
-      const arr = closes.get(i).sort((a, b) => b.start - a.start);
-      for (const item of arr) out += item.close;
-    }
-
-    if (opens.has(i)) {
-      const arr = opens.get(i).sort((a, b) => b.end - a.end);
-      for (const item of arr) out += item.open;
-    }
-
-    if (i < source.length) {
-      out += lrNativeEscapeHtml(source[i]);
-    }
-  }
-
-  return out;
+  return result;
 }
 
 function lrDebugMarkupTypes(markup = []) {
   try {
     const types = [...new Set((Array.isArray(markup) ? markup : []).map(lrMarkupType).filter(Boolean))];
-    if (types.length) console.log('[native-max-markup] types:', JSON.stringify(types));
+
+    if (types.length) {
+      console.log('[native-max-markup] types:', JSON.stringify(types));
+    }
   } catch {}
 }
 // LR_NATIVE_MAX_MARKUP_END
 
 
 async function hydrateContent(u) {
-  const best = bestContentCandidate(u);
+  const best = bestContentCandidate(u) || {};
   const rawText = String(best.text || firstText(u) || '').trim();
   const markup = Array.isArray(best.markup) && best.markup.length ? best.markup : firstMarkup(u);
   const attachments = normalizeAttachments(collectAttachments(u?.message || u));
 
   lrDebugMarkupTypes(markup);
 
-  const htmlText = lrMaxMarkupToHtml(rawText, markup);
+  if (Array.isArray(markup) && markup.length) {
+    return {
+      text: lrMaxMarkupToMarkdown(rawText, markup),
+      format: 'markdown',
+      markup,
+      attachments,
+      raw: u?.message || u
+    };
+  }
+
+  const htmlText = typeof htmlifyText === 'function'
+    ? htmlifyText(rawText, markup)
+    : rawText;
 
   return {
     text: htmlText,
