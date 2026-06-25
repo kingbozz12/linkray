@@ -5,14 +5,14 @@ function lrNoPreviewPayload(payload) {
 
   const patched = { ...payload };
 
-  patched.disable_link_preview = true;
-  patched.disableLinkPreview = true;
+  patched.disable_link_preview = false;
+  patched.disableLinkPreview = false;
 
   if (patched.message && typeof patched.message === 'object' && !Array.isArray(patched.message)) {
     patched.message = {
       ...patched.message,
-      disable_link_preview: true,
-      disableLinkPreview: true,
+      disable_link_preview: false,
+      disableLinkPreview: false,
     };
   }
 
