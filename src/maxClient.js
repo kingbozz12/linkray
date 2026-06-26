@@ -113,8 +113,8 @@ function lrNoPreviewPayload(payload) {
   const hasHtml = (value) => /<\/?(a|b|strong|i|em|u|ins|s|strike|del|code|blockquote|h[1-6])/i.test(String(value || ''));
 
   // В MAX по документации: disable_link_preview=false отключает превью ссылок.
-  patched.disable_link_preview = false;
-  patched.disableLinkPreview = false;
+  patched.disable_link_preview = true;
+  patched.disableLinkPreview = true;
 
   if (typeof patched.text === 'string' && hasHtml(patched.text)) {
     patched.format = 'html';
@@ -123,8 +123,8 @@ function lrNoPreviewPayload(payload) {
   if (patched.message && typeof patched.message === 'object' && !Array.isArray(patched.message)) {
     patched.message = {
       ...patched.message,
-      disable_link_preview: false,
-      disableLinkPreview: false,
+      disable_link_preview: true,
+      disableLinkPreview: true,
     };
 
     if (typeof patched.message.text === 'string' && hasHtml(patched.message.text)) {
@@ -339,14 +339,114 @@ function lrLooksMarkdownAfterNormalize(text) {
   );
 }
 
+
 function lrOutgoingTextAndFormat(text, fallback = 'html') {
-  const normalized = lrNormalizeMixedMarkupToMarkdown(text);
+  const raw = String(text ?? '');
 
-  if (lrLooksMarkdownAfterNormalize(normalized)) {
-    return { text: normalized, format: 'markdown' };
-  }
+  const decode = (value) => String(value ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
 
-  return { text: String(text || ''), format: fallback || 'html' };
+  const esc = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const attr = (value) => esc(value).replace(/"/g, '&quot;');
+
+  const keepHtml = (value) => {
+    let source = decode(value);
+    const saved = [];
+
+    const save = (html) => {
+      const key = `__LR_KEEP_${saved.length}__`;
+      saved.push(html);
+      return key;
+    };
+
+    source = source.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => {
+      return save(`<a href="${attr(url)}">${keepHtml(label)}</a>`);
+    });
+
+    source = source
+      .replace(/<\s*(b|strong)\s*>/gi, save('<b>'))
+      .replace(/<\s*\/\s*(b|strong)\s*>/gi, save('</b>'))
+      .replace(/<\s*(i|em)\s*>/gi, save('<i>'))
+      .replace(/<\s*\/\s*(i|em)\s*>/gi, save('</i>'))
+      .replace(/<\s*(u|ins)\s*>/gi, save('<u>'))
+      .replace(/<\s*\/\s*(u|ins)\s*>/gi, save('</u>'))
+      .replace(/<\s*(s|strike|del)\s*>/gi, save('<s>'))
+      .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, save('</s>'))
+      .replace(/<\s*blockquote\s*>/gi, save('<blockquote>'))
+      .replace(/<\s*\/\s*blockquote\s*>/gi, save('</blockquote>'))
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]*>/g, '');
+
+    source = esc(source);
+
+    saved.forEach((html, i) => {
+      source = source.replaceAll(`__LR_KEEP_${i}__`, html);
+    });
+
+    return source;
+  };
+
+  const mdToHtml = (value) => {
+    let source = decode(value);
+    const saved = [];
+
+    const save = (html) => {
+      const key = `__LR_MD_${saved.length}__`;
+      saved.push(html);
+      return key;
+    };
+
+    source = source.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
+      return save(`<a href="${attr(url)}"><b>${esc(label)}</b></a>`);
+    });
+
+    source = source.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+      return save(`<a href="${attr(url)}"><b>${esc(label)}</b></a>`);
+    });
+
+    source = source.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+      return save(`<a href="${attr(url)}">${esc(label)}</a>`);
+    });
+
+    source = esc(source);
+
+    source = source
+      .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+      .replace(/__([^_\n]+?)__/g, '<b>$1</b>')
+      .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
+      .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
+      .replace(/(^|[^\w])_([^_\n]+?)_/g, '$1<i>$2</i>');
+
+    saved.forEach((html, i) => {
+      source = source.replaceAll(`__LR_MD_${i}__`, html);
+    });
+
+    return source;
+  };
+
+  let html = /<\/?(a|b|strong|i|em|u|ins|s|strike|del|code|blockquote|h[1-6])\b/i.test(decode(raw))
+    ? keepHtml(raw)
+    : mdToHtml(raw);
+
+  html = html
+    .replace(/\*\*/g, '')
+    .replace(/\+\+/g, '')
+    .replace(/<\/b>\s*<b>/g, '')
+    .replace(/<\/u>\s*<u>/g, '')
+    .replace(/<\/i>\s*<i>/g, '')
+    .replace(/<\/s>\s*<s>/g, '')
+    .trim();
+
+  return { text: html, format: 'html' };
 }
 // LR_MIXED_MARKUP_TO_MARKDOWN_END
 
