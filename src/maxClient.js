@@ -110,16 +110,26 @@ function lrNoPreviewPayload(payload) {
 
   const patched = { ...payload };
 
-  // В MAX: false = не генерировать preview ссылок.
-  patched.disable_link_preview = true;
-  patched.disableLinkPreview = true;
+  const hasHtml = (value) => /<\/?(a|b|strong|i|em|u|ins|s|strike|del|code|blockquote|h[1-6])/i.test(String(value || ''));
+
+  // В MAX по документации: disable_link_preview=false отключает превью ссылок.
+  patched.disable_link_preview = false;
+  patched.disableLinkPreview = false;
+
+  if (typeof patched.text === 'string' && hasHtml(patched.text)) {
+    patched.format = 'html';
+  }
 
   if (patched.message && typeof patched.message === 'object' && !Array.isArray(patched.message)) {
     patched.message = {
       ...patched.message,
-      disable_link_preview: true,
-      disableLinkPreview: true,
+      disable_link_preview: false,
+      disableLinkPreview: false,
     };
+
+    if (typeof patched.message.text === 'string' && hasHtml(patched.message.text)) {
+      patched.message.format = 'html';
+    }
   }
 
   return patched;

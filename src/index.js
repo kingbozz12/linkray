@@ -725,31 +725,113 @@ function safeDraft(data) {
 }
 function hasContent(d) { return Boolean(String(d?.content?.text || '').trim() || (Array.isArray(d?.content?.attachments) && d.content.attachments.length)); }
 
+
 function applyMarkupToHtml(text, markup = []) {
   const source = String(text || '');
   const marks = Array.isArray(markup) ? markup : [];
-  const opens = new Map(); const closes = new Map();
-  const add = (map, pos, tag, len) => { if (!map.has(pos)) map.set(pos, []); map.get(pos).push({ tag, len }); };
+
+  const esc = (v) => String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const attr = (v) => esc(v).replace(/"/g, '&quot;');
+
+  const typeOf = (m) => String(
+    m?.type ||
+    m?.kind ||
+    m?.style ||
+    m?.format ||
+    m?.markup_type ||
+    m?.markupType ||
+    m?.entity_type ||
+    m?.entityType ||
+    ''
+  ).toLowerCase();
+
+  const urlOf = (m) => String(
+    m?.url ||
+    m?.href ||
+    m?.link ||
+    m?.target_url ||
+    m?.targetUrl ||
+    m?.payload?.url ||
+    m?.payload?.href ||
+    m?.payload?.link ||
+    ''
+  ).trim();
+
+  const rangeOf = (m) => {
+    let start = Number(m?.from ?? m?.start ?? m?.offset ?? m?.pos ?? m?.range?.from ?? m?.range?.start ?? 0);
+    let end = Number(m?.to ?? m?.end ?? m?.range?.to ?? m?.range?.end ?? NaN);
+    const len = Number(m?.length ?? m?.len ?? m?.range?.length ?? m?.range?.len ?? NaN);
+
+    if (!Number.isFinite(start)) start = 0;
+    if (!Number.isFinite(end)) end = Number.isFinite(len) ? start + len : start;
+
+    start = Math.max(0, Math.min(source.length, start));
+    end = Math.max(0, Math.min(source.length, end));
+
+    if (end <= start) return null;
+    return { start, end };
+  };
+
+  const tagOf = (m) => {
+    const t = typeOf(m);
+    const url = urlOf(m);
+
+    if ((t.includes('link') || t.includes('url')) && /^https?:\/\//i.test(url)) {
+      return { open: `<a href="${attr(url)}">`, close: '</a>', priority: 70 };
+    }
+
+    if (t.includes('strong') || t.includes('bold')) return { open: '<b>', close: '</b>', priority: 10 };
+    if (t.includes('italic') || t.includes('emphasis') || t.includes('emphasized') || t === 'em') return { open: '<i>', close: '</i>', priority: 20 };
+    if (t.includes('underline') || t.includes('underlined') || t.includes('ins')) return { open: '<u>', close: '</u>', priority: 30 };
+    if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return { open: '<s>', close: '</s>', priority: 40 };
+    if (t.includes('mono') || t.includes('code')) return { open: '<code>', close: '</code>', priority: 50 };
+    if (t.includes('heading') || t.includes('header') || t.includes('title') || /^h[1-6]$/.test(t)) return { open: '<b>', close: '</b>', priority: 5 };
+    if (t.includes('quote') || t.includes('blockquote') || t.includes('quotation') || t.includes('cite')) return { open: '<blockquote>', close: '</blockquote>', priority: 6 };
+
+    return null;
+  };
+
+  const opens = new Map();
+  const closes = new Map();
+
+  const add = (map, pos, item) => {
+    if (!map.has(pos)) map.set(pos, []);
+    map.get(pos).push(item);
+  };
+
   for (const m of marks) {
-    const from = Number(m.from); const len = Number(m.length);
-    if (!Number.isFinite(from) || !Number.isFinite(len) || len <= 0 || from < 0 || from >= source.length) continue;
-    const end = Math.min(source.length, from + len); const type = String(m.type || '').toLowerCase();
-    let open = '', close = '';
-    if ((type === 'link' || type === 'url') && m.url) { open = `<a href="${attr(m.url)}">`; close = '</a>'; }
-    else if (['strong','bold'].includes(type)) { open = '<b>'; close = '</b>'; }
-    else if (['emphasized','italic','em'].includes(type)) { open = '<i>'; close = '</i>'; }
-    else if (['underline','underlined'].includes(type)) { open = '<u>'; close = '</u>'; }
-    else if (['strikethrough','strike'].includes(type)) { open = '<s>'; close = '</s>'; }
-    else if (['code','monospace'].includes(type)) { open = '<code>'; close = '</code>'; }
-    if (open) { add(opens, from, open, len); add(closes, end, close, len); }
+    if (!m || typeof m !== 'object') continue;
+
+    const range = rangeOf(m);
+    const tag = tagOf(m);
+
+    if (!range || !tag) continue;
+
+    const item = { ...tag, start: range.start, end: range.end };
+    add(opens, range.start, item);
+    add(closes, range.end, item);
   }
+
+  if (!opens.size && !closes.size) return esc(source);
+
+  for (const arr of opens.values()) arr.sort((a, b) => a.priority - b.priority);
+  for (const arr of closes.values()) arr.sort((a, b) => b.priority - a.priority);
+
   let out = '';
+
   for (let i = 0; i <= source.length; i++) {
-    if (closes.has(i)) for (const x of closes.get(i).sort((a,b)=>a.len-b.len)) out += x.tag;
-    if (opens.has(i)) for (const x of opens.get(i).sort((a,b)=>b.len-a.len)) out += x.tag;
-    if (i < source.length) out += escapeHtml(source[i]);
+    for (const item of closes.get(i) || []) out += item.close;
+    for (const item of opens.get(i) || []) out += item.open;
+    if (i < source.length) out += esc(source[i]);
   }
-  return out;
+
+  return out
+    .replace(/<\/blockquote>\s*<blockquote>/g, '\n')
+    .trim();
 }
 function contentTextCandidates(v, found = [], seen = new Set(), path = '') {
   if (!v || typeof v !== 'object' || seen.has(v)) return found;
@@ -1270,6 +1352,142 @@ function lrSignatureForPostFormat(value, format = 'html') {
 // LR_SIGNATURE_FORMAT_SAFE_END
 
 
+
+
+// LR_AUTOSIG_HTML_V8_START
+function lrSigV8Decode(value) {
+  return String(value ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function lrSigV8Esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrSigV8Attr(value) {
+  return lrSigV8Esc(value).replace(/"/g, '&quot;');
+}
+
+function lrSigV8CleanHtml(value) {
+  let text = lrSigV8Decode(value).trim();
+  if (!text) return '';
+
+  const saved = [];
+
+  const save = (html) => {
+    const key = `__LR_SIG_V8_${saved.length}__`;
+    saved.push(html);
+    return key;
+  };
+
+  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => {
+    const inner = lrSigV8CleanHtml(label);
+    return save(`<a href="${lrSigV8Attr(url)}">${inner}</a>`);
+  });
+
+  text = text
+    .replace(/<\s*(b|strong)\s*>/gi, save('<b>'))
+    .replace(/<\s*\/\s*(b|strong)\s*>/gi, save('</b>'))
+    .replace(/<\s*(i|em)\s*>/gi, save('<i>'))
+    .replace(/<\s*\/\s*(i|em)\s*>/gi, save('</i>'))
+    .replace(/<\s*(u|ins)\s*>/gi, save('<u>'))
+    .replace(/<\s*\/\s*(u|ins)\s*>/gi, save('</u>'))
+    .replace(/<\s*(s|strike|del)\s*>/gi, save('<s>'))
+    .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, save('</s>'))
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+
+  text = lrSigV8Esc(text);
+
+  saved.forEach((html, i) => {
+    text = text.replaceAll(`__LR_SIG_V8_${i}__`, html);
+  });
+
+  return text.trim();
+}
+
+function lrSigV8MarkdownToHtml(value) {
+  let text = String(value ?? '').trim();
+  if (!text) return '';
+
+  const saved = [];
+
+  const save = (html) => {
+    const key = `__LR_SIG_MD_V8_${saved.length}__`;
+    saved.push(html);
+    return key;
+  };
+
+  text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
+    return save(`<a href="${lrSigV8Attr(url)}"><b>${lrSigV8Esc(label)}</b></a>`);
+  });
+
+  text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return save(`<a href="${lrSigV8Attr(url)}"><b>${lrSigV8Esc(label)}</b></a>`);
+  });
+
+  text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return save(`<a href="${lrSigV8Attr(url)}">${lrSigV8Esc(label)}</a>`);
+  });
+
+  text = lrSigV8Esc(text);
+
+  text = text
+    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+    .replace(/__([^_\n]+?)__/g, '<b>$1</b>')
+    .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
+    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
+    .replace(/(^|[^\w])_([^_\n]+?)_/g, '$1<i>$2</i>');
+
+  saved.forEach((html, i) => {
+    text = text.replaceAll(`__LR_SIG_MD_V8_${i}__`, html);
+  });
+
+  return text.trim();
+}
+
+function lrSigV8SignatureHtml(sigOrText) {
+  if (!sigOrText) return '';
+
+  const text = typeof sigOrText === 'object'
+    ? String(sigOrText.text || '')
+    : String(sigOrText || '');
+
+  const format = typeof sigOrText === 'object'
+    ? String(sigOrText.format || 'html').toLowerCase()
+    : 'html';
+
+  const markup = typeof sigOrText === 'object' && Array.isArray(sigOrText.markup)
+    ? sigOrText.markup
+    : [];
+
+  if (!text.trim()) return '';
+
+  if (markup.length) return applyMarkupToHtml(text, markup);
+  if (format === 'html' || /<\/?(a|b|strong|i|em|u|ins|s|strike|del|code|blockquote)\b/i.test(lrSigV8Decode(text))) {
+    return lrSigV8CleanHtml(text);
+  }
+
+  return lrSigV8MarkdownToHtml(text);
+}
+
+function lrSigV8SignaturePreview(sig) {
+  const html = lrSigV8SignatureHtml(sig);
+  return html || 'Подпись не создана.';
+}
+
+function signatureNoPreviewHtml(value) {
+  return lrSigV8SignatureHtml(value);
+}
+// LR_AUTOSIG_HTML_V8_END
 
 function sha256Hex(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
@@ -2002,7 +2220,57 @@ async function handleCallback(update) {
   if (payload.startsWith('post:delete_confirm:')) { const id = Number(payload.split(':')[2]); return cb(callbackId, `❌ Удалить пост #${id}?`, [[callbackButton('✅ Да, удалить', `post:delete:${id}`)],[callbackButton('⬅️ Назад', `post:open:${id}`)]]); }
   if (payload.startsWith('post:delete:')) { const id = Number(payload.split(':')[2]); const p = await getPost(id); if (p?.status === 'published' && p.published_message_id) await deleteMaxMessage(p.published_message_id).catch(e=>console.error('[delete max]', e.message || e)); await query(`UPDATE scheduled_posts SET status='canceled', updated_at=now() WHERE id=$1`, [id]); return cb(callbackId, `✅ Пост #${id} удалён.`, [[callbackButton('🗂 Посты','post:all')]]); }
   if (payload.startsWith('report:open:')) { const gid = payload.split(':').slice(2).join(':'); return cb(callbackId, `📊 <b>LinkRay Analytics</b>\n\nОтчёт: <a href="${reportUrl(gid)}">открыть красивую страницу</a>`, [[linkButton('📊 Открыть отчёт', reportUrl(gid))],[callbackButton('🏠 В меню','main:menu')]]); }
-  if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
+  
+if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
+
+// LR_SIG_CHANNEL_HANDLERS_V8_START
+if (payload.startsWith('sig:channel:')) {
+  const channelId = Number(payload.split(':')[2]);
+  const channel = await getChannel(channelId).catch(() => null);
+  const sig = channelId ? await loadSignature(channelId) : null;
+
+  const draft = emptyDraft();
+  draft.channelIds = [channelId].filter(Boolean);
+  await setSession(key, 'edit_draft', { draft });
+
+  const rows = [
+    [callbackButton('✏️ Заменить подпись', `sig:add_channel:${channelId}`)],
+    [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+    [callbackButton('⬅️ В Studio', 'main:posting')]
+  ];
+
+  return cb(callbackId, `━━━━━━━━━━━━━━
+🏷 <b>Автоподпись</b>
+
+Канал:
+${channel ? escapeHtml(channelName(channel)) : `#${channelId}`}
+
+Статус: ${sig ? 'включена' : 'не создана'}
+
+${lrSigV8SignaturePreview(sig)}
+━━━━━━━━━━━━━━`, rows, 'html');
+}
+
+if (payload.startsWith('sig:add_channel:')) {
+  const channelId = Number(payload.split(':')[2]);
+  const draft = emptyDraft();
+  draft.channelIds = [channelId].filter(Boolean);
+
+  await setSession(key, 'wait_signature', { draft });
+
+  return cb(callbackId, `🏷 Отправьте подпись.
+
+Можно отправить:
+<b>жирный текст</b>
+<a href="https://max.ru">текст с ссылкой</a>
+или выделить текст через меню MAX.
+
+После сохранения подпись будет добавляться к посту без карточки канала снизу.`, [
+    [callbackButton('⬅️ Назад', `sig:channel:${channelId}`)]
+  ], 'html');
+}
+// LR_SIG_CHANNEL_HANDLERS_V8_END
+
   await cb(callbackId, 'Команда пока не обработана.', [[callbackButton('🏠 В меню','main:menu')]]);
 }
 
