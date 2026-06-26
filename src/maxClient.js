@@ -111,14 +111,14 @@ function lrNoPreviewPayload(payload) {
   const patched = { ...payload };
 
   // В MAX: false = не генерировать preview ссылок.
-  patched.disable_link_preview = false;
-  patched.disableLinkPreview = false;
+  patched.disable_link_preview = true;
+  patched.disableLinkPreview = true;
 
   if (patched.message && typeof patched.message === 'object' && !Array.isArray(patched.message)) {
     patched.message = {
       ...patched.message,
-      disable_link_preview: false,
-      disableLinkPreview: false,
+      disable_link_preview: true,
+      disableLinkPreview: true,
     };
   }
 

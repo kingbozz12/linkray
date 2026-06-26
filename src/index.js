@@ -63,6 +63,243 @@ import {
   deleteMaxMessage,
 } from './maxClient.js';
 
+
+
+// LR_AUTOSIGN_ONLY_SAFE_START
+globalThis.__lrAutosignOnlySafe = globalThis.__lrAutosignOnlySafe || {};
+
+globalThis.__lrAutosignOnlySafe.esc = function(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+};
+
+globalThis.__lrAutosignOnlySafe.attr = function(value) {
+  return globalThis.__lrAutosignOnlySafe.esc(value).replace(/"/g, '&quot;');
+};
+
+globalThis.__lrAutosignOnlySafe.cleanUrl = function(value) {
+  const url = String(value ?? '').trim();
+  if (!/^https?:\/\//i.test(url)) return '';
+  return url;
+};
+
+globalThis.__lrAutosignOnlySafe.type = function(mark) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    ''
+  ).toLowerCase();
+};
+
+globalThis.__lrAutosignOnlySafe.url = function(mark) {
+  return globalThis.__lrAutosignOnlySafe.cleanUrl(
+    mark?.url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.target_url ||
+    mark?.targetUrl ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+    mark?.payload?.link ||
+    ''
+  );
+};
+
+globalThis.__lrAutosignOnlySafe.range = function(mark, textLength) {
+  let start = Number(mark?.from ?? mark?.start ?? mark?.offset ?? mark?.pos ?? mark?.range?.from ?? mark?.range?.start ?? 0);
+  let end = Number(mark?.to ?? mark?.end ?? mark?.range?.to ?? mark?.range?.end ?? NaN);
+  const len = Number(mark?.length ?? mark?.len ?? mark?.range?.length ?? mark?.range?.len ?? NaN);
+
+  if (!Number.isFinite(start)) start = 0;
+  if (!Number.isFinite(end)) end = Number.isFinite(len) ? start + len : start;
+
+  start = Math.max(0, Math.min(textLength, start));
+  end = Math.max(0, Math.min(textLength, end));
+
+  if (end <= start) return null;
+  return { start, end };
+};
+
+globalThis.__lrAutosignOnlySafe.tag = function(mark) {
+  const t = globalThis.__lrAutosignOnlySafe.type(mark);
+  const url = globalThis.__lrAutosignOnlySafe.url(mark);
+
+  if ((t.includes('link') || t.includes('url')) && url) {
+    return { open: `<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}">`, close: '</a>', priority: 70 };
+  }
+
+  if (t.includes('strong') || t.includes('bold')) return { open: '<b>', close: '</b>', priority: 10 };
+  if (t.includes('emphasized') || t.includes('emphasis') || t.includes('italic') || t === 'em') return { open: '<i>', close: '</i>', priority: 20 };
+  if (t.includes('underline') || t.includes('underlined') || t.includes('ins')) return { open: '<u>', close: '</u>', priority: 30 };
+  if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return { open: '<s>', close: '</s>', priority: 40 };
+  if (t.includes('mono') || t.includes('code')) return { open: '<code>', close: '</code>', priority: 50 };
+
+  return null;
+};
+
+globalThis.__lrAutosignOnlySafe.markupToHtml = function(text, markup) {
+  const source = String(text ?? '');
+  const marks = Array.isArray(markup) ? markup : [];
+
+  if (!source) return '';
+
+  const opens = new Map();
+  const closes = new Map();
+
+  const add = (map, pos, item) => {
+    if (!map.has(pos)) map.set(pos, []);
+    map.get(pos).push(item);
+  };
+
+  for (const mark of marks) {
+    if (!mark || typeof mark !== 'object') continue;
+
+    const range = globalThis.__lrAutosignOnlySafe.range(mark, source.length);
+    const tag = globalThis.__lrAutosignOnlySafe.tag(mark);
+
+    if (!range || !tag) continue;
+
+    const item = { ...tag, start: range.start, end: range.end };
+    add(opens, range.start, item);
+    add(closes, range.end, item);
+  }
+
+  if (!opens.size && !closes.size) return globalThis.__lrAutosignOnlySafe.esc(source);
+
+  for (const arr of opens.values()) arr.sort((a, b) => a.priority - b.priority);
+  for (const arr of closes.values()) arr.sort((a, b) => b.priority - a.priority);
+
+  let out = '';
+
+  for (let i = 0; i <= source.length; i++) {
+    for (const item of closes.get(i) || []) out += item.close;
+    for (const item of opens.get(i) || []) out += item.open;
+    if (i < source.length) out += globalThis.__lrAutosignOnlySafe.esc(source[i]);
+  }
+
+  return out.trim();
+};
+
+globalThis.__lrAutosignOnlySafe.cleanHtml = function(value) {
+  let text = String(value ?? '').trim();
+  if (!text) return '';
+
+  const saved = [];
+
+  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => {
+    const marker = `__LR_AUTOSIGN_LINK_${saved.length}__`;
+    const inner = globalThis.__lrAutosignOnlySafe.cleanHtml(label);
+    saved.push(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}">${inner}</a>`);
+    return marker;
+  });
+
+  text = text
+    .replace(/<\s*(b|strong)\s*>/gi, '__LR_B_OPEN__')
+    .replace(/<\s*\/\s*(b|strong)\s*>/gi, '__LR_B_CLOSE__')
+    .replace(/<\s*(i|em)\s*>/gi, '__LR_I_OPEN__')
+    .replace(/<\s*\/\s*(i|em)\s*>/gi, '__LR_I_CLOSE__')
+    .replace(/<\s*(u|ins)\s*>/gi, '__LR_U_OPEN__')
+    .replace(/<\s*\/\s*(u|ins)\s*>/gi, '__LR_U_CLOSE__')
+    .replace(/<\s*(s|strike|del)\s*>/gi, '__LR_S_OPEN__')
+    .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, '__LR_S_CLOSE__')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+
+  text = globalThis.__lrAutosignOnlySafe.esc(text);
+
+  text = text
+    .replace(/__LR_B_OPEN__/g, '<b>').replace(/__LR_B_CLOSE__/g, '</b>')
+    .replace(/__LR_I_OPEN__/g, '<i>').replace(/__LR_I_CLOSE__/g, '</i>')
+    .replace(/__LR_U_OPEN__/g, '<u>').replace(/__LR_U_CLOSE__/g, '</u>')
+    .replace(/__LR_S_OPEN__/g, '<s>').replace(/__LR_S_CLOSE__/g, '</s>');
+
+  saved.forEach((html, i) => {
+    text = text.replaceAll(`__LR_AUTOSIGN_LINK_${i}__`, html);
+  });
+
+  return text.trim();
+};
+
+globalThis.__lrAutosignOnlySafe.markdownToHtml = function(value) {
+  let text = String(value ?? '').trim();
+  if (!text) return '';
+
+  const saved = [];
+
+  const put = (html) => {
+    const key = `__LR_AUTOSIGN_MD_${saved.length}__`;
+    saved.push(html);
+    return key;
+  };
+
+  text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return put(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}"><b>${globalThis.__lrAutosignOnlySafe.esc(label)}</b></a>`);
+  });
+
+  text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
+    return put(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}"><b>${globalThis.__lrAutosignOnlySafe.esc(label)}</b></a>`);
+  });
+
+  text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return put(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}">${globalThis.__lrAutosignOnlySafe.esc(label)}</a>`);
+  });
+
+  text = globalThis.__lrAutosignOnlySafe.esc(text);
+
+  text = text
+    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+    .replace(/__([^_\n]+?)__/g, '<b>$1</b>')
+    .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
+    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
+    .replace(/(^|[^\w])_([^_\n]+?)_/g, '$1<i>$2</i>');
+
+  saved.forEach((html, i) => {
+    text = text.replaceAll(`__LR_AUTOSIGN_MD_${i}__`, html);
+  });
+
+  return text.trim();
+};
+
+globalThis.__lrAutosignOnlySafe.normalizeContent = function(content) {
+  const c = content && typeof content === 'object' ? content : { text: String(content ?? '') };
+  const text = String(c.text ?? '');
+  const markup = Array.isArray(c.markup) ? c.markup : [];
+  const format = String(c.format || '').toLowerCase();
+
+  let html = '';
+
+  if (markup.length) {
+    html = globalThis.__lrAutosignOnlySafe.markupToHtml(text, markup);
+  } else if (format === 'html' || /<\/?[a-z][\s\S]*>/i.test(text)) {
+    html = globalThis.__lrAutosignOnlySafe.cleanHtml(text);
+  } else {
+    html = globalThis.__lrAutosignOnlySafe.markdownToHtml(text);
+  }
+
+  return {
+    text: html,
+    format: 'html',
+    markup: []
+  };
+};
+
+globalThis.__lrAutosignOnlySafe.display = function(sigOrContent) {
+  const c = sigOrContent && sigOrContent.text !== undefined
+    ? sigOrContent
+    : { text: String(sigOrContent ?? ''), format: 'html', markup: [] };
+
+  return globalThis.__lrAutosignOnlySafe.normalizeContent(c).text || 'Подпись не создана.';
+};
+// LR_AUTOSIGN_ONLY_SAFE_END
+
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
@@ -898,24 +1135,24 @@ function lrCleanMarkdownLinkLabels(value) {
 }
 
 function lrSignatureForPostFormat(value, format = 'html') {
-  const source = String(value || '');
-
-  if (String(format || '').toLowerCase() === 'markdown') {
-    return lrCleanMarkdownLinkLabels(lrSignatureToMarkdown(source));
+  const html = globalThis.__lrAutosignOnlySafe.display({ text: value, format: 'html', markup: [] });
+  if (String(format || 'html').toLowerCase() === 'markdown') {
+    return html
+      .replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => `[${String(label || '').replace(/<[^>]*>/g, '').trim() || url}](${url})`)
+      .replace(/<b>([\s\S]*?)<\/b>/gi, '**$1**')
+      .replace(/<i>([\s\S]*?)<\/i>/gi, '_$1_')
+      .replace(/<u>([\s\S]*?)<\/u>/gi, '++$1++')
+      .replace(/<s>([\s\S]*?)<\/s>/gi, '~~$1~~')
+      .replace(/<[^>]*>/g, '')
+      .trim();
   }
-
-  return typeof signatureNoPreviewHtml === 'function'
-    ? lrSignatureForPostFormat(source, ((typeof format !== 'undefined' && format) || (typeof content !== 'undefined' && content?.format) || (typeof draft !== 'undefined' && draft?.content?.format) || 'html')).replace(/<\/b>/gi, '').replace(/<b>(?![\s\S]*<\/b>)/gi, '')
-    : source.replace(/<\/b>/gi, '').replace(/<b>(?![\s\S]*<\/b>)/gi, '');
+  return html;
 }
 // LR_SIGNATURE_FORMAT_SAFE_END
 
 
-function signatureNoPreviewHtml(html) {
-  return String(html || '').replace(
-    /(^|[\s>])(https?:\/\/[^\s<]+)/gi,
-    (m, prefix, url) => `${prefix}<a href="${attr(url)}">ссылка</a>`
-  );
+function signatureNoPreviewHtml(value) {
+  return globalThis.__lrAutosignOnlySafe.display({ text: value, format: 'html', markup: [] });
 }
 
 
@@ -1615,7 +1852,7 @@ async function handleCallback(update) {
   if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:media') { const s = await getSession(key); await setSession(key, 'wait_edit_media', s.data); return cb(callbackId, '🖼 Отправьте новое фото, видео или файл.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:button') { const s = await getSession(key); await setSession(key, 'wait_button', s.data); return cb(callbackId, '🔘 Формат кнопки:\n<code>Название - https://site.ru</code>\nНесколько в строке через |', [[callbackButton('⬅️ Назад','editor:back')]]); }
-  if (payload === 'editor:signature') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.isAd) return cb(callbackId, '💼 Для рекламного поста автоподпись не добавляется.', [[callbackButton('⬅️ В редактор','editor:back')]]); const channelId = draft.channelIds[0]; const sig = channelId ? await loadSignature(channelId) : null; const rows = [[callbackButton('✏️ Заменить подпись','sig:add')],[callbackButton(sig?.is_active ? '🚫 Выключить' : '✅ Включить', 'sig:toggle')],[callbackButton('⬅️ В редактор','editor:back')]]; return cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nСтатус: ${sig?.is_active ? 'включена' : 'выключена'}\n\n${sig?.text ? sig.text : 'Подпись не создана.'}\n━━━━━━━━━━━━━━`, rows); }
+  if (payload === 'editor:signature') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.isAd) return cb(callbackId, '💼 Для рекламного поста автоподпись не добавляется.', [[callbackButton('⬅️ В редактор','editor:back')]]); const channelId = draft.channelIds[0]; const sig = channelId ? await loadSignature(channelId) : null; const rows = [[callbackButton('✏️ Заменить подпись','sig:add')],[callbackButton(sig?.is_active ? '🚫 Выключить' : '✅ Включить', 'sig:toggle')],[callbackButton('⬅️ В редактор','editor:back')]]; return cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nСтатус: ${sig?.is_active ? 'включена' : 'выключена'}\n\n${sig?.text ? globalThis.__lrAutosignOnlySafe.display(sig) : 'Подпись не создана.'}\n━━━━━━━━━━━━━━`, rows); }
   if (payload === 'sig:add') { const s = await getSession(key); await setSession(key, 'wait_signature', s.data); return cb(callbackId, '🏷 Отправьте подпись. Ссылки, жирный, курсив и подчёркивание MAX сохранятся.', [[callbackButton('⬅️ Назад','editor:signature')]]); }
   if (payload === 'sig:toggle') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.channelIds[0]) await setSignatureActive(draft.channelIds[0], true); return showEditor(callbackId, key, draft); }
   if (payload === 'editor:ad') { const s = await getSession(key); const draft = safeDraft(s.data); draft.isAd = !draft.isAd; if (draft.isAd) { draft.signatureEnabled = false; draft.reportAfterHours = 24; if (!draft.autoDeleteMinutes) draft.autoDeleteMinutes = 2880; } return showEditor(callbackId, key, draft); }
@@ -2207,7 +2444,7 @@ async function handleMessage(update) {
 
     return sendEditorAsNew(chatId, key, draft);
   }
-  if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, content); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
+  if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, globalThis.__lrAutosignOnlySafe.normalizeContent(content)); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('➡️ К выпуску','editor:next')]]); }
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
