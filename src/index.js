@@ -65,27 +65,117 @@ import {
 
 
 
-// LR_AUTOSIGN_ONLY_SAFE_START
-globalThis.__lrAutosignOnlySafe = globalThis.__lrAutosignOnlySafe || {};
 
-globalThis.__lrAutosignOnlySafe.esc = function(value) {
+
+
+// LR_RICH_HTML_V7_START
+globalThis.__lrRichV7 = globalThis.__lrRichV7 || {};
+
+globalThis.__lrRichV7.decode = function(value) {
+  return String(value ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+};
+
+globalThis.__lrRichV7.esc = function(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 };
 
-globalThis.__lrAutosignOnlySafe.attr = function(value) {
-  return globalThis.__lrAutosignOnlySafe.esc(value).replace(/"/g, '&quot;');
+globalThis.__lrRichV7.attr = function(value) {
+  return globalThis.__lrRichV7.esc(value).replace(/"/g, '&quot;');
 };
 
-globalThis.__lrAutosignOnlySafe.cleanUrl = function(value) {
+globalThis.__lrRichV7.cleanUrl = function(value) {
   const url = String(value ?? '').trim();
-  if (!/^https?:\/\//i.test(url)) return '';
-  return url;
+  return /^https?:\/\//i.test(url) ? url : '';
 };
 
-globalThis.__lrAutosignOnlySafe.type = function(mark) {
+globalThis.__lrRichV7.markdownToHtml = function(value) {
+  let text = String(value ?? '').trim();
+  if (!text) return '';
+
+  const saved = [];
+
+  const put = (html) => {
+    const key = `__LR_MD7_${saved.length}__`;
+    saved.push(html);
+    return key;
+  };
+
+  text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
+    return put(`<a href="${globalThis.__lrRichV7.attr(url)}"><b>${globalThis.__lrRichV7.esc(label)}</b></a>`);
+  });
+
+  text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return put(`<a href="${globalThis.__lrRichV7.attr(url)}"><b>${globalThis.__lrRichV7.esc(label)}</b></a>`);
+  });
+
+  text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return put(`<a href="${globalThis.__lrRichV7.attr(url)}">${globalThis.__lrRichV7.esc(label)}</a>`);
+  });
+
+  text = globalThis.__lrRichV7.esc(text);
+
+  text = text
+    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+    .replace(/__([^_\n]+?)__/g, '<b>$1</b>')
+    .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
+    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
+    .replace(/(^|[^\w])_([^_\n]+?)_/g, '$1<i>$2</i>');
+
+  saved.forEach((html, i) => {
+    text = text.replaceAll(`__LR_MD7_${i}__`, html);
+  });
+
+  return text.trim();
+};
+
+globalThis.__lrRichV7.cleanHtml = function(value) {
+  let text = globalThis.__lrRichV7.decode(value).trim();
+  if (!text) return '';
+
+  const saved = [];
+
+  const put = (html) => {
+    const key = `__LR_HTML7_${saved.length}__`;
+    saved.push(html);
+    return key;
+  };
+
+  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => {
+    const inner = globalThis.__lrRichV7.cleanHtml(label);
+    return put(`<a href="${globalThis.__lrRichV7.attr(url)}">${inner}</a>`);
+  });
+
+  text = text
+    .replace(/<\s*(b|strong)\s*>/gi, put('<b>'))
+    .replace(/<\s*\/\s*(b|strong)\s*>/gi, put('</b>'))
+    .replace(/<\s*(i|em)\s*>/gi, put('<i>'))
+    .replace(/<\s*\/\s*(i|em)\s*>/gi, put('</i>'))
+    .replace(/<\s*(u|ins)\s*>/gi, put('<u>'))
+    .replace(/<\s*\/\s*(u|ins)\s*>/gi, put('</u>'))
+    .replace(/<\s*(s|strike|del)\s*>/gi, put('<s>'))
+    .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, put('</s>'))
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+
+  text = globalThis.__lrRichV7.esc(text);
+
+  saved.forEach((html, i) => {
+    text = text.replaceAll(`__LR_HTML7_${i}__`, html);
+  });
+
+  return text.trim();
+};
+
+globalThis.__lrRichV7.type = function(mark) {
   return String(
     mark?.type ||
     mark?.kind ||
@@ -95,12 +185,14 @@ globalThis.__lrAutosignOnlySafe.type = function(mark) {
     mark?.markupType ||
     mark?.entity_type ||
     mark?.entityType ||
+    mark?.block_type ||
+    mark?.blockType ||
     ''
   ).toLowerCase();
 };
 
-globalThis.__lrAutosignOnlySafe.url = function(mark) {
-  return globalThis.__lrAutosignOnlySafe.cleanUrl(
+globalThis.__lrRichV7.url = function(mark) {
+  return globalThis.__lrRichV7.cleanUrl(
     mark?.url ||
     mark?.href ||
     mark?.link ||
@@ -113,7 +205,7 @@ globalThis.__lrAutosignOnlySafe.url = function(mark) {
   );
 };
 
-globalThis.__lrAutosignOnlySafe.range = function(mark, textLength) {
+globalThis.__lrRichV7.range = function(mark, textLength) {
   let start = Number(mark?.from ?? mark?.start ?? mark?.offset ?? mark?.pos ?? mark?.range?.from ?? mark?.range?.start ?? 0);
   let end = Number(mark?.to ?? mark?.end ?? mark?.range?.to ?? mark?.range?.end ?? NaN);
   const len = Number(mark?.length ?? mark?.len ?? mark?.range?.length ?? mark?.range?.len ?? NaN);
@@ -128,24 +220,23 @@ globalThis.__lrAutosignOnlySafe.range = function(mark, textLength) {
   return { start, end };
 };
 
-globalThis.__lrAutosignOnlySafe.tag = function(mark) {
-  const t = globalThis.__lrAutosignOnlySafe.type(mark);
-  const url = globalThis.__lrAutosignOnlySafe.url(mark);
+globalThis.__lrRichV7.tag = function(mark) {
+  const t = globalThis.__lrRichV7.type(mark);
+  const url = globalThis.__lrRichV7.url(mark);
 
-  if ((t.includes('link') || t.includes('url')) && url) {
-    return { open: `<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}">`, close: '</a>', priority: 70 };
-  }
-
+  if ((t.includes('link') || t.includes('url')) && url) return { open: `<a href="${globalThis.__lrRichV7.attr(url)}">`, close: '</a>', priority: 70 };
   if (t.includes('strong') || t.includes('bold')) return { open: '<b>', close: '</b>', priority: 10 };
   if (t.includes('emphasized') || t.includes('emphasis') || t.includes('italic') || t === 'em') return { open: '<i>', close: '</i>', priority: 20 };
   if (t.includes('underline') || t.includes('underlined') || t.includes('ins')) return { open: '<u>', close: '</u>', priority: 30 };
   if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return { open: '<s>', close: '</s>', priority: 40 };
   if (t.includes('mono') || t.includes('code')) return { open: '<code>', close: '</code>', priority: 50 };
+  if (t.includes('quote') || t.includes('blockquote') || t.includes('quotation') || t.includes('cite')) return { open: '<blockquote>', close: '</blockquote>', priority: 5 };
+  if (t.includes('heading') || t.includes('header') || t.includes('title') || /^h[1-6]$/.test(t)) return { open: '<b>', close: '</b>', priority: 8 };
 
   return null;
 };
 
-globalThis.__lrAutosignOnlySafe.markupToHtml = function(text, markup) {
+globalThis.__lrRichV7.markupToHtml = function(text, markup = []) {
   const source = String(text ?? '');
   const marks = Array.isArray(markup) ? markup : [];
 
@@ -162,8 +253,8 @@ globalThis.__lrAutosignOnlySafe.markupToHtml = function(text, markup) {
   for (const mark of marks) {
     if (!mark || typeof mark !== 'object') continue;
 
-    const range = globalThis.__lrAutosignOnlySafe.range(mark, source.length);
-    const tag = globalThis.__lrAutosignOnlySafe.tag(mark);
+    const range = globalThis.__lrRichV7.range(mark, source.length);
+    const tag = globalThis.__lrRichV7.tag(mark);
 
     if (!range || !tag) continue;
 
@@ -172,7 +263,7 @@ globalThis.__lrAutosignOnlySafe.markupToHtml = function(text, markup) {
     add(closes, range.end, item);
   }
 
-  if (!opens.size && !closes.size) return globalThis.__lrAutosignOnlySafe.esc(source);
+  if (!opens.size && !closes.size) return globalThis.__lrRichV7.esc(source);
 
   for (const arr of opens.values()) arr.sort((a, b) => a.priority - b.priority);
   for (const arr of closes.values()) arr.sort((a, b) => b.priority - a.priority);
@@ -182,93 +273,13 @@ globalThis.__lrAutosignOnlySafe.markupToHtml = function(text, markup) {
   for (let i = 0; i <= source.length; i++) {
     for (const item of closes.get(i) || []) out += item.close;
     for (const item of opens.get(i) || []) out += item.open;
-    if (i < source.length) out += globalThis.__lrAutosignOnlySafe.esc(source[i]);
+    if (i < source.length) out += globalThis.__lrRichV7.esc(source[i]);
   }
 
   return out.trim();
 };
 
-globalThis.__lrAutosignOnlySafe.cleanHtml = function(value) {
-  let text = String(value ?? '').trim();
-  if (!text) return '';
-
-  const saved = [];
-
-  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => {
-    const marker = `__LR_AUTOSIGN_LINK_${saved.length}__`;
-    const inner = globalThis.__lrAutosignOnlySafe.cleanHtml(label);
-    saved.push(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}">${inner}</a>`);
-    return marker;
-  });
-
-  text = text
-    .replace(/<\s*(b|strong)\s*>/gi, '__LR_B_OPEN__')
-    .replace(/<\s*\/\s*(b|strong)\s*>/gi, '__LR_B_CLOSE__')
-    .replace(/<\s*(i|em)\s*>/gi, '__LR_I_OPEN__')
-    .replace(/<\s*\/\s*(i|em)\s*>/gi, '__LR_I_CLOSE__')
-    .replace(/<\s*(u|ins)\s*>/gi, '__LR_U_OPEN__')
-    .replace(/<\s*\/\s*(u|ins)\s*>/gi, '__LR_U_CLOSE__')
-    .replace(/<\s*(s|strike|del)\s*>/gi, '__LR_S_OPEN__')
-    .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, '__LR_S_CLOSE__')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]*>/g, '');
-
-  text = globalThis.__lrAutosignOnlySafe.esc(text);
-
-  text = text
-    .replace(/__LR_B_OPEN__/g, '<b>').replace(/__LR_B_CLOSE__/g, '</b>')
-    .replace(/__LR_I_OPEN__/g, '<i>').replace(/__LR_I_CLOSE__/g, '</i>')
-    .replace(/__LR_U_OPEN__/g, '<u>').replace(/__LR_U_CLOSE__/g, '</u>')
-    .replace(/__LR_S_OPEN__/g, '<s>').replace(/__LR_S_CLOSE__/g, '</s>');
-
-  saved.forEach((html, i) => {
-    text = text.replaceAll(`__LR_AUTOSIGN_LINK_${i}__`, html);
-  });
-
-  return text.trim();
-};
-
-globalThis.__lrAutosignOnlySafe.markdownToHtml = function(value) {
-  let text = String(value ?? '').trim();
-  if (!text) return '';
-
-  const saved = [];
-
-  const put = (html) => {
-    const key = `__LR_AUTOSIGN_MD_${saved.length}__`;
-    saved.push(html);
-    return key;
-  };
-
-  text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
-    return put(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}"><b>${globalThis.__lrAutosignOnlySafe.esc(label)}</b></a>`);
-  });
-
-  text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
-    return put(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}"><b>${globalThis.__lrAutosignOnlySafe.esc(label)}</b></a>`);
-  });
-
-  text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
-    return put(`<a href="${globalThis.__lrAutosignOnlySafe.attr(url)}">${globalThis.__lrAutosignOnlySafe.esc(label)}</a>`);
-  });
-
-  text = globalThis.__lrAutosignOnlySafe.esc(text);
-
-  text = text
-    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
-    .replace(/__([^_\n]+?)__/g, '<b>$1</b>')
-    .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
-    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
-    .replace(/(^|[^\w])_([^_\n]+?)_/g, '$1<i>$2</i>');
-
-  saved.forEach((html, i) => {
-    text = text.replaceAll(`__LR_AUTOSIGN_MD_${i}__`, html);
-  });
-
-  return text.trim();
-};
-
-globalThis.__lrAutosignOnlySafe.normalizeContent = function(content) {
+globalThis.__lrRichV7.content = function(content) {
   const c = content && typeof content === 'object' ? content : { text: String(content ?? '') };
   const text = String(c.text ?? '');
   const markup = Array.isArray(c.markup) ? c.markup : [];
@@ -276,29 +287,146 @@ globalThis.__lrAutosignOnlySafe.normalizeContent = function(content) {
 
   let html = '';
 
-  if (markup.length) {
-    html = globalThis.__lrAutosignOnlySafe.markupToHtml(text, markup);
-  } else if (format === 'html' || /<\/?[a-z][\s\S]*>/i.test(text)) {
-    html = globalThis.__lrAutosignOnlySafe.cleanHtml(text);
-  } else {
-    html = globalThis.__lrAutosignOnlySafe.markdownToHtml(text);
-  }
+  if (markup.length) html = globalThis.__lrRichV7.markupToHtml(text, markup);
+  else if (format === 'html' || /<\/?[a-z][\s\S]*>/i.test(globalThis.__lrRichV7.decode(text))) html = globalThis.__lrRichV7.cleanHtml(text);
+  else html = globalThis.__lrRichV7.markdownToHtml(text);
 
   return {
     text: html,
     format: 'html',
-    markup: []
+    markup: [],
+    attachments: Array.isArray(c.attachments) ? c.attachments : [],
+    raw: null
   };
 };
 
-globalThis.__lrAutosignOnlySafe.display = function(sigOrContent) {
-  const c = sigOrContent && sigOrContent.text !== undefined
-    ? sigOrContent
-    : { text: String(sigOrContent ?? ''), format: 'html', markup: [] };
-
-  return globalThis.__lrAutosignOnlySafe.normalizeContent(c).text || 'Подпись не создана.';
+globalThis.__lrRichV7.signatureForPost = function(value, format = 'html') {
+  return globalThis.__lrRichV7.content({ text: value, format, markup: [] }).text;
 };
-// LR_AUTOSIGN_ONLY_SAFE_END
+
+globalThis.__lrRichV7.signaturePreview = function(sigOrContent) {
+  if (!sigOrContent) return 'Подпись не создана.';
+
+  return globalThis.__lrRichV7.content({
+    text: String(sigOrContent.text ?? sigOrContent ?? ''),
+    format: sigOrContent.format || 'html',
+    markup: Array.isArray(sigOrContent.markup) ? sigOrContent.markup : []
+  }).text || 'Подпись не создана.';
+};
+
+globalThis.__lrRichV7.localMarkup = function(node) {
+  if (!node || typeof node !== 'object') return [];
+
+  const variants = [
+    node.markup,
+    node.body?.markup,
+    node.content?.markup,
+    node.message?.markup,
+    node.message?.body?.markup,
+    node.payload?.markup
+  ];
+
+  for (const v of variants) {
+    if (Array.isArray(v) && v.length) return v;
+  }
+
+  return [];
+};
+
+globalThis.__lrRichV7.bestContent = function(update) {
+  const queue = [
+    { node: update?.message, path: 'message' },
+    { node: update, path: 'update' }
+  ];
+
+  const seen = new WeakSet();
+  let best = { text: '', markup: [], score: -1 };
+  let steps = 0;
+
+  while (queue.length && steps < 800) {
+    steps += 1;
+
+    const current = queue.shift();
+    const node = current.node;
+    const path = current.path;
+
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+
+    const markup = globalThis.__lrRichV7.localMarkup(node);
+
+    const candidates = [
+      node.body?.text,
+      node.body?.caption,
+      node.content?.text,
+      node.content?.caption,
+      node.payload?.text,
+      node.payload?.caption,
+      node.text,
+      node.caption
+    ];
+
+    for (const value of candidates) {
+      if (typeof value !== 'string') continue;
+
+      const text = value.trim();
+      if (!text) continue;
+
+      let score = text.length;
+      if (markup.length) score += markup.length * 1000;
+      if (/message|body|content|payload|forward|original/i.test(path)) score += 300;
+      if (/chat|sender|user|button|keyboard|callback/i.test(path)) score -= 500;
+
+      if (score > best.score) best = { text, markup, score };
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (!value || typeof value !== 'object') continue;
+
+      const low = String(key).toLowerCase();
+      if (low.includes('chat') || low.includes('sender') || low.includes('user') || low.includes('button') || low.includes('keyboard') || low.includes('callback')) continue;
+
+      queue.push({ node: value, path: `${path}.${key}` });
+    }
+  }
+
+  return best;
+};
+
+globalThis.__lrRichV7.attachments = function(update) {
+  const queue = [update?.message, update];
+  const seen = new WeakSet();
+  let steps = 0;
+
+  while (queue.length && steps < 500) {
+    steps += 1;
+
+    const node = queue.shift();
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+
+    for (const [key, value] of Object.entries(node)) {
+      const low = String(key).toLowerCase();
+
+      if (Array.isArray(value) && low.includes('attachment') && value.length) {
+        try {
+          return typeof normalizeAttachments === 'function' ? normalizeAttachments(value) : value;
+        } catch (_) {
+          return value;
+        }
+      }
+
+      if (value && typeof value === 'object' && !low.includes('chat') && !low.includes('sender') && !low.includes('user')) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return [];
+};
+// LR_RICH_HTML_V7_END
 
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
@@ -1022,33 +1150,24 @@ function lrCollectNativeMarkupDeep(root) {
 
 
 async function hydrateContent(u) {
-  const best = bestContentCandidate(u) || {};
-  const rawText = String(best.text || firstText(u) || '').trim();
-  const deepMarkup = lrCollectNativeMarkupDeep(u); const markup = Array.isArray(best.markup) && best.markup.length ? best.markup : (deepMarkup.length ? deepMarkup : firstMarkup(u));
-  const attachments = normalizeAttachments(collectAttachments(u?.message || u));
+  const best = globalThis.__lrRichV7.bestContent(u);
+  const rawText = String(best?.text || '').trim();
+  const markup = Array.isArray(best?.markup) ? best.markup : [];
+  const attachments = globalThis.__lrRichV7.attachments(u);
 
-  lrDebugMarkupTypes(markup);
-
-  if (Array.isArray(markup) && markup.length) {
-    return {
-      text: lrMaxMarkupToMarkdown(rawText, markup),
-      format: 'markdown',
-      markup,
-      attachments,
-      raw: u?.message || u
-    };
-  }
-
-  const htmlText = typeof htmlifyText === 'function'
-    ? htmlifyText(rawText, markup)
-    : rawText;
+  const content = globalThis.__lrRichV7.content({
+    text: rawText,
+    format: markup.length ? 'native' : 'html',
+    markup,
+    attachments
+  });
 
   return {
-    text: htmlText,
+    text: content.text,
     format: 'html',
-    markup,
+    markup: [],
     attachments,
-    raw: u?.message || u
+    raw: null
   };
 }
 
@@ -1150,10 +1269,6 @@ function lrSignatureForPostFormat(value, format = 'html') {
 }
 // LR_SIGNATURE_FORMAT_SAFE_END
 
-
-function signatureNoPreviewHtml(value) {
-  return globalThis.__lrAutosignOnlySafe.display({ text: value, format: 'html', markup: [] });
-}
 
 
 function sha256Hex(value) {
@@ -1487,7 +1602,7 @@ async function composePostForChannel(draft, channelId) {
 
     if (sig?.text) {
       const cleanSignature = typeof signatureNoPreviewHtml === 'function'
-        ? lrSignatureForPostFormat(sig.text, ((typeof format !== 'undefined' && format) || (typeof content !== 'undefined' && content?.format) || (typeof draft !== 'undefined' && draft?.content?.format) || 'html'))
+        ? globalThis.__lrRichV7.signatureForPost(sig.text, ((typeof format !== 'undefined' && format) || (typeof content !== 'undefined' && content?.format) || (typeof draft !== 'undefined' && draft?.content?.format) || 'html'))
         : sig.text;
 
       text = `${text}\n\n${cleanSignature}`;
@@ -1852,7 +1967,7 @@ async function handleCallback(update) {
   if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:media') { const s = await getSession(key); await setSession(key, 'wait_edit_media', s.data); return cb(callbackId, '🖼 Отправьте новое фото, видео или файл.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:button') { const s = await getSession(key); await setSession(key, 'wait_button', s.data); return cb(callbackId, '🔘 Формат кнопки:\n<code>Название - https://site.ru</code>\nНесколько в строке через |', [[callbackButton('⬅️ Назад','editor:back')]]); }
-  if (payload === 'editor:signature') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.isAd) return cb(callbackId, '💼 Для рекламного поста автоподпись не добавляется.', [[callbackButton('⬅️ В редактор','editor:back')]]); const channelId = draft.channelIds[0]; const sig = channelId ? await loadSignature(channelId) : null; const rows = [[callbackButton('✏️ Заменить подпись','sig:add')],[callbackButton(sig?.is_active ? '🚫 Выключить' : '✅ Включить', 'sig:toggle')],[callbackButton('⬅️ В редактор','editor:back')]]; return cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nСтатус: ${sig?.is_active ? 'включена' : 'выключена'}\n\n${sig?.text ? globalThis.__lrAutosignOnlySafe.display(sig) : 'Подпись не создана.'}\n━━━━━━━━━━━━━━`, rows); }
+  if (payload === 'editor:signature') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.isAd) return cb(callbackId, '💼 Для рекламного поста автоподпись не добавляется.', [[callbackButton('⬅️ В редактор','editor:back')]]); const channelId = draft.channelIds[0]; const sig = channelId ? await loadSignature(channelId) : null; const rows = [[callbackButton('✏️ Заменить подпись','sig:add')],[callbackButton(sig?.is_active ? '🚫 Выключить' : '✅ Включить', 'sig:toggle')],[callbackButton('⬅️ В редактор','editor:back')]]; return cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nСтатус: ${sig?.is_active ? 'включена' : 'выключена'}\n\n${sig?.text ? globalThis.__lrRichV7.signaturePreview(sig) : 'Подпись не создана.'}\n━━━━━━━━━━━━━━`, rows); }
   if (payload === 'sig:add') { const s = await getSession(key); await setSession(key, 'wait_signature', s.data); return cb(callbackId, '🏷 Отправьте подпись. Ссылки, жирный, курсив и подчёркивание MAX сохранятся.', [[callbackButton('⬅️ Назад','editor:signature')]]); }
   if (payload === 'sig:toggle') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.channelIds[0]) await setSignatureActive(draft.channelIds[0], true); return showEditor(callbackId, key, draft); }
   if (payload === 'editor:ad') { const s = await getSession(key); const draft = safeDraft(s.data); draft.isAd = !draft.isAd; if (draft.isAd) { draft.signatureEnabled = false; draft.reportAfterHours = 24; if (!draft.autoDeleteMinutes) draft.autoDeleteMinutes = 2880; } return showEditor(callbackId, key, draft); }
@@ -2444,7 +2559,7 @@ async function handleMessage(update) {
 
     return sendEditorAsNew(chatId, key, draft);
   }
-  if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, globalThis.__lrAutosignOnlySafe.normalizeContent(content)); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
+  if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, globalThis.__lrRichV7.content(content)); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('➡️ К выпуску','editor:next')]]); }
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
