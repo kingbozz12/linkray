@@ -72,6 +72,141 @@ import {
 
 
 
+
+// LR_SIG_RICH_V13_START
+globalThis.__lrSigRichV13 = (() => {
+  const decode = (value) => String(value ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+
+  const esc = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const attr = (value) => esc(value).replace(/"/g, '&quot;');
+
+  const cleanTail = (value) => String(value ?? '')
+    .replace(/\*\*/g, '')
+    .replace(/\+\+/g, '')
+    .trim();
+
+  const htmlToSafe = (value) => {
+    let text = decode(value).trim();
+    if (!text) return '';
+
+    text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*><b>([\s\S]*?)<\/b><\/a>/gi, (_, q, url, label) => {
+      return `<b><a href="${attr(url)}">${esc(decode(label))}</a></b>`;
+    });
+
+    text = text.replace(/<b><a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a><\/b>/gi, (_, q, url, label) => {
+      return `<b><a href="${attr(url)}">${esc(decode(label))}</a></b>`;
+    });
+
+    text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, q, url, label) => {
+      const inner = decode(label).replace(/<\/?b>/gi, '').trim();
+      return `<a href="${attr(url)}">${esc(inner)}</a>`;
+    });
+
+    text = text
+      .replace(/<strong>/gi, '<b>')
+      .replace(/<\/strong>/gi, '</b>')
+      .replace(/<em>/gi, '<i>')
+      .replace(/<\/em>/gi, '</i>')
+      .replace(/<ins>/gi, '<u>')
+      .replace(/<\/ins>/gi, '</u>')
+      .replace(/<strike>/gi, '<s>')
+      .replace(/<\/strike>/gi, '</s>')
+      .replace(/<del>/gi, '<s>')
+      .replace(/<\/del>/gi, '</s>')
+      .replace(/<br\s*\/?>/gi, '\n');
+
+    const keep = [];
+    text = text.replace(/<\/?(a|b|i|u|s|code)\b[^>]*>/gi, (m) => {
+      const key = `__LR_KEEP_${keep.length}__`;
+      keep.push(m);
+      return key;
+    });
+
+    text = text.replace(/<[^>]*>/g, '');
+    text = esc(text);
+
+    keep.forEach((m, i) => {
+      text = text.replaceAll(`__LR_KEEP_${i}__`, m);
+    });
+
+    return cleanTail(text);
+  };
+
+  const mdToHtml = (value) => {
+    let text = decode(value).trim();
+    if (!text) return '';
+
+    const keep = [];
+    const save = (html) => {
+      const key = `__LR_MD_KEEP_${keep.length}__`;
+      keep.push(html);
+      return key;
+    };
+
+    text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
+      return save(`<b><a href="${attr(url)}">${esc(label)}</a></b>`);
+    });
+
+    text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+      return save(`<b><a href="${attr(url)}">${esc(label)}</a></b>`);
+    });
+
+    text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+      return save(`<a href="${attr(url)}">${esc(label)}</a>`);
+    });
+
+    text = esc(text)
+      .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+      .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
+      .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>');
+
+    keep.forEach((html, i) => {
+      text = text.replaceAll(`__LR_MD_KEEP_${i}__`, html);
+    });
+
+    return cleanTail(text);
+  };
+
+  const contentForSave = (content) => {
+    const c = content && typeof content === 'object' ? content : { text: String(content ?? '') };
+    const text = String(c.text ?? '');
+    const format = String(c.format || '').toLowerCase();
+
+    let html;
+    if (format === 'html' || /(<|&lt;)\/?(a|b|strong|i|em|u|ins|s|strike|del|code)\b/i.test(text)) {
+      html = htmlToSafe(text);
+    } else {
+      html = mdToHtml(text);
+    }
+
+    return {
+      text: html,
+      format: 'html',
+      markup: [],
+      attachments: []
+    };
+  };
+
+  const preview = (sig) => {
+    if (!sig) return 'Подпись не создана.';
+    return contentForSave(sig).text || 'Подпись не создана.';
+  };
+
+  return { contentForSave, preview };
+})();
+// LR_SIG_RICH_V13_END
+
+
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
@@ -1881,9 +2016,7 @@ if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
     const sig = await loadSignature(channelId);
     const isActive = sig ? sig.is_active !== false : true;
 
-    const signatureText = sig?.text
-      ? String(sig.text)
-      : 'Подпись не создана.';
+    const signatureText = globalThis.__lrSigRichV13.preview(sig);
 
     return cb(
       callbackId,
@@ -1909,7 +2042,7 @@ if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
 
     const channel = (await getChannels()).find((c) => Number(c.id) === channelId);
     const newSig = await loadSignature(channelId);
-    const signatureText = newSig?.text ? String(newSig.text) : 'Подпись не создана.';
+    const signatureText = globalThis.__lrSigRichV13.preview(newSig);
 
     return cb(
       callbackId,
@@ -1963,7 +2096,7 @@ ${channel ? escapeHtml(channelName(channel)) : `#${channelId}`}
 
 Статус: ${sig ? 'включена' : 'не создана'}
 
-${lrSigV8SignaturePreview(sig)}
+${globalThis.__lrSigRichV13.preview(sig)}
 ━━━━━━━━━━━━━━`, rows, 'html');
 }
 
@@ -2543,7 +2676,7 @@ async function handleMessage(update) {
 
     return sendEditorAsNew(chatId, key, draft);
   }
-  if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, content); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
+  if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, globalThis.__lrSigRichV13.contentForSave(content)); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('➡️ К выпуску','editor:next')]]); }
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
