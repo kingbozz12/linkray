@@ -77,6 +77,313 @@ import {
 
 
 
+
+// LR_AUTOSIG_FINAL_START
+function lrAutoSigFinalDecode(value) {
+  return String(value ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function lrAutoSigFinalEsc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrAutoSigFinalAttr(value) {
+  return lrAutoSigFinalEsc(value).replace(/"/g, '&quot;');
+}
+
+function lrAutoSigFinalPlain(value) {
+  return lrAutoSigFinalDecode(value)
+    .replace(/<[^>]*>/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\+\+/g, '')
+    .trim();
+}
+
+function lrAutoSigFinalType(mark) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    ''
+  ).toLowerCase();
+}
+
+function lrAutoSigFinalUrl(mark) {
+  return String(
+    mark?.url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.target_url ||
+    mark?.targetUrl ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+    mark?.payload?.link ||
+    ''
+  ).trim();
+}
+
+function lrAutoSigFinalRange(mark, length) {
+  let start = Number(mark?.from ?? mark?.start ?? mark?.offset ?? mark?.pos ?? mark?.range?.from ?? mark?.range?.start ?? 0);
+  let end = Number(mark?.to ?? mark?.end ?? mark?.range?.to ?? mark?.range?.end ?? NaN);
+  const len = Number(mark?.length ?? mark?.len ?? mark?.range?.length ?? mark?.range?.len ?? NaN);
+
+  if (!Number.isFinite(start)) start = 0;
+  if (!Number.isFinite(end)) end = Number.isFinite(len) ? start + len : start;
+
+  start = Math.max(0, Math.min(length, start));
+  end = Math.max(0, Math.min(length, end));
+
+  if (end <= start) return null;
+  return { start, end };
+}
+
+function lrAutoSigFinalTag(mark) {
+  const type = lrAutoSigFinalType(mark);
+  const url = lrAutoSigFinalUrl(mark);
+
+  if ((type.includes('link') || type.includes('url')) && /^https?:\/\//i.test(url)) {
+    return { open: `<a href="${lrAutoSigFinalAttr(url)}">`, close: '</a>', priority: 20 };
+  }
+
+  if (type.includes('strong') || type.includes('bold')) return { open: '<b>', close: '</b>', priority: 10 };
+  if (type.includes('italic') || type.includes('emphasis') || type.includes('emphasized') || type === 'em') return { open: '<i>', close: '</i>', priority: 30 };
+  if (type.includes('underline') || type.includes('underlined') || type.includes('ins')) return { open: '<u>', close: '</u>', priority: 40 };
+  if (type.includes('strike') || type.includes('through') || type.includes('deleted') || type === 's' || type === 'del') return { open: '<s>', close: '</s>', priority: 50 };
+  if (type.includes('mono') || type.includes('code')) return { open: '<code>', close: '</code>', priority: 60 };
+
+  return null;
+}
+
+function lrAutoSigFinalMarkupToHtml(text, markup = []) {
+  const source = String(text ?? '');
+  const marks = Array.isArray(markup) ? markup : [];
+
+  if (!source) return '';
+
+  const opens = new Map();
+  const closes = new Map();
+
+  const add = (map, pos, item) => {
+    if (!map.has(pos)) map.set(pos, []);
+    map.get(pos).push(item);
+  };
+
+  for (const mark of marks) {
+    if (!mark || typeof mark !== 'object') continue;
+
+    const range = lrAutoSigFinalRange(mark, source.length);
+    const tag = lrAutoSigFinalTag(mark);
+
+    if (!range || !tag) continue;
+
+    const item = { ...tag, start: range.start, end: range.end };
+    add(opens, range.start, item);
+    add(closes, range.end, item);
+  }
+
+  if (!opens.size && !closes.size) return lrAutoSigFinalMarkdownToHtml(source);
+
+  for (const arr of opens.values()) arr.sort((a, b) => a.priority - b.priority);
+  for (const arr of closes.values()) arr.sort((a, b) => b.priority - a.priority);
+
+  let out = '';
+
+  for (let i = 0; i <= source.length; i++) {
+    for (const item of closes.get(i) || []) out += item.close;
+    for (const item of opens.get(i) || []) out += item.open;
+    if (i < source.length) out += lrAutoSigFinalEsc(source[i]);
+  }
+
+  return out.replace(/\*\*/g, '').replace(/\+\+/g, '').trim();
+}
+
+function lrAutoSigFinalMarkdownToHtml(value) {
+  let text = lrAutoSigFinalDecode(value).trim();
+  if (!text) return '';
+
+  const keep = [];
+  const save = (html) => {
+    const key = `__LR_AUTOSIG_KEEP_${keep.length}__`;
+    keep.push(html);
+    return key;
+  };
+
+  text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
+    return save(`<b><a href="${lrAutoSigFinalAttr(url)}">${lrAutoSigFinalEsc(label)}</a></b>`);
+  });
+
+  text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return save(`<b><a href="${lrAutoSigFinalAttr(url)}">${lrAutoSigFinalEsc(label)}</a></b>`);
+  });
+
+  text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return save(`<a href="${lrAutoSigFinalAttr(url)}">${lrAutoSigFinalEsc(label)}</a>`);
+  });
+
+  text = lrAutoSigFinalEsc(text)
+    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+    .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
+    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>');
+
+  keep.forEach((html, i) => {
+    text = text.replaceAll(`__LR_AUTOSIG_KEEP_${i}__`, html);
+  });
+
+  return text.replace(/\*\*/g, '').replace(/\+\+/g, '').trim();
+}
+
+function lrAutoSigFinalHtmlToSafe(value) {
+  let text = lrAutoSigFinalDecode(value).trim();
+  if (!text) return '';
+
+  const keep = [];
+  const save = (html) => {
+    const key = `__LR_AUTOSIG_HTML_${keep.length}__`;
+    keep.push(html);
+    return key;
+  };
+
+  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*><b>([\s\S]*?)<\/b><\/a>/gi, (_, q, url, label) => {
+    return save(`<b><a href="${lrAutoSigFinalAttr(url)}">${lrAutoSigFinalEsc(lrAutoSigFinalPlain(label))}</a></b>`);
+  });
+
+  text = text.replace(/<b><a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a><\/b>/gi, (_, q, url, label) => {
+    return save(`<b><a href="${lrAutoSigFinalAttr(url)}">${lrAutoSigFinalEsc(lrAutoSigFinalPlain(label))}</a></b>`);
+  });
+
+  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, q, url, label) => {
+    return save(`<a href="${lrAutoSigFinalAttr(url)}">${lrAutoSigFinalEsc(lrAutoSigFinalPlain(label))}</a>`);
+  });
+
+  text = text
+    .replace(/<\s*(b|strong)\s*>/gi, () => save('<b>'))
+    .replace(/<\s*\/\s*(b|strong)\s*>/gi, () => save('</b>'))
+    .replace(/<\s*(i|em)\s*>/gi, () => save('<i>'))
+    .replace(/<\s*\/\s*(i|em)\s*>/gi, () => save('</i>'))
+    .replace(/<\s*(u|ins)\s*>/gi, () => save('<u>'))
+    .replace(/<\s*\/\s*(u|ins)\s*>/gi, () => save('</u>'))
+    .replace(/<\s*(s|strike|del)\s*>/gi, () => save('<s>'))
+    .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, () => save('</s>'))
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+
+  text = lrAutoSigFinalEsc(text);
+
+  keep.forEach((html, i) => {
+    text = text.replaceAll(`__LR_AUTOSIG_HTML_${i}__`, html);
+  });
+
+  return text.replace(/\*\*/g, '').replace(/\+\+/g, '').trim();
+}
+
+function lrAutoSigFinalFindText(root) {
+  const found = [];
+  const seen = new WeakSet();
+
+  const walk = (value, path = '', inheritedMarkup = []) => {
+    if (!value || typeof value !== 'object') return;
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    const localMarkup =
+      (Array.isArray(value.markup) && value.markup) ||
+      (Array.isArray(value.body?.markup) && value.body.markup) ||
+      (Array.isArray(value.message?.body?.markup) && value.message.body.markup) ||
+      (Array.isArray(value.content?.markup) && value.content.markup) ||
+      inheritedMarkup ||
+      [];
+
+    const add = (textValue, markup, bonus = 0) => {
+      const text = String(textValue ?? '').trim();
+      if (!text) return;
+
+      const low = path.toLowerCase();
+      let score = text.length + bonus;
+
+      if (low.includes('message')) score += 300;
+      if (low.includes('body')) score += 300;
+      if (low.includes('content')) score += 150;
+
+      if (low.includes('preview')) score -= 500;
+      if (low.includes('attachment')) score -= 500;
+      if (low.includes('button')) score -= 500;
+      if (low.includes('chat')) score -= 250;
+      if (low.includes('sender')) score -= 250;
+      if (low.includes('user')) score -= 250;
+
+      found.push({
+        text,
+        markup: Array.isArray(markup) ? markup : [],
+        format: String(value.format || value.body?.format || value.content?.format || '').toLowerCase(),
+        score
+      });
+    };
+
+    if (typeof value.message?.body?.text === 'string') add(value.message.body.text, value.message.body.markup || localMarkup, 800);
+    if (typeof value.body?.text === 'string') add(value.body.text, value.body.markup || localMarkup, 750);
+    if (typeof value.text === 'string') add(value.text, localMarkup, 650);
+    if (typeof value.caption === 'string') add(value.caption, localMarkup, 550);
+    if (typeof value.content?.text === 'string') add(value.content.text, value.content.markup || localMarkup, 450);
+    if (typeof value.payload?.text === 'string') add(value.payload.text, value.payload.markup || localMarkup, 250);
+
+    for (const [key, child] of Object.entries(value)) {
+      if (child && typeof child === 'object') walk(child, `${path}.${key}`, localMarkup);
+    }
+  };
+
+  walk(root, 'root', []);
+
+  found.sort((a, b) => b.score - a.score);
+  return found[0] || { text: '', markup: [], format: '' };
+}
+
+function lrAutoSigFinalContent(updateOrContent) {
+  const found = lrAutoSigFinalFindText(updateOrContent);
+  const text = String(found.text || '').trim();
+  const markup = Array.isArray(found.markup) ? found.markup : [];
+  const format = String(found.format || '').toLowerCase();
+
+  let html = '';
+
+  if (markup.length) {
+    html = lrAutoSigFinalMarkupToHtml(text, markup);
+  } else if (format === 'html' || /(<|&lt;)\/?(a|b|strong|i|em|u|ins|s|strike|del|code)\b/i.test(text)) {
+    html = lrAutoSigFinalHtmlToSafe(text);
+  } else {
+    html = lrAutoSigFinalMarkdownToHtml(text);
+  }
+
+  return {
+    text: html,
+    format: 'html',
+    markup: [],
+    attachments: []
+  };
+}
+
+function lrAutoSigFinalPreview(sig) {
+  if (!sig) return 'Подпись не создана.';
+  const text = String(sig.text || '').trim();
+  if (!text) return 'Подпись не создана.';
+  return lrAutoSigFinalContent({ text, format: sig.format || 'html', markup: sig.markup || [] }).text || 'Подпись не создана.';
+}
+// LR_AUTOSIG_FINAL_END
+
+
 // LR_SIG_INPUT_V14_START
 function lrSigV14Decode(value) {
   return String(value ?? '')
@@ -2976,7 +3283,32 @@ async function handleMessage(update) {
 
     return sendEditorAsNew(chatId, key, draft);
   }
-  if (session.state === 'wait_signature') { const content = lrSigV14Content(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, content); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
+  if (session.state === 'wait_signature') {
+    const content = lrAutoSigFinalContent(update);
+    const channelId = draft.channelIds[0];
+
+    if (!channelId) {
+      await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+      return msg(chatId, '⚠️ Сначала выберите канал для автоподписи.');
+    }
+
+    if (!String(content.text || '').trim()) {
+      return msg(chatId, '⚠️ Подпись пустая. Отправьте текст, ссылку или жирный текст-ссылку.');
+    }
+
+    try {
+      await saveSignature(channelId, content);
+    } catch (error) {
+      console.error('[signature save final]', error.message || error);
+      await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+      return msg(chatId, `⚠️ Не удалось сохранить автоподпись:
+${error.message || error}`);
+    }
+
+    await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+    return sendStudioEditorMessage(chatId, draft);
+  }
+
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('➡️ К выпуску','editor:next')]]); }
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
