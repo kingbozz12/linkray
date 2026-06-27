@@ -76,6 +76,303 @@ import {
 
 
 
+
+// LR_SIG_INPUT_V14_START
+function lrSigV14Decode(value) {
+  return String(value ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function lrSigV14Esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrSigV14Attr(value) {
+  return lrSigV14Esc(value).replace(/"/g, '&quot;');
+}
+
+function lrSigV14Type(mark) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    ''
+  ).toLowerCase();
+}
+
+function lrSigV14Url(mark) {
+  return String(
+    mark?.url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.target_url ||
+    mark?.targetUrl ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+    mark?.payload?.link ||
+    ''
+  ).trim();
+}
+
+function lrSigV14Range(mark, textLength) {
+  let start = Number(mark?.from ?? mark?.start ?? mark?.offset ?? mark?.pos ?? mark?.range?.from ?? mark?.range?.start ?? 0);
+  let end = Number(mark?.to ?? mark?.end ?? mark?.range?.to ?? mark?.range?.end ?? NaN);
+  const len = Number(mark?.length ?? mark?.len ?? mark?.range?.length ?? mark?.range?.len ?? NaN);
+
+  if (!Number.isFinite(start)) start = 0;
+  if (!Number.isFinite(end)) end = Number.isFinite(len) ? start + len : start;
+
+  start = Math.max(0, Math.min(textLength, start));
+  end = Math.max(0, Math.min(textLength, end));
+
+  if (end <= start) return null;
+  return { start, end };
+}
+
+function lrSigV14Tag(mark) {
+  const type = lrSigV14Type(mark);
+  const url = lrSigV14Url(mark);
+
+  if ((type.includes('link') || type.includes('url')) && /^https?:\/\//i.test(url)) {
+    return { open: `<a href="${lrSigV14Attr(url)}">`, close: '</a>', priority: 20 };
+  }
+
+  if (type.includes('strong') || type.includes('bold')) return { open: '<b>', close: '</b>', priority: 10 };
+  if (type.includes('italic') || type.includes('emphasis') || type.includes('emphasized') || type === 'em') return { open: '<i>', close: '</i>', priority: 30 };
+  if (type.includes('underline') || type.includes('underlined') || type.includes('ins')) return { open: '<u>', close: '</u>', priority: 40 };
+  if (type.includes('strike') || type.includes('through') || type.includes('deleted') || type === 's' || type === 'del') return { open: '<s>', close: '</s>', priority: 50 };
+  if (type.includes('mono') || type.includes('code')) return { open: '<code>', close: '</code>', priority: 60 };
+
+  return null;
+}
+
+function lrSigV14MarkupToHtml(text, markup = []) {
+  const source = String(text ?? '');
+  const marks = Array.isArray(markup) ? markup : [];
+
+  if (!source) return '';
+
+  const opens = new Map();
+  const closes = new Map();
+
+  const add = (map, pos, item) => {
+    if (!map.has(pos)) map.set(pos, []);
+    map.get(pos).push(item);
+  };
+
+  for (const mark of marks) {
+    if (!mark || typeof mark !== 'object') continue;
+
+    const range = lrSigV14Range(mark, source.length);
+    const tag = lrSigV14Tag(mark);
+
+    if (!range || !tag) continue;
+
+    const item = { ...tag, start: range.start, end: range.end };
+    add(opens, range.start, item);
+    add(closes, range.end, item);
+  }
+
+  if (!opens.size && !closes.size) return lrSigV14MarkdownToHtml(source);
+
+  for (const arr of opens.values()) arr.sort((a, b) => a.priority - b.priority);
+  for (const arr of closes.values()) arr.sort((a, b) => b.priority - a.priority);
+
+  let out = '';
+
+  for (let i = 0; i <= source.length; i++) {
+    for (const item of closes.get(i) || []) out += item.close;
+    for (const item of opens.get(i) || []) out += item.open;
+    if (i < source.length) out += lrSigV14Esc(source[i]);
+  }
+
+  return out.replace(/\*\*/g, '').replace(/\+\+/g, '').trim();
+}
+
+function lrSigV14HtmlToSafe(value) {
+  let text = lrSigV14Decode(value).trim();
+  if (!text) return '';
+
+  const keep = [];
+  const save = (html) => {
+    const key = `__LR_SIG14_KEEP_${keep.length}__`;
+    keep.push(html);
+    return key;
+  };
+
+  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*><b>([\s\S]*?)<\/b><\/a>/gi, (_, q, url, label) => {
+    return save(`<b><a href="${lrSigV14Attr(url)}">${lrSigV14Esc(lrSigV14Decode(label).replace(/<\/?[^>]+>/g, ''))}</a></b>`);
+  });
+
+  text = text.replace(/<b><a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a><\/b>/gi, (_, q, url, label) => {
+    return save(`<b><a href="${lrSigV14Attr(url)}">${lrSigV14Esc(lrSigV14Decode(label).replace(/<\/?[^>]+>/g, ''))}</a></b>`);
+  });
+
+  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, q, url, label) => {
+    const cleanLabel = lrSigV14Decode(label).replace(/<\/?[^>]+>/g, '').trim();
+    return save(`<a href="${lrSigV14Attr(url)}">${lrSigV14Esc(cleanLabel)}</a>`);
+  });
+
+  text = text
+    .replace(/<\s*(b|strong)\s*>/gi, () => save('<b>'))
+    .replace(/<\s*\/\s*(b|strong)\s*>/gi, () => save('</b>'))
+    .replace(/<\s*(i|em)\s*>/gi, () => save('<i>'))
+    .replace(/<\s*\/\s*(i|em)\s*>/gi, () => save('</i>'))
+    .replace(/<\s*(u|ins)\s*>/gi, () => save('<u>'))
+    .replace(/<\s*\/\s*(u|ins)\s*>/gi, () => save('</u>'))
+    .replace(/<\s*(s|strike|del)\s*>/gi, () => save('<s>'))
+    .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, () => save('</s>'))
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+
+  text = lrSigV14Esc(text);
+
+  keep.forEach((html, i) => {
+    text = text.replaceAll(`__LR_SIG14_KEEP_${i}__`, html);
+  });
+
+  return text.replace(/\*\*/g, '').replace(/\+\+/g, '').trim();
+}
+
+function lrSigV14MarkdownToHtml(value) {
+  let text = lrSigV14Decode(value).trim();
+  if (!text) return '';
+
+  const keep = [];
+  const save = (html) => {
+    const key = `__LR_SIG14_MD_${keep.length}__`;
+    keep.push(html);
+    return key;
+  };
+
+  text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
+    return save(`<b><a href="${lrSigV14Attr(url)}">${lrSigV14Esc(label)}</a></b>`);
+  });
+
+  text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return save(`<b><a href="${lrSigV14Attr(url)}">${lrSigV14Esc(label)}</a></b>`);
+  });
+
+  text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+    return save(`<a href="${lrSigV14Attr(url)}">${lrSigV14Esc(label)}</a>`);
+  });
+
+  text = lrSigV14Esc(text)
+    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+    .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
+    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>');
+
+  keep.forEach((html, i) => {
+    text = text.replaceAll(`__LR_SIG14_MD_${i}__`, html);
+  });
+
+  return text.replace(/\*\*/g, '').replace(/\+\+/g, '').trim();
+}
+
+function lrSigV14FindText(root) {
+  const found = [];
+  const seen = new WeakSet();
+
+  const walk = (v, path = '', inheritedMarkup = []) => {
+    if (!v || typeof v !== 'object') return;
+    if (seen.has(v)) return;
+    seen.add(v);
+
+    const localMarkup =
+      (Array.isArray(v.markup) && v.markup) ||
+      (Array.isArray(v.body?.markup) && v.body.markup) ||
+      (Array.isArray(v.message?.body?.markup) && v.message.body.markup) ||
+      inheritedMarkup ||
+      [];
+
+    const add = (value, markup, bonus = 0) => {
+      const text = String(value ?? '').trim();
+      if (!text) return;
+
+      const low = path.toLowerCase();
+      let score = text.length + bonus;
+
+      if (low.includes('message')) score += 300;
+      if (low.includes('body')) score += 300;
+      if (low.includes('content')) score += 120;
+
+      if (low.includes('preview')) score -= 500;
+      if (low.includes('attachment')) score -= 500;
+      if (low.includes('button')) score -= 500;
+      if (low.includes('chat')) score -= 250;
+      if (low.includes('sender')) score -= 250;
+      if (low.includes('user')) score -= 250;
+
+      found.push({
+        text,
+        markup: Array.isArray(markup) ? markup : [],
+        format: String(v.format || v.body?.format || v.content?.format || '').toLowerCase(),
+        score
+      });
+    };
+
+    if (typeof v.body?.text === 'string') add(v.body.text, v.body.markup || localMarkup, 700);
+    if (typeof v.message?.body?.text === 'string') add(v.message.body.text, v.message.body.markup || localMarkup, 700);
+    if (typeof v.text === 'string') add(v.text, localMarkup, 600);
+    if (typeof v.caption === 'string') add(v.caption, localMarkup, 500);
+    if (typeof v.content?.text === 'string') add(v.content.text, v.content.markup || localMarkup, 400);
+    if (typeof v.payload?.text === 'string') add(v.payload.text, v.payload.markup || localMarkup, 300);
+
+    for (const [k, child] of Object.entries(v)) {
+      if (child && typeof child === 'object') walk(child, `${path}.${k}`, localMarkup);
+    }
+  };
+
+  walk(root, 'root', []);
+
+  found.sort((a, b) => b.score - a.score);
+  return found[0] || { text: '', markup: [], format: '' };
+}
+
+function lrSigV14Content(updateOrContent) {
+  const found = lrSigV14FindText(updateOrContent);
+  const text = String(found.text || '').trim();
+  const markup = Array.isArray(found.markup) ? found.markup : [];
+  const format = String(found.format || '').toLowerCase();
+
+  let html = '';
+
+  if (markup.length) {
+    html = lrSigV14MarkupToHtml(text, markup);
+  } else if (format === 'html' || /(<|&lt;)\/?(a|b|strong|i|em|u|ins|s|strike|del|code)\b/i.test(text)) {
+    html = lrSigV14HtmlToSafe(text);
+  } else {
+    html = lrSigV14MarkdownToHtml(text);
+  }
+
+  return {
+    text: html,
+    format: 'html',
+    markup: [],
+    attachments: []
+  };
+}
+
+function lrSigV14Preview(sig) {
+  if (!sig) return 'Подпись не создана.';
+  return lrSigV14Content(sig).text || 'Подпись не создана.';
+}
+// LR_SIG_INPUT_V14_END
+
+
 // LR_SIG_RICH_V13_START
 globalThis.__lrSigRichV13 = (() => {
   const decode = (value) => String(value ?? '')
@@ -2019,7 +2316,7 @@ if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
     const sig = await loadSignature(channelId);
     const isActive = sig ? sig.is_active !== false : true;
 
-    const signatureText = globalThis.__lrSigRichV13.preview(sig);
+    const signatureText = lrSigV14Preview(sig);
 
     return cb(
       callbackId,
@@ -2045,7 +2342,7 @@ if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
 
     const channel = (await getChannels()).find((c) => Number(c.id) === channelId);
     const newSig = await loadSignature(channelId);
-    const signatureText = globalThis.__lrSigRichV13.preview(newSig);
+    const signatureText = lrSigV14Preview(newSig);
 
     return cb(
       callbackId,
@@ -2679,7 +2976,7 @@ async function handleMessage(update) {
 
     return sendEditorAsNew(chatId, key, draft);
   }
-  if (session.state === 'wait_signature') { const content = await hydrateContent(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, globalThis.__lrSigRichV13.contentForSave(content)); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
+  if (session.state === 'wait_signature') { const content = lrSigV14Content(update); const channelId = draft.channelIds[0]; if (channelId) await saveSignature(channelId, content); await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_cpm') { const cpm = Number(String(text).replace(',', '.').replace(/[^0-9.]/g,'')); if (!Number.isFinite(cpm) || cpm <= 0) return msg(chatId, 'Введите число, например 1000.'); draft.cpm = cpm; draft.isAd = true; draft.signatureEnabled = false; draft.autoDeleteMinutes ||= 2880; await setSession(key, 'edit_draft', { draft }); return sendStudioEditorMessage(chatId, draft); }
   if (session.state === 'wait_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('➡️ К выпуску','editor:next')]]); }
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
