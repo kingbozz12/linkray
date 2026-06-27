@@ -1866,6 +1866,79 @@ async function handleCallback(update) {
   
 if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
 
+  // LR_AUTOSIGN_CHANNEL_CLICK_FIX_START
+  if (payload.startsWith('sig:channel:')) {
+    const channelId = Number(String(payload).split(':').pop());
+    const channel = (await getChannels()).find((c) => Number(c.id) === channelId);
+
+    if (!channel || !channelId) {
+      return cb(callbackId, '⚠️ Канал не найден.', [
+        [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+        [callbackButton('⬅️ В Studio', 'main:posting')]
+      ]);
+    }
+
+    const sig = await loadSignature(channelId);
+    const isActive = sig ? sig.is_active !== false : true;
+
+    const signatureText = sig?.text
+      ? String(sig.text)
+      : 'Подпись не создана.';
+
+    return cb(
+      callbackId,
+      `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nКанал:\n${channelName(channel)}\n\nСтатус: ${isActive ? 'включена' : 'выключена'}\n\n${signatureText}\n━━━━━━━━━━━━━━`,
+      [
+        [callbackButton('✏️ Заменить подпись', `sig:add_channel:${channelId}`)],
+        [callbackButton(isActive ? '🚫 Выключить' : '✅ Включить', `sig:toggle_channel:${channelId}`)],
+        [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+        [callbackButton('⬅️ В Studio', 'main:posting')]
+      ]
+    );
+  }
+
+  if (payload.startsWith('sig:toggle_channel:')) {
+    const channelId = Number(String(payload).split(':').pop());
+    if (!channelId) {
+      return cb(callbackId, '⚠️ Канал не найден.', [[callbackButton('⬅️ Автоподписи', 'sig:menu')]]);
+    }
+
+    const sig = await loadSignature(channelId);
+    const nextActive = !(sig ? sig.is_active !== false : true);
+    await setSignatureActive(channelId, nextActive);
+
+    const channel = (await getChannels()).find((c) => Number(c.id) === channelId);
+    const newSig = await loadSignature(channelId);
+    const signatureText = newSig?.text ? String(newSig.text) : 'Подпись не создана.';
+
+    return cb(
+      callbackId,
+      `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nКанал:\n${channel ? channelName(channel) : channelId}\n\nСтатус: ${nextActive ? 'включена' : 'выключена'}\n\n${signatureText}\n━━━━━━━━━━━━━━`,
+      [
+        [callbackButton('✏️ Заменить подпись', `sig:add_channel:${channelId}`)],
+        [callbackButton(nextActive ? '🚫 Выключить' : '✅ Включить', `sig:toggle_channel:${channelId}`)],
+        [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+        [callbackButton('⬅️ В Studio', 'main:posting')]
+      ]
+    );
+  }
+
+  if (payload.startsWith('sig:add_channel:')) {
+    const channelId = Number(String(payload).split(':').pop());
+    if (!channelId) {
+      return cb(callbackId, '⚠️ Канал не найден.', [[callbackButton('⬅️ Автоподписи', 'sig:menu')]]);
+    }
+
+    const draft = { ...emptyDraft(), channelIds: [channelId], signatureEnabled: true };
+    await setSession(key, 'wait_signature', { draft });
+
+    return cb(callbackId, '🏷 Отправьте подпись. Ссылки, жирный, курсив и подчёркивание MAX сохранятся.', [
+      [callbackButton('⬅️ Назад', `sig:channel:${channelId}`)]
+    ]);
+  }
+  // LR_AUTOSIGN_CHANNEL_CLICK_FIX_END
+
+
 // LR_SIG_CHANNEL_HANDLERS_V8_START
 if (payload.startsWith('sig:channel:')) {
   const channelId = Number(payload.split(':')[2]);
