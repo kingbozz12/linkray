@@ -2271,12 +2271,34 @@ function editorMenuText() {
 }
 
 async function showEditor(callbackId, key, draft) {
-  if (hasContent(draft) && Number(key)) {
-    const mid = await sendDraftPreview(Number(key), draft);
-    if (mid) draft.previewMessageId = mid;
-  }
   await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
-  await cb(callbackId, editorMenuText(), editorMenuRows(draft));
+
+  try {
+    await cb(callbackId, editorMenuText(), editorMenuRows(draft));
+  } catch (error) {
+    console.error('[editor menu callback failed]', error.message || error);
+    if (Number(key)) {
+      await msg(Number(key), editorMenuText(), editorMenuRows(draft));
+    }
+  }
+
+  if (hasContent(draft) && Number(key)) {
+    setTimeout(async () => {
+      try {
+        const latest = await getSession(key);
+        const latestDraft = safeDraft(latest.data);
+        const targetDraft = hasContent(latestDraft) ? latestDraft : draft;
+
+        const mid = await sendDraftPreview(Number(key), targetDraft);
+        if (mid) {
+          targetDraft.previewMessageId = mid;
+          await setSession(key, targetDraft.postId ? 'edit_existing' : 'edit_draft', { draft: targetDraft });
+        }
+      } catch (error) {
+        console.error('[preview background failed]', error.message || error);
+      }
+    }, 0);
+  }
 }
 
 async function sendDraftPreview(chatId, draft) {
