@@ -817,6 +817,116 @@ globalThis.__lrSigRichV13 = (() => {
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
+/* LR_FORCE_BUTTON_DELETE_FIX_V12_START */
+app.use(async function lrForceButtonDeleteFixV12(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const chatId = Number(getChatId(update) || 0);
+    const key = getSessionKey(update);
+
+    if (!payload) return next();
+
+    const isButtonDelete =
+      /btn|button/i.test(payload) &&
+      /remove|delete|del|clear/i.test(payload);
+
+    const isKnownButtonDelete =
+      payload.startsWith('lr_btn:remove:') ||
+      payload.startsWith('lr_btn_clean:remove:') ||
+      payload.startsWith('lr_btn_stable:remove:') ||
+      payload.startsWith('lr_btn:clear') ||
+      payload.startsWith('lr_btn_clean:clear') ||
+      payload.startsWith('lr_btn_stable:clear');
+
+    if (!isButtonDelete && !isKnownButtonDelete) return next();
+
+    const session = await getSession(key);
+    const data = session?.data || {};
+    const draft = data.draft ? data.draft : (typeof safeDraft === 'function' ? safeDraft(data) : data);
+
+    if (!draft || typeof draft !== 'object') return next();
+
+    const oldButtons = Array.isArray(draft.buttons) ? draft.buttons : [];
+
+    function cleanButton(b) {
+      const text = String(b?.text || b?.title || b?.label || '').trim();
+      const url = String(b?.url || b?.link || b?.href || '').trim();
+      if (!text || !/^https?:\/\//i.test(url)) return null;
+      if (/^(⚠️|формат кнопки|добавить кнопку|отправьте|сейчас|кнопки поста)/i.test(text)) return null;
+      return { text, url };
+    }
+
+    let buttons = oldButtons.map(cleanButton).filter(Boolean);
+
+    const isClear = /clear/i.test(payload) || /delete_all|remove_all/i.test(payload);
+
+    if (isClear) {
+      buttons = [];
+    } else {
+      const nums = payload.match(/\d+/g);
+      let index = nums && nums.length ? Number(nums[nums.length - 1]) : 0;
+
+      // В старых payload индекс мог быть 1-based, в новых 0-based.
+      if (index >= buttons.length && index - 1 >= 0 && index - 1 < buttons.length) {
+        index = index - 1;
+      }
+
+      // Если payload старый lr_btn...:0, оставляем 0-based.
+      if (Number.isInteger(index) && index >= 0 && index < buttons.length) {
+        buttons.splice(index, 1);
+      }
+    }
+
+    draft.buttons = buttons;
+
+    console.log('[LR_FORCE_BUTTON_DELETE_FIX_V12]', JSON.stringify({
+      payload,
+      left: buttons.length
+    }));
+
+    if (callbackId) {
+      try {
+        await answerCallback({
+          callbackId,
+          notification: buttons.length ? 'Кнопка удалена' : 'Кнопки удалены'
+        });
+      } catch (e) {
+        console.error('[LR_FORCE_BUTTON_DELETE_FIX_V12 callback]', e?.message || e);
+      }
+    }
+
+    await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+
+    try {
+      draft.previewMessageId = null;
+      if (typeof hasContent !== 'function' || hasContent(draft)) {
+        const mid = await sendDraftPreview(chatId, draft);
+        if (mid) draft.previewMessageId = mid;
+      }
+    } catch (e) {
+      console.error('[LR_FORCE_BUTTON_DELETE_FIX_V12 preview]', e?.message || e);
+    }
+
+    await sendMaxMessage({
+      chatId,
+      text: editorMenuText(),
+      format: 'html',
+      attachments: inlineKeyboard(editorMenuRows(draft))
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('[LR_FORCE_BUTTON_DELETE_FIX_V12]', e?.stack || e);
+    return next();
+  }
+});
+/* LR_FORCE_BUTTON_DELETE_FIX_V12_END */
+
+
 /* LR_BUTTON_BACK_TO_EDITOR_FIX_V11_START */
 app.use(async function lrButtonBackToEditorFixV11(req, res, next) {
   try {
