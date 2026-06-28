@@ -816,6 +816,363 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
+/* LR_BUTTON_PREVIEW_REFRESH_V7_START */
+app.use(async function lrButtonPreviewRefreshV7(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = getCallbackPayload(update);
+    const callbackId = getCallbackId(update);
+    const chatId = Number(getChatId(update) || 0);
+    const key = getSessionKey(update);
+
+    function lrEsc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function lrPlain(v) {
+      try {
+        return typeof plain === 'function' ? plain(v) : String(v || '');
+      } catch {
+        return String(v || '');
+      }
+    }
+
+    function lrShort(v, max = 40) {
+      const s = lrPlain(v || '').replace(/\s+/g, ' ').trim();
+      return s.length > max ? s.slice(0, max) + '...' : (s || 'кнопка');
+    }
+
+    function lrDraftFromSession(session) {
+      const data = session && session.data ? session.data : {};
+      const raw = data.draft ? data.draft : data;
+
+      try {
+        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
+      } catch {
+        return raw || {};
+      }
+    }
+
+    function lrMessageMarkup(u) {
+      const m =
+        (u.message && u.message.body && u.message.body.markup) ||
+        (u.message && u.message.markup) ||
+        (u.body && u.body.markup) ||
+        u.markup ||
+        [];
+
+      return Array.isArray(m) ? m : [];
+    }
+
+    function lrOverlap(aStart, aLen, bStart, bLen) {
+      const a1 = Number(aStart) || 0;
+      const a2 = a1 + (Number(aLen) || 0);
+      const b1 = Number(bStart) || 0;
+      const b2 = b1 + (Number(bLen) || 0);
+      return a1 < b2 && b1 < a2;
+    }
+
+    function lrParseButtonLine(fullText, line) {
+      const raw = String(line || '').trim();
+      const urlMatch = raw.match(/https?:\/\/[^\s<>"']+/i);
+
+      if (!urlMatch) return null;
+
+      const url = urlMatch[0].trim();
+      let title = raw.slice(0, urlMatch.index).trim();
+
+      title = title.replace(/[-–—|:]+$/g, '').trim();
+
+      if (!title) return null;
+
+      return {
+        text: title,
+        url: url,
+        titleFrom: fullText.indexOf(title),
+        titleLength: title.length
+      };
+    }
+
+    function lrParseButtonsInput(fullText) {
+      const raw = String(fullText || '').replace(/\r/g, '\n').trim();
+      const parts = raw.split(/\n|\|/g).map(x => x.trim()).filter(Boolean);
+      const out = [];
+
+      for (let i = 0; i < parts.length; i++) {
+        let line = parts[i];
+
+        if (!/https?:\/\//i.test(line) && i + 1 < parts.length && /https?:\/\//i.test(parts[i + 1])) {
+          line = line + ' ' + parts[i + 1];
+          i++;
+        }
+
+        const parsed = lrParseButtonLine(raw, line);
+
+        if (!parsed) {
+          return {
+            ok: false,
+            error: '⚠️ Формат кнопки:\n<b>Название - https://site.ru</b>'
+          };
+        }
+
+        out.push(parsed);
+      }
+
+      if (!out.length) {
+        return {
+          ok: false,
+          error: '⚠️ Формат кнопки:\n<b>Название - https://site.ru</b>'
+        };
+      }
+
+      return { ok: true, buttons: out };
+    }
+
+    function lrValidateButtonMarkup(fullText, parsedButtons, markup) {
+      for (const item of parsedButtons) {
+        const unsupported = markup.find(m => {
+          const type = String(m.type || m.kind || '').toLowerCase();
+
+          if (!lrOverlap(m.from || 0, m.length || 0, item.titleFrom, item.titleLength)) return false;
+
+          if (type === 'strong' || type === 'bold') return false;
+
+          return true;
+        });
+
+        if (unsupported) {
+          return '⚠️ Формат не поддерживается.\n\nВ названии кнопки можно использовать обычный текст или жирный. Остальные форматы для кнопок не сохраняются.';
+        }
+      }
+
+      return null;
+    }
+
+    async function lrAck(text) {
+      if (!callbackId) return;
+
+      try {
+        await answerCallback({
+          callbackId: callbackId,
+          notification: lrPlain(text || 'Готово').slice(0, 120)
+        });
+      } catch (e) {
+        console.error('[LR_BUTTON_PREVIEW_REFRESH_V7 ack]', e.message || e);
+      }
+    }
+
+    async function lrSendEditorBelowPreview(draft, notice) {
+      if (!chatId) return;
+
+      const oldPreviewId = draft.previewMessageId || null;
+
+      /*
+        Важно: после ввода/удаления кнопки отправляем новое превью прямо над новым редактором.
+        Иначе старое превью редактируется выше по истории, а под новым редактором его не видно.
+      */
+      draft.previewMessageId = null;
+
+      if (typeof hasContent !== 'function' || hasContent(draft)) {
+        try {
+          const mid = await sendDraftPreview(chatId, draft);
+          if (mid) draft.previewMessageId = mid;
+          else draft.previewMessageId = oldPreviewId;
+        } catch (e) {
+          console.error('[LR_BUTTON_PREVIEW_REFRESH_V7 preview]', e.message || e);
+          draft.previewMessageId = oldPreviewId;
+        }
+      }
+
+      await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+
+      const text =
+        (notice ? notice + '\n\n' : '') +
+        editorMenuText();
+
+      await sendMaxMessage({
+        chatId: chatId,
+        text: text,
+        format: 'html',
+        attachments: inlineKeyboard(editorMenuRows(draft))
+      });
+    }
+
+    function lrButtonsListText(draft) {
+      const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+
+      if (!buttons.length) return 'Кнопок пока нет.';
+
+      return buttons
+        .map((b, i) => `${i + 1}. ${lrEsc(lrShort(b.text || b.title || 'кнопка', 32))} — ${lrEsc(b.url || '')}`)
+        .join('\n');
+    }
+
+    function lrButtonPromptRows(draft) {
+      const rows = [];
+      const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+
+      buttons.forEach((b, i) => {
+        rows.push([
+          callbackButton(`❌ Удалить ${i + 1}. ${lrShort(b.text || b.title || 'кнопка', 18)}`, `lr_btn:remove:${i}`)
+        ]);
+      });
+
+      if (buttons.length) {
+        rows.push([callbackButton('🧹 Удалить все кнопки', 'lr_btn:clear')]);
+      }
+
+      rows.push([callbackButton('⬅️ Назад', 'editor:back')]);
+
+      return rows;
+    }
+
+    async function lrShowButtonPrompt() {
+      const session = await getSession(key);
+      const draft = lrDraftFromSession(session);
+
+      await setSession(key, 'wait_button', { draft });
+
+      const text =
+        '━━━━━━━━━━━━━━\n' +
+        '🔘 <b>Кнопки поста</b>\n\n' +
+        '<b>Сейчас:</b>\n' +
+        lrButtonsListText(draft) +
+        '\n\n' +
+        '<b>Добавить кнопку:</b>\n' +
+        'Отправьте сообщением:\n' +
+        '<b>Название - https://site.ru</b>\n\n' +
+        'Можно отправить несколько кнопок, каждую с новой строки или через <b>|</b>.\n' +
+        'В названии поддерживается обычный текст и жирный.\n' +
+        '━━━━━━━━━━━━━━';
+
+      if (callbackId) {
+        return answerCallback({
+          callbackId: callbackId,
+          text: text,
+          format: 'html',
+          attachments: inlineKeyboard(lrButtonPromptRows(draft))
+        });
+      }
+
+      return sendMaxMessage({
+        chatId: chatId,
+        text: text,
+        format: 'html',
+        attachments: inlineKeyboard(lrButtonPromptRows(draft))
+      });
+    }
+
+    async function lrRemoveButton(index) {
+      const session = await getSession(key);
+      const draft = lrDraftFromSession(session);
+      const buttons = Array.isArray(draft.buttons) ? draft.buttons : [];
+
+      if (index < 0 || index >= buttons.length) {
+        await lrAck('Кнопка не найдена');
+        return;
+      }
+
+      buttons.splice(index, 1);
+      draft.buttons = buttons;
+
+      await lrAck('Кнопка удалена');
+      await lrSendEditorBelowPreview(draft, '✅ Кнопка удалена.');
+    }
+
+    async function lrClearButtons() {
+      const session = await getSession(key);
+      const draft = lrDraftFromSession(session);
+
+      draft.buttons = [];
+
+      await lrAck('Кнопки удалены');
+      await lrSendEditorBelowPreview(draft, '✅ Все кнопки удалены.');
+    }
+
+    async function lrHandleButtonInputMessage() {
+      const session = await getSession(key);
+      if (!session || session.state !== 'wait_button') return false;
+
+      const draft = lrDraftFromSession(session);
+      const fullText = getMessageText(update);
+
+      if (!fullText) return false;
+
+      const parsed = lrParseButtonsInput(fullText);
+
+      if (!parsed.ok) {
+        await sendMaxMessage({
+          chatId: chatId,
+          text: parsed.error,
+          format: 'html',
+          attachments: inlineKeyboard(lrButtonPromptRows(draft))
+        });
+        return true;
+      }
+
+      const markupError = lrValidateButtonMarkup(fullText, parsed.buttons, lrMessageMarkup(update));
+
+      if (markupError) {
+        await sendMaxMessage({
+          chatId: chatId,
+          text: markupError,
+          format: 'html',
+          attachments: inlineKeyboard(lrButtonPromptRows(draft))
+        });
+        return true;
+      }
+
+      draft.buttons = [].concat(draft.buttons || [], parsed.buttons.map(b => ({
+        text: b.text,
+        url: b.url
+      })));
+
+      console.log('[LR_BUTTON_PREVIEW_REFRESH_V7 added]', JSON.stringify({
+        key,
+        added: parsed.buttons.length,
+        total: draft.buttons.length,
+        previewMessageId: draft.previewMessageId || null
+      }));
+
+      await lrSendEditorBelowPreview(draft, '✅ Кнопка добавлена.');
+      return true;
+    }
+
+    if (await lrHandleButtonInputMessage()) {
+      return res.json({ ok: true });
+    }
+
+    if (!payload) return next();
+
+    if (payload === 'editor:button') {
+      await lrShowButtonPrompt();
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_btn:remove:')) {
+      const index = Number(payload.split(':')[2]);
+      await lrRemoveButton(index);
+      return res.json({ ok: true });
+    }
+
+    if (payload === 'lr_btn:clear') {
+      await lrClearButtons();
+      return res.json({ ok: true });
+    }
+
+    return next();
+  } catch (error) {
+    console.error('[LR_BUTTON_PREVIEW_REFRESH_V7]', error && error.stack ? error.stack : error);
+    return next();
+  }
+});
+/* LR_BUTTON_PREVIEW_REFRESH_V7_END */
+
 /* LR_CALENDAR_SCHEDULE_BUTTON_V6_START */
 app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
   try {
