@@ -4643,24 +4643,105 @@ async function scheduleDraft(draft, key, publishAt) {
   return ids;
 }
 function extractMessageId(res) { return res?.message?.body?.mid || res?.message?.id || res?.message_id || res?.messageId || res?.id || res?.mid || null; }
+
 async function publishDraftNow(draft, key) {
   if (!draft.campaignId) draft.campaignId = `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   if (draft.isAd && !draft.autoDeleteMinutes) draft.autoDeleteMinutes = 2880;
+
   const results = [];
-  for (const channel of await getChannelsByIds(draft.channelIds)) {
+  const channels = await getChannelsByIds(draft.channelIds);
+
+  for (const channel of channels) {
+    let content = null;
+    let sent = null;
+    let messageId = null;
+    let dbPostId = null;
+
     try {
-      const content = await composePostForChannel(draft, channel.id);
-      const sent = await sendMaxMessage({ chatId: channel.max_chat_id, ...content });
-      const messageId = extractMessageId(sent);
-      const r = await query(`INSERT INTO scheduled_posts(channel_id,text,format,publish_at,status,notify,created_by_max_user_id,attachments,buttons,draft,is_ad,cpm,auto_delete_minutes,report_after_hours,report_group_id,published_at,published_message_id,updated_at) VALUES($1,$2,$3,now(),'published',false,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12,now(),$13,now()) RETURNING id`, [channel.id, content.text, content.format, String(key), JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24, draft.campaignId, messageId]);
-      results.push({ ok: true, channel, id: r[0].id, messageId });
+      content = await composePostForChannel(draft, channel.id);
+
+      sent = await sendMaxMessage({
+        chatId: channel.max_chat_id,
+        ...content
+      });
+
+      messageId = extractMessageId(sent);
+
+      // Важно: если дошли сюда — MAX уже принял/отправил пост.
+      // Ошибка ниже в БД больше не должна превращать публикацию в "0/1".
     } catch (e) {
-      console.error('[publish now]', e.message || e);
-      results.push({ ok: false, channel, error: e.message || String(e) });
+      console.error('[publish now send failed]', e?.message || e);
+      results.push({
+        ok: false,
+        channel,
+        error: e?.message || String(e)
+      });
+      continue;
     }
+
+    try {
+      const r = await query(
+        `INSERT INTO scheduled_posts(
+          channel_id,
+          text,
+          format,
+          publish_at,
+          status,
+          notify,
+          created_by_max_user_id,
+          attachments,
+          buttons,
+          draft,
+          is_ad,
+          cpm,
+          auto_delete_minutes,
+          report_after_hours,
+          report_group_id,
+          published_at,
+          published_message_id,
+          updated_at
+        )
+        VALUES(
+          $1,$2,$3,now(),'published',false,$4,
+          $5::jsonb,$6::jsonb,$7::jsonb,
+          $8,$9,$10,$11,$12,
+          now(),$13,now()
+        )
+        RETURNING id`,
+        [
+          channel.id,
+          content.text,
+          content.format,
+          String(key),
+          JSON.stringify(normalizeAttachments(draft.content?.attachments || [])),
+          JSON.stringify(draft.buttons || []),
+          JSON.stringify(draft),
+          Boolean(draft.isAd),
+          draft.cpm,
+          draft.autoDeleteMinutes,
+          draft.reportAfterHours || 24,
+          draft.campaignId,
+          messageId
+        ]
+      );
+
+      dbPostId = r?.[0]?.id || null;
+    } catch (dbError) {
+      console.error('[publish now db after sent]', dbError?.message || dbError);
+      // Пост уже вышел, поэтому пользователю не показываем ошибку MAX API.
+    }
+
+    results.push({
+      ok: true,
+      channel,
+      id: dbPostId,
+      messageId
+    });
   }
+
   return results;
 }
+
 async function afterPlanned(chatId, draft, publishAt, ids) {
   const channels = await getChannelsByIds(draft.channelIds);
   const d = parseDbDate(publishAt);
