@@ -817,6 +817,293 @@ globalThis.__lrSigRichV13 = (() => {
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
+
+/* LR_SAVED_TIME_REAL_SCHEDULE_V1_START */
+app.use(async function lrSavedTimeRealScheduleV1(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const chatId = Number(getChatId(update) || 0);
+    const key = getSessionKey(update);
+
+    if (!key) return next();
+
+    function lrText(update) {
+      try {
+        return String(getMessageText(update) || '').trim();
+      } catch {
+        return '';
+      }
+    }
+
+    function lrDraftFromSession(session) {
+      const data = session && session.data ? session.data : {};
+      const raw = data.draft ? data.draft : data;
+
+      try {
+        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
+      } catch {
+        return raw || {};
+      }
+    }
+
+    function lrNormalizeTime(input) {
+      const raw = String(input || '').trim();
+
+      let m = raw.match(/^(\d{1,2})[:.\s](\d{2})$/);
+      if (!m) m = raw.match(/^(\d{1,2})(\d{2})$/);
+
+      if (!m) return null;
+
+      const hh = Number(m[1]);
+      const mm = Number(m[2]);
+
+      if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+
+      return String(hh).padStart(2, '0') + String(mm).padStart(2, '0');
+    }
+
+    function lrPublishDate(dayKey, hhmm) {
+      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
+
+      try {
+        if (typeof dateTimeFromDayTime === 'function') {
+          return dateTimeFromDayTime(dayKey, clean);
+        }
+      } catch {}
+
+      const parts = String(dayKey || '').split('-').map(Number);
+      const y = parts[0] || new Date().getFullYear();
+      const m = parts[1] || (new Date().getMonth() + 1);
+      const d = parts[2] || new Date().getDate();
+      const hh = Number(clean.slice(0, 2));
+      const mm = Number(clean.slice(2, 4));
+
+      return new Date(`${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00+03:00`);
+    }
+
+    function lrNiceTime(hhmm) {
+      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
+      return clean.slice(0, 2) + ':' + clean.slice(2, 4);
+    }
+
+    function lrHasPostBody(draft) {
+      if (!draft || typeof draft !== 'object') return false;
+
+      const content = draft.content || {};
+      const text = String(content.text || draft.text || '').trim();
+      const attachments = Array.isArray(content.attachments) ? content.attachments : [];
+
+      if (text) return true;
+      if (attachments.length) return true;
+
+      try {
+        if (typeof hasContent === 'function') return Boolean(hasContent(draft));
+      } catch {}
+
+      return false;
+    }
+
+    async function lrSchedule(dayKey, hhmm, sourceSession = null) {
+      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
+      const nice = lrNiceTime(clean);
+      const publishAt = lrPublishDate(dayKey, clean);
+
+      if (!publishAt || Number.isNaN(publishAt.getTime())) {
+        return cb(
+          callbackId,
+          '⚠️ Не удалось разобрать дату публикации.',
+          [[callbackButton('⬅️ Назад', 'editor:next')]]
+        );
+      }
+
+      if (publishAt.getTime() <= Date.now()) {
+        return cb(
+          callbackId,
+          `⚠️ Это время уже прошло: ${nice}.\n\nВыберите будущее время.`,
+          [[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]]
+        );
+      }
+
+      const session = sourceSession || await getSession(key);
+      const draft = lrDraftFromSession(session);
+
+      if (!draft || !Array.isArray(draft.channelIds) || !draft.channelIds.length) {
+        return cb(
+          callbackId,
+          '⚠️ Сначала выберите канал для публикации.',
+          [[callbackButton('⬅️ В редактор', 'editor:back')]]
+        );
+      }
+
+      if (!lrHasPostBody(draft)) {
+        return cb(
+          callbackId,
+          '⚠️ Пост пустой. Сначала добавьте текст или медиа.',
+          [[callbackButton('⬅️ В редактор', 'editor:back')]]
+        );
+      }
+
+      if (callbackId && typeof answerCallback === 'function') {
+        try {
+          await answerCallback({
+            callbackId,
+            notification: 'Планирую пост на ' + nice
+          });
+        } catch {}
+      }
+
+      const ids = await scheduleDraft(draft, key, publishAt);
+
+      await clearSession(key);
+
+      console.log('[LR_SAVED_TIME_REAL_SCHEDULE_V1 scheduled]', JSON.stringify({
+        dayKey,
+        time: nice,
+        ids
+      }));
+
+      return afterPlanned(chatId, draft, publishAt, ids);
+    }
+
+    async function lrAskManualForDay(dayKey) {
+      const session = await getSession(key);
+      const draft = lrDraftFromSession(session);
+
+      await setSession(key, 'lr_wait_manual_schedule_day_v1', {
+        draft,
+        dayKey
+      });
+
+      return cb(
+        callbackId,
+        `━━━━━━━━━━━━━━
+✍️ Введите время публикации.
+
+Дата:
+<b>${escapeHtml(dayKey)}</b>
+
+Пример: <b>18:30</b> или <b>1830</b>.
+
+После ввода пост сразу будет отложен на это время.
+━━━━━━━━━━━━━━`,
+        [[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]]
+      );
+    }
+
+    async function lrHandleManualMessage() {
+      if (payload) return false;
+
+      const session = await getSession(key);
+      const state = String(session && session.state || '');
+
+      if (state !== 'lr_wait_manual_schedule_day_v1') return false;
+
+      const dayKey = session.data && session.data.dayKey;
+      const clean = lrNormalizeTime(lrText(update));
+
+      if (!clean) {
+        await sendMaxMessage({
+          chatId,
+          text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
+          format: 'html',
+          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
+        });
+
+        return true;
+      }
+
+      await lrSchedule(dayKey, clean, session);
+      return true;
+    }
+
+    if (await lrHandleManualMessage()) {
+      return res.json({ ok: true });
+    }
+
+    if (!payload) return next();
+
+    // Сохранённое время: 💾 01:48
+    // Нажатие должно НЕ просто писать "время выбрано",
+    // а сразу создавать отложенный пост как обычное планирование.
+    if (payload.startsWith('lr_cal:pick:')) {
+      const parts = payload.split(':');
+      const dayKey = parts[2];
+      const clean = lrNormalizeTime(parts[3] || '');
+
+      if (!dayKey || !clean) {
+        return cb(callbackId, '⚠️ Не удалось выбрать время.', [
+          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
+        ]);
+      }
+
+      await lrSchedule(dayKey, clean);
+      return res.json({ ok: true });
+    }
+
+    // Старые кнопки времени календаря.
+    if (payload.startsWith('schedule:time:')) {
+      const parts = payload.split(':');
+      const dayKey = parts[2];
+      const clean = lrNormalizeTime(parts[3] || '');
+
+      if (!dayKey || !clean) {
+        return cb(callbackId, '⚠️ Не удалось выбрать время.', [
+          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
+        ]);
+      }
+
+      await lrSchedule(dayKey, clean);
+      return res.json({ ok: true });
+    }
+
+    // Ручной ввод внутри выбранной даты.
+    if (payload.startsWith('lr_cal:manual_day:') || payload.startsWith('schedule:manual_day:')) {
+      const dayKey = payload.split(':')[2];
+
+      if (!dayKey) {
+        return cb(callbackId, '⚠️ Не удалось определить дату.', [
+          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
+        ]);
+      }
+
+      await lrAskManualForDay(dayKey);
+      return res.json({ ok: true });
+    }
+
+    // Старую кнопку ручного ввода из меню выпуска больше не используем.
+    if (payload === 'schedule:manual') {
+      return cb(
+        callbackId,
+        '━━━━━━━━━━━━━━\n📅 Выберите дату в календаре, затем нажмите «Ввести время вручную».\n━━━━━━━━━━━━━━',
+        [[callbackButton('📅 Календарь', 'schedule:calendar')]]
+      );
+    }
+
+    return next();
+  } catch (error) {
+    console.error('[LR_SAVED_TIME_REAL_SCHEDULE_V1]', error && error.stack ? error.stack : error);
+
+    try {
+      const callbackId = getCallbackId(req.body || {});
+      if (callbackId) {
+        await cb(callbackId, '⚠️ Ошибка планирования. Проверь логи.', [
+          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
+        ]);
+        return res.json({ ok: true });
+      }
+    } catch {}
+
+    return next();
+  }
+});
+/* LR_SAVED_TIME_REAL_SCHEDULE_V1_END */
+
+
 /* LR_CALENDAR_SAVED_TIME_DELETE_V1_START */
 app.use(async function lrCalendarSavedTimeDeleteV1(req, res, next) {
   try {
