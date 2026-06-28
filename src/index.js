@@ -4698,21 +4698,71 @@ ${channelsLines(channels)}
   }
   await sendMain(chatId);
 }
-async function afterPublished(chatId, draft, results) {
-  if (draft.isAd) {
-    await msg(chatId, `━━━━━━━━━━━━━━
-✅ <b>Рекламный пост опубликован</b>
 
-Каналов: ${results.filter(r=>r.ok).length}/${results.length}
-💼 CPM: ${draft.cpm || 'не указан'} ₽
-🗑 Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
-📊 Отчёт придёт через 24ч
-🔗 Страница отчёта: <a href="${reportUrl(draft.campaignId)}">LinkRay Analytics</a>
-━━━━━━━━━━━━━━`, [[callbackButton('📊 Открыть отчёт', `report:open:${draft.campaignId}`)],[callbackButton('🗂 Посты','post:all')],[callbackButton('🏠 В меню','main:menu')]]);
-  } else {
-    await msg(chatId, `✅ Пост опубликован.
-Успешно: ${results.filter(r=>r.ok).length}/${results.length}`, [[callbackButton('🗂 Посты','post:all')],[callbackButton('🏠 В меню','main:menu')]]);
+async function afterPublished(chatId, draft, results) {
+  const list = Array.isArray(results) ? results : [];
+  const ok = list.filter(r => r && r.ok);
+  const fail = list.filter(r => r && !r.ok);
+
+  let allChannels = list.map(r => r && r.channel).filter(Boolean);
+
+  if (!allChannels.length && draft?.channelIds?.length) {
+    allChannels = await getChannelsByIds(draft.channelIds);
   }
+
+  const okChannels = ok.map(r => r.channel).filter(Boolean);
+  const shownChannels = okChannels.length ? okChannels : allChannels;
+
+  const channelTitle = shownChannels.length > 1 ? 'Каналы' : 'Канал';
+  const channelList = shownChannels.length ? channelsLines(shownChannels) : '—';
+
+  let text;
+
+  if (draft.isAd) {
+    text =
+      `━━━━━━━━━━━━━━
+✅ Рекламный пост опубликован
+
+${channelTitle}:
+${channelList}
+
+CPM: ${draft.cpm || 'не указан'} ₽
+Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
+Отчёт придёт через 24ч
+Страница отчёта: <a href="${reportUrl(draft.campaignId)}">LinkRay Analytics</a>
+━━━━━━━━━━━━━━`;
+  } else {
+    text =
+      `━━━━━━━━━━━━━━
+✅ Пост опубликован.
+
+${channelTitle}:
+${channelList}
+━━━━━━━━━━━━━━`;
+  }
+
+  if (fail.length) {
+    const failedChannels = fail.map(r => r.channel).filter(Boolean);
+    if (failedChannels.length) {
+      text += `
+
+⚠️ Не подтверждено MAX API:
+${channelsLines(failedChannels)}`;
+    }
+  }
+
+  const rows = draft.isAd
+    ? [
+        [callbackButton('📊 Открыть отчёт', `report:open:${draft.campaignId}`)],
+        [callbackButton('🗂 Посты', 'post:all')],
+        [callbackButton('🏠 В меню', 'main:menu')]
+      ]
+    : [
+        [callbackButton('🗂 Посты', 'post:all')],
+        [callbackButton('🏠 В меню', 'main:menu')]
+      ];
+
+  await msg(chatId, text, rows);
   await sendMain(chatId);
 }
 
