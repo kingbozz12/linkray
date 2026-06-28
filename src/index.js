@@ -5041,7 +5041,156 @@ function postAutoRows(postId) { return [[callbackButton('24', `post:auto_set:${p
 
 async function openPost(callbackId, chatId, id) { const p = await getPost(id); if (!p) { await cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); return; } await answerCallback({ callbackId, notification: 'Открываю пост...' }).catch(()=>{}); try { const d = postPreviewDraft(p); await sendMaxMessage({ ...lrBuildSendTarget(chatId), text: p.text || '', format: p.format || 'html', attachments: finalAttachments(d) }); await msg(chatId, postMenuText(p), postMenuRows(p)); } catch (e) { console.error('[open post]', e.message || e); await cb(callbackId, `${postMenuText(p)}\n\n⚠️ Пост не удалось вывести отдельно: ${escapeHtml(e.message || e)}`, postMenuRows(p)); } }
 async function editExisting(callbackId, key, id) { const p = await getPost(id); if (!p) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); if (olderThan24(p)) return cb(callbackId, '🔒 Редактирование недоступно: прошло больше 24 часов.', [[callbackButton('⬅️ Назад', `post:open:${id}`)]]); const draft = makeDraftFromPost(p); await showEditor(callbackId, key, draft); }
-async function saveExisting(callbackId, key, draft) { const post = await getPost(draft.postId); if (!post) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); const content = await composePostForChannel(draft, draft.channelIds[0]); await query(`UPDATE scheduled_posts SET text=$2, format=$3, attachments=$4::jsonb, buttons=$5::jsonb, draft=$6::jsonb, is_ad=$7, cpm=$8, auto_delete_minutes=$9, report_after_hours=$10, updated_at=now() WHERE id=$1`, [draft.postId, content.text, content.format, JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24]); let warn = ''; if (post.status === 'published' && post.published_message_id) { try { await editMaxMessage(post.published_message_id, content); } catch(e) { warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение: ${escapeHtml(e.message || e)}`; } } await clearSession(key); await cb(callbackId, `━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>${warn}\n━━━━━━━━━━━━━━`, [[callbackButton('👁 Открыть пост', `post:open:${draft.postId}`)],[callbackButton('🗂 Посты','post:all')]]); }
+
+async function saveExisting(callbackId, key, draft) {
+  const chatId = Number(key || 0);
+
+  try {
+    if (!draft || !draft.postId) {
+      return cb(callbackId, '⚠️ Пост не найден в редакторе.', [
+        [callbackButton('🗂 Посты', 'post:all')]
+      ]);
+    }
+
+    const post = await getPost(draft.postId);
+
+    if (!post) {
+      return cb(callbackId, '⚠️ Пост не найден.', [
+        [callbackButton('🗂 Посты', 'post:all')]
+      ]);
+    }
+
+    draft.previewMessageId = null;
+
+    if (!Array.isArray(draft.buttons)) draft.buttons = [];
+    if (!draft.content) draft.content = {};
+    if (!Array.isArray(draft.content.attachments)) draft.content.attachments = [];
+
+    let content;
+    try {
+      content = await composePostForChannel(draft, draft.channelIds?.[0] || post.channel_id);
+    } catch (composeError) {
+      console.error('[saveExisting compose failed]', composeError?.message || composeError);
+
+      content = {
+        text: draft.content?.text || post.text || '',
+        format: draft.content?.format || post.format || 'html',
+        attachments: finalAttachments(draft),
+        markup: []
+      };
+    }
+
+    let dbAttachments = [];
+    try {
+      dbAttachments = normalizeAttachments(draft.content.attachments || []);
+    } catch {
+      dbAttachments = draft.content.attachments || [];
+    }
+
+    await query(
+      `UPDATE scheduled_posts
+       SET text=$2,
+           format=$3,
+           attachments=$4::jsonb,
+           buttons=$5::jsonb,
+           draft=$6::jsonb,
+           is_ad=$7,
+           cpm=$8,
+           auto_delete_minutes=$9,
+           report_after_hours=$10,
+           updated_at=now()
+       WHERE id=$1`,
+      [
+        draft.postId,
+        content.text || '',
+        content.format || 'html',
+        JSON.stringify(dbAttachments),
+        JSON.stringify(draft.buttons || []),
+        JSON.stringify({ ...draft, previewMessageId: null }),
+        Boolean(draft.isAd),
+        draft.cpm || null,
+        draft.autoDeleteMinutes || null,
+        draft.reportAfterHours || 24
+      ]
+    );
+
+    let warn = '';
+
+    if (post.status === 'published' && post.published_message_id) {
+      try {
+        await editMaxMessage(post.published_message_id, content);
+      } catch (editError) {
+        warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение в канале:\n${escapeHtml(editError?.message || editError)}`;
+        console.error('[saveExisting edit published failed]', editError?.message || editError);
+      }
+    }
+
+    await setSession(key, 'edit_existing', { draft });
+
+    try {
+      if (callbackId && typeof answerCallback === 'function') {
+        await answerCallback({
+          callbackId,
+          notification: warn ? 'Сохранено, но канал не обновился' : 'Пост сохранён'
+        });
+      }
+    } catch {}
+
+    // После сохранения НЕ уходим в меню постов.
+    // Открываем заново: сначала пост-превью, потом редактор.
+    if (chatId) {
+      try {
+        await sendDraftPreview(chatId, draft);
+      } catch (previewError) {
+        console.error('[saveExisting preview after save failed]', previewError?.message || previewError);
+      }
+
+      await sendMaxMessage({
+        chatId,
+        text:
+          `━━━━━━━━━━━━━━
+✅ Пост сохранён.${warn}
+
+🧬 <b>Редактор LinkRay</b>
+
+Пост-превью находится выше.
+При изменении текста, медиа, кнопок или автоподписи превью будет обновляться.
+
+Настройте оформление.
+━━━━━━━━━━━━━━`,
+        format: 'html',
+        attachments: inlineKeyboard(editorMenuRows(draft))
+      });
+
+      return;
+    }
+
+    return cb(
+      callbackId,
+      `━━━━━━━━━━━━━━
+✅ Пост сохранён.${warn}
+
+Редактор остаётся открытым.
+━━━━━━━━━━━━━━`,
+      editorMenuRows(draft)
+    );
+  } catch (e) {
+    console.error('[saveExisting direct fix error]', e?.stack || e);
+
+    return cb(
+      callbackId,
+      `━━━━━━━━━━━━━━
+⚠️ Не удалось сохранить пост:
+${escapeHtml(e?.message || e)}
+━━━━━━━━━━━━━━`,
+      [
+        [callbackButton('⬅️ В редактор', 'editor:back')],
+        [callbackButton('🗂 Посты', 'post:all')]
+      ]
+    );
+  }
+}
+
 
 async function handleCallback(update) {
   __lrStartChannelDbSyncTimer();
