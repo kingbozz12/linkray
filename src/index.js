@@ -1037,7 +1037,7 @@ app.use(async function lrTopCalendarScheduleFixV2(req, res, next) {
         ids
       }));
 
-      return afterPlanned(chatId, draft, publishAt, ids);
+      return lrInplaceAfterPlannedHelperV1(callbackId, chatId, draft, publishAt, ids);
     }
 
     async function lrAskManual(dayKey) {
@@ -1339,7 +1339,7 @@ app.use(async function lrSavedTimeRealScheduleV1(req, res, next) {
         ids
       }));
 
-      return afterPlanned(chatId, draft, publishAt, ids);
+      return lrInplaceAfterPlannedHelperV1(callbackId, chatId, draft, publishAt, ids);
     }
 
     async function lrAskManualForDay(dayKey) {
@@ -5985,6 +5985,52 @@ async function publishDraftNow(draft, key) {
 
   return results;
 }
+
+
+/* LR_INPLACE_AFTER_PLANNED_HELPER_V1_START */
+async function lrInplaceAfterPlannedHelperV1(callbackId, chatId, draft, publishAt, ids) {
+  const channels = await getChannelsByIds(draft.channelIds || []);
+  const d = parseDbDate(publishAt);
+
+  const text = draft.isAd
+    ? `━━━━━━━━━━━━━━
+✅ <b>Рекламный пост запланирован</b>
+
+🕒 ${dateText(d)} ${timeText(d)} МСК
+
+📡 Каналы:
+${channelsLines(channels)}
+
+CPM: ${draft.cpm || 'не указан'} ₽
+Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
+
+Пост добавлен в очередь.
+━━━━━━━━━━━━━━`
+    : `━━━━━━━━━━━━━━
+✅ <b>Публикация запланирована</b>
+
+🕒 ${dateText(d)} ${timeText(d)} МСК
+
+📡 Каналы:
+${channelsLines(channels)}
+
+Автоудаление: ${formatAutoDelete(draft.autoDeleteMinutes)}
+
+Пост добавлен в очередь.
+━━━━━━━━━━━━━━`;
+
+  const rows = [
+    [callbackButton('📂 Посты', 'post:all')],
+    [callbackButton('🧬 LinkRay Studio', 'main:posting')]
+  ];
+
+  if (callbackId) {
+    return cb(callbackId, text, rows);
+  }
+
+  return msg(chatId, text, rows);
+}
+/* LR_INPLACE_AFTER_PLANNED_HELPER_V1_END */
 
 async function afterPlanned(chatId, draft, publishAt, ids) {
   const channels = await getChannelsByIds(draft.channelIds);
