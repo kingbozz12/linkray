@@ -818,6 +818,132 @@ const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
 
+/* LR_FORCE_AD_CALENDAR_CONTEXT_V2_START */
+app.use(async function lrForceAdCalendarContextV2(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+
+    function lrSafe(fn, fallback = '') {
+      try {
+        const v = fn();
+        return v == null ? fallback : v;
+      } catch {
+        return fallback;
+      }
+    }
+
+    const payload = String(lrSafe(() => getCallbackPayload(update), ''));
+    const callbackId = String(lrSafe(() => getCallbackId(update), ''));
+    const chatId = Number(lrSafe(() => getChatId(update), 0) || 0);
+    const key = String(lrSafe(() => getSessionKey(update), ''));
+
+    function lrLooksAdValue(v) {
+      const text = String(v ?? '').toLowerCase();
+
+      if (!text) return false;
+
+      return (
+        text.includes('реклам') ||
+        text.includes('cpm') ||
+        text.includes('ad_post') ||
+        text.includes('advertising') ||
+        text.includes('advertisement') ||
+        text.includes('ad-cpm') ||
+        text.includes('wait_cpm') ||
+        text.includes('wait_ad_cpm') ||
+        text.includes('ad_cpm')
+      );
+    }
+
+    function lrIsAdObject(obj, depth = 0) {
+      if (!obj || depth > 7) return false;
+
+      if (typeof obj === 'string' || typeof obj === 'number' || typeof obj === 'boolean') {
+        return lrLooksAdValue(obj);
+      }
+
+      if (Array.isArray(obj)) {
+        return obj.some(x => lrIsAdObject(x, depth + 1));
+      }
+
+      if (typeof obj !== 'object') return false;
+
+      for (const [k, v] of Object.entries(obj)) {
+        const key = String(k || '').toLowerCase();
+
+        if (
+          key === 'isad' ||
+          key === 'is_ad' ||
+          key === 'ad' ||
+          key === 'isadvertising' ||
+          key === 'advertising' ||
+          key === 'advertisement' ||
+          key === 'adpost' ||
+          key === 'ad_post' ||
+          key === 'iscpm' ||
+          key === 'cpm' ||
+          key === 'adcpm' ||
+          key === 'ad_cpm'
+        ) {
+          if (v === true) return true;
+          if (v !== false && v !== null && v !== undefined && String(v).trim() !== '') return true;
+        }
+
+        if ((key === 'type' || key === 'posttype' || key === 'post_type' || key === 'mode' || key === 'state') && lrLooksAdValue(v)) {
+          return true;
+        }
+
+        if (lrIsAdObject(v, depth + 1)) return true;
+      }
+
+      return false;
+    }
+
+    let session = null;
+
+    if (key && typeof getSession === 'function') {
+      try {
+        session = await getSession(key);
+      } catch {}
+    }
+
+    const isAd =
+      lrLooksAdValue(payload) ||
+      lrIsAdObject(session) ||
+      lrLooksAdValue(session && session.state);
+
+    globalThis.__lrForceAdCalendarModeV2 = globalThis.__lrForceAdCalendarModeV2 || {
+      byChat: new Map(),
+      byCallback: new Map()
+    };
+
+    const item = {
+      isAd: Boolean(isAd),
+      ts: Date.now(),
+      payload,
+      state: session && session.state ? String(session.state) : ''
+    };
+
+    if (chatId) {
+      globalThis.__lrForceAdCalendarModeV2.byChat.set(chatId, item);
+    }
+
+    if (callbackId) {
+      globalThis.__lrForceAdCalendarModeV2.byCallback.set(callbackId, item);
+    }
+
+    return next();
+  } catch (e) {
+    console.error('[LR_FORCE_AD_CALENDAR_CONTEXT_V2]', e?.stack || e);
+    return next();
+  }
+});
+/* LR_FORCE_AD_CALENDAR_CONTEXT_V2_END */
+
+
+
 /* LR_AD_TIME_FIRST_OPEN_FIX_V1_START */
 app.use(async function lrAdTimeFirstOpenFixV1(req, res, next) {
   try {
@@ -11123,4 +11249,201 @@ function normalizeAttachments(input) {
   return out;
 }
 /* LR_NORMALIZE_ATTACHMENTS_SAFE_V1_END */
+
+
+/* LR_FORCE_AD_CALENDAR_REWRITE_V2_START */
+(function lrForceAdCalendarRewriteV2Install() {
+  if (globalThis.__LR_FORCE_AD_CALENDAR_REWRITE_V2_INSTALLED) return;
+  globalThis.__LR_FORCE_AD_CALENDAR_REWRITE_V2_INSTALLED = true;
+
+  function lrStore() {
+    globalThis.__lrForceAdCalendarModeV2 = globalThis.__lrForceAdCalendarModeV2 || {
+      byChat: new Map(),
+      byCallback: new Map()
+    };
+
+    return globalThis.__lrForceAdCalendarModeV2;
+  }
+
+  function lrIsFresh(item) {
+    return Boolean(item && Date.now() - Number(item.ts || 0) < 5 * 60 * 1000);
+  }
+
+  function lrAdByChat(chatId) {
+    const item = lrStore().byChat.get(Number(chatId || 0));
+    return lrIsFresh(item) && item.isAd === true;
+  }
+
+  function lrAdByCallback(callbackId) {
+    const item = lrStore().byCallback.get(String(callbackId || ''));
+    return lrIsFresh(item) && item.isAd === true;
+  }
+
+  function lrHasCalendarText(value) {
+    const text = String(value ?? '');
+
+    return (
+      text.includes('Сохранённое время') ||
+      text.includes('сохранённое время') ||
+      text.includes('Сохраненное время') ||
+      text.includes('сохраненное время') ||
+      text.includes('Посты на этот день') ||
+      text.includes('Свободные времена')
+    );
+  }
+
+  function lrRewriteString(value, isAd) {
+    let text = String(value ?? '');
+
+    if (!isAd) return text;
+
+    text = text
+      .replaceAll('💾 Сохранённое время', '💼 Рекламное время')
+      .replaceAll('💾 Сохраненное время', '💼 Рекламное время')
+      .replaceAll('Сохранённое время', 'Рекламное время')
+      .replaceAll('Сохраненное время', 'Рекламное время')
+      .replaceAll('сохранённое время', 'рекламное время')
+      .replaceAll('сохраненное время', 'рекламное время');
+
+    text = text
+      .replace(/lr_advcal:add:(\d{4}-\d{2}-\d{2}):normal/g, 'lr_advcal:add:$1:ad')
+      .replace(/lr_advcal:delete_menu:(\d{4}-\d{2}-\d{2}):normal/g, 'lr_advcal:delete_menu:$1:ad')
+      .replace(/lr_advcal:delete:(\d{4}-\d{2}-\d{2}):normal:/g, 'lr_advcal:delete:$1:ad:');
+
+    return text;
+  }
+
+  function lrRewriteDeep(value, isAd) {
+    if (!isAd) return value;
+
+    if (typeof value === 'string') {
+      return lrRewriteString(value, isAd);
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(x => lrRewriteDeep(x, isAd));
+    }
+
+    if (value && typeof value === 'object') {
+      const out = {};
+
+      for (const [k, v] of Object.entries(value)) {
+        out[k] = lrRewriteDeep(v, isAd);
+      }
+
+      return out;
+    }
+
+    return value;
+  }
+
+  function lrNeedsRewrite(args, isAd) {
+    if (!isAd) return false;
+
+    try {
+      return lrHasCalendarText(JSON.stringify(args));
+    } catch {
+      return true;
+    }
+  }
+
+  try {
+    const originalSendMaxMessage = sendMaxMessage;
+
+    sendMaxMessage = async function lrSendMaxMessageAdCalendarWrappedV2(params, ...rest) {
+      try {
+        const chatId = params && (params.chatId || params.chat_id || params.recipient?.chatId);
+        const isAd = lrAdByChat(chatId);
+
+        if (isAd && lrNeedsRewrite(params, true)) {
+          params = lrRewriteDeep(params, true);
+        }
+      } catch (e) {
+        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 sendMaxMessage]', e?.message || e);
+      }
+
+      return originalSendMaxMessage.call(this, params, ...rest);
+    };
+
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] sendMaxMessage wrapped');
+  } catch (e) {
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] sendMaxMessage wrap skipped:', e?.message || e);
+  }
+
+  try {
+    const originalEditMaxMessage = editMaxMessage;
+
+    editMaxMessage = async function lrEditMaxMessageAdCalendarWrappedV2(...args) {
+      try {
+        let isAd = false;
+
+        for (const a of args) {
+          if (a && typeof a === 'object') {
+            const chatId = a.chatId || a.chat_id || a.recipient?.chatId;
+            if (chatId && lrAdByChat(chatId)) isAd = true;
+          }
+        }
+
+        if (isAd && lrNeedsRewrite(args, true)) {
+          args = lrRewriteDeep(args, true);
+        }
+      } catch (e) {
+        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 editMaxMessage]', e?.message || e);
+      }
+
+      return originalEditMaxMessage.apply(this, args);
+    };
+
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] editMaxMessage wrapped');
+  } catch (e) {
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] editMaxMessage wrap skipped:', e?.message || e);
+  }
+
+  try {
+    const originalCb = cb;
+
+    cb = async function lrCbAdCalendarWrappedV2(callbackId, text, rows, ...rest) {
+      try {
+        const isAd = lrAdByCallback(callbackId);
+
+        if (isAd && lrNeedsRewrite([text, rows], true)) {
+          text = lrRewriteString(text, true);
+          rows = lrRewriteDeep(rows, true);
+        }
+      } catch (e) {
+        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 cb]', e?.message || e);
+      }
+
+      return originalCb.call(this, callbackId, text, rows, ...rest);
+    };
+
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] cb wrapped');
+  } catch (e) {
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] cb wrap skipped:', e?.message || e);
+  }
+
+  try {
+    const originalMsg = msg;
+
+    msg = async function lrMsgAdCalendarWrappedV2(chatId, text, rows, ...rest) {
+      try {
+        const isAd = lrAdByChat(chatId);
+
+        if (isAd && lrNeedsRewrite([text, rows], true)) {
+          text = lrRewriteString(text, true);
+          rows = lrRewriteDeep(rows, true);
+        }
+      } catch (e) {
+        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 msg]', e?.message || e);
+      }
+
+      return originalMsg.call(this, chatId, text, rows, ...rest);
+    };
+
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] msg wrapped');
+  } catch (e) {
+    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] msg wrap skipped:', e?.message || e);
+  }
+})();
+/* LR_FORCE_AD_CALENDAR_REWRITE_V2_END */
 
