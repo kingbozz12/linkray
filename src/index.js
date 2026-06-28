@@ -9805,3 +9805,43 @@ function finalAttachments(draft) {
 }
 /* LR_FINAL_ATTACHMENTS_SAFE_END */
 
+/* LR_NORMALIZE_ATTACHMENTS_SAFE_V1_START */
+function normalizeAttachments(input) {
+  const src = Array.isArray(input) ? input : [];
+  const out = [];
+  const seen = new Set();
+
+  for (const item of src) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+    const type = String(
+      item.type ||
+      item.kind ||
+      item.attachment_type ||
+      item.attachmentType ||
+      ''
+    ).toLowerCase();
+
+    // Клавиатуры/кнопки не должны попадать в поле attachments БД как обычные медиа.
+    if (type.includes('inline_keyboard')) continue;
+    if (type.includes('keyboard')) continue;
+    if (type.includes('button')) continue;
+
+    // link_preview/web_page иногда ломают повторную отправку через MAX body.
+    // Их не сохраняем как media-attachments.
+    if (type.includes('link_preview')) continue;
+    if (type.includes('web_page')) continue;
+
+    const clean = { ...item };
+    const key = JSON.stringify(clean);
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push(clean);
+  }
+
+  return out;
+}
+/* LR_NORMALIZE_ATTACHMENTS_SAFE_V1_END */
+
