@@ -7727,5 +7727,216 @@ try {
 /* LR_CLEAN_SIGNATURE_COMPOSE_END */
 
 
+/* LR_PREVIEW_PAYLOAD_FIX_V13_START */
+{
+  const __lrPreviewOldComposeV13 = composePostForChannel;
+  const __lrPreviewOldSendDraftPreviewV13 = sendDraftPreview;
 
+  function lrPreviewBtnTextV13(button, index = 0) {
+    return String(
+      button?.text ||
+      button?.title ||
+      button?.label ||
+      button?.name ||
+      `Кнопка ${index + 1}`
+    ).trim();
+  }
+
+  function lrPreviewBtnUrlV13(button) {
+    return String(
+      button?.url ||
+      button?.link ||
+      button?.href ||
+      button?.targetUrl ||
+      button?.originalUrl ||
+      ''
+    ).trim();
+  }
+
+  function lrPreviewCleanButtonsV13(buttons) {
+    const source = Array.isArray(buttons) ? buttons : [];
+    const out = [];
+    const seen = new Set();
+
+    for (const item of source) {
+      const raw = Array.isArray(item) ? item : [item];
+
+      for (let i = 0; i < raw.length; i++) {
+        const b = raw[i] || {};
+        const text = lrPreviewBtnTextV13(b, i);
+        const url = lrPreviewBtnUrlV13(b);
+
+        if (!text || !/^https?:\/\//i.test(url)) continue;
+        if (/^(⚠️|формат кнопки|добавить кнопку|отправьте|можно отправить|сейчас|кнопки поста)/i.test(text)) continue;
+
+        const id = text + '|' + url;
+        if (seen.has(id)) continue;
+        seen.add(id);
+
+        out.push({ text, url });
+      }
+    }
+
+    return out;
+  }
+
+  function lrPreviewKeyboardV13(draft) {
+    const buttons = lrPreviewCleanButtonsV13(draft?.buttons || []);
+    if (!buttons.length) return [];
+
+    const rows = buttons.map((b) => [linkButton(b.text, b.url)]);
+    return inlineKeyboard(rows);
+  }
+
+  function lrPreviewCleanAttachmentsV13(attachments) {
+    let list = Array.isArray(attachments) ? attachments : [];
+
+    try {
+      if (typeof normalizeAttachments === 'function') {
+        list = normalizeAttachments(list);
+      }
+    } catch (e) {
+      console.error('[LR_PREVIEW_PAYLOAD_FIX_V13 normalize]', e?.message || e);
+    }
+
+    const out = [];
+    const seen = new Set();
+
+    for (const item of list) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+      const type = String(
+        item.type ||
+        item.kind ||
+        item.attachment_type ||
+        item.attachmentType ||
+        ''
+      ).toLowerCase();
+
+      // Эти типы часто ломают body при повторной отправке чужого/пересланного поста.
+      if (type.includes('inline_keyboard')) continue;
+      if (type.includes('keyboard')) continue;
+      if (type.includes('button')) continue;
+      if (type.includes('link_preview')) continue;
+      if (type.includes('web_page')) continue;
+      if (type.includes('preview')) continue;
+
+      // Не отправляем сырой payload входящего сообщения обратно в MAX.
+      if ('payload' in item && !type.match(/photo|video|audio|file|image|media|sticker/)) continue;
+
+      const key = JSON.stringify(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push(item);
+    }
+
+    return out;
+  }
+
+  function lrPreviewSanitizeContentV13(content, draft) {
+    const base = content && typeof content === 'object' ? content : {};
+    const draftContent = draft?.content || {};
+
+    const text = String(
+      base.text ??
+      draftContent.text ??
+      ''
+    );
+
+    const format = String(
+      base.format ||
+      draftContent.format ||
+      'html'
+    );
+
+    const baseAttachments =
+      Array.isArray(base.attachments) && base.attachments.length
+        ? base.attachments
+        : draftContent.attachments;
+
+    const attachments = [
+      ...lrPreviewCleanAttachmentsV13(baseAttachments),
+      ...lrPreviewKeyboardV13(draft)
+    ];
+
+    // Если текст уже HTML, markup лучше не дублировать: MAX иногда падает на смешанном html + markup + кнопки.
+    const markup = format === 'html'
+      ? []
+      : (Array.isArray(base.markup) ? base.markup : []);
+
+    return {
+      text,
+      format,
+      attachments,
+      markup
+    };
+  }
+
+  composePostForChannel = async function lrPreviewComposePayloadFixV13(draft, channelId) {
+    let result = null;
+
+    try {
+      result = await __lrPreviewOldComposeV13(draft, channelId);
+    } catch (e) {
+      console.error('[LR_PREVIEW_PAYLOAD_FIX_V13 compose old failed]', e?.message || e);
+      result = draft?.content || {};
+    }
+
+    return lrPreviewSanitizeContentV13(result, draft);
+  };
+
+  sendDraftPreview = async function lrPreviewSendDraftPreviewFixV13(chatId, draft) {
+    try {
+      const channelId = Array.isArray(draft?.channelIds) ? draft.channelIds[0] : null;
+      const content = await composePostForChannel(draft, channelId);
+
+      if (!String(content.text || '').trim() && !content.attachments.length) {
+        return null;
+      }
+
+      if (draft?.previewMessageId) {
+        try {
+          await editMaxMessage(draft.previewMessageId, content);
+          return draft.previewMessageId;
+        } catch (editError) {
+          console.error('[LR_PREVIEW_PAYLOAD_FIX_V13 edit failed, send new]', editError?.message || editError);
+        }
+      }
+
+      try {
+        const sent = await sendMaxMessage({ chatId, ...content });
+        return extractMessageId(sent);
+      } catch (firstError) {
+        console.error('[LR_PREVIEW_PAYLOAD_FIX_V13 full send failed]', firstError?.message || firstError);
+
+        // Второй проход: текст + кнопки без старых вложений.
+        const safeContent = {
+          text: content.text || draft?.content?.text || 'пост без текста',
+          format: content.format || draft?.content?.format || 'html',
+          attachments: lrPreviewKeyboardV13(draft),
+          markup: []
+        };
+
+        const sent = await sendMaxMessage({ chatId, ...safeContent });
+        return extractMessageId(sent);
+      }
+    } catch (e) {
+      console.error('[LR_PREVIEW_PAYLOAD_FIX_V13 final failed]', e?.message || e);
+
+      await msg(
+        chatId,
+        '⚠️ Не удалось вывести превью полностью, но текст поста сохранён.\n\n' +
+          escapeHtml(short(draft?.content?.text || '', 900)),
+        [],
+        'html'
+      );
+
+      return null;
+    }
+  };
+
+  console.log('[LR_PREVIEW_PAYLOAD_FIX_V13] installed');
+}
+/* LR_PREVIEW_PAYLOAD_FIX_V13_END */
 
