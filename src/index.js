@@ -1983,13 +1983,14 @@ app.use(async function lrButtonPreviewRefreshV7(req, res, next) {
 });
 /* LR_BUTTON_PREVIEW_REFRESH_V7_END */
 
+
 /* LR_CALENDAR_SCHEDULE_BUTTON_V6_START */
-app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
+app.use(async function lrCalendarScheduleButtonV7(req, res, next) {
   try {
     if (req.method !== 'POST') return next();
 
     const update = req.body || {};
-    const payload = getCallbackPayload(update);
+    const payload = String(getCallbackPayload(update) || '');
     const callbackId = getCallbackId(update);
     const chatId = Number(getChatId(update) || 0);
     const key = getSessionKey(update);
@@ -1999,16 +2000,24 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
     }
 
     function lrEsc(v) {
-      return String(v == null ? '' : v)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+      try {
+        return typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '');
+      } catch {
+        return String(v ?? '');
+      }
     }
 
-    function lrShort(v, max) {
-      const text = plain(v || '').replace(/\s+/g, ' ').trim();
+    function lrShort(v, max = 58) {
+      let text = '';
+      try {
+        text = typeof plain === 'function' ? plain(v || '') : String(v || '');
+      } catch {
+        text = String(v || '');
+      }
+
+      text = text.replace(/\s+/g, ' ').trim();
       if (!text) return 'пост без текста';
-      return text.length > max ? text.slice(0, max) + '...' : text;
+      return text.length > max ? text.slice(0, max) + '…' : text;
     }
 
     function lrChunk(list, size) {
@@ -2028,10 +2037,8 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
 
     function lrNormalizeTime(raw) {
       const text = String(raw || '').trim();
-
       let m = text.match(/^(\d{1,2})[:.\s](\d{2})$/);
-      if (!m) m = text.match(/^(\d{2})(\d{2})$/);
-
+      if (!m) m = text.match(/^(\d{1,2})(\d{2})$/);
       if (!m) return null;
 
       const hh = Number(m[1]);
@@ -2061,31 +2068,56 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
       return [];
     }
 
+    function lrEnsureDraftShape(draft) {
+      if (!draft || typeof draft !== 'object') draft = {};
+      if (!draft.content || typeof draft.content !== 'object') draft.content = {};
+      if (!Array.isArray(draft.content.attachments)) draft.content.attachments = [];
+      if (!Array.isArray(draft.buttons)) draft.buttons = [];
+      return draft;
+    }
+
     async function lrCb(text, rows) {
       const attachments = rows && rows.length ? inlineKeyboard(rows) : [];
 
       if (callbackId) {
         return answerCallback({
-          callbackId: callbackId,
-          text: text,
+          callbackId,
+          text,
           format: 'html',
-          attachments: attachments
+          attachments
         });
       }
 
       if (chatId) {
         return sendMaxMessage({
-          chatId: chatId,
-          text: text,
+          chatId,
+          text,
           format: 'html',
-          attachments: attachments
+          attachments
         });
       }
     }
 
+    async function lrAck(text) {
+      if (!callbackId) return;
+      try {
+        await answerCallback({
+          callbackId,
+          notification: text
+        });
+      } catch {}
+    }
+
     async function lrEnsureSavedTimesTable() {
       await query(
-        "CREATE TABLE IF NOT EXISTS channel_saved_times (id serial PRIMARY KEY, channel_id integer NOT NULL REFERENCES channels(id) ON DELETE CASCADE, time_text text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(channel_id, time_text))"
+        `CREATE TABLE IF NOT EXISTS channel_saved_times (
+          id serial PRIMARY KEY,
+          channel_id integer NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+          time_text text NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE(channel_id, time_text)
+        )`
       );
     }
 
@@ -2095,7 +2127,10 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
       if (!channelIds.length) return [];
 
       const r = await query(
-        "SELECT DISTINCT time_text FROM channel_saved_times WHERE channel_id = ANY($1::int[]) ORDER BY time_text ASC",
+        `SELECT DISTINCT time_text
+         FROM channel_saved_times
+         WHERE channel_id = ANY($1::int[])
+         ORDER BY time_text ASC`,
         [channelIds]
       );
 
@@ -2105,23 +2140,30 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
     async function lrBusyPosts(dayKey, channelIds) {
       if (!channelIds.length) return [];
 
-      const sql =
-        "SELECT " +
-        "to_char(sp.publish_at AT TIME ZONE 'Europe/Moscow', 'HH24:MI') AS time_text, " +
-        "COALESCE(NULLIF(sp.text, ''), NULLIF(sp.draft #>> '{content,text}', ''), NULLIF(sp.draft ->> 'text', ''), 'пост без текста') AS post_text " +
-        "FROM scheduled_posts sp " +
-        "WHERE sp.channel_id = ANY($1::int[]) " +
-        "AND sp.status::text IN ('scheduled','publishing') " +
-        "AND sp.publish_at >= $2::timestamptz " +
-        "AND sp.publish_at < ($2::timestamptz + interval '1 day') " +
-        "ORDER BY sp.publish_at ASC " +
-        "LIMIT 30";
-
-      const r = await query(sql, [channelIds, dayKey + 'T00:00:00+03:00']);
+      const r = await query(
+        `SELECT
+            to_char(publish_at AT TIME ZONE 'Europe/Moscow', 'HH24:MI') AS time_text,
+            status,
+            COALESCE(
+              NULLIF(text, ''),
+              NULLIF(draft #>> '{content,text}', ''),
+              NULLIF(draft ->> 'text', ''),
+              'пост без текста'
+            ) AS post_text
+         FROM scheduled_posts
+         WHERE channel_id = ANY($1::int[])
+           AND status::text IN ('scheduled','publishing','published')
+           AND publish_at >= $2::timestamptz
+           AND publish_at < ($2::timestamptz + interval '1 day')
+         ORDER BY publish_at ASC
+         LIMIT 50`,
+        [channelIds, dayKey + 'T00:00:00+03:00']
+      );
 
       return lrRows(r).map(x => ({
         time: String(x.time_text || '').trim(),
-        text: lrShort(x.post_text || '', 65)
+        text: lrShort(x.post_text || '', 65),
+        status: String(x.status || '')
       })).filter(x => x.time);
     }
 
@@ -2130,19 +2172,19 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
       return new Set(posts.map(x => x.time));
     }
 
+    function lrDateTime(dayKey, hhmm) {
+      const clean = lrCleanHhmm(hhmm);
+      return dateTimeFromDayTime(dayKey, clean);
+    }
+
     async function lrFreeSavedTimes(dayKey, channelIds) {
       const saved = await lrSavedTimes(channelIds);
       const busy = await lrBusyTimes(dayKey, channelIds);
+      const now = Date.now();
 
       return saved.filter(t => {
         if (busy.has(t)) return false;
-
-        const clean = lrCleanHhmm(t);
-        const dt = dateTimeFromDayTime(dayKey, clean);
-
-        if (dt.getTime() <= Date.now()) return false;
-
-        return true;
+        return lrDateTime(dayKey, t).getTime() > now;
       });
     }
 
@@ -2167,8 +2209,8 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
       const parts = String(monthKey || lrMonthKeyFromDay(dateKey(new Date()))).split('-');
       const year = Number(parts[0]) || new Date().getFullYear();
       const month = (Number(parts[1]) || 1) - 1;
-
       const today = dateKey(new Date());
+
       const first = new Date(year, month, 1);
       const last = new Date(year, month + 1, 0);
       const start = new Date(first);
@@ -2215,7 +2257,6 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
 
         const weekEnd = new Date(start);
         weekEnd.setDate(start.getDate() + w * 7 + 6);
-
         if (weekEnd > last && w >= 4) break;
       }
 
@@ -2229,17 +2270,22 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
       const year = Number(parts[0]) || new Date().getFullYear();
       const month = (Number(parts[1]) || 1) - 1;
 
-      await lrCb(
-        '━━━━━━━━━━━━━━\n📅 <b>Календарь публикации</b>\n\n' +
-        lrEsc(lrMonthName(month) + ' ' + year) +
-        '\n\nДни идут по неделям: 7 дней в ряд.\nВыберите дату публикации.\n━━━━━━━━━━━━━━',
+      return lrCb(
+        `━━━━━━━━━━━━━━
+📅 <b>Календарь публикации</b>
+
+${lrEsc(lrMonthName(month) + ' ' + year)}
+
+Дни идут по неделям: 7 дней в ряд.
+Выберите дату публикации.
+━━━━━━━━━━━━━━`,
         lrMonthRows(monthKey, selectedDay || null)
       );
     }
 
     async function lrShowDay(dayKey) {
       const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
+      const draft = lrEnsureDraftShape(lrDraftFromSession(session));
       const channelIds = lrChannelIdsFromDraft(draft);
 
       const freeTimes = await lrFreeSavedTimes(dayKey, channelIds);
@@ -2247,7 +2293,7 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
 
       const rows = [];
 
-      for (const group of lrChunk(freeTimes.slice(0, 36), 3)) {
+      for (const group of lrChunk(freeTimes, 3)) {
         rows.push(group.map(t => callbackButton('💾 ' + t, 'lr_cal:pick:' + dayKey + ':' + lrCleanHhmm(t))));
       }
 
@@ -2256,128 +2302,199 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
       rows.push([callbackButton('⬅️ К месяцу', 'lr_cal:month:' + lrMonthKeyFromDay(dayKey) + ':' + dayKey)]);
 
       const postsText = posts.length
-        ? posts.map(p => '• <b>' + lrEsc(p.time) + '</b> — ' + lrEsc(p.text)).join('\n')
+        ? posts.map(p => {
+            const status = p.status === 'published' ? 'опубликован' : 'запланирован';
+            return '• ' + lrEsc(p.time) + ' — ' + lrEsc(p.text) + ' (' + status + ')';
+          }).join('\n')
         : 'Постов на этот день пока нет.';
 
       const freeHint = freeTimes.length
         ? 'Свободные сохранённые времена показаны кнопками ниже.'
         : 'Свободного сохранённого времени на этот день нет.';
 
-      await lrCb(
-        '━━━━━━━━━━━━━━\n📅 <b>' + lrEsc(dateText(keyToDate(dayKey))) + '</b>\n\n' +
-        '<b>Посты на этот день:</b>\n' +
-        postsText +
-        '\n\n' +
-        lrEsc(freeHint) +
-        '\n\nЕсли время занято постом, кнопкой оно не показывается.\n━━━━━━━━━━━━━━',
+      return lrCb(
+        `━━━━━━━━━━━━━━
+📅 <b>${lrEsc(dateText(keyToDate(dayKey)))}</b>
+
+<b>Посты на этот день:</b>
+${postsText}
+
+${lrEsc(freeHint)}
+
+Если время занято постом или уже прошло, кнопкой оно не показывается.
+━━━━━━━━━━━━━━`,
+        rows
+      );
+    }
+
+    async function lrShowSavedManager(dayKey) {
+      const session = await getSession(key);
+      const draft = lrEnsureDraftShape(lrDraftFromSession(session));
+      const channelIds = lrChannelIdsFromDraft(draft);
+      const saved = await lrSavedTimes(channelIds);
+
+      const rows = [];
+
+      for (const group of lrChunk(saved, 2)) {
+        rows.push(group.map(t => callbackButton('🗑 ' + t, 'lr_cal:delete_saved:' + dayKey + ':' + lrCleanHhmm(t))));
+      }
+
+      rows.push([callbackButton('➕ Добавить время', 'lr_cal:add_saved:' + dayKey)]);
+      rows.push([callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + dayKey)]);
+
+      return lrCb(
+        `━━━━━━━━━━━━━━
+💾 <b>Сохранённое время</b>
+
+${saved.length ? saved.map(t => '• ' + lrEsc(t)).join('\n') : 'Пока нет сохранённых времён.'}
+
+Нажмите 🗑 рядом со временем, чтобы удалить его.
+━━━━━━━━━━━━━━`,
         rows
       );
     }
 
     async function lrAskSavedTime(dayKey) {
       const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
+      const draft = lrEnsureDraftShape(lrDraftFromSession(session));
 
-      await setSession(key, 'lr_wait_saved_time_v6', {
-        draft: draft,
-        dayKey: dayKey
-      });
+      await setSession(key, 'lr_wait_saved_time_v7', { draft, dayKey });
 
-      await lrCb(
-        '💾 Введите сохранённое время для канала.\n\nПример: <b>18:30</b> или <b>1830</b>.\n\nОно сохранится для канала и будет показываться кнопкой, если на выбранный день это время свободно.',
+      return lrCb(
+        `━━━━━━━━━━━━━━
+💾 Введите сохранённое время для канала.
+
+Пример: <b>18:30</b> или <b>1830</b>.
+
+Оно сохранится для канала и будет показываться кнопкой, если на выбранный день это время свободно.
+━━━━━━━━━━━━━━`,
         [[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + dayKey)]]
       );
     }
 
     async function lrAskManualTime(dayKey) {
       const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
+      const draft = lrEnsureDraftShape(lrDraftFromSession(session));
 
-      await setSession(key, 'lr_wait_manual_calendar_time_v6', {
-        draft: draft,
-        dayKey: dayKey
-      });
+      await setSession(key, 'lr_wait_manual_calendar_time_v7', { draft, dayKey });
 
-      await lrCb(
-        '✍️ Введите время для даты:\n<b>' + lrEsc(dateText(keyToDate(dayKey))) + '</b>\n\nПример: <b>18:30</b> или <b>1830</b>.',
+      return lrCb(
+        `━━━━━━━━━━━━━━
+✍️ Введите время публикации.
+
+Дата:
+<b>${lrEsc(dateText(keyToDate(dayKey)))}</b>
+
+Пример: <b>18:30</b> или <b>1830</b>.
+━━━━━━━━━━━━━━`,
         [[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + dayKey)]]
       );
     }
 
-    async function lrFinalizeSchedule(dayKey, rawHhmm, sourceSession) {
+    async function lrDeleteSavedTime(dayKey, rawTime) {
+      const session = await getSession(key);
+      const draft = lrEnsureDraftShape(lrDraftFromSession(session));
+      const channelIds = lrChannelIdsFromDraft(draft);
+      const timeText = lrNiceTime(rawTime);
+
+      await lrEnsureSavedTimesTable();
+
+      if (channelIds.length) {
+        await query(
+          `DELETE FROM channel_saved_times
+           WHERE channel_id = ANY($1::int[])
+             AND time_text = $2`,
+          [channelIds, timeText]
+        );
+      }
+
+      await lrAck('Время удалено: ' + timeText);
+      return lrShowSavedManager(dayKey);
+    }
+
+    async function lrFinalizeSchedule(dayKey, rawHhmm, sourceSession = null) {
       const clean = lrCleanHhmm(rawHhmm);
       const nice = lrNiceTime(clean);
       const publishAt = dateTimeFromDayTime(dayKey, clean);
 
       if (publishAt.getTime() <= Date.now()) {
-        await sendMaxMessage({
-          chatId: chatId,
-          text: '⏰ Это время уже прошло: <b>' + lrEsc(nice) + '</b>',
-          format: 'html',
-          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + dayKey)]])
-        }).catch(() => {});
-        return;
+        await lrAck('Это время уже прошло');
+        return lrShowDay(dayKey);
       }
 
       const session = sourceSession || await getSession(key);
-      const draft = lrDraftFromSession(session);
+      const draft = lrEnsureDraftShape(lrDraftFromSession(session));
 
-      if (!draft || !Array.isArray(draft.channelIds) || !draft.channelIds.length) {
-        await sendMaxMessage({
-          chatId: chatId,
-          text: '⚠️ Сначала выберите канал для поста.',
-          format: 'html'
-        }).catch(() => {});
-        return;
+      if (!lrChannelIdsFromDraft(draft).length) {
+        return lrCb(
+          `━━━━━━━━━━━━━━
+⚠️ Сначала выберите канал для поста.
+━━━━━━━━━━━━━━`,
+          [[callbackButton('⬅️ В редактор', 'editor:back')]]
+        );
       }
 
-      if (!hasContent(draft)) {
-        await sendMaxMessage({
-          chatId: chatId,
-          text: '⚠️ Пост пустой. Сначала добавьте текст или медиа.',
-          format: 'html'
-        }).catch(() => {});
-        return;
+      const hasBody =
+        (typeof hasContent === 'function' && hasContent(draft)) ||
+        String(draft?.content?.text || draft?.text || '').trim() ||
+        (Array.isArray(draft?.content?.attachments) && draft.content.attachments.length);
+
+      if (!hasBody) {
+        return lrCb(
+          `━━━━━━━━━━━━━━
+⚠️ Пост пустой. Сначала добавьте текст или медиа.
+━━━━━━━━━━━━━━`,
+          [[callbackButton('⬅️ В редактор', 'editor:back')]]
+        );
       }
 
-      if (callbackId) {
-        await answerCallback({
-          callbackId: callbackId,
-          notification: 'Планирую пост...'
-        }).catch(() => {});
-      }
+      await lrAck('Планирую пост на ' + nice);
+
+      await setSession(key, 'publish_menu', draft);
 
       const ids = await scheduleDraft(draft, key, publishAt);
 
       await clearSession(key);
-      await afterPlanned(chatId, draft, publishAt, ids);
+
+      console.log('[LR_CALENDAR_SCHEDULE_BUTTON_V7 scheduled]', JSON.stringify({
+        dayKey,
+        time: nice,
+        ids
+      }));
+
+      return afterPlanned(chatId, draft, publishAt, ids);
     }
 
     async function lrHandleSavedTimeMessage() {
+      if (payload) return false;
+
       const session = await getSession(key);
-      if (!session || !['lr_wait_saved_time_v5', 'lr_wait_saved_time_v6'].includes(session.state)) return false;
+      if (!session || !['lr_wait_saved_time_v7', 'lr_wait_saved_time_v6', 'lr_wait_saved_time_v5'].includes(session.state)) return false;
 
       const time = lrNormalizeTime(getMessageText(update));
+      const dayKey = (session.data && session.data.dayKey) || dateKey(new Date());
 
       if (!time) {
         await sendMaxMessage({
-          chatId: chatId,
+          chatId,
           text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
           format: 'html',
-          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + ((session.data && session.data.dayKey) || dateKey(new Date()))) ]])
+          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + dayKey)]])
         });
+
         return true;
       }
 
-      const draft = lrDraftFromSession(session);
+      const draft = lrEnsureDraftShape(lrDraftFromSession(session));
       const channelIds = lrChannelIdsFromDraft(draft);
 
       if (!channelIds.length) {
         await sendMaxMessage({
-          chatId: chatId,
+          chatId,
           text: '⚠️ Сначала выберите канал для поста.',
           format: 'html'
         });
+
         return true;
       }
 
@@ -2385,166 +2502,66 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
 
       for (const channelId of channelIds) {
         await query(
-          "INSERT INTO channel_saved_times(channel_id, time_text, updated_at) VALUES($1,$2,now()) ON CONFLICT(channel_id,time_text) DO UPDATE SET updated_at=now()",
+          `INSERT INTO channel_saved_times(channel_id, time_text, updated_at)
+           VALUES($1, $2, now())
+           ON CONFLICT(channel_id, time_text)
+           DO UPDATE SET updated_at = now()`,
           [channelId, time]
         );
       }
 
-      await setSession(key, 'publish_menu', { draft: draft });
+      await setSession(key, 'publish_menu', { draft });
 
       await sendMaxMessage({
-        chatId: chatId,
+        chatId,
         text: '✅ Сохранённое время добавлено:\n<b>' + lrEsc(time) + '</b>',
         format: 'html'
       });
 
-      await lrShowDay((session.data && session.data.dayKey) || dateKey(new Date()));
+      await lrShowDay(dayKey);
+
       return true;
     }
 
     async function lrHandleManualTimeMessage() {
+      if (payload) return false;
+
       const session = await getSession(key);
-      if (!session || !['lr_wait_manual_calendar_time_v5', 'lr_wait_manual_calendar_time_v6'].includes(session.state)) return false;
+      if (!session || !['lr_wait_manual_calendar_time_v7', 'lr_wait_manual_calendar_time_v6', 'lr_wait_manual_calendar_time_v5'].includes(session.state)) return false;
 
       const time = lrNormalizeTime(getMessageText(update));
+      const dayKey = (session.data && session.data.dayKey) || dateKey(new Date());
 
       if (!time) {
         await sendMaxMessage({
-          chatId: chatId,
+          chatId,
           text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
           format: 'html',
-          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + ((session.data && session.data.dayKey) || dateKey(new Date()))) ]])
+          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + dayKey)]])
         });
+
         return true;
       }
 
-      const dayKey = (session.data && session.data.dayKey) || dateKey(new Date());
       await lrFinalizeSchedule(dayKey, time.replace(':', ''), session);
-      return true;
-    }
-
-    function lrMessageMarkup(u) {
-      const m =
-        (u.message && u.message.body && u.message.body.markup) ||
-        (u.message && u.message.markup) ||
-        (u.body && u.body.markup) ||
-        u.markup ||
-        [];
-
-      return Array.isArray(m) ? m : [];
-    }
-
-    function lrOverlap(aStart, aLen, bStart, bLen) {
-      const a1 = Number(aStart) || 0;
-      const a2 = a1 + (Number(aLen) || 0);
-      const b1 = Number(bStart) || 0;
-      const b2 = b1 + (Number(bLen) || 0);
-      return a1 < b2 && b1 < a2;
-    }
-
-    function lrParseButtonLine(fullText, line) {
-      const raw = String(line || '').trim();
-      const urlMatch = raw.match(/https?:\/\/[^\s]+/i);
-
-      if (!urlMatch) return null;
-
-      const url = urlMatch[0].trim();
-      let title = raw.slice(0, urlMatch.index).trim();
-
-      title = title.replace(/[-–—|:]+$/g, '').trim();
-
-      if (!title) return null;
-
-      return {
-        text: title,
-        url: url,
-        titleFrom: fullText.indexOf(title),
-        titleLength: title.length
-      };
-    }
-
-    async function lrHandleButtonInputMessage() {
-      const session = await getSession(key);
-      if (!session || session.state !== 'wait_button') return false;
-
-      const fullText = getMessageText(update);
-      if (!fullText) return false;
-
-      const markup = lrMessageMarkup(update);
-      const lines = fullText.split(/\n|\|/g).map(x => x.trim()).filter(Boolean);
-      const parsed = [];
-
-      for (const line of lines) {
-        const item = lrParseButtonLine(fullText, line);
-
-        if (!item) {
-          await sendMaxMessage({
-            chatId: chatId,
-            text: '⚠️ Формат кнопки:\n<b>Название - https://site.ru</b>',
-            format: 'html'
-          });
-          return true;
-        }
-
-        const unsupported = markup.find(m => {
-          const type = String(m.type || m.kind || '').toLowerCase();
-
-          if (!lrOverlap(m.from || 0, m.length || 0, item.titleFrom, item.titleLength)) return false;
-          if (type === 'strong' || type === 'bold') return false;
-
-          return true;
-        });
-
-        if (unsupported) {
-          await sendMaxMessage({
-            chatId: chatId,
-            text: '⚠️ Формат не поддерживается.\n\nВ названии кнопки можно использовать только обычный текст или жирный. Остальные форматы для кнопок не сохраняются.',
-            format: 'html'
-          });
-          return true;
-        }
-
-        parsed.push({
-          text: item.text,
-          url: item.url
-        });
-      }
-
-      const draft = lrDraftFromSession(session);
-      draft.buttons = [].concat(draft.buttons || [], parsed);
-      draft.previewMessageId = null;
-
-      await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft: draft });
-
-      await sendMaxMessage({
-        chatId: chatId,
-        text: '✅ Кнопка добавлена.',
-        format: 'html'
-      }).catch(() => {});
-
-      if (typeof editorMenuText === 'function' && typeof editorMenuRows === 'function') {
-        await sendMaxMessage({
-          chatId: chatId,
-          text: editorMenuText(),
-          format: 'html',
-          attachments: inlineKeyboard(editorMenuRows(draft))
-        }).catch(() => {});
-      } else {
-        await sendMaxMessage({
-          chatId: chatId,
-          text: '━━━━━━━━━━━━━━\n🧬 <b>Редактор LinkRay</b>\n\nКнопка добавлена. Вернитесь в редактор.\n━━━━━━━━━━━━━━',
-          format: 'html'
-        }).catch(() => {});
-      }
 
       return true;
     }
 
     if (await lrHandleSavedTimeMessage()) return res.json({ ok: true });
     if (await lrHandleManualTimeMessage()) return res.json({ ok: true });
-    if (await lrHandleButtonInputMessage()) return res.json({ ok: true });
 
     if (!payload) return next();
+
+    if (payload === 'noop') {
+      await lrAck('Недоступно');
+      return res.json({ ok: true });
+    }
+
+    if (payload === 'schedule:manual') {
+      await lrAck('Откройте календарь и выберите дату');
+      return res.json({ ok: true });
+    }
 
     if (payload === 'schedule:calendar') {
       await lrShowMonth(lrMonthKeyFromDay(dateKey(new Date())), null);
@@ -2562,14 +2579,14 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
       return res.json({ ok: true });
     }
 
-    if (payload.startsWith('schedule:manual_day:')) {
-      await lrAskManualTime(payload.split(':')[2] || dateKey(new Date()));
-      return res.json({ ok: true });
-    }
-
     if (payload.startsWith('schedule:time:')) {
       const parts = payload.split(':');
       await lrFinalizeSchedule(parts[2] || dateKey(new Date()), parts[3] || '');
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('schedule:manual_day:')) {
+      await lrAskManualTime(payload.split(':')[2] || dateKey(new Date()));
       return res.json({ ok: true });
     }
 
@@ -2585,7 +2602,18 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
     }
 
     if (payload.startsWith('lr_cal:saved_time:')) {
+      await lrShowSavedManager(payload.split(':')[2] || dateKey(new Date()));
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_cal:add_saved:')) {
       await lrAskSavedTime(payload.split(':')[2] || dateKey(new Date()));
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_cal:delete_saved:')) {
+      const parts = payload.split(':');
+      await lrDeleteSavedTime(parts[2] || dateKey(new Date()), parts[3] || '');
       return res.json({ ok: true });
     }
 
@@ -2602,11 +2630,12 @@ app.use(async function lrCalendarScheduleButtonV6(req, res, next) {
 
     return next();
   } catch (error) {
-    console.error('[LR_CALENDAR_SCHEDULE_BUTTON_V6]', error && error.stack ? error.stack : error);
+    console.error('[LR_CALENDAR_SCHEDULE_BUTTON_V7]', error && error.stack ? error.stack : error);
     return next();
   }
 });
 /* LR_CALENDAR_SCHEDULE_BUTTON_V6_END */
+
 
 
 
@@ -5170,7 +5199,7 @@ async function showPublishMenu(callbackId, key, draft) {
   const channels = await getChannelsByIds(draft.channelIds);
   const rows = [
     ...autoDeleteRows('publish'),
-    [callbackButton('📅 Календарь', 'schedule:calendar'), callbackButton('✍️ Ввести время', 'schedule:manual')],
+    [callbackButton('📅 Календарь', 'schedule:calendar')],
     [callbackButton('⚡ Опубликовать сейчас', 'publish:now')],
     [callbackButton('⬅️ В редактор', 'editor:back'), callbackButton('❌ Отмена', 'post:cancel')],
   ];
