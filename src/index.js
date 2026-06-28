@@ -818,6 +818,441 @@ const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
 
+/* LR_AD_TIME_FIRST_OPEN_FIX_V1_START */
+app.use(async function lrAdTimeFirstOpenFixV1(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const key = getSessionKey(update);
+
+    if (!payload || !callbackId || !key) return next();
+
+    function lrDayFromPayload(value) {
+      const p = String(value || '');
+
+      if (
+        !p.includes('cal') &&
+        !p.includes('calendar') &&
+        !p.includes('date') &&
+        !p.includes('day') &&
+        !p.includes('schedule')
+      ) {
+        return null;
+      }
+
+      const m = p.match(/(\d{4}-\d{2}-\d{2})/);
+      return m ? m[1] : null;
+    }
+
+    const dayKey = lrDayFromPayload(payload);
+    if (!dayKey) return next();
+
+    // Уже наш новый роут — пусть его обработает основной календарный блок.
+    if (payload.startsWith('lr_cal:day:')) return next();
+
+    function lrEsc(v) {
+      try {
+        return escapeHtml(v);
+      } catch {
+        return String(v ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;');
+      }
+    }
+
+    function lrRows(result) {
+      if (Array.isArray(result)) return result;
+      if (result && Array.isArray(result.rows)) return result.rows;
+      return [];
+    }
+
+    function lrDraftFromSession(session) {
+      const data = session && session.data ? session.data : {};
+      const raw = data.draft ? data.draft : data;
+
+      try {
+        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
+      } catch {
+        return raw || {};
+      }
+    }
+
+    function lrIsAdDraft(draft) {
+      if (!draft || typeof draft !== 'object') return false;
+
+      if (draft.isAd === true) return true;
+      if (draft.is_ad === true) return true;
+      if (draft.ad === true) return true;
+      if (draft.isAdvertising === true) return true;
+
+      if (String(draft.type || '').toLowerCase() === 'ad') return true;
+      if (String(draft.postType || '').toLowerCase() === 'ad') return true;
+
+      if (draft.cpm !== undefined && draft.cpm !== null && String(draft.cpm).trim() !== '') return true;
+
+      return false;
+    }
+
+    function lrChannelIds(draft) {
+      if (!draft || typeof draft !== 'object') return [];
+      if (Array.isArray(draft.channelIds)) return draft.channelIds.map(Number).filter(Boolean);
+      if (Array.isArray(draft.channel_ids)) return draft.channel_ids.map(Number).filter(Boolean);
+      if (draft.channelId) return [Number(draft.channelId)].filter(Boolean);
+      if (draft.channel_id) return [Number(draft.channel_id)].filter(Boolean);
+      return [];
+    }
+
+    function lrNormalizeTime(input) {
+      const raw = String(input || '').trim();
+
+      let m = raw.match(/^(\d{1,2})[:.\s](\d{2})$/);
+      if (!m) m = raw.match(/^(\d{1,2})(\d{2})$/);
+
+      if (!m) return null;
+
+      const hh = Number(m[1]);
+      const mm = Number(m[2]);
+
+      if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+
+      return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+    }
+
+    function lrTimeCompact(hhmm) {
+      return String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
+    }
+
+    function lrPublishDate(day, hhmm) {
+      const clean = lrTimeCompact(hhmm);
+
+      try {
+        if (typeof dateTimeFromDayTime === 'function') {
+          return dateTimeFromDayTime(day, clean);
+        }
+      } catch {}
+
+      const parts = String(day || '').split('-').map(Number);
+      const y = parts[0] || new Date().getFullYear();
+      const m = parts[1] || (new Date().getMonth() + 1);
+      const d = parts[2] || new Date().getDate();
+
+      return new Date(
+        `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}T${clean.slice(0, 2)}:${clean.slice(2, 4)}:00+03:00`
+      );
+    }
+
+    function lrDayTitle(day) {
+      const parts = String(day).split('-').map(Number);
+      const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12, 0, 0));
+
+      try {
+        return d.toLocaleDateString('ru-RU', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'Europe/Moscow'
+        });
+      } catch {
+        return day;
+      }
+    }
+
+    function lrCleanPreviewText(value) {
+      let text = '';
+
+      function pick(obj) {
+        if (!obj || typeof obj !== 'object') return '';
+
+        return String(
+          obj.text ||
+          obj.caption ||
+          obj.body?.text ||
+          obj.content?.text ||
+          obj.draft?.text ||
+          obj.draft?.content?.text ||
+          obj.message?.text ||
+          obj.message?.body?.text ||
+          ''
+        );
+      }
+
+      if (typeof value === 'string') {
+        text = value;
+      } else {
+        text = pick(value);
+      }
+
+      text = String(text || '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (!text && value && typeof value === 'object') {
+        const raw = JSON.stringify(value);
+        if (/photo|video|image|attachment|media/i.test(raw)) text = 'медиа';
+      }
+
+      if (!text) text = 'пост без текста';
+      if (text.length > 58) text = text.slice(0, 58).trim() + '…';
+
+      return text;
+    }
+
+    function lrExtractPostText(rowJson) {
+      if (!rowJson || typeof rowJson !== 'object') return 'пост без текста';
+
+      const candidates = [
+        rowJson.text,
+        rowJson.caption,
+        rowJson.body,
+        rowJson.content,
+        rowJson.draft,
+        rowJson.payload,
+        rowJson.message,
+        rowJson.data
+      ];
+
+      for (const c of candidates) {
+        const t = lrCleanPreviewText(c);
+        if (t && t !== 'пост без текста') return t;
+      }
+
+      return lrCleanPreviewText(rowJson);
+    }
+
+    function lrExtractPostTime(rowJson, fallbackColumn) {
+      const value =
+        rowJson.publish_at ||
+        rowJson.published_at ||
+        rowJson.scheduled_at ||
+        rowJson.planned_at ||
+        rowJson.run_at ||
+        rowJson.send_at ||
+        rowJson.created_at ||
+        rowJson[fallbackColumn] ||
+        null;
+
+      if (!value) return '';
+
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) {
+        const m = String(value).match(/(\d{1,2}):(\d{2})/);
+        return m ? `${m[1].padStart(2, '0')}:${m[2]}` : '';
+      }
+
+      return d.toLocaleTimeString('ru-RU', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'Europe/Moscow'
+      });
+    }
+
+    async function lrEnsureSavedTimesTable() {
+      await query(`
+        CREATE TABLE IF NOT EXISTS public.channel_saved_times (
+          id serial PRIMARY KEY,
+          channel_id integer NOT NULL,
+          time_text text NOT NULL,
+          is_ad boolean NOT NULL DEFAULT false,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+
+      await query(`ALTER TABLE public.channel_saved_times ADD COLUMN IF NOT EXISTS is_ad boolean NOT NULL DEFAULT false`);
+      await query(`ALTER TABLE public.channel_saved_times ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+
+      await query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_saved_times_channel_time_ad
+        ON public.channel_saved_times(channel_id, time_text, is_ad)
+      `);
+    }
+
+    async function lrLoadSavedTimes(channelIds, isAd) {
+      await lrEnsureSavedTimesTable();
+
+      if (!channelIds.length) return [];
+
+      const result = await query(
+        `SELECT DISTINCT time_text
+         FROM public.channel_saved_times
+         WHERE channel_id = ANY($1::int[])
+           AND is_ad = $2
+         ORDER BY time_text ASC`,
+        [channelIds, Boolean(isAd)]
+      );
+
+      return lrRows(result)
+        .map(r => lrNormalizeTime(r.time_text))
+        .filter(Boolean);
+    }
+
+    async function lrTableExists(table) {
+      const result = await query(`SELECT to_regclass($1) AS name`, [`public.${table}`]);
+      return Boolean(lrRows(result)[0]?.name);
+    }
+
+    async function lrColumns(table) {
+      const result = await query(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = $1`,
+        [table]
+      );
+
+      return lrRows(result).map(r => r.column_name);
+    }
+
+    async function lrPostsForDay(day, channelIds) {
+      const tables = ['scheduled_posts', 'posts', 'published_posts'];
+      const all = [];
+      const seen = new Set();
+
+      for (const table of tables) {
+        try {
+          if (!(await lrTableExists(table))) continue;
+
+          const cols = await lrColumns(table);
+          const timeCol =
+            ['publish_at', 'published_at', 'scheduled_at', 'planned_at', 'run_at', 'send_at', 'created_at']
+              .find(c => cols.includes(c));
+
+          if (!timeCol) continue;
+
+          const result = await query(
+            `SELECT to_jsonb(t) AS j, ${timeCol} AS post_time
+             FROM public.${table} t
+             WHERE (${timeCol} AT TIME ZONE 'Europe/Moscow')::date = $1::date
+             ORDER BY ${timeCol} ASC
+             LIMIT 50`,
+            [day]
+          );
+
+          for (const row of lrRows(result)) {
+            const j = row.j || {};
+            const id = `${table}:${j.id || j.post_id || j.message_id || JSON.stringify(j).slice(0, 80)}`;
+
+            if (seen.has(id)) continue;
+            seen.add(id);
+
+            const rowChannel = Number(j.channel_id || j.channelId || j.target_channel_id || 0);
+
+            if (channelIds.length && rowChannel && !channelIds.includes(rowChannel)) continue;
+
+            if (channelIds.length && !rowChannel) {
+              const raw = JSON.stringify(j);
+              const hasAny = channelIds.some(cid => raw.includes(String(cid)));
+              if (!hasAny && /channel/i.test(raw)) continue;
+            }
+
+            const time = lrExtractPostTime(j, 'post_time') || lrExtractPostTime({ post_time: row.post_time }, 'post_time');
+            const text = lrExtractPostText(j);
+
+            if (!time) continue;
+
+            all.push({ time, text });
+          }
+        } catch (e) {
+          console.error('[LR_AD_TIME_FIRST_OPEN_FIX_V1 posts]', table, e?.message || e);
+        }
+      }
+
+      all.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+      return all.slice(0, 20);
+    }
+
+    function lrTimeIsPast(day, hhmm) {
+      const d = lrPublishDate(day, hhmm);
+      return !d || Number.isNaN(d.getTime()) || d.getTime() <= Date.now();
+    }
+
+    function lrTimeOccupied(posts, hhmm) {
+      const t = String(hhmm || '').slice(0, 5);
+      return posts.some(p => String(p.time || '').slice(0, 5) === t);
+    }
+
+    const session = await getSession(key);
+    const draft = lrDraftFromSession(session);
+    const channelIds = lrChannelIds(draft);
+    const isAd = lrIsAdDraft(draft);
+
+    const savedTimes = await lrLoadSavedTimes(channelIds, isAd);
+    const posts = await lrPostsForDay(dayKey, channelIds);
+
+    const visibleTimes = savedTimes.filter(t => {
+      if (lrTimeIsPast(dayKey, t)) return false;
+      if (lrTimeOccupied(posts, t)) return false;
+      return true;
+    });
+
+    const savedTitle = isAd ? 'Рекламное время' : 'Сохранённое время';
+    const savedIcon = isAd ? '💼' : '💾';
+
+    const postLines = posts.length
+      ? posts.map(p => `• <b>${lrEsc(p.time)}</b> — ${lrEsc(p.text)}`).join('\n')
+      : 'Постов на этот день пока нет';
+
+    const savedLines = savedTimes.length
+      ? savedTimes.map(t => `${savedIcon} ${lrEsc(t)}`).join('  ')
+      : 'пока нет';
+
+    const text =
+`━━━━━━━━━━━━━━
+📅 <b>${lrEsc(lrDayTitle(dayKey))}</b>
+
+<b>Посты на этот день:</b>
+${postLines}
+
+<b>${lrEsc(savedTitle)}:</b>
+${savedLines}
+
+Свободные времена показаны кнопками ниже.
+Если время занято постом или прошло, кнопкой оно не показывается.
+━━━━━━━━━━━━━━`;
+
+    const rows = [];
+
+    for (let i = 0; i < visibleTimes.length; i += 3) {
+      rows.push(
+        visibleTimes.slice(i, i + 3).map(t =>
+          callbackButton(`${savedIcon} ${t}`, `lr_cal:pick:${dayKey}:${lrTimeCompact(t)}`)
+        )
+      );
+    }
+
+    rows.push([callbackButton(`${savedIcon} ${savedTitle}`, `lr_advcal:add:${dayKey}:${isAd ? 'ad' : 'normal'}`)]);
+
+    if (savedTimes.length) {
+      rows.push([callbackButton('🗑 Удалить время', `lr_advcal:delete_menu:${dayKey}:${isAd ? 'ad' : 'normal'}`)]);
+    }
+
+    rows.push([callbackButton('✍️ Ввести время вручную', `lr_advcal:manual_publish:${dayKey}`)]);
+    rows.push([callbackButton('⬅️ К месяцу', 'schedule:calendar')]);
+
+    await cb(callbackId, text, rows);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('[LR_AD_TIME_FIRST_OPEN_FIX_V1]', e?.stack || e);
+    return next();
+  }
+});
+/* LR_AD_TIME_FIRST_OPEN_FIX_V1_END */
+
+
+
 /* LR_CALENDAR_AD_TIMES_AND_DB_POSTS_V1_START */
 app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
   try {
