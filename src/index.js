@@ -1219,6 +1219,925 @@ async function refreshChannelMeta(channel) {
   }
 }
 
+
+
+
+
+
+
+
+
+
+
+
+// LR_FORWARD_HYDRATE_EXACT_V2_START
+function lrDeepPickForwardMessage(update) {
+  const direct = [
+    update?.message?.link?.message,
+    update?.link?.message,
+    update?.message?.body?.link?.message,
+    update?.body?.link?.message,
+    update?.message?.forward?.message,
+    update?.forward?.message,
+    update?.message?.body?.forward?.message,
+    update?.message,
+    update?.message?.body,
+    update?.body,
+    update
+  ].filter(Boolean);
+
+  const all = [];
+  const seen = new WeakSet();
+
+  function walk(value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 8) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    if (!Array.isArray(value)) {
+      const text =
+        value.text ??
+        value.body?.text ??
+        value.content?.text ??
+        value.message?.text ??
+        value.message?.body?.text ??
+        '';
+
+      const markup =
+        value.markup ??
+        value.body?.markup ??
+        value.content?.markup ??
+        value.message?.markup ??
+        value.message?.body?.markup ??
+        [];
+
+      const attachments =
+        value.attachments ??
+        value.body?.attachments ??
+        value.content?.attachments ??
+        value.message?.attachments ??
+        value.message?.body?.attachments ??
+        [];
+
+      if (
+        String(text || '').trim() ||
+        (Array.isArray(markup) && markup.length) ||
+        (Array.isArray(attachments) && attachments.length)
+      ) {
+        all.push(value);
+      }
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1);
+      return;
+    }
+
+    for (const key of Object.keys(value)) {
+      if (key === 'sender' || key === 'recipient' || key === 'chat') continue;
+      walk(value[key], depth + 1);
+    }
+  }
+
+  for (const item of direct) walk(item, 0);
+  walk(update, 0);
+
+  function textOf(value) {
+    return String(
+      value?.text ??
+      value?.body?.text ??
+      value?.content?.text ??
+      value?.message?.text ??
+      value?.message?.body?.text ??
+      ''
+    );
+  }
+
+  function markupOf(value) {
+    const m =
+      value?.markup ??
+      value?.body?.markup ??
+      value?.content?.markup ??
+      value?.message?.markup ??
+      value?.message?.body?.markup ??
+      [];
+    return Array.isArray(m) ? m : [];
+  }
+
+  function attachmentsOf(value) {
+    const a =
+      value?.attachments ??
+      value?.body?.attachments ??
+      value?.content?.attachments ??
+      value?.message?.attachments ??
+      value?.message?.body?.attachments ??
+      [];
+    return Array.isArray(a) ? a : [];
+  }
+
+  function score(value) {
+    const text = textOf(value);
+    const markup = markupOf(value);
+    const attachments = attachmentsOf(value);
+
+    let n = 0;
+    if (String(text).trim()) n += 10000 + text.length;
+    if (attachments.length) n += 5000 + attachments.length * 100;
+    if (markup.length) n += 2000 + markup.length * 50;
+
+    if (
+      value === update?.message?.link?.message ||
+      value === update?.link?.message ||
+      value === update?.message?.body?.link?.message
+    ) {
+      n += 100000;
+    }
+
+    return n;
+  }
+
+  const unique = [];
+  const uniqueSeen = new WeakSet();
+
+  for (const item of all) {
+    if (!item || typeof item !== 'object') continue;
+    if (uniqueSeen.has(item)) continue;
+    uniqueSeen.add(item);
+    unique.push(item);
+  }
+
+  unique.sort((a, b) => score(b) - score(a));
+  return unique[0] || update;
+}
+
+function lrExactTextOf(value) {
+  return String(
+    value?.text ??
+    value?.body?.text ??
+    value?.content?.text ??
+    value?.message?.text ??
+    value?.message?.body?.text ??
+    ''
+  );
+}
+
+function lrExactMarkupOf(value) {
+  const m =
+    value?.markup ??
+    value?.body?.markup ??
+    value?.content?.markup ??
+    value?.message?.markup ??
+    value?.message?.body?.markup ??
+    [];
+  return Array.isArray(m) ? m : [];
+}
+
+function lrExactAttachmentsOf(value) {
+  const a =
+    value?.attachments ??
+    value?.body?.attachments ??
+    value?.content?.attachments ??
+    value?.message?.attachments ??
+    value?.message?.body?.attachments ??
+    [];
+  return Array.isArray(a) ? a : [];
+}
+
+function lrNormalizeExactAttachments(list) {
+  const raw = Array.isArray(list) ? list.filter(Boolean) : [];
+
+  try {
+    if (typeof normalizeAttachments === 'function') {
+      return normalizeAttachments(raw);
+    }
+  } catch (error) {
+    console.error('[forward exact attachments normalize]', error?.message || error);
+  }
+
+  return raw;
+}
+
+function lrNativeExactHtml(text, markup) {
+  try {
+    if (typeof applyMarkupToHtml === 'function') {
+      return applyMarkupToHtml(text, markup);
+    }
+
+    if (typeof lrMaxMarkupToHtml === 'function') {
+      return lrMaxMarkupToHtml(text, markup);
+    }
+
+    if (typeof lrMaxMarkupToMarkdown === 'function') {
+      return lrMaxMarkupToMarkdown(text, markup);
+    }
+  } catch (error) {
+    console.error('[forward exact markup convert]', error?.message || error);
+  }
+
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+async function hydrateContentUnsafe(update) {
+  const picked = lrDeepPickForwardMessage(update);
+  const text = lrExactTextOf(picked);
+  const markup = lrExactMarkupOf(picked);
+  const attachments = lrNormalizeExactAttachments(lrExactAttachmentsOf(picked));
+
+  if (String(text || '').trim() || markup.length || attachments.length) {
+    const html = lrNativeExactHtml(text, markup);
+
+    console.log('[hydrate exact forward]', JSON.stringify({
+      textLength: text.length,
+      markup: markup.length,
+      attachments: attachments.length,
+      format: 'html'
+    }));
+
+    return {
+      text: html,
+      format: 'html',
+      attachments,
+      markup: [],
+      raw: picked,
+      hasRealBody: Boolean(String(text || '').trim() || attachments.length)
+    };
+  }
+
+  if (typeof lrOldHydrateContentUnsafeV2 === 'function') {
+    return lrOldHydrateContentUnsafeV2(update);
+  }
+
+  return {
+    text: '',
+    format: 'html',
+    attachments: [],
+    markup: [],
+    raw: update,
+    hasRealBody: false
+  };
+}
+
+async function hydrateContent(update) {
+  try {
+    return await hydrateContentUnsafe(update);
+  } catch (error) {
+    console.error('[hydrate exact safe fallback]', error?.message || error);
+
+    try {
+      if (typeof lrOldHydrateContentUnsafeV2 === 'function') {
+        return await lrOldHydrateContentUnsafeV2(update);
+      }
+    } catch (legacyError) {
+      console.error('[hydrate exact legacy failed]', legacyError?.message || legacyError);
+    }
+
+    return {
+      text: '',
+      format: 'html',
+      attachments: [],
+      markup: [],
+      raw: update,
+      hasRealBody: false
+    };
+  }
+}
+
+
+
+
+
+
+// LR_QUOTE_HYDRATE_WRAP_V1_START
+const __lrHydrateContentBeforeQuoteV1 = typeof hydrateContent === 'function' ? hydrateContent : null;
+
+if (__lrHydrateContentBeforeQuoteV1) {
+  hydrateContent = async function lrHydrateContentQuoteV1(update) {
+    const content = await __lrHydrateContentBeforeQuoteV1(update);
+
+    try {
+      const rawText = lrQuoteFindMessageText(update);
+      const extraMarkup = lrQuoteCollectNativeMarkupDeep(update, rawText);
+      const hasQuote = extraMarkup.some((x) => lrQuoteKind(lrQuoteTypeOf(x)) === 'quote');
+
+      // Если пришла нативная цитата, пересобираем HTML из исходного текста и всех native markups.
+      // Это нужно именно после пересылки/обновления превью: старый путь часто теряет quote-range.
+      if (rawText && hasQuote) {
+        const merged = lrQuoteMergeMarkup(content?.markup || [], extraMarkup);
+        return {
+          ...(content || {}),
+          text: applyMarkupToHtml(rawText, merged),
+          format: 'html',
+          markup: merged,
+        };
+      }
+    } catch (error) {
+      console.error('[quote hydrate wrapper]', error.message || error);
+    }
+
+    return content;
+  };
+}
+// LR_QUOTE_HYDRATE_WRAP_V1_END
+
+
+// LR_FORWARD_HYDRATE_EXACT_V2_END
+
+
+
+// LR_NATIVE_MAX_MARKUP_V4_START
+function lrRichHtmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function lrRichAttr(value) {
+  return lrRichHtmlEscape(value).replace(/\n/g, '').trim();
+}
+
+function lrRichType(mark) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    mark?.block_type ||
+    mark?.blockType ||
+    ''
+  ).toLowerCase();
+}
+
+function lrRichUrl(mark) {
+  return String(
+    mark?.url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+    mark?.payload?.link ||
+    ''
+  ).trim();
+}
+
+function lrRichStart(mark, max) {
+  const raw = mark?.from ?? mark?.start ?? mark?.offset ?? mark?.position ?? mark?.index ?? 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(max, n));
+}
+
+function lrRichEnd(mark, start, max) {
+  const direct = mark?.to ?? mark?.end;
+  if (direct !== undefined && direct !== null && direct !== '') {
+    const n = Number(direct);
+    if (Number.isFinite(n) && n > start) return Math.max(start, Math.min(max, n));
+  }
+
+  const len = mark?.length ?? mark?.len ?? mark?.size;
+  const n = Number(len);
+  if (Number.isFinite(n) && n > 0) return Math.max(start, Math.min(max, start + n));
+
+  return start;
+}
+
+function lrRichKind(type) {
+  if (!type) return '';
+  if (type.includes('quote') || type.includes('blockquote') || type.includes('quotation') || type.includes('quoted') || type.includes('cite')) return 'quote';
+  if (type.includes('heading') || type.includes('header') || type.includes('title') || /^h[1-6]$/.test(type)) return 'heading';
+  if (type.includes('bold') || type.includes('strong') || type === 'b') return 'bold';
+  if (type.includes('italic') || type.includes('emphas') || type === 'em' || type === 'i') return 'italic';
+  if (type.includes('underline') || type === 'u' || type === 'ins') return 'underline';
+  if (type.includes('strike') || type.includes('through') || type.includes('delete') || type === 's' || type === 'del') return 'strike';
+  if (type.includes('mono') || type.includes('code') || type.includes('pre') || type === 'tt') return 'code';
+  if (type.includes('mark') || type.includes('highlight')) return 'mark';
+  if (type.includes('link') || type.includes('url') || type === 'a') return 'link';
+  return '';
+}
+
+function lrRichNormalizeMarks(text, markup) {
+  const source = String(text ?? '');
+  const max = source.length;
+  const list = Array.isArray(markup) ? markup : [];
+  const out = [];
+
+  for (const mark of list) {
+    if (!mark || typeof mark !== 'object') continue;
+    const type = lrRichType(mark);
+    const kind = lrRichKind(type);
+    if (!kind) continue;
+
+    const start = lrRichStart(mark, max);
+    const end = lrRichEnd(mark, start, max);
+    if (end <= start || start >= max) continue;
+
+    const url = lrRichUrl(mark);
+    if (kind === 'link' && !url) continue;
+
+    out.push({ kind, type, start, end, url });
+  }
+
+  return out;
+}
+
+function lrRichTagsFor(active) {
+  const tags = [];
+  const has = (kind) => active.some((x) => x.kind === kind);
+  const link = [...active].reverse().find((x) => x.kind === 'link' && x.url);
+
+  if (has('quote')) tags.push(['<blockquote>', '</blockquote>']);
+  if (has('heading')) tags.push(['<h1>', '</h1>']);
+  if (has('bold')) tags.push(['<b>', '</b>']);
+  if (has('italic')) tags.push(['<i>', '</i>']);
+  if (has('underline')) tags.push(['<u>', '</u>']);
+  if (has('strike')) tags.push(['<s>', '</s>']);
+  if (has('code')) tags.push(['<code>', '</code>']);
+  if (has('mark')) tags.push(['<mark>', '</mark>']);
+  if (link) tags.push(['<a href="' + lrRichAttr(link.url) + '">', '</a>']);
+
+  return tags;
+}
+
+function applyMarkupToHtml(text, markup = []) {
+  const source = String(text ?? '');
+
+  function esc(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function attr(value) {
+    return esc(value).replace(/'/g, '&#39;');
+  }
+
+  function rawType(mark) {
+    return String(
+      mark?.type ||
+      mark?.kind ||
+      mark?.style ||
+      mark?.format ||
+      mark?.markup_type ||
+      mark?.markupType ||
+      mark?.entity_type ||
+      mark?.entityType ||
+      mark?.block_type ||
+      mark?.blockType ||
+      mark?.message_style ||
+      mark?.messageStyle ||
+      mark?.payload?.type ||
+      mark?.payload?.kind ||
+      mark?.payload?.style ||
+      ''
+    ).toLowerCase();
+  }
+
+  function kind(mark) {
+    const t = rawType(mark);
+
+    if (
+      t.includes('blockquote') ||
+      t.includes('block_quote') ||
+      t.includes('block-quote') ||
+      t.includes('quote') ||
+      t.includes('quotation') ||
+      t.includes('quoted') ||
+      t.includes('citation') ||
+      t.includes('cite')
+    ) return 'quote';
+
+    if (t.includes('heading') || t.includes('header') || t.includes('title') || /^h[1-6]$/.test(t)) return 'heading';
+    if (t.includes('bold') || t.includes('strong') || t === 'b') return 'bold';
+    if (t.includes('italic') || t.includes('emphasis') || t.includes('emphasized') || t === 'em' || t === 'i') return 'italic';
+    if (t.includes('underline') || t === 'u' || t === 'ins') return 'underline';
+    if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return 'strike';
+    if (t.includes('mono') || t.includes('code') || t.includes('pre') || t === 'tt') return 'code';
+    if (t.includes('mark') || t.includes('highlight')) return 'mark';
+    if (t.includes('link') || t.includes('url') || t === 'a') return 'link';
+
+    return '';
+  }
+
+  function startOf(mark, max) {
+    const n = Number(mark?.from ?? mark?.start ?? mark?.offset ?? mark?.position ?? mark?.index ?? mark?.begin ?? 0);
+    return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0;
+  }
+
+  function endOf(mark, start, max) {
+    const direct = mark?.to ?? mark?.end ?? mark?.stop;
+
+    if (direct !== undefined && direct !== null && direct !== '') {
+      const n = Number(direct);
+      if (Number.isFinite(n) && n > start) return Math.max(start, Math.min(max, n));
+    }
+
+    const len = Number(mark?.length ?? mark?.len ?? mark?.size ?? mark?.count);
+    if (Number.isFinite(len) && len > 0) return Math.max(start, Math.min(max, start + len));
+
+    return start;
+  }
+
+  function urlOf(mark) {
+    const url = String(
+      mark?.url ||
+      mark?.href ||
+      mark?.link ||
+      mark?.payload?.url ||
+      mark?.payload?.href ||
+      mark?.payload?.link ||
+      ''
+    ).trim();
+
+    if (!url) return '';
+    if (/^javascript:/i.test(url)) return '';
+    return url;
+  }
+
+  function priority(k) {
+    if (k === 'quote') return 0;
+    if (k === 'heading') return 1;
+    if (k === 'link') return 2;
+    if (k === 'bold') return 3;
+    if (k === 'italic') return 4;
+    if (k === 'underline') return 5;
+    if (k === 'strike') return 6;
+    if (k === 'code') return 7;
+    if (k === 'mark') return 8;
+    return 99;
+  }
+
+  function openTag(item) {
+    if (item.kind === 'quote') return '<blockquote>';
+    if (item.kind === 'heading') return '<h1>';
+    if (item.kind === 'bold') return '<b>';
+    if (item.kind === 'italic') return '<i>';
+    if (item.kind === 'underline') return '<u>';
+    if (item.kind === 'strike') return '<s>';
+    if (item.kind === 'code') return '<code>';
+    if (item.kind === 'mark') return '<mark>';
+    if (item.kind === 'link') return item.url ? '<a href="' + attr(item.url) + '">' : '';
+    return '';
+  }
+
+  function closeTag(item) {
+    if (item.kind === 'quote') return '</blockquote>';
+    if (item.kind === 'heading') return '</h1>';
+    if (item.kind === 'bold') return '</b>';
+    if (item.kind === 'italic') return '</i>';
+    if (item.kind === 'underline') return '</u>';
+    if (item.kind === 'strike') return '</s>';
+    if (item.kind === 'code') return '</code>';
+    if (item.kind === 'mark') return '</mark>';
+    if (item.kind === 'link') return item.url ? '</a>' : '';
+    return '';
+  }
+
+  const max = source.length;
+  const list = Array.isArray(markup) ? markup : [];
+  const items = [];
+  const seen = new Set();
+
+  for (const mark of list) {
+    if (!mark || typeof mark !== 'object') continue;
+
+    const k = kind(mark);
+    if (!k) continue;
+
+    const start = startOf(mark, max);
+    const end = endOf(mark, start, max);
+    const url = urlOf(mark);
+
+    if (end <= start || start >= max) continue;
+    if (k === 'link' && !url) continue;
+
+    const key = [k, start, end, url].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    items.push({ mark, kind: k, start, end, url, priority: priority(k) });
+  }
+
+  if (!source) return '';
+  if (!items.length) return esc(source);
+
+  items.sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start;
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return b.end - a.end;
+  });
+
+  const opens = new Map();
+  const closes = new Map();
+
+  for (const item of items) {
+    if (!opens.has(item.start)) opens.set(item.start, []);
+    if (!closes.has(item.end)) closes.set(item.end, []);
+
+    opens.get(item.start).push(item);
+    closes.get(item.end).push(item);
+  }
+
+  for (const arr of opens.values()) {
+    arr.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return b.end - a.end;
+    });
+  }
+
+  for (const arr of closes.values()) {
+    arr.sort((a, b) => {
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      return a.start - b.start;
+    });
+  }
+
+  let out = '';
+
+  for (let i = 0; i <= max; i++) {
+    const closeItems = closes.get(i);
+    if (closeItems) {
+      for (const item of closeItems) out += closeTag(item);
+    }
+
+    const openItems = opens.get(i);
+    if (openItems) {
+      for (const item of openItems) out += openTag(item);
+    }
+
+    if (i < max) out += esc(source[i]);
+  }
+
+  return out;
+}
+
+
+// LR_QUOTE_BLOCKQUOTE_V1_START
+function lrQuoteTypeOf(mark) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    mark?.block_type ||
+    mark?.blockType ||
+    mark?.message_style ||
+    mark?.messageStyle ||
+    mark?.payload?.type ||
+    mark?.payload?.kind ||
+    ''
+  ).toLowerCase();
+}
+
+function lrQuoteIsQuoteType(type) {
+  const t = String(type || '').toLowerCase();
+  return (
+    t.includes('quote') ||
+    t.includes('blockquote') ||
+    t.includes('block_quote') ||
+    t.includes('block-quote') ||
+    t.includes('quotation') ||
+    t.includes('quoted') ||
+    t.includes('cite') ||
+    t.includes('citation')
+  );
+}
+
+function lrQuoteKind(type) {
+  const t = String(type || '').toLowerCase();
+
+  if (lrQuoteIsQuoteType(t)) return 'quote';
+  if (t.includes('heading') || t.includes('header') || t.includes('title') || /^h[1-6]$/.test(t)) return 'heading';
+  if (t.includes('bold') || t.includes('strong') || t === 'b') return 'bold';
+  if (t.includes('italic') || t.includes('emphas') || t === 'em' || t === 'i') return 'italic';
+  if (t.includes('underline') || t === 'u' || t === 'ins') return 'underline';
+  if (t.includes('strike') || t.includes('through') || t.includes('delete') || t === 's' || t === 'del') return 'strike';
+  if (t.includes('mono') || t.includes('code') || t.includes('pre') || t === 'tt') return 'code';
+  if (t.includes('mark') || t.includes('highlight')) return 'mark';
+  if (t.includes('link') || t.includes('url') || t === 'a') return 'link';
+
+  return '';
+}
+
+function lrQuoteStart(mark, max) {
+  const raw = mark?.from ?? mark?.start ?? mark?.offset ?? mark?.position ?? mark?.index ?? mark?.begin ?? 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0;
+}
+
+function lrQuoteEnd(mark, start, max) {
+  const direct = mark?.to ?? mark?.end ?? mark?.stop;
+  if (direct !== undefined && direct !== null && direct !== '') {
+    const n = Number(direct);
+    if (Number.isFinite(n) && n > start) return Math.max(start, Math.min(max, n));
+  }
+
+  const len = mark?.length ?? mark?.len ?? mark?.size ?? mark?.count;
+  const n = Number(len);
+  if (Number.isFinite(n) && n > 0) return Math.max(start, Math.min(max, start + n));
+
+  return start;
+}
+
+function lrQuoteUrl(mark) {
+  return String(
+    mark?.url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+    mark?.payload?.link ||
+    ''
+  ).trim();
+}
+
+function lrQuoteHasRange(mark) {
+  return (
+    mark &&
+    typeof mark === 'object' &&
+    (
+      mark.from !== undefined ||
+      mark.start !== undefined ||
+      mark.offset !== undefined ||
+      mark.position !== undefined ||
+      mark.index !== undefined ||
+      mark.begin !== undefined
+    ) &&
+    (
+      mark.length !== undefined ||
+      mark.len !== undefined ||
+      mark.size !== undefined ||
+      mark.count !== undefined ||
+      mark.to !== undefined ||
+      mark.end !== undefined ||
+      mark.stop !== undefined
+    )
+  );
+}
+
+function lrQuoteFindMessageText(root) {
+  const candidates = [
+    root?.message?.body?.text,
+    root?.message?.text,
+    root?.body?.text,
+    root?.text,
+    root?.message?.link?.message?.body?.text,
+    root?.message?.link?.message?.text,
+    root?.link?.message?.body?.text,
+    root?.link?.message?.text,
+  ];
+
+  for (const value of candidates) {
+    const text = String(value || '');
+    if (text.trim()) return text;
+  }
+
+  return '';
+}
+
+function lrQuoteMergeMarkup(base = [], extra = []) {
+  const out = [];
+  const seen = new Set();
+
+  for (const item of [...(Array.isArray(base) ? base : []), ...(Array.isArray(extra) ? extra : [])]) {
+    if (!item || typeof item !== 'object') continue;
+
+    const type = lrQuoteTypeOf(item);
+    const kind = lrQuoteKind(type);
+    if (!kind) continue;
+
+    const from = item.from ?? item.start ?? item.offset ?? item.position ?? item.index ?? item.begin ?? 0;
+    const len = item.length ?? item.len ?? item.size ?? item.count ?? '';
+    const to = item.to ?? item.end ?? item.stop ?? '';
+    const url = lrQuoteUrl(item);
+
+    if (kind === 'link' && !url) continue;
+
+    const key = [kind, type, from, len, to, url].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push(item);
+  }
+
+  return out;
+}
+
+function lrQuoteCollectNativeMarkupDeep(root, sourceText = '') {
+  const text = String(sourceText || lrQuoteFindMessageText(root) || '');
+  const max = text.length;
+  const out = [];
+  const seenObjects = new WeakSet();
+  const seenRanges = new Set();
+
+  function addRange(mark, typeHint = '') {
+    if (!mark || typeof mark !== 'object') return;
+
+    const type = lrQuoteTypeOf(mark) || String(typeHint || '').toLowerCase();
+    const kind = lrQuoteKind(type);
+    if (!kind) return;
+
+    let start = lrQuoteStart(mark, max);
+    let end = lrQuoteEnd(mark, start, max);
+
+    // Иногда MAX отдаёт цитату как блок с text, но без диапазона.
+    // Тогда ищем этот текст в общем тексте и создаём диапазон сами.
+    if ((!lrQuoteHasRange(mark) || end <= start) && lrQuoteIsQuoteType(type)) {
+      const blockText = String(
+        mark?.text ||
+        mark?.body?.text ||
+        mark?.payload?.text ||
+        mark?.caption ||
+        ''
+      ).trim();
+
+      if (blockText && text.includes(blockText)) {
+        start = text.indexOf(blockText);
+        end = start + blockText.length;
+      }
+    }
+
+    if (end <= start || start >= max) return;
+
+    const url = lrQuoteUrl(mark);
+    if (kind === 'link' && !url) return;
+
+    const key = [kind, start, end, url].join('|');
+    if (seenRanges.has(key)) return;
+    seenRanges.add(key);
+
+    out.push({
+      ...mark,
+      type: type || kind,
+      from: start,
+      length: end - start,
+      ...(url ? { url } : {}),
+    });
+  }
+
+  function walk(value, keyHint = '') {
+    if (!value || typeof value !== 'object') return;
+    if (seenObjects.has(value)) return;
+    seenObjects.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, keyHint);
+      return;
+    }
+
+    addRange(value, keyHint);
+
+    for (const [key, child] of Object.entries(value)) {
+      // Встречаются разные контейнеры: markup, markups, entities, richText, blocks.
+      // Поэтому идём вглубь, но key передаём как подсказку для объектов без поля type.
+      walk(child, key);
+    }
+  }
+
+  walk(root, '');
+
+  if (out.some((x) => lrQuoteKind(lrQuoteTypeOf(x)) === 'quote')) {
+    console.log('[quote markup] found', JSON.stringify(out.map((x) => ({
+      type: lrQuoteTypeOf(x),
+      from: x.from,
+      length: x.length,
+      text: text.slice(Number(x.from || 0), Number(x.from || 0) + Number(x.length || 0)).slice(0, 80),
+    })).slice(0, 20)));
+  }
+
+  return out;
+}
+// LR_QUOTE_BLOCKQUOTE_V1_END
+
+
+
+function lrMaxMarkupToHtml(text, markup = []) {
+  return applyMarkupToHtml(text, markup);
+}
+
+function lrMaxMarkupToMarkdown(text, markup = []) {
+  return applyMarkupToHtml(text, markup);
+}
+
+
+
+
+// LR_NATIVE_MAX_MARKUP_V4_END
+
+
 function emptyDraft() { return { campaignId: `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`, channelIds: [], content: { text: '', format: 'html', attachments: [], markup: [], raw: null }, buttons: [], isAd: false, cpm: null, autoDeleteMinutes: null, reportAfterHours: 24, signatureEnabled: true, scheduleDate: null, previewMessageId: null }; }
 function safeDraft(data) {
   const d = data?.draft || data || {};
@@ -1248,1180 +2167,7 @@ function hasContent(d) {
 
 
 
-function applyMarkupToHtml(text, markup = []) {
-  const source = String(text || '');
-  const marks = Array.isArray(markup) ? markup : [];
 
-  const esc = (v) => String(v ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  const attr = (v) => esc(v).replace(/"/g, '&quot;');
-
-  const typeOf = (m) => String(
-    m?.type ||
-    m?.kind ||
-    m?.style ||
-    m?.format ||
-    m?.markup_type ||
-    m?.markupType ||
-    m?.entity_type ||
-    m?.entityType ||
-    ''
-  ).toLowerCase();
-
-  const urlOf = (m) => String(
-    m?.url ||
-    m?.href ||
-    m?.link ||
-    m?.target_url ||
-    m?.targetUrl ||
-    m?.payload?.url ||
-    m?.payload?.href ||
-    m?.payload?.link ||
-    ''
-  ).trim();
-
-  const rangeOf = (m) => {
-    let start = Number(m?.from ?? m?.start ?? m?.offset ?? m?.pos ?? m?.range?.from ?? m?.range?.start ?? 0);
-    let end = Number(m?.to ?? m?.end ?? m?.range?.to ?? m?.range?.end ?? NaN);
-    const len = Number(m?.length ?? m?.len ?? m?.range?.length ?? m?.range?.len ?? NaN);
-
-    if (!Number.isFinite(start)) start = 0;
-    if (!Number.isFinite(end)) end = Number.isFinite(len) ? start + len : start;
-
-    start = Math.max(0, Math.min(source.length, start));
-    end = Math.max(0, Math.min(source.length, end));
-
-    if (end <= start) return null;
-    return { start, end };
-  };
-
-  const tagOf = (m) => {
-    const t = typeOf(m);
-    const url = urlOf(m);
-
-    if ((t.includes('link') || t.includes('url')) && /^https?:\/\//i.test(url)) {
-      return { open: `<a href="${attr(url)}">`, close: '</a>', priority: 70 };
-    }
-
-    if (t.includes('strong') || t.includes('bold')) return { open: '<b>', close: '</b>', priority: 10 };
-    if (t.includes('italic') || t.includes('emphasis') || t.includes('emphasized') || t === 'em') return { open: '<i>', close: '</i>', priority: 20 };
-    if (t.includes('underline') || t.includes('underlined') || t.includes('ins')) return { open: '<u>', close: '</u>', priority: 30 };
-    if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return { open: '<s>', close: '</s>', priority: 40 };
-    if (t.includes('mono') || t.includes('code')) return { open: '<code>', close: '</code>', priority: 50 };
-    if (t.includes('heading') || t.includes('header') || t.includes('title') || /^h[1-6]$/.test(t)) return { open: '<b>', close: '</b>', priority: 5 };
-    if (t.includes('quote') || t.includes('blockquote') || t.includes('quotation') || t.includes('cite')) return { open: '<blockquote>', close: '</blockquote>', priority: 6 };
-
-    return null;
-  };
-
-  const opens = new Map();
-  const closes = new Map();
-
-  const add = (map, pos, item) => {
-    if (!map.has(pos)) map.set(pos, []);
-    map.get(pos).push(item);
-  };
-
-  for (const m of marks) {
-    if (!m || typeof m !== 'object') continue;
-
-    const range = rangeOf(m);
-    const tag = tagOf(m);
-
-    if (!range || !tag) continue;
-
-    const item = { ...tag, start: range.start, end: range.end };
-    add(opens, range.start, item);
-    add(closes, range.end, item);
-  }
-
-  if (!opens.size && !closes.size) return esc(source);
-
-  for (const arr of opens.values()) arr.sort((a, b) => a.priority - b.priority);
-  for (const arr of closes.values()) arr.sort((a, b) => b.priority - a.priority);
-
-  let out = '';
-
-  for (let i = 0; i <= source.length; i++) {
-    for (const item of closes.get(i) || []) out += item.close;
-    for (const item of opens.get(i) || []) out += item.open;
-    if (i < source.length) out += esc(source[i]);
-  }
-
-  return out
-    .replace(/<\/blockquote>\s*<blockquote>/g, '\n')
-    .trim();
-}
-function contentTextCandidates(v, found = [], seen = new Set(), path = '') {
-  if (!v || typeof v !== 'object' || seen.has(v)) return found;
-  seen.add(v);
-
-  if (Array.isArray(v)) {
-    for (let i = 0; i < v.length; i++) contentTextCandidates(v[i], found, seen, `${path}.${i}`);
-    return found;
-  }
-
-  const localMarkup =
-    (Array.isArray(v.markup) && v.markup) ||
-    (Array.isArray(v.body?.markup) && v.body.markup) ||
-    (Array.isArray(v.message?.body?.markup) && v.message.body.markup) ||
-    [];
-
-  const addCandidate = (value, markup = localMarkup, scoreBonus = 0) => {
-    const txt = String(value || '').trim();
-    if (!txt) return;
-    const lowPath = String(path).toLowerCase();
-    let score = plain(txt).length + scoreBonus;
-    if (lowPath.includes('forward') || lowPath.includes('link') || lowPath.includes('message') || lowPath.includes('body') || lowPath.includes('content')) score += 200;
-    if (lowPath.includes('chat') || lowPath.includes('sender') || lowPath.includes('user') || lowPath.includes('button')) score -= 200;
-    found.push({ text: txt, markup: Array.isArray(markup) ? markup : [], score });
-  };
-
-  if (typeof v.body?.text === 'string') addCandidate(v.body.text, v.body.markup || localMarkup, 250);
-  if (typeof v.text === 'string') addCandidate(v.text, localMarkup, 200);
-  if (typeof v.caption === 'string') addCandidate(v.caption, localMarkup, 200);
-  if (typeof v.payload?.text === 'string') addCandidate(v.payload.text, v.payload.markup || localMarkup, 150);
-  if (typeof v.content?.text === 'string') addCandidate(v.content.text, v.content.markup || localMarkup, 150);
-
-  for (const [k, child] of Object.entries(v)) {
-    if (child && typeof child === 'object') contentTextCandidates(child, found, seen, `${path}.${k}`);
-  }
-  return found;
-}
-
-function bestContentCandidate(u) {
-  const candidates = contentTextCandidates(u?.message || u);
-  candidates.sort((a, b) => b.score - a.score);
-  return candidates[0] || { text: '', markup: [], score: 0 };
-}
-
-function firstText(u) {
-  return String(bestContentCandidate(u).text || '').trim();
-}
-
-function firstMarkup(u) {
-  const best = bestContentCandidate(u);
-  if (Array.isArray(best.markup) && best.markup.length) return best.markup;
-
-  const found = [];
-  const seen = new Set();
-  const scan = (v) => {
-    if (!v || typeof v !== 'object' || seen.has(v)) return;
-    seen.add(v);
-    if (Array.isArray(v)) { for (const x of v) scan(x); return; }
-    if (Array.isArray(v.markup) && v.markup.length) found.push(v.markup);
-    if (Array.isArray(v.body?.markup) && v.body.markup.length) found.push(v.body.markup);
-    if (Array.isArray(v.payload?.markup) && v.payload.markup.length) found.push(v.payload.markup);
-    for (const child of Object.values(v)) if (child && typeof child === 'object') scan(child);
-  };
-  scan(u?.message || u);
-  return found[0] || [];
-}
-
-function looksLikeAttachment(v) { if (!v || typeof v !== 'object') return false; const t = String(v.type || v.attachment_type || v.attachmentType || '').toLowerCase(); return ['image','photo','video','file','audio','sticker'].some(x => t.includes(x)); }
-function collectAttachments(v, found = [], seen = new Set()) {
-  if (!v || typeof v !== 'object' || found.length >= MAX_PREVIEW_ATTACHMENTS || seen.has(v)) return found;
-  seen.add(v);
-  if (Array.isArray(v)) {
-    for (const x of v) collectAttachments(x, found, seen);
-    return found.slice(0, MAX_PREVIEW_ATTACHMENTS);
-  }
-  if (looksLikeAttachment(v)) {
-    const t = String(v.type || v.attachment_type || v.attachmentType || '').toLowerCase();
-    if (t !== 'inline_keyboard' && !t.includes('keyboard')) found.push(v);
-  }
-  for (const child of Object.values(v)) {
-    if (child && typeof child === 'object') collectAttachments(child, found, seen);
-  }
-  return found.slice(0, MAX_PREVIEW_ATTACHMENTS);
-}
-
-function normalizeAttachment(a) {
-  if (!a || typeof a !== 'object') return null;
-  const type = String(a.type || a.attachment_type || a.attachmentType || '').toLowerCase();
-  const p = a.payload && typeof a.payload === 'object' ? a.payload : {};
-  if (type === 'inline_keyboard') return a;
-  if (type.includes('image') || type.includes('photo')) { if (p.token) return { type: 'image', payload: { token: p.token } }; if (a.token) return { type: 'image', payload: { token: a.token } }; if (Array.isArray(p.photos)) return { type: 'image', payload: { photos: p.photos } }; }
-  if (type.includes('video')) { if (p.token) return { type: 'video', payload: { token: p.token } }; if (a.token) return { type: 'video', payload: { token: a.token } }; }
-  if (type.includes('file')) { if (p.token) return { type: 'file', payload: { token: p.token } }; if (a.token) return { type: 'file', payload: { token: a.token } }; }
-  return null;
-}
-function normalizeAttachments(list = []) { const out = []; const seen = new Set(); for (const a of list || []) { const n = normalizeAttachment(a); if (!n) continue; const k = JSON.stringify(n); if (seen.has(k)) continue; seen.add(k); out.push(n); } return out; }
-
-
-
-
-
-
-// LR_NATIVE_MAX_MARKUP_START
-function lrMarkupType(mark) {
-  return String(
-    mark?.type ||
-    mark?.kind ||
-    mark?.style ||
-    mark?.format ||
-    mark?.markup_type ||
-    mark?.markupType ||
-    mark?.entity_type ||
-    mark?.entityType ||
-    mark?.block_type ||
-    mark?.blockType ||
-    ''
-  ).toLowerCase();
-}
-
-function lrMarkupStart(mark) {
-  const n = Number(
-    mark?.from ??
-    mark?.start ??
-    mark?.offset ??
-    mark?.position ??
-    mark?.index ??
-    0
-  );
-
-  return Number.isFinite(n) ? Math.max(0, n) : 0;
-}
-
-function lrMarkupEnd(mark, textLength) {
-  const start = lrMarkupStart(mark);
-
-  const directEnd = Number(mark?.to ?? mark?.end);
-
-  if (Number.isFinite(directEnd)) {
-    return Math.max(start, Math.min(textLength, directEnd));
-  }
-
-  const len = Number(mark?.length ?? mark?.len ?? mark?.size ?? 0);
-
-  if (Number.isFinite(len) && len > 0) {
-    return Math.max(start, Math.min(textLength, start + len));
-  }
-
-  return start;
-}
-
-function lrMarkupUrl(mark) {
-  return String(
-    mark?.url ||
-    mark?.href ||
-    mark?.link ||
-    mark?.payload?.url ||
-    mark?.payload?.href ||
-    mark?.payload?.link ||
-    ''
-  );
-}
-
-function lrApplyBlockMarkdown(type, part) {
-  const clean = String(part || '');
-
-  if (!clean) return clean;
-
-  if (type.includes('quote') || type.includes('blockquote') || type.includes('quotation') || type.includes('quoted') || type.includes('cite') || type.includes('quotation') || type.includes('quoted')) {
-    return clean
-      .split('\n')
-      .map((line) => line.trim() ? `> ${line}` : '>')
-      .join('\n');
-  }
-
-  if (type.includes('heading') || type.includes('header') || type.includes('title') || /^h[1-6]$/.test(type)) {
-    return clean
-      .split('\n')
-      .map((line) => line.trim() ? `# ${line}` : line)
-      .join('\n');
-  }
-
-  return clean;
-}
-
-function lrApplyInlineMarkdown(type, part, mark) {
-  const value = String(part || '');
-  const url = lrMarkupUrl(mark);
-
-  if (!value) return value;
-
-  if (type.includes('bold') || type.includes('strong')) return `**${value}**`;
-  if (type.includes('italic') || type.includes('emphasis') || type.includes('emphasiz') || type === 'em') return `_${value}_`;
-  if (type.includes('underline') || type === 'ins') return `++${value}++`;
-  if (type.includes('strike') || type.includes('strikethrough') || type.includes('deleted') || type === 'del' || type === 's') return `~~${value}~~`;
-  if (type.includes('mono') || type.includes('inline_code') || type === 'code') return '`' + value.replace(/`/g, 'ʼ') + '`';
-  if (type.includes('mark') || type.includes('highlight')) return `^^${value}^^`;
-  if ((type.includes('link') || type.includes('url')) && url) return `[${value}](${url})`;
-
-  return value;
-}
-
-function lrMaxMarkupToMarkdown(text, markup = []) {
-  const source = String(text || '');
-
-  if (!source) return '';
-
-  const list = Array.isArray(markup) ? markup : [];
-
-  if (!list.length) return source;
-
-  const normalized = [];
-
-  for (const mark of list) {
-    const type = lrMarkupType(mark);
-    const start = lrMarkupStart(mark);
-    const end = lrMarkupEnd(mark, source.length);
-
-    if (!type || end <= start || start >= source.length) continue;
-
-    normalized.push({ mark, type, start, end });
-  }
-
-  if (!normalized.length) return source;
-
-  // Сначала применяем самые поздние диапазоны, чтобы индексы не съехали.
-  normalized.sort((a, b) => {
-    if (b.start !== a.start) return b.start - a.start;
-    return a.end - b.end;
-  });
-
-  let result = source;
-
-  for (const item of normalized) {
-    const before = result.slice(0, item.start);
-    const part = result.slice(item.start, item.end);
-    const after = result.slice(item.end);
-
-    let replaced = part;
-
-    if (
-      item.type.includes('quote') ||
-      item.type.includes('blockquote') ||
-      item.type.includes('quotation') ||
-      item.type.includes('quoted') ||
-      item.type.includes('cite') ||
-      item.type.includes('quotation') ||
-      item.type.includes('quoted') ||
-      item.type.includes('heading') ||
-      item.type.includes('header') ||
-      item.type.includes('title') ||
-      /^h[1-6]$/.test(item.type)
-    ) {
-      replaced = lrApplyBlockMarkdown(item.type, part);
-    } else {
-      replaced = lrApplyInlineMarkdown(item.type, part, item.mark);
-    }
-
-    result = before + replaced + after;
-  }
-
-  return result;
-}
-
-function lrDebugMarkupTypes(markup = []) {
-  try {
-    const types = [...new Set((Array.isArray(markup) ? markup : []).map(lrMarkupType).filter(Boolean))];
-
-    if (types.length) {
-      console.log('[native-max-markup] types:', JSON.stringify(types));
-    }
-  } catch {}
-}
-// LR_NATIVE_MAX_MARKUP_END
-
-
-
-// LR_DEEP_NATIVE_MARKUP_START
-function lrDeepNativeMarkupType(mark) {
-  return String(
-    mark?.type ||
-    mark?.kind ||
-    mark?.style ||
-    mark?.format ||
-    mark?.markup_type ||
-    mark?.markupType ||
-    mark?.entity_type ||
-    mark?.entityType ||
-    mark?.block_type ||
-    mark?.blockType ||
-    ''
-  ).toLowerCase();
-}
-
-function lrLooksLikeNativeMarkupItem(item) {
-  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
-
-  const type = lrDeepNativeMarkupType(item);
-
-  if (!type) return false;
-
-  const hasRange =
-    item.from !== undefined ||
-    item.start !== undefined ||
-    item.offset !== undefined ||
-    item.position !== undefined ||
-    item.index !== undefined ||
-    item.to !== undefined ||
-    item.end !== undefined ||
-    item.length !== undefined ||
-    item.len !== undefined ||
-    item.size !== undefined;
-
-  const supported =
-    type.includes('heading') ||
-    type.includes('header') ||
-    type.includes('title') ||
-    type.includes('strong') ||
-    type.includes('bold') ||
-    type.includes('emphas') ||
-    type.includes('italic') ||
-    type.includes('underline') ||
-    type.includes('mono') ||
-    type.includes('code') ||
-    type.includes('strike') ||
-    type.includes('through') ||
-    type.includes('link') ||
-    type.includes('url') ||
-    type.includes('quote') ||
-    type.includes('blockquote') ||
-    type.includes('quotation') ||
-    type.includes('quoted') ||
-    type.includes('cite') ||
-    /^h[1-6]$/.test(type);
-
-  return supported && hasRange;
-}
-
-function lrCollectNativeMarkupDeep(root) {
-  const out = [];
-  const seen = new WeakSet();
-
-  function walk(value) {
-    if (!value || typeof value !== 'object') return;
-
-    if (seen.has(value)) return;
-    seen.add(value);
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (lrLooksLikeNativeMarkupItem(item)) out.push(item);
-        walk(item);
-      }
-      return;
-    }
-
-    for (const key of Object.keys(value)) {
-      const child = value[key];
-
-      if (
-        key === 'markup' ||
-        key === 'markups' ||
-        key === 'entities' ||
-        key === 'text_entities' ||
-        key === 'textEntities' ||
-        key === 'formatting' ||
-        key === 'formats' ||
-        key === 'blocks' ||
-        key === 'spans'
-      ) {
-        walk(child);
-      } else if (child && typeof child === 'object') {
-        walk(child);
-      }
-    }
-  }
-
-  walk(root);
-
-  const uniq = [];
-  const keys = new Set();
-
-  for (const item of out) {
-    const key = JSON.stringify([
-      lrDeepNativeMarkupType(item),
-      item.from ?? item.start ?? item.offset ?? item.position ?? item.index ?? 0,
-      item.to ?? item.end ?? item.length ?? item.len ?? item.size ?? 0,
-      item.url ?? item.href ?? item.link ?? item?.payload?.url ?? ''
-    ]);
-
-    if (keys.has(key)) continue;
-    keys.add(key);
-    uniq.push(item);
-  }
-
-  return uniq;
-}
-// LR_DEEP_NATIVE_MARKUP_END
-
-
-async function hydrateContentUnsafe(u) {
-  const best = globalThis.__lrRichV7.bestContent(u);
-  const rawText = String(best?.text || '').trim();
-  const markup = Array.isArray(best?.markup) ? best.markup : [];
-  const attachments = globalThis.__lrRichV7.attachments(u);
-
-  const content = globalThis.__lrRichV7.content({
-    text: rawText,
-    format: markup.length ? 'native' : 'html',
-    markup,
-    attachments
-  });
-
-  return {
-    text: content.text,
-    format: 'html',
-    markup: [],
-    attachments,
-    raw: null
-  };
-}
-
-function lrForwardDeepSearchText(obj, seen = new Set(), depth = 0) {
-  if (!obj || typeof obj !== 'object' || seen.has(obj) || depth > 8) return '';
-  seen.add(obj);
-
-  const direct = [
-    obj?.bestContent?.text,
-    obj?.bestContent?.body?.text,
-    obj?.body?.bestContent?.text,
-    obj?.body?.text,
-    obj?.text,
-    obj?.caption,
-    obj?.html
-  ];
-
-  for (const v of direct) {
-    if (typeof v === 'string' && v.trim()) return v.trim();
-  }
-
-  for (const v of Object.values(obj)) {
-    if (v && typeof v === 'object') {
-      const found = lrForwardDeepSearchText(v, seen, depth + 1);
-      if (found) return found;
-    }
-  }
-
-  return '';
-}
-
-function lrForwardDeepSearchAttachments(obj, seen = new Set(), depth = 0) {
-  if (!obj || typeof obj !== 'object' || seen.has(obj) || depth > 8) return [];
-  seen.add(obj);
-
-  const out = [];
-
-  for (const [key, value] of Object.entries(obj)) {
-    const k = String(key).toLowerCase();
-
-    if (Array.isArray(value) && (k.includes('attachment') || k === 'media' || k.includes('bestcontent'))) {
-      for (const item of value) {
-        if (item && typeof item === 'object') out.push(item);
-      }
-    }
-
-    if (value && typeof value === 'object') {
-      out.push(...lrForwardDeepSearchAttachments(value, seen, depth + 1));
-    }
-  }
-
-  const unique = [];
-  const used = new Set();
-
-  for (const a of out) {
-    const sig = JSON.stringify(a).slice(0, 500);
-    if (used.has(sig)) continue;
-    used.add(sig);
-    unique.push(a);
-    if (unique.length >= MAX_PREVIEW_ATTACHMENTS) break;
-  }
-
-  return unique;
-}
-
-
-function lrExactGet(obj, path) {
-  try {
-    return path.split('.').reduce((a, k) => a && a[k], obj);
-  } catch {
-    return null;
-  }
-}
-
-function lrExactFirst(...values) {
-  for (const v of values) {
-    if (v === undefined || v === null) continue;
-    if (typeof v === 'string' && !v.trim()) continue;
-    if (Array.isArray(v) && !v.length) continue;
-    return v;
-  }
-  return null;
-}
-
-function lrExactForwardLink(update) {
-  const link = lrExactFirst(
-    update?.message?.link,
-    update?.body?.message?.link,
-    update?.link,
-    update?.message_link,
-    update?.messageLink
-  );
-
-  return link && typeof link === 'object' && !Array.isArray(link) ? link : null;
-}
-
-function lrExactLinkedMessageFromLink(link) {
-  if (!link || typeof link !== 'object') return null;
-
-  return lrExactFirst(
-    link.message,
-    link.linked_message,
-    link.linkedMessage,
-    link.forwarded_message,
-    link.forwardedMessage,
-    link.original_message,
-    link.originalMessage,
-    link.source_message,
-    link.sourceMessage
-  );
-}
-
-function lrExactLinkedMessageId(link) {
-  if (!link || typeof link !== 'object') return null;
-
-  return lrExactFirst(
-    link.message_id,
-    link.messageId,
-    link.mid,
-    link.id,
-    link.message?.message_id,
-    link.message?.messageId,
-    link.message?.id,
-    link.linked_message?.message_id,
-    link.linked_message?.messageId,
-    link.linked_message?.id,
-    link.linkedMessage?.message_id,
-    link.linkedMessage?.messageId,
-    link.linkedMessage?.id
-  );
-}
-
-function lrExactLinkedChatId(link) {
-  if (!link || typeof link !== 'object') return null;
-
-  return lrExactFirst(
-    link.chat_id,
-    link.chatId,
-    link.chat?.id,
-    link.chat?.chat_id,
-    link.message?.recipient?.chat_id,
-    link.message?.recipient?.chatId,
-    link.linked_message?.recipient?.chat_id,
-    link.linked_message?.recipient?.chatId,
-    link.linkedMessage?.recipient?.chat_id,
-    link.linkedMessage?.recipient?.chatId
-  );
-}
-
-function lrExactHtmlEscape(v) {
-  return String(v ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function lrExactApplyMarkup(text, markup) {
-  const src = String(text || '');
-  const items = Array.isArray(markup) ? markup.slice() : [];
-
-  if (!src || !items.length) return src;
-
-  const sorted = items
-    .map((m) => {
-      const from = Number(m.from ?? m.start ?? m.offset ?? 0);
-      const length = Number(m.length ?? m.len ?? 0);
-      const type = String(m.type || m.kind || m.markup_type || m.markupType || '').toLowerCase();
-      const url = m.url || m.href || m.link;
-      return { from, length, type, url };
-    })
-    .filter((m) => Number.isFinite(m.from) && Number.isFinite(m.length) && m.length > 0)
-    .sort((a, b) => b.from - a.from);
-
-  let out = src;
-
-  for (const m of sorted) {
-    const before = out.slice(0, m.from);
-    const mid = out.slice(m.from, m.from + m.length);
-    const after = out.slice(m.from + m.length);
-
-    let wrapped = mid;
-
-    if (m.type.includes('bold') || m.type.includes('strong')) wrapped = '<b>' + mid + '</b>';
-    else if (m.type.includes('italic') || m.type.includes('em')) wrapped = '<i>' + mid + '</i>';
-    else if (m.type.includes('under')) wrapped = '<u>' + mid + '</u>';
-    else if (m.type.includes('strike') || m.type.includes('del')) wrapped = '<s>' + mid + '</s>';
-    else if ((m.type.includes('link') || m.url) && m.url) wrapped = '<a href="' + lrExactHtmlEscape(m.url) + '">' + mid + '</a>';
-
-    out = before + wrapped + after;
-  }
-
-  return out;
-}
-
-function lrExactNormalizeAttachments(value) {
-  const arr = Array.isArray(value) ? value : [];
-  const out = [];
-  const seen = new Set();
-
-  for (const item of arr) {
-    if (!item || typeof item !== 'object') continue;
-
-    const type = String(item.type || '').toLowerCase();
-
-    if (type === 'inline_keyboard') continue;
-    if (type === 'link_preview') continue;
-    if (type === 'url_preview') continue;
-    if (type === 'share') continue;
-
-    const sig = JSON.stringify(item).slice(0, 1000);
-    if (seen.has(sig)) continue;
-    seen.add(sig);
-
-    out.push(item);
-    if (out.length >= MAX_PREVIEW_ATTACHMENTS) break;
-  }
-
-  return out;
-}
-
-
-function lrExactContentFromMessage(message) {
-  if (!message || typeof message !== 'object') {
-    return { text: '', format: 'html', attachments: [], hasRealBody: false };
-  }
-
-  const bodyCandidate = lrExactFirst(
-    message.body,
-    message.bestContent,
-    message.best_content,
-    message.content,
-    message.payload
-  );
-
-  const body = bodyCandidate && typeof bodyCandidate === 'object'
-    ? bodyCandidate
-    : message;
-
-  const textRaw = lrExactFirst(
-    body?.text,
-    body?.html,
-    body?.caption,
-    message.text,
-    message.caption
-  );
-
-  const markup = lrExactFirst(
-    body?.markup,
-    body?.markups,
-    body?.entities,
-    message.markup,
-    message.entities
-  );
-
-  let text = String(textRaw || '');
-
-  if (markup && Array.isArray(markup) && markup.length && text && !/[<][a-zA-Z/]/.test(text)) {
-    text = lrExactApplyMarkup(text, markup);
-  }
-
-  const attachments = lrExactNormalizeAttachments(
-    lrExactFirst(
-      body?.attachments,
-      body?.media,
-      message.attachments,
-      message.media,
-      message.bestContent?.attachments,
-      message.best_content?.attachments
-    )
-  );
-
-  const format = lrExactFirst(body?.format, message.format, 'html') || 'html';
-
-  const hasRealBody = Boolean(
-    String(text || '').trim() ||
-    attachments.length
-  );
-
-  return {
-    text,
-    format,
-    attachments,
-    hasRealBody
-  };
-}
-
-
-async function lrExactLoadLinkedMessage(update) {
-  const link = lrExactForwardLink(update);
-  if (!link) return null;
-
-  const embedded = lrExactLinkedMessageFromLink(link);
-  if (embedded) return embedded;
-
-  const messageId = lrExactLinkedMessageId(link);
-  if (!messageId) return null;
-
-  try {
-    const linkedChatId = lrExactLinkedChatId(link);
-    return await getMaxMessage(messageId, linkedChatId ? { chatId: linkedChatId } : {});
-  } catch (e) {
-    console.error('[exact forward getMaxMessage]', e.message || e);
-    return null;
-  }
-}
-
-async function hydrateContent(update) {
-  await writeFile('/tmp/linkray_last_incoming.json', JSON.stringify(update, null, 2)).catch(() => {});
-
-  let unsafe = {};
-  try {
-    if (typeof hydrateContentUnsafe === 'function') {
-      unsafe = await hydrateContentUnsafe(update);
-    }
-  } catch (e) {
-    console.error('[hydrateContentUnsafe ignored]', e.message || e);
-  }
-
-  const link = unsafe?.link || lrExactForwardLink(update);
-  const linkedMessage = await lrExactLoadLinkedMessage(update);
-
-  const linkedContent = lrExactContentFromMessage(linkedMessage);
-  const embeddedContent = lrExactContentFromMessage(lrExactLinkedMessageFromLink(link));
-  const ownContent = lrExactContentFromMessage(update?.message || update);
-
-  const selected = linkedContent.hasRealBody
-    ? linkedContent
-    : embeddedContent.hasRealBody
-      ? embeddedContent
-      : ownContent.hasRealBody
-        ? ownContent
-        : { text: '', format: 'html', attachments: [], hasRealBody: false };
-
-  const unsafeAttachments = lrExactNormalizeAttachments(unsafe?.attachments);
-  const attachments = selected.attachments.length
-    ? selected.attachments
-    : unsafeAttachments;
-
-  const text = String(selected.text || unsafe?.text || '').trim();
-  const format = selected.format || unsafe?.format || 'html';
-
-  // Если body/attachments реально получили — пересобираем пост без заголовка пересылки.
-  // Если MAX не отдал body/attachments — отправляем через link, чтобы хотя бы сохранить оригинал.
-  const needLinkFallback = Boolean(link && !selected.hasRealBody && !attachments.length);
-
-  return {
-    ...unsafe,
-    text,
-    format,
-    attachments: attachments.slice(0, MAX_PREVIEW_ATTACHMENTS),
-    buttons: Array.isArray(unsafe?.buttons) ? unsafe.buttons : [],
-    link: needLinkFallback ? link : null
-  };
-}
-
-
-
-
-function parseButtonsInput(input) {
-  const rows = [];
-  for (const line of String(input || '').split(/\n+/).map(x=>x.trim()).filter(Boolean)) {
-    const row = [];
-    for (const part of line.split('|').map(x=>x.trim()).filter(Boolean)) {
-      const m = part.match(/^(.+?)\s*(?:-|—|–)\s*(https?:\/\/\S+)$/i);
-      if (m) row.push({ text: m[1].trim(), url: m[2].trim() });
-    }
-    if (row.length) rows.push(row);
-  }
-  return rows;
-}
-function keyboardAttachmentFromButtons(buttons = []) {
-  const rows = [];
-  for (const r of buttons || []) {
-    const row = [];
-    for (const b of (Array.isArray(r) ? r : [r])) if (b?.text && /^https?:\/\//i.test(b?.url || '')) row.push(linkButton(b.text, b.url));
-    if (row.length) rows.push(row);
-  }
-  return rows.length ? inlineKeyboard(rows)[0] : null;
-}
-function finalAttachments(draft) { const out = normalizeAttachments(draft?.content?.attachments || []); const kb = keyboardAttachmentFromButtons(draft?.buttons || []); if (kb) out.push(kb); return out; }
-async function loadSignature(channelId, ownerKey = 'shared') { const r = await query('SELECT * FROM channel_signatures WHERE channel_id=$1 AND owner_key=$2 AND is_active=true ORDER BY updated_at DESC LIMIT 1', [Number(channelId), String(ownerKey)]); return r[0] || null; }
-async function saveSignature(channelId, content, ownerKey = 'shared') {
-  await query(`INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, updated_at) VALUES($1,$2,'Автоподпись',$3,$4,$5::jsonb,true,now()) ON CONFLICT(channel_id, owner_key) DO UPDATE SET text=EXCLUDED.text, format=EXCLUDED.format, markup=EXCLUDED.markup, is_active=true, updated_at=now()`, [Number(channelId), ownerKey, content.text || '', content.format || 'html', JSON.stringify(content.markup || [])]);
-}
-async function setSignatureActive(channelId, active, ownerKey = 'shared') { await query('UPDATE channel_signatures SET is_active=$3, updated_at=now() WHERE channel_id=$1 AND owner_key=$2', [Number(channelId), ownerKey, Boolean(active)]); }
-
-
-// LR_SIGNATURE_FORMAT_SAFE_START
-function lrDecodeBasicHtmlEntities(value) {
-  return String(value || '')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
-
-function lrStripTags(value) {
-  return lrDecodeBasicHtmlEntities(String(value || '').replace(/<[^>]*>/g, ''));
-}
-
-function lrSignatureToMarkdown(value) {
-  let text = String(value || '');
-
-  text = text
-    .replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+|max:\/\/user\/\d+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => `[${lrStripTags(label).trim() || url}](${url})`)
-    .replace(/<(b|strong)\b[^>]*>([\s\S]*?)<\/(b|strong)>/gi, (_, __, inner) => `**${lrStripTags(inner)}**`)
-    .replace(/<(i|em)\b[^>]*>([\s\S]*?)<\/(i|em)>/gi, (_, __, inner) => `_${lrStripTags(inner)}_`)
-    .replace(/<(u|ins)\b[^>]*>([\s\S]*?)<\/(u|ins)>/gi, (_, __, inner) => `++${lrStripTags(inner)}++`)
-    .replace(/<(s|strike|del)\b[^>]*>([\s\S]*?)<\/(s|strike|del)>/gi, (_, __, inner) => `~~${lrStripTags(inner)}~~`)
-    .replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_, inner) => '`' + lrStripTags(inner).replace(/`/g, 'ʼ') + '`')
-    .replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, inner) => lrStripTags(inner).split('\n').map(line => line.trim() ? `> ${line}` : '>').join('\n'))
-    .replace(/<br\s*\/?>/gi, '\n');
-
-  // Убираем любые оставшиеся хвосты HTML, включая сломанный </b>.
-  text = lrStripTags(text);
-
-  return lrCleanMarkdownLinkLabels(text.trim());
-}
-
-
-function lrCleanMarkdownLinkLabels(value) {
-  return String(value || '').replace(
-    /\[([^\]\n]+)\]\((https?:\/\/[^)\s]+|max:\/\/user\/\d+)\)/gi,
-    (_, label, url) => {
-      const clean = String(label || '')
-        .replace(/\*\*/g, '')
-        .replace(/__/g, '')
-        .replace(/\+\+/g, '')
-        .replace(/~~/g, '')
-        .replace(/\^\^/g, '')
-        .replace(/`/g, '')
-        .trim();
-
-      return `[${clean || url}](${url})`;
-    }
-  );
-}
-
-function lrSignatureForPostFormat(value, format = 'html') {
-  const html = globalThis.__lrAutosignOnlySafe.display({ text: value, format: 'html', markup: [] });
-  if (String(format || 'html').toLowerCase() === 'markdown') {
-    return html
-      .replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => `[${String(label || '').replace(/<[^>]*>/g, '').trim() || url}](${url})`)
-      .replace(/<b>([\s\S]*?)<\/b>/gi, '**$1**')
-      .replace(/<i>([\s\S]*?)<\/i>/gi, '_$1_')
-      .replace(/<u>([\s\S]*?)<\/u>/gi, '++$1++')
-      .replace(/<s>([\s\S]*?)<\/s>/gi, '~~$1~~')
-      .replace(/<[^>]*>/g, '')
-      .trim();
-  }
-  return html;
-}
-// LR_SIGNATURE_FORMAT_SAFE_END
-
-
-
-
-// LR_AUTOSIG_HTML_V8_START
-function lrSigV8Decode(value) {
-  return String(value ?? '')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#34;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&');
-}
-
-function lrSigV8Esc(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function lrSigV8Attr(value) {
-  return lrSigV8Esc(value).replace(/"/g, '&quot;');
-}
-
-function lrSigV8CleanHtml(value) {
-  let text = lrSigV8Decode(value).trim();
-  if (!text) return '';
-
-  const saved = [];
-
-  const save = (html) => {
-    const key = `__LR_SIG_V8_${saved.length}__`;
-    saved.push(html);
-    return key;
-  };
-
-  text = text.replace(/<a\b[^>]*href=(["'])(https?:\/\/[^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi, (_, __, url, label) => {
-    const inner = lrSigV8CleanHtml(label);
-    return save(`<a href="${lrSigV8Attr(url)}">${inner}</a>`);
-  });
-
-  text = text
-    .replace(/<\s*(b|strong)\s*>/gi, save('<b>'))
-    .replace(/<\s*\/\s*(b|strong)\s*>/gi, save('</b>'))
-    .replace(/<\s*(i|em)\s*>/gi, save('<i>'))
-    .replace(/<\s*\/\s*(i|em)\s*>/gi, save('</i>'))
-    .replace(/<\s*(u|ins)\s*>/gi, save('<u>'))
-    .replace(/<\s*\/\s*(u|ins)\s*>/gi, save('</u>'))
-    .replace(/<\s*(s|strike|del)\s*>/gi, save('<s>'))
-    .replace(/<\s*\/\s*(s|strike|del)\s*>/gi, save('</s>'))
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]*>/g, '');
-
-  text = lrSigV8Esc(text);
-
-  saved.forEach((html, i) => {
-    text = text.replaceAll(`__LR_SIG_V8_${i}__`, html);
-  });
-
-  return text.trim();
-}
-
-function lrSigV8MarkdownToHtml(value) {
-  let text = String(value ?? '').trim();
-  if (!text) return '';
-
-  const saved = [];
-
-  const save = (html) => {
-    const key = `__LR_SIG_MD_V8_${saved.length}__`;
-    saved.push(html);
-    return key;
-  };
-
-  text = text.replace(/\*\*\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)\*\*/g, (_, label, url) => {
-    return save(`<a href="${lrSigV8Attr(url)}"><b>${lrSigV8Esc(label)}</b></a>`);
-  });
-
-  text = text.replace(/\[\*\*([^\]]+?)\*\*\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
-    return save(`<a href="${lrSigV8Attr(url)}"><b>${lrSigV8Esc(label)}</b></a>`);
-  });
-
-  text = text.replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
-    return save(`<a href="${lrSigV8Attr(url)}">${lrSigV8Esc(label)}</a>`);
-  });
-
-  text = lrSigV8Esc(text);
-
-  text = text
-    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
-    .replace(/__([^_\n]+?)__/g, '<b>$1</b>')
-    .replace(/\+\+([\s\S]+?)\+\+/g, '<u>$1</u>')
-    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
-    .replace(/(^|[^\w])_([^_\n]+?)_/g, '$1<i>$2</i>');
-
-  saved.forEach((html, i) => {
-    text = text.replaceAll(`__LR_SIG_MD_V8_${i}__`, html);
-  });
-
-  return text.trim();
-}
-
-function lrSigV8SignatureHtml(sigOrText) {
-  if (!sigOrText) return '';
-
-  const text = typeof sigOrText === 'object'
-    ? String(sigOrText.text || '')
-    : String(sigOrText || '');
-
-  const format = typeof sigOrText === 'object'
-    ? String(sigOrText.format || 'html').toLowerCase()
-    : 'html';
-
-  const markup = typeof sigOrText === 'object' && Array.isArray(sigOrText.markup)
-    ? sigOrText.markup
-    : [];
-
-  if (!text.trim()) return '';
-
-  if (markup.length) return applyMarkupToHtml(text, markup);
-  if (format === 'html' || /<\/?(a|b|strong|i|em|u|ins|s|strike|del|code|blockquote)\b/i.test(lrSigV8Decode(text))) {
-    return lrSigV8CleanHtml(text);
-  }
-
-  return lrSigV8MarkdownToHtml(text);
-}
-
-
-function lrSigV8SignaturePreview(sig) {
-  return globalThis.__lrSigSaveSafeV11.preview(sig);
-}
-function signatureNoPreviewHtml(value) {
-  return lrSigV8SignatureHtml(value);
-}
-// LR_AUTOSIG_HTML_V8_END
-
-function sha256Hex(value) {
-  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
-}
-
-function trackingToken(campaignId, channelId, url, label = '') {
-  return sha256Hex(`${campaignId}|${channelId}|${url}|${label}`).slice(0, 18);
-}
-
-async function ensureAnalyticsLink({ campaignId, postId = null, channelId = null, targetUrl, label = '' }) {
-  const token = trackingToken(campaignId, channelId, targetUrl, label);
-
-  await query(
-    `INSERT INTO analytics_links(token,campaign_id,post_id,channel_id,label,target_url,created_at)
-     VALUES($1,$2,$3,$4,$5,$6,now())
-     ON CONFLICT(token) DO UPDATE SET
-       campaign_id=EXCLUDED.campaign_id,
-       post_id=COALESCE(EXCLUDED.post_id, analytics_links.post_id),
-       channel_id=EXCLUDED.channel_id,
-       label=EXCLUDED.label,
-       target_url=EXCLUDED.target_url`,
-    [token, String(campaignId), postId, channelId ? Number(channelId) : null, String(label || ''), String(targetUrl)]
-  );
-
-  return `${PUBLIC_BASE_URL}/r/${token}`;
-}
-
-async function rewriteAdHtmlLinks(draft, channelId, html) {
-  let text = String(html || '');
-  if (!draft?.isAd) return text;
-
-  const campaignId = draft.campaignId || draft.reportGroupId || `lr-${Date.now()}`;
-
-  const anchors = [];
-  text = text.replace(/<a\b([^>]*?)href=(["'])(https?:\/\/[^"']+)\2([^>]*)>([\s\S]*?)<\/a>/gi, (full, before, quote, url, after, label) => {
-    const marker = `___LR_ANCHOR_${anchors.length}___`;
-    anchors.push({ marker, before, quote, url, after, label });
-    return marker;
-  });
-
-  for (const a of anchors) {
-    const tracked = await ensureAnalyticsLink({
-      campaignId,
-      postId: draft.postId || null,
-      channelId,
-      targetUrl: a.url,
-      label: plain(a.label || 'ссылка'),
-    });
-
-    text = text.replace(
-      a.marker,
-      `<a${a.before}href="${attr(tracked)}"${a.after}>${a.label}</a>`
-    );
-  }
-
-  text = await replaceBareAdUrls(draft, channelId, text);
-
-  return text;
-}
 
 async function replaceBareAdUrls(draft, channelId, html) {
   const campaignId = draft.campaignId || draft.reportGroupId || `lr-${Date.now()}`;
@@ -3110,7 +2856,7 @@ async function sendPosts(chatId, mode = 'all', day = null, channelId = null) {
 async function showPostChannels(callbackId, chatId = null) { const channels = await getChannels(); const day = await defaultPostDay('all'); const rows = [[callbackButton('🌐 Все каналы', filterPayload('all', day, 0))]]; for (const c of channels) rows.push([callbackButton(`📡 ${channelName(c)}`, filterPayload('all', day, c.id))]); rows.push([callbackButton('⬅️ К постам', filterPayload('all', day, 0))]); await cbOrMsg(callbackId, chatId, `━━━━━━━━━━━━━━\n📡 <b>Посты по каналам</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
 async function getPost(id) { const r = await query(`SELECT sp.*, c.title AS channel_title, c.link AS channel_link, c.max_chat_id FROM scheduled_posts sp LEFT JOIN channels c ON c.id=sp.channel_id WHERE sp.id=$1`, [Number(id)]); return r[0] || null; }
 function postChannelObj(p) { return { id: p.channel_id, title: p.channel_title, link: p.channel_link, max_chat_id: p.max_chat_id }; }
-function postPreviewDraft(p) { return { ...emptyDraft(), channelIds: [p.channel_id], content: { text: p.text || '', format: p.format || 'html', attachments: safeJson(p.attachments, []), markup: [] }, buttons: safeJson(p.buttons, []), isAd: Boolean(p.is_ad), cpm: p.cpm ? Number(p.cpm) : null, autoDeleteMinutes: p.auto_delete_minutes, reportAfterHours: p.report_after_hours || 24, signatureEnabled: false }; }
+function postPreviewDraft(p) { return { ...emptyDraft(), channelIds: [p.channel_id], content: { text: p.text || '', format: p.format || 'html', attachments: safeJson(p.attachments, []), markup: [] }, buttons: safeJson(p.buttons, []), isAd: Boolean(p.is_ad), cpm: p.cpm ? Number(p.cpm) : null, autoDeleteMinutes: p.auto_delete_minutes, reportAfterHours: p.report_after_hours || 24, signatureEnabled: true }; }
 function olderThan24(p) { return p.status === 'published' && Date.now() - parseDbDate(p.published_at || p.publish_at).getTime() > 24*60*60*1000; }
 function postMenuText(p) { const d = parseDbDate(p.published_at || p.publish_at); const ch = postChannelObj(p); if (olderThan24(p)) return `━━━━━━━━━━━━━━\n🔒 <b>Пост #${p.id}</b>\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Опубликован:</b> ${dateTimeText(d)}\n📌 <b>Статус:</b> опубликован\n🗑 <b>Автоудаление:</b> ${formatAutoDelete(p.auto_delete_minutes)}\n\n<b>Канал:</b>\n${channelLine(ch)}\n\nРедактирование недоступно: прошло больше 24 часов.\n━━━━━━━━━━━━━━`; if (p.status === 'published') return `━━━━━━━━━━━━━━\n${p.is_ad ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${p.id}\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Опубликован:</b> ${dateTimeText(d)}\n📌 <b>Статус:</b> опубликован\n🗑 <b>Автоудаление:</b> ${formatAutoDelete(p.auto_delete_minutes)}\n${p.is_ad ? `💰 <b>CPM:</b> ${p.cpm || 'не указан'} ₽\n` : ''}\n<b>Канал:</b>\n${channelLine(ch)}\n━━━━━━━━━━━━━━`; return `━━━━━━━━━━━━━━\n${p.is_ad ? '💼 <b>Рекламный пост</b>' : '📄 <b>Пост</b>'} #${p.id}\n\n↑ Пост находится над этим сообщением ↑\n\n🕒 <b>Время:</b> ${dateTimeText(d)}\n⏳ <b>Статус:</b> ожидает публикации\n🗑 <b>Автоудаление:</b> ${formatAutoDelete(p.auto_delete_minutes)}\n\nПост будет опубликован в канал:\n${channelLine(ch)}\n━━━━━━━━━━━━━━`; }
 function postMenuRows(p) {
@@ -3816,6 +3562,108 @@ function __lrStartChannelDbSyncTimer() {
 // LR_CHANNEL_DB_SYNC_END
 
 
+
+
+function lrFindForwardBodyMessage(update) {
+  return (
+    update?.message?.link?.message ||
+    update?.message?.body?.link?.message ||
+    update?.body?.link?.message ||
+    update?.link?.message ||
+    update?.message?.forward?.message ||
+    update?.message?.body?.forward?.message ||
+    update?.message ||
+    update
+  );
+}
+
+function lrFallbackContentFromUpdate(update) {
+  const m = lrFindForwardBodyMessage(update) || {};
+  const body = m.body || {};
+
+  const rawText = String(
+    m.text ??
+    body.text ??
+    m.caption ??
+    body.caption ??
+    ''
+  );
+
+  const markup = Array.isArray(m.markup)
+    ? m.markup
+    : Array.isArray(body.markup)
+      ? body.markup
+      : [];
+
+  let text = rawText;
+
+  try {
+    if (typeof lrMaxMarkupToMarkdown === 'function') {
+      text = lrBuildMaxHtmlV2(rawText, markup);
+    }
+  } catch (error) {
+    console.error('[fallback markup ignored]', error.message || error);
+    text = rawText;
+  }
+
+  const rawAttachments = Array.isArray(m.attachments)
+    ? m.attachments
+    : Array.isArray(body.attachments)
+      ? body.attachments
+      : [];
+
+  let attachments = rawAttachments.filter(Boolean);
+
+  try {
+    if (typeof normalizeAttachments === 'function') {
+      attachments = normalizeAttachments(attachments);
+    }
+  } catch (error) {
+    console.error('[fallback attachments normalize ignored]', error.message || error);
+  }
+
+  return {
+    text,
+    format: 'html',
+    attachments,
+    markup,
+    raw: m
+  };
+}
+
+async function lrSafeHydrateContent(update) {
+  try {
+    const hydrated = await hydrateContent(update);
+
+    if (
+      hydrated &&
+      (
+        String(hydrated.text || '').trim() ||
+        (Array.isArray(hydrated.attachments) && hydrated.attachments.length) ||
+        hydrated.link
+      )
+    ) {
+      return hydrated;
+    }
+
+    console.error('[safe hydrate] empty result, using fallback');
+  } catch (error) {
+    console.error('[safe hydrate] hydrateContent failed:', error?.stack || error?.message || error);
+
+    try {
+      await writeFile(
+        '/tmp/linkray_hydrate_error.json',
+        JSON.stringify({
+          error: String(error?.stack || error?.message || error),
+          update
+        }, null, 2)
+      ).catch(() => {});
+    } catch {}
+  }
+
+  return lrFallbackContentFromUpdate(update);
+}
+
 async function handleMessage(update) {
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
@@ -3830,9 +3678,9 @@ async function handleMessage(update) {
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) { await clearSession(key); return sendMain(chatId); }
   const session = await getSession(key); const draft = safeDraft(session.data);
-  if (session.state === 'wait_post_content') { const content = await hydrateContent(update); draft.content = { ...draft.content, ...content }; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
-  if (session.state === 'wait_edit_text') { const content = await hydrateContent(update); draft.content.text = content.text || text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
-  if (session.state === 'wait_edit_media') { const content = await hydrateContent(update); if (content.attachments.length) draft.content.attachments = content.attachments; if (content.text) draft.content.text = content.text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
+  if (session.state === 'wait_post_content') { const content = await lrSafeHydrateContent(update); draft.content = { ...draft.content, ...content }; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
+  if (session.state === 'wait_edit_text') { const content = await lrSafeHydrateContent(update); draft.content.text = content.text || text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
+  if (session.state === 'wait_edit_media') { const content = await lrSafeHydrateContent(update); if (content.attachments.length) draft.content.attachments = content.attachments; if (content.text) draft.content.text = content.text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
   if (session.state === 'wait_button') {
     const parsed = parseButtonsInput(text);
 
@@ -3914,7 +3762,7 @@ ${error.message || error}`);
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
   if (session.state === 'wait_post_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); await query('UPDATE scheduled_posts SET auto_delete_minutes=$2, updated_at=now() WHERE id=$1', [session.data.postId, v]); await clearSession(key); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
   if (session.state === 'wait_post_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время.'); await query(`UPDATE scheduled_posts SET publish_at=$2, updated_at=now() WHERE id=$1`, [session.data.postId, publishAt]); await clearSession(key); return msg(chatId, '✅ Время обновлено.', [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
-  const content = await hydrateContent(update); if (String(content.text || '').trim() || (Array.isArray(content.attachments) && content.attachments.length) || content.link) { const d = emptyDraft(); d.content = { ...d.content, ...content }; await setSession(key, 'select_channels', { draft: d }); const channels = await getChannels(); const rs = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `post:single:${c.id}`)]); rs.push([callbackButton('🌐 Все каналы','post:all_channels')],[callbackButton('❌ Отмена','post:cancel')]); return msg(chatId, '📡 Пост принят. Теперь выберите канал для публикации.', rs); }
+  const content = await lrSafeHydrateContent(update); if (String(content.text || '').trim() || (Array.isArray(content.attachments) && content.attachments.length) || content.link) { const d = emptyDraft(); d.content = { ...d.content, ...content }; await setSession(key, 'select_channels', { draft: d }); const channels = await getChannels(); const rs = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `post:single:${c.id}`)]); rs.push([callbackButton('🌐 Все каналы','post:all_channels')],[callbackButton('❌ Отмена','post:cancel')]); return msg(chatId, '📡 Пост принят. Теперь выберите канал для публикации.', rs); }
   return msg(chatId, 'Команда не найдена. Нажмите /start.');
 }
 async function sendStudioEditorMessage(chatId, draft) {
@@ -4118,6 +3966,1752 @@ app.post('/webhook', async (req, res) => {
   } catch(e) { console.error('[webhook] processing error:', e); }
 });
 
+
+// LR_APPEND_HEADING_QUOTE_SAFE_V2_START
+function lrHq2EscapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrHq2Attr(value) {
+  return lrHq2EscapeHtml(value).replace(/"/g, '&quot;');
+}
+
+function lrHq2Plain(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|h1|h2|h3|h4|h5|h6|blockquote)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+function lrHq2RawType(mark, hint) {
+  return String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    mark?.block_type ||
+    mark?.blockType ||
+    hint ||
+    ''
+  ).toLowerCase();
+}
+
+function lrHq2Kind(mark, hint) {
+  const t = lrHq2RawType(mark, hint);
+
+  if (t.includes('heading') || t.includes('header') || t.includes('title') || /^h[1-6]$/.test(t)) return 'heading';
+  if (t.includes('quote') || t.includes('blockquote') || t.includes('quotation') || t.includes('quoted') || t.includes('citation') || t.includes('cite')) return 'quote';
+
+  if (t.includes('strong') || t.includes('bold') || t === 'b') return 'bold';
+  if (t.includes('emphas') || t.includes('italic') || t === 'i' || t === 'em') return 'italic';
+  if (t.includes('underline') || t === 'u' || t === 'ins') return 'underline';
+  if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return 'strike';
+  if (t.includes('mono') || t.includes('code') || t === 'pre') return 'mono';
+  if (t.includes('mark') || t.includes('highlight') || t.includes('important')) return 'mark';
+  if (t.includes('link') || t.includes('url') || t === 'a') return 'link';
+
+  return '';
+}
+
+function lrHq2Url(mark) {
+  return String(
+    mark?.url ||
+    mark?.href ||
+    mark?.link ||
+    mark?.payload?.url ||
+    mark?.payload?.href ||
+    mark?.payload?.link ||
+    mark?.button?.url ||
+    ''
+  ).trim();
+}
+
+function lrHq2Start(mark, max) {
+  const raw = mark?.from ?? mark?.start ?? mark?.offset ?? mark?.position ?? mark?.index ?? mark?.begin ?? 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0;
+}
+
+function lrHq2End(mark, start, max) {
+  const direct = mark?.to ?? mark?.end ?? mark?.stop;
+  if (direct !== undefined && direct !== null && direct !== '') {
+    const n = Number(direct);
+    if (Number.isFinite(n)) return Math.max(start, Math.min(max, n));
+  }
+
+  const len = mark?.length ?? mark?.len ?? mark?.size ?? mark?.count;
+  const n = Number(len);
+  if (Number.isFinite(n) && n > 0) return Math.max(start, Math.min(max, start + n));
+
+  return start;
+}
+
+function lrHq2Priority(kind) {
+  if (kind === 'heading') return 1;
+  if (kind === 'quote') return 2;
+  if (kind === 'link') return 3;
+  if (kind === 'bold') return 4;
+  if (kind === 'italic') return 5;
+  if (kind === 'underline') return 6;
+  if (kind === 'strike') return 7;
+  if (kind === 'mono') return 8;
+  if (kind === 'mark') return 9;
+  return 99;
+}
+
+function lrHq2Open(item) {
+  if (item.kind === 'heading') return '<h1>';
+  if (item.kind === 'quote') return '<blockquote>';
+  if (item.kind === 'bold') return '<b>';
+  if (item.kind === 'italic') return '<i>';
+  if (item.kind === 'underline') return '<u>';
+  if (item.kind === 'strike') return '<s>';
+  if (item.kind === 'mono') return '<code>';
+  if (item.kind === 'mark') return '<mark>';
+  if (item.kind === 'link') return item.url ? '<a href="' + lrHq2Attr(item.url) + '">' : '';
+  return '';
+}
+
+function lrHq2Close(item) {
+  if (item.kind === 'heading') return '</h1>';
+  if (item.kind === 'quote') return '</blockquote>';
+  if (item.kind === 'bold') return '</b>';
+  if (item.kind === 'italic') return '</i>';
+  if (item.kind === 'underline') return '</u>';
+  if (item.kind === 'strike') return '</s>';
+  if (item.kind === 'mono') return '</code>';
+  if (item.kind === 'mark') return '</mark>';
+  if (item.kind === 'link') return item.url ? '</a>' : '';
+  return '';
+}
+
+function lrHq2ApplyMarkupToHtml(text, markup) {
+  const source = String(text || '');
+  const list = Array.isArray(markup) ? markup : [];
+  if (!source) return '';
+  if (!list.length) return lrHq2EscapeHtml(source);
+
+  const items = [];
+
+  for (const mark of list) {
+    if (!mark || typeof mark !== 'object') continue;
+    const kind = lrHq2Kind(mark, '');
+    if (!kind) continue;
+
+    const start = lrHq2Start(mark, source.length);
+    const end = lrHq2End(mark, start, source.length);
+    const url = lrHq2Url(mark);
+
+    if (end <= start || start >= source.length) continue;
+    if (kind === 'link' && !url) continue;
+
+    items.push({ kind, start, end, url, priority: lrHq2Priority(kind) });
+  }
+
+  if (!items.length) return lrHq2EscapeHtml(source);
+
+  const opens = new Map();
+  const closes = new Map();
+
+  for (const item of items) {
+    if (!opens.has(item.start)) opens.set(item.start, []);
+    if (!closes.has(item.end)) closes.set(item.end, []);
+    opens.get(item.start).push(item);
+    closes.get(item.end).push(item);
+  }
+
+  for (const arr of opens.values()) {
+    arr.sort((a, b) => (a.priority !== b.priority ? a.priority - b.priority : b.end - a.end));
+  }
+
+  for (const arr of closes.values()) {
+    arr.sort((a, b) => (a.priority !== b.priority ? b.priority - a.priority : a.start - b.start));
+  }
+
+  let out = '';
+  for (let i = 0; i <= source.length; i++) {
+    const closeItems = closes.get(i);
+    if (closeItems) {
+      for (const item of closeItems) out += lrHq2Close(item);
+    }
+
+    const openItems = opens.get(i);
+    if (openItems) {
+      for (const item of openItems) out += lrHq2Open(item);
+    }
+
+    if (i < source.length) out += lrHq2EscapeHtml(source[i]);
+  }
+
+  return out;
+}
+
+function lrHq2FindRawText(root) {
+  const candidates = [
+    root?.message?.body?.text,
+    root?.message?.text,
+    root?.message?.caption,
+    root?.body?.text,
+    root?.text,
+    root?.caption,
+    root?.message?.link?.message?.body?.text,
+    root?.message?.link?.message?.text,
+    root?.link?.message?.body?.text,
+    root?.link?.message?.text,
+    root?.message?.linked_message?.body?.text,
+    root?.message?.linkedMessage?.body?.text,
+    root?.message?.forwarded_message?.body?.text,
+    root?.message?.forwardedMessage?.body?.text,
+    root?.linked_message?.body?.text,
+    root?.linkedMessage?.body?.text,
+    root?.forwarded_message?.body?.text,
+    root?.forwardedMessage?.body?.text
+  ];
+
+  for (const value of candidates) {
+    const text = String(value || '');
+    if (text.trim()) return text;
+  }
+
+  return '';
+}
+
+function lrHq2ObjectText(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+
+  const candidates = [
+    obj.text,
+    obj.caption,
+    obj.title,
+    obj.body?.text,
+    obj.payload?.text,
+    obj.payload?.body?.text,
+    obj.quote?.text,
+    obj.quote?.body?.text,
+    obj.quoted?.text,
+    obj.quoted?.body?.text,
+    obj.blockquote?.text,
+    obj.blockquote?.body?.text,
+    obj.blockQuote?.text,
+    obj.blockQuote?.body?.text,
+    obj.heading?.text,
+    obj.header?.text,
+    obj.message?.body?.text,
+    obj.message?.text
+  ];
+
+  for (const value of candidates) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+
+  return '';
+}
+
+function lrHq2CollectDeep(root, sourceText) {
+  const text = String(sourceText || '');
+  const max = text.length;
+  const out = [];
+  const seenObjects = new WeakSet();
+  const seenRanges = new Set();
+  if (!max) return out;
+
+  function push(kind, rawType, start, end, mark, url) {
+    if (!kind) return;
+    if (kind === 'link' && !url) return;
+
+    const a = Math.max(0, Math.min(max, Number(start) || 0));
+    const b = Math.max(a, Math.min(max, Number(end) || 0));
+    if (b <= a) return;
+
+    const key = [kind, a, b, url || ''].join('|');
+    if (seenRanges.has(key)) return;
+    seenRanges.add(key);
+
+    out.push({
+      ...(mark && typeof mark === 'object' ? mark : {}),
+      type: rawType || kind,
+      from: a,
+      length: b - a,
+      ...(url ? { url } : {})
+    });
+  }
+
+  function addMark(mark, hint) {
+    if (!mark || typeof mark !== 'object') return;
+
+    const raw = lrHq2RawType(mark, hint);
+    const kind = lrHq2Kind(mark, hint);
+    if (!kind) return;
+
+    let start = lrHq2Start(mark, max);
+    let end = lrHq2End(mark, start, max);
+    const url = lrHq2Url(mark);
+
+    if (end <= start && (kind === 'heading' || kind === 'quote')) {
+      const part = lrHq2ObjectText(mark);
+      const idx = part ? text.indexOf(part) : -1;
+      if (idx >= 0) {
+        start = idx;
+        end = idx + part.length;
+      }
+    }
+
+    push(kind, raw || kind, start, end, mark, url);
+  }
+
+  function walk(value, hint) {
+    if (!value || typeof value !== 'object') return;
+    if (seenObjects.has(value)) return;
+    seenObjects.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, hint);
+      return;
+    }
+
+    addMark(value, hint);
+
+    for (const entry of Object.entries(value)) {
+      const key = String(entry[0] || '');
+      const child = entry[1];
+      const lower = key.toLowerCase();
+
+      if (typeof child === 'string') {
+        const kind = lower.includes('heading') || lower.includes('header') || lower.includes('title')
+          ? 'heading'
+          : (lower.includes('quote') || lower.includes('blockquote') || lower.includes('citation') || lower.includes('cite') ? 'quote' : '');
+
+        if (kind) {
+          const part = child.trim();
+          const idx = part ? text.indexOf(part) : -1;
+          if (idx >= 0) push(kind, kind, idx, idx + part.length, { type: kind, text: part }, '');
+        }
+      }
+
+      walk(child, key);
+    }
+  }
+
+  walk(root, '');
+  return out;
+}
+
+function lrHq2MergeMarkup(base, extra) {
+  const out = [];
+  const seen = new Set();
+
+  for (const item of [...(Array.isArray(base) ? base : []), ...(Array.isArray(extra) ? extra : [])]) {
+    if (!item || typeof item !== 'object') continue;
+    const kind = lrHq2Kind(item, '');
+    if (!kind) continue;
+
+    const start = item.from ?? item.start ?? item.offset ?? item.position ?? item.index ?? item.begin ?? 0;
+    const len = item.length ?? item.len ?? item.size ?? item.count ?? '';
+    const to = item.to ?? item.end ?? item.stop ?? '';
+    const url = lrHq2Url(item);
+
+    if (kind === 'link' && !url) continue;
+
+    const key = [kind, start, len, to, url].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+
+  return out;
+}
+
+try {
+  if (typeof applyMarkupToHtml === 'function') {
+    applyMarkupToHtml = lrHq2ApplyMarkupToHtml;
+    console.log('[heading quote patch] applyMarkupToHtml overridden');
+  }
+} catch (error) {
+  console.error('[heading quote patch] apply override failed:', error?.message || error);
+}
+
+try {
+  if (typeof lrMaxMarkupToMarkdown === 'function') {
+    lrMaxMarkupToMarkdown = function lrMaxMarkupToMarkdownPatched(text, markup = []) {
+      return lrHq2ApplyMarkupToHtml(text, markup);
+    };
+    console.log('[heading quote patch] lrMaxMarkupToMarkdown overridden');
+  }
+} catch (error) {
+  console.error('[heading quote patch] markdown override failed:', error?.message || error);
+}
+
+try {
+  if (typeof hydrateContent === 'function') {
+    const lrHq2HydrateBefore = hydrateContent;
+    hydrateContent = async function lrHq2HydrateContent(update) {
+      const content = await lrHq2HydrateBefore(update);
+
+      try {
+        const rawText = lrHq2FindRawText(update) || String(content?.raw?.text || content?.sourceText || '') || lrHq2Plain(content?.text || '');
+        if (!String(rawText || '').trim()) return content;
+
+        const baseMarkup = Array.isArray(content?.markup) ? content.markup : [];
+        const extraMarkup = lrHq2CollectDeep(update, rawText);
+        const mergedMarkup = lrHq2MergeMarkup(baseMarkup, extraMarkup);
+
+        const special = mergedMarkup.filter((x) => {
+          const k = lrHq2Kind(x, '');
+          return k === 'heading' || k === 'quote';
+        });
+
+        if (special.length) {
+          console.log('[heading quote detected]', JSON.stringify(special.map((x) => {
+            const from = Number(x.from ?? x.start ?? x.offset ?? 0) || 0;
+            const length = Number(x.length ?? x.len ?? x.size ?? 0) || 0;
+            return {
+              type: lrHq2RawType(x, ''),
+              kind: lrHq2Kind(x, ''),
+              from,
+              length,
+              text: String(rawText).slice(from, from + length).slice(0, 120)
+            };
+          }).slice(0, 20)));
+        }
+
+        if (mergedMarkup.length) {
+          return {
+            ...(content || {}),
+            text: lrHq2ApplyMarkupToHtml(rawText, mergedMarkup),
+            format: 'html',
+            markup: mergedMarkup,
+            raw: {
+              ...(content?.raw || {}),
+              text: rawText
+            }
+          };
+        }
+      } catch (error) {
+        console.error('[heading quote hydrate error]', error?.message || error);
+      }
+
+      return content;
+    };
+    console.log('[heading quote patch] hydrateContent wrapped');
+  }
+} catch (error) {
+  console.error('[heading quote patch] hydrate wrapper failed:', error?.message || error);
+}
+// LR_APPEND_HEADING_QUOTE_SAFE_V2_END
+
 await ensureDb();
 startAutopostWorker().catch(e => console.error('[autopost start]', e));
 app.listen(PORT, () => console.log(`LinkRay bot started on port ${PORT}`));
+
+
+// LR_HEADING_QUOTE_SPECIAL_V6_START
+(() => {
+  if (globalThis.__lrHeadingQuoteSpecialV6Installed) return;
+  globalThis.__lrHeadingQuoteSpecialV6Installed = true;
+
+  const esc = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  const attr = (value) => esc(value).replace(/'/g, '&#39;');
+
+  const rawType = (mark, keyHint = '') => String(
+    mark?.type ||
+    mark?.kind ||
+    mark?.style ||
+    mark?.format ||
+    mark?.markup_type ||
+    mark?.markupType ||
+    mark?.entity_type ||
+    mark?.entityType ||
+    mark?.block_type ||
+    mark?.blockType ||
+    mark?.message_style ||
+    mark?.messageStyle ||
+    mark?.payload?.type ||
+    mark?.payload?.kind ||
+    mark?.payload?.style ||
+    mark?.payload?.format ||
+    mark?.payload?.markup_type ||
+    mark?.payload?.markupType ||
+    mark?.payload?.entity_type ||
+    mark?.payload?.entityType ||
+    mark?.payload?.block_type ||
+    mark?.payload?.blockType ||
+    keyHint ||
+    ''
+  ).toLowerCase();
+
+  const kindFromType = (mark, keyHint = '') => {
+    const t = rawType(mark, keyHint)
+      .replace(/[\s_-]+/g, '');
+
+    if (
+      t.includes('blockquote') ||
+      t.includes('quote') ||
+      t.includes('quotation') ||
+      t.includes('quoted') ||
+      t.includes('citation') ||
+      t.includes('cite')
+    ) return 'quote';
+
+    if (
+      t.includes('heading') ||
+      t.includes('header') ||
+      t.includes('headline') ||
+      t.includes('title') ||
+      t.includes('h1') ||
+      t.includes('h2') ||
+      t.includes('h3') ||
+      t.includes('h4') ||
+      t.includes('h5') ||
+      t.includes('h6') ||
+      t === 'big' ||
+      t === 'large'
+    ) return 'heading';
+
+    if (t.includes('bold') || t.includes('strong') || t === 'b') return 'bold';
+    if (t.includes('italic') || t.includes('emphasis') || t.includes('emphasized') || t === 'em' || t === 'i') return 'italic';
+    if (t.includes('underline') || t === 'u' || t === 'ins') return 'underline';
+    if (t.includes('strike') || t.includes('strikethrough') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return 'strike';
+    if (t.includes('mono') || t.includes('code') || t.includes('pre') || t === 'tt') return 'code';
+    if (t.includes('mark') || t.includes('highlight')) return 'mark';
+    if (t.includes('link') || t.includes('url') || t === 'a') return 'link';
+
+    return '';
+  };
+
+  const urlOf = (mark) => {
+    const url = String(
+      mark?.url ||
+      mark?.href ||
+      mark?.link ||
+      mark?.payload?.url ||
+      mark?.payload?.href ||
+      mark?.payload?.link ||
+      mark?.data?.url ||
+      mark?.data?.href ||
+      mark?.data?.link ||
+      ''
+    ).trim();
+
+    if (!url || /^javascript:/i.test(url)) return '';
+
+    return url;
+  };
+
+  const numFrom = (mark, names) => {
+    const boxes = [
+      mark,
+      mark?.range,
+      mark?.text_range,
+      mark?.textRange,
+      mark?.span,
+      mark?.segment,
+      mark?.selection,
+      mark?.entity,
+      mark?.payload,
+      mark?.payload?.range,
+      mark?.payload?.text_range,
+      mark?.payload?.textRange,
+      mark?.payload?.span,
+      mark?.payload?.segment,
+      mark?.payload?.selection,
+      mark?.data,
+      mark?.data?.range,
+      mark?.data?.text_range,
+      mark?.data?.textRange,
+      mark?.data?.span,
+    ];
+
+    for (const box of boxes) {
+      if (!box || typeof box !== 'object') continue;
+
+      for (const name of names) {
+        const n = Number(box?.[name]);
+
+        if (Number.isFinite(n)) return n;
+      }
+    }
+
+    return NaN;
+  };
+
+  const startOf = (mark, max) => {
+    const n = numFrom(mark, ['from', 'start', 'offset', 'position', 'index', 'begin']);
+    return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0;
+  };
+
+  const endOf = (mark, start, max) => {
+    const direct = numFrom(mark, ['to', 'end', 'stop']);
+
+    if (Number.isFinite(direct) && direct > start) {
+      return Math.max(start, Math.min(max, direct));
+    }
+
+    const len = numFrom(mark, ['length', 'len', 'size', 'count']);
+
+    if (Number.isFinite(len) && len > 0) {
+      return Math.max(start, Math.min(max, start + len));
+    }
+
+    return start;
+  };
+
+  const priority = (kind) => {
+    if (kind === 'quote') return 0;
+    if (kind === 'heading') return 1;
+    if (kind === 'bold') return 2;
+    if (kind === 'italic') return 3;
+    if (kind === 'underline') return 4;
+    if (kind === 'strike') return 5;
+    if (kind === 'code') return 6;
+    if (kind === 'mark') return 7;
+    if (kind === 'link') return 8;
+
+    return 99;
+  };
+
+  const openTag = (item) => {
+    if (item.kind === 'quote') return '<blockquote>';
+    if (item.kind === 'heading') return '<h1>';
+    if (item.kind === 'bold') return '<b>';
+    if (item.kind === 'italic') return '<i>';
+    if (item.kind === 'underline') return '<u>';
+    if (item.kind === 'strike') return '<s>';
+    if (item.kind === 'code') return '<code>';
+    if (item.kind === 'mark') return '<mark>';
+    if (item.kind === 'link') return item.url ? '<a href="' + attr(item.url) + '">' : '';
+
+    return '';
+  };
+
+  const closeTag = (item) => {
+    if (item.kind === 'quote') return '</blockquote>';
+    if (item.kind === 'heading') return '</h1>';
+    if (item.kind === 'bold') return '</b>';
+    if (item.kind === 'italic') return '</i>';
+    if (item.kind === 'underline') return '</u>';
+    if (item.kind === 'strike') return '</s>';
+    if (item.kind === 'code') return '</code>';
+    if (item.kind === 'mark') return '</mark>';
+    if (item.kind === 'link') return item.url ? '</a>' : '';
+
+    return '';
+  };
+
+  const renderHtml = (text, markup = []) => {
+    const source = String(text ?? '');
+    const max = source.length;
+    const list = Array.isArray(markup) ? markup : [];
+    const items = [];
+    const seen = new Set();
+
+    if (!source) return '';
+
+    for (const mark of list) {
+      if (!mark || typeof mark !== 'object') continue;
+
+      const kind = kindFromType(mark);
+      if (!kind) continue;
+
+      const start = startOf(mark, max);
+      const end = endOf(mark, start, max);
+      const url = urlOf(mark);
+
+      if (end <= start || start >= max) continue;
+      if (kind === 'link' && !url) continue;
+
+      const key = [kind, start, end, url].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      items.push({
+        mark,
+        kind,
+        start,
+        end,
+        url,
+        priority: priority(kind),
+      });
+    }
+
+    if (!items.length) return esc(source);
+
+    const opens = new Map();
+    const closes = new Map();
+
+    for (const item of items) {
+      if (!opens.has(item.start)) opens.set(item.start, []);
+      if (!closes.has(item.end)) closes.set(item.end, []);
+
+      opens.get(item.start).push(item);
+      closes.get(item.end).push(item);
+    }
+
+    for (const arr of opens.values()) {
+      arr.sort((a, b) => {
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        return b.end - a.end;
+      });
+    }
+
+    for (const arr of closes.values()) {
+      arr.sort((a, b) => {
+        if (a.priority !== b.priority) return b.priority - a.priority;
+        return b.start - a.start;
+      });
+    }
+
+    let out = '';
+
+    for (let i = 0; i <= max; i++) {
+      const closeItems = closes.get(i);
+      if (closeItems) {
+        for (const item of closeItems) out += closeTag(item);
+      }
+
+      const openItems = opens.get(i);
+      if (openItems) {
+        for (const item of openItems) out += openTag(item);
+      }
+
+      if (i < max) out += esc(source[i]);
+    }
+
+    return out;
+  };
+
+  const findText = (root) => {
+    const candidates = [
+      root?.message?.body?.text,
+      root?.message?.text,
+      root?.message?.caption,
+      root?.body?.text,
+      root?.text,
+      root?.caption,
+      root?.message?.link?.message?.body?.text,
+      root?.message?.link?.message?.text,
+      root?.link?.message?.body?.text,
+      root?.link?.message?.text,
+      root?.linked_message?.body?.text,
+      root?.linkedMessage?.body?.text,
+    ];
+
+    for (const value of candidates) {
+      const text = String(value || '');
+
+      if (text.trim()) return text;
+    }
+
+    return '';
+  };
+
+  const findNestedText = (obj) => {
+    if (!obj || typeof obj !== 'object') return '';
+
+    const candidates = [
+      obj.text,
+      obj.caption,
+      obj.title,
+      obj.body?.text,
+      obj.payload?.text,
+      obj.payload?.body?.text,
+      obj.data?.text,
+      obj.data?.body?.text,
+      obj.quote?.text,
+      obj.quote?.body?.text,
+      obj.quoted?.text,
+      obj.quoted?.body?.text,
+      obj.blockquote?.text,
+      obj.blockquote?.body?.text,
+      obj.blockQuote?.text,
+      obj.blockQuote?.body?.text,
+      obj.message?.body?.text,
+      obj.message?.text,
+    ];
+
+    for (const value of candidates) {
+      const text = String(value || '').trim();
+
+      if (text) return text;
+    }
+
+    return '';
+  };
+
+  const collectDeepMarkup = (root, sourceText = '') => {
+    const text = String(sourceText || findText(root) || '');
+    const max = text.length;
+
+    if (!max) return [];
+
+    const out = [];
+    const seenObjects = new WeakSet();
+    const seenRanges = new Set();
+
+    const push = (kind, type, start, end, mark, url = '') => {
+      if (!kind || end <= start || start >= max) return;
+      if (kind === 'link' && !url) return;
+
+      const key = [kind, start, end, url].join('|');
+      if (seenRanges.has(key)) return;
+      seenRanges.add(key);
+
+      out.push({
+        ...(mark && typeof mark === 'object' ? mark : {}),
+        type: type || kind,
+        from: start,
+        length: end - start,
+        ...(url ? { url } : {}),
+      });
+    };
+
+    const addMark = (mark, keyHint = '') => {
+      if (!mark || typeof mark !== 'object') return;
+
+      const type = rawType(mark, keyHint);
+      const kind = kindFromType(mark, keyHint);
+      if (!kind) return;
+
+      let start = startOf(mark, max);
+      let end = endOf(mark, start, max);
+      const url = urlOf(mark);
+
+      if ((kind === 'quote' || kind === 'heading') && end <= start) {
+        const nestedText = findNestedText(mark);
+
+        if (nestedText) {
+          const idx = text.indexOf(nestedText);
+
+          if (idx >= 0) {
+            start = idx;
+            end = idx + nestedText.length;
+          }
+        }
+      }
+
+      push(kind, type || kind, start, end, mark, url);
+    };
+
+    const walk = (value, keyHint = '') => {
+      if (!value || typeof value !== 'object') return;
+      if (seenObjects.has(value)) return;
+      seenObjects.add(value);
+
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item, keyHint);
+        return;
+      }
+
+      addMark(value, keyHint);
+
+      for (const [key, child] of Object.entries(value)) {
+        const lower = String(key || '').toLowerCase().replace(/[\s_-]+/g, '');
+
+        if (typeof child === 'string') {
+          let syntheticKind = '';
+
+          if (
+            lower.includes('blockquote') ||
+            lower.includes('quote') ||
+            lower.includes('quotation') ||
+            lower.includes('quoted') ||
+            lower.includes('citation') ||
+            lower.includes('cite')
+          ) syntheticKind = 'quote';
+
+          if (
+            lower.includes('heading') ||
+            lower.includes('header') ||
+            lower.includes('headline') ||
+            lower.includes('title')
+          ) syntheticKind = syntheticKind || 'heading';
+
+          if (syntheticKind) {
+            const part = child.trim();
+            const idx = part ? text.indexOf(part) : -1;
+
+            if (idx >= 0) {
+              push(syntheticKind, syntheticKind, idx, idx + part.length, { type: syntheticKind, text: part }, '');
+            }
+          }
+        }
+
+        walk(child, key);
+      }
+    };
+
+    walk(root, '');
+
+    return out;
+  };
+
+  const mergeMarkup = (base = [], extra = []) => {
+    const out = [];
+    const seen = new Set();
+
+    for (const item of [...(Array.isArray(base) ? base : []), ...(Array.isArray(extra) ? extra : [])]) {
+      if (!item || typeof item !== 'object') continue;
+
+      const kind = kindFromType(item);
+      if (!kind) continue;
+
+      const from = item.from ?? item.start ?? item.offset ?? item.position ?? item.index ?? item.begin ?? item.range?.from ?? item.range?.start ?? 0;
+      const len = item.length ?? item.len ?? item.size ?? item.count ?? item.range?.length ?? item.range?.len ?? '';
+      const to = item.to ?? item.end ?? item.stop ?? item.range?.to ?? item.range?.end ?? '';
+      const url = urlOf(item);
+
+      if (kind === 'link' && !url) continue;
+
+      const key = [kind, from, len, to, url].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push(item);
+    }
+
+    return out;
+  };
+
+  const summarizeKinds = (markup, rawText) => {
+    const counts = {};
+    const ranges = [];
+
+    for (const item of Array.isArray(markup) ? markup : []) {
+      const kind = kindFromType(item) || 'unknown';
+      counts[kind] = (counts[kind] || 0) + 1;
+
+      if (kind === 'heading' || kind === 'quote') {
+        const start = startOf(item, rawText.length);
+        const end = endOf(item, start, rawText.length);
+
+        ranges.push({
+          kind,
+          from: start,
+          length: end - start,
+          type: rawType(item),
+          text: rawText.slice(start, end).slice(0, 120),
+        });
+      }
+    }
+
+    return { counts, ranges: ranges.slice(0, 20) };
+  };
+
+  const previousHydrate = typeof hydrateContent === 'function' ? hydrateContent : null;
+
+  if (!previousHydrate) {
+    console.error('[heading quote v6] hydrateContent not found');
+    return;
+  }
+
+  hydrateContent = async function lrHeadingQuoteSpecialV6HydrateContent(update) {
+    const content = await previousHydrate(update);
+
+    try {
+      const rawText =
+        findText(update) ||
+        String(content?.raw?.text || content?.sourceText || content?.text || '');
+
+      if (!rawText) return content;
+
+      const extraMarkup = collectDeepMarkup(update, rawText);
+      const mergedMarkup = mergeMarkup(content?.markup || [], extraMarkup);
+
+      const hasSpecial = mergedMarkup.some((x) => {
+        const kind = kindFromType(x);
+
+        return kind === 'heading' || kind === 'quote';
+      });
+
+      const summary = summarizeKinds(mergedMarkup, rawText);
+
+      console.log('[heading quote v6]', JSON.stringify({
+        rawTextLength: rawText.length,
+        baseMarkup: Array.isArray(content?.markup) ? content.markup.length : 0,
+        extraMarkup: extraMarkup.length,
+        mergedMarkup: mergedMarkup.length,
+        hasSpecial,
+        counts: summary.counts,
+        ranges: summary.ranges,
+      }));
+
+      if (hasSpecial) {
+        return {
+          ...(content || {}),
+          text: renderHtml(rawText, mergedMarkup),
+          format: 'html',
+          markup: mergedMarkup,
+          raw: {
+            ...(content?.raw || {}),
+            text: rawText,
+          },
+        };
+      }
+    } catch (error) {
+      console.error('[heading quote v6 error]', error.message || error);
+    }
+
+    return content;
+  };
+})();
+// LR_HEADING_QUOTE_SPECIAL_V6_END
+
+
+// LR_SAFE_APPEND_MAX_MARKUP_START
+try {
+  if (!globalThis.__lrSafeAppendMaxMarkupInstalled) {
+    globalThis.__lrSafeAppendMaxMarkupInstalled = true;
+
+    const __lrEscHtml = (value) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+    const __lrRawType = (mark, keyHint = '') => String(
+      mark?.type ||
+      mark?.kind ||
+      mark?.style ||
+      mark?.format ||
+      mark?.markup_type ||
+      mark?.markupType ||
+      mark?.entity_type ||
+      mark?.entityType ||
+      mark?.block_type ||
+      mark?.blockType ||
+      keyHint ||
+      ''
+    ).toLowerCase();
+
+    const __lrKind = (mark, keyHint = '') => {
+      const t = __lrRawType(mark, keyHint);
+      if (!t) return '';
+
+      if (t.includes('heading') || t.includes('header') || t.includes('title') || /^h[1-6]$/.test(t)) return 'heading';
+      if (t.includes('blockquote') || t.includes('block_quote') || t.includes('quote') || t.includes('quotation') || t.includes('quoted') || t.includes('cite')) return 'quote';
+      if (t.includes('bold') || t.includes('strong')) return 'bold';
+      if (t.includes('italic') || t.includes('emphasis') || t.includes('emphasiz') || t === 'em') return 'italic';
+      if (t.includes('underline') || t === 'ins') return 'underline';
+      if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 'del' || t === 's') return 'strike';
+      if (t.includes('mono') || t.includes('inline_code') || t.includes('pre') || t === 'code') return 'code';
+      if (t.includes('mark') || t.includes('highlight')) return 'mark';
+      if (t.includes('link') || t.includes('url')) return 'link';
+
+      return '';
+    };
+
+    const __lrUrl = (mark) => String(
+      mark?.url ||
+      mark?.href ||
+      mark?.link ||
+      mark?.payload?.url ||
+      mark?.payload?.href ||
+      mark?.payload?.link ||
+      ''
+    ).trim();
+
+    const __lrStart = (mark, max) => {
+      const raw = mark?.from ?? mark?.start ?? mark?.offset ?? mark?.position ?? mark?.index ?? mark?.begin ?? 0;
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0;
+    };
+
+    const __lrEnd = (mark, start, max) => {
+      const direct = mark?.to ?? mark?.end ?? mark?.stop;
+
+      if (direct !== undefined && direct !== null && direct !== '') {
+        const n = Number(direct);
+        if (Number.isFinite(n)) return Math.max(start, Math.min(max, n));
+      }
+
+      const len = mark?.length ?? mark?.len ?? mark?.size ?? mark?.count;
+      const n = Number(len);
+
+      if (Number.isFinite(n) && n > 0) {
+        return Math.max(start, Math.min(max, start + n));
+      }
+
+      return start;
+    };
+
+    const __lrPriority = (kind) => ({
+      quote: 10,
+      heading: 20,
+      bold: 30,
+      italic: 40,
+      underline: 50,
+      strike: 60,
+      mark: 70,
+      code: 80,
+      link: 90,
+    }[kind] ?? 100);
+
+    const __lrOpenTag = (item) => {
+      if (item.kind === 'quote') return '<blockquote>';
+      if (item.kind === 'heading') return '<h1>';
+      if (item.kind === 'bold') return '<b>';
+      if (item.kind === 'italic') return '<i>';
+      if (item.kind === 'underline') return '<u>';
+      if (item.kind === 'strike') return '<s>';
+      if (item.kind === 'mark') return '<mark>';
+      if (item.kind === 'code') return '<code>';
+      if (item.kind === 'link') return item.url ? '<a href="' + __lrEscHtml(item.url) + '">' : '';
+      return '';
+    };
+
+    const __lrCloseTag = (item) => {
+      if (item.kind === 'quote') return '</blockquote>';
+      if (item.kind === 'heading') return '</h1>';
+      if (item.kind === 'bold') return '</b>';
+      if (item.kind === 'italic') return '</i>';
+      if (item.kind === 'underline') return '</u>';
+      if (item.kind === 'strike') return '</s>';
+      if (item.kind === 'mark') return '</mark>';
+      if (item.kind === 'code') return '</code>';
+      if (item.kind === 'link') return item.url ? '</a>' : '';
+      return '';
+    };
+
+    const __lrApplyHtml = (text, markup = []) => {
+      const source = String(text ?? '');
+      const list = Array.isArray(markup) ? markup : [];
+
+      if (!source || !list.length) return __lrEscHtml(source);
+
+      const items = [];
+      const seen = new Set();
+
+      for (const mark of list) {
+        if (!mark || typeof mark !== 'object') continue;
+
+        const kind = __lrKind(mark);
+        if (!kind) continue;
+
+        const start = __lrStart(mark, source.length);
+        const end = __lrEnd(mark, start, source.length);
+        const url = __lrUrl(mark);
+
+        if (end <= start || start >= source.length) continue;
+        if (kind === 'link' && !url) continue;
+
+        const key = [kind, start, end, url].join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        items.push({ kind, start, end, url, priority: __lrPriority(kind) });
+      }
+
+      if (!items.length) return __lrEscHtml(source);
+
+      const opens = new Map();
+      const closes = new Map();
+
+      for (const item of items) {
+        if (!opens.has(item.start)) opens.set(item.start, []);
+        if (!closes.has(item.end)) closes.set(item.end, []);
+        opens.get(item.start).push(item);
+        closes.get(item.end).push(item);
+      }
+
+      for (const arr of opens.values()) {
+        arr.sort((a, b) => {
+          if (a.priority !== b.priority) return a.priority - b.priority;
+          return b.end - a.end;
+        });
+      }
+
+      for (const arr of closes.values()) {
+        arr.sort((a, b) => {
+          if (a.priority !== b.priority) return b.priority - a.priority;
+          return a.start - b.start;
+        });
+      }
+
+      let out = '';
+
+      for (let i = 0; i <= source.length; i++) {
+        const closeItems = closes.get(i);
+        if (closeItems) {
+          for (const item of closeItems) out += __lrCloseTag(item);
+        }
+
+        const openItems = opens.get(i);
+        if (openItems) {
+          for (const item of openItems) out += __lrOpenTag(item);
+        }
+
+        if (i < source.length) out += __lrEscHtml(source[i]);
+      }
+
+      return out;
+    };
+
+    try {
+      applyMarkupToHtml = function applyMarkupToHtmlPatched(text, markup = []) {
+        return __lrApplyHtml(text, markup);
+      };
+    } catch (error) {
+      console.error('[safe max markup] applyMarkupToHtml override failed:', error?.message || error);
+    }
+
+    try {
+      lrMaxMarkupToMarkdown = function lrMaxMarkupToMarkdownPatched(text, markup = []) {
+        return __lrApplyHtml(text, markup);
+      };
+    } catch (error) {
+      console.error('[safe max markup] lrMaxMarkupToMarkdown override failed:', error?.message || error);
+    }
+
+    const __lrFindText = (root) => {
+      const candidates = [
+        root?.message?.body?.text,
+        root?.message?.text,
+        root?.message?.caption,
+        root?.body?.text,
+        root?.text,
+        root?.caption,
+        root?.message?.link?.message?.body?.text,
+        root?.message?.link?.message?.text,
+        root?.link?.message?.body?.text,
+        root?.link?.message?.text,
+        root?.linked_message?.body?.text,
+        root?.linkedMessage?.body?.text,
+      ];
+
+      for (const value of candidates) {
+        const text = String(value || '');
+        if (text.trim()) return text;
+      }
+
+      return '';
+    };
+
+    const __lrInnerText = (obj) => {
+      if (!obj || typeof obj !== 'object') return '';
+
+      const direct = [
+        obj.text,
+        obj.caption,
+        obj.title,
+        obj.body?.text,
+        obj.payload?.text,
+        obj.payload?.body?.text,
+        obj.quote?.text,
+        obj.quote?.body?.text,
+        obj.quoted?.text,
+        obj.quoted?.body?.text,
+        obj.blockquote?.text,
+        obj.blockquote?.body?.text,
+        obj.blockQuote?.text,
+        obj.blockQuote?.body?.text,
+        obj.message?.body?.text,
+        obj.message?.text,
+      ];
+
+      for (const value of direct) {
+        const text = String(value || '').trim();
+        if (text) return text;
+      }
+
+      return '';
+    };
+
+    const __lrCollectMarkup = (root, sourceText = '') => {
+      const text = String(sourceText || __lrFindText(root) || '');
+      const max = text.length;
+
+      if (!max) return [];
+
+      const out = [];
+      const seenObj = new WeakSet();
+      const seenRange = new Set();
+
+      const push = (kind, rawType, start, end, mark, url = '') => {
+        if (!kind || end <= start || start >= max) return;
+        if (kind === 'link' && !url) return;
+
+        const key = [kind, start, end, url].join('|');
+        if (seenRange.has(key)) return;
+        seenRange.add(key);
+
+        out.push({
+          ...(mark && typeof mark === 'object' ? mark : {}),
+          type: rawType || kind,
+          from: start,
+          length: end - start,
+          ...(url ? { url } : {}),
+        });
+      };
+
+      const addMark = (mark, keyHint = '') => {
+        if (!mark || typeof mark !== 'object') return;
+
+        const rawType = __lrRawType(mark, keyHint);
+        const kind = __lrKind(mark, keyHint);
+
+        if (!kind) return;
+
+        let start = __lrStart(mark, max);
+        let end = __lrEnd(mark, start, max);
+        const url = __lrUrl(mark);
+
+        const hasRange =
+          mark.from !== undefined ||
+          mark.start !== undefined ||
+          mark.offset !== undefined ||
+          mark.position !== undefined ||
+          mark.index !== undefined ||
+          mark.begin !== undefined;
+
+        if ((end <= start || !hasRange) && (kind === 'quote' || kind === 'heading')) {
+          const inner = __lrInnerText(mark);
+
+          if (inner) {
+            const idx = text.indexOf(inner);
+
+            if (idx >= 0) {
+              start = idx;
+              end = idx + inner.length;
+            }
+          }
+        }
+
+        push(kind, rawType, start, end, mark, url);
+      };
+
+      const walk = (value, keyHint = '') => {
+        if (!value || typeof value !== 'object') return;
+        if (seenObj.has(value)) return;
+
+        seenObj.add(value);
+
+        if (Array.isArray(value)) {
+          for (const item of value) walk(item, keyHint);
+          return;
+        }
+
+        addMark(value, keyHint);
+
+        for (const [key, child] of Object.entries(value)) {
+          const low = String(key || '').toLowerCase();
+
+          if (
+            typeof child === 'string' &&
+            child.trim() &&
+            (
+              low.includes('blockquote') ||
+              low.includes('quote') ||
+              low.includes('quotation') ||
+              low.includes('cite') ||
+              low.includes('heading') ||
+              low.includes('header') ||
+              low.includes('title')
+            )
+          ) {
+            const inner = child.trim();
+            const idx = text.indexOf(inner);
+
+            if (idx >= 0) {
+              const k = (
+                low.includes('heading') ||
+                low.includes('header') ||
+                low.includes('title')
+              ) ? 'heading' : 'quote';
+
+              push(k, k, idx, idx + inner.length, { type: k, text: inner }, '');
+            }
+          }
+
+          walk(child, key);
+        }
+      };
+
+      walk(root, '');
+
+      return out;
+    };
+
+    const __lrMergeMarkup = (base = [], extra = []) => {
+      const out = [];
+      const seen = new Set();
+
+      for (const item of [
+        ...(Array.isArray(base) ? base : []),
+        ...(Array.isArray(extra) ? extra : []),
+      ]) {
+        if (!item || typeof item !== 'object') continue;
+
+        const kind = __lrKind(item);
+        if (!kind) continue;
+
+        const from = item.from ?? item.start ?? item.offset ?? item.position ?? item.index ?? item.begin ?? 0;
+        const len = item.length ?? item.len ?? item.size ?? item.count ?? '';
+        const to = item.to ?? item.end ?? item.stop ?? '';
+        const url = __lrUrl(item);
+
+        if (kind === 'link' && !url) continue;
+
+        const key = [kind, from, len, to, url].join('|');
+        if (seen.has(key)) continue;
+
+        seen.add(key);
+        out.push(item);
+      }
+
+      return out;
+    };
+
+    try {
+      if (typeof hydrateContent === 'function') {
+        const __lrBaseHydrateContent = hydrateContent;
+
+        hydrateContent = async function hydrateContentSafeMaxMarkup(update) {
+          const content = await __lrBaseHydrateContent(update);
+
+          try {
+            const rawText =
+              __lrFindText(update) ||
+              String(content?.raw?.text || content?.sourceText || content?.text || '');
+
+            if (!rawText) return content;
+
+            const extraMarkup = __lrCollectMarkup(update, rawText);
+            const mergedMarkup = __lrMergeMarkup(content?.markup || content?.raw?.markup || [], extraMarkup);
+
+            if (mergedMarkup.length) {
+              const special = mergedMarkup.some((x) => {
+                const k = __lrKind(x);
+                return k === 'heading' || k === 'quote';
+              });
+
+              if (special) {
+                console.log('[full max markup] special ranges', JSON.stringify(mergedMarkup.map((x) => ({
+                  type: __lrRawType(x),
+                  kind: __lrKind(x),
+                  from: x.from ?? x.start ?? x.offset,
+                  length: x.length ?? x.len,
+                  text: rawText
+                    .slice(
+                      Number(x.from ?? x.start ?? x.offset ?? 0),
+                      Number(x.from ?? x.start ?? x.offset ?? 0) + Number(x.length ?? x.len ?? 0)
+                    )
+                    .slice(0, 80),
+                })).slice(0, 40)));
+              }
+
+              return {
+                ...(content || {}),
+                text: __lrApplyHtml(rawText, mergedMarkup),
+                format: 'html',
+                markup: mergedMarkup,
+                raw: {
+                  ...(content?.raw || {}),
+                  text: rawText,
+                  markup: mergedMarkup,
+                },
+              };
+            }
+          } catch (error) {
+            console.error('[full max markup hydrate]', error?.message || error);
+          }
+
+          return content;
+        };
+      }
+    } catch (error) {
+      console.error('[safe max markup] hydrateContent override failed:', error?.message || error);
+    }
+  }
+} catch (error) {
+  console.error('[safe max markup append]', error?.message || error);
+}
+// LR_SAFE_APPEND_MAX_MARKUP_END
+
+
+
+// LR_HEADING_QUOTE_HEURISTIC_START
+try {
+  if (typeof hydrateContent === 'function' && !globalThis.__LR_HEADING_QUOTE_HEURISTIC__) {
+    globalThis.__LR_HEADING_QUOTE_HEURISTIC__ = true;
+    const __lrHydrateBeforeHeadingQuote = hydrateContent;
+
+    function lrHqEsc(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function lrHqType(mark) {
+      return String(
+        (mark && (mark.type || mark.kind || mark.style || mark.format || mark.markup_type || mark.markupType)) || ''
+      ).toLowerCase();
+    }
+
+    function lrHqKind(mark) {
+      const t = lrHqType(mark);
+      if (!t) return '';
+      if (t.includes('heading') || t === 'h1' || t === 'header' || t.includes('title')) return 'heading';
+      if (t.includes('quote') || t.includes('blockquote') || t.includes('citation') || t === 'cite') return 'quote';
+      if (t.includes('bold') || t.includes('strong')) return 'bold';
+      if (t.includes('italic') || t.includes('emphas')) return 'italic';
+      if (t.includes('underline') || t === 'ins') return 'underline';
+      if (t.includes('strike') || t.includes('through') || t.includes('deleted') || t === 's' || t === 'del') return 'strike';
+      if (t.includes('mono') || t.includes('code')) return 'code';
+      if (t.includes('mark') || t.includes('highlight')) return 'mark';
+      if (t.includes('link') || t.includes('url')) return 'link';
+      return '';
+    }
+
+    function lrHqStart(mark, max) {
+      const raw = mark && (mark.from ?? mark.start ?? mark.offset ?? mark.position ?? mark.index ?? mark.begin ?? 0);
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0;
+    }
+
+    function lrHqEnd(mark, start, max) {
+      const direct = mark && (mark.to ?? mark.end ?? mark.stop);
+      if (direct !== undefined && direct !== null && direct !== '') {
+        const n = Number(direct);
+        if (Number.isFinite(n)) return Math.max(start, Math.min(max, n));
+      }
+      const len = mark && (mark.length ?? mark.len ?? mark.size ?? mark.count);
+      const n = Number(len);
+      if (Number.isFinite(n) && n > 0) return Math.max(start, Math.min(max, start + n));
+      return start;
+    }
+
+    function lrHqUrl(mark) {
+      return String(
+        (mark && (mark.url || mark.href || mark.link || (mark.payload && (mark.payload.url || mark.payload.href || mark.payload.link)))) || ''
+      ).trim();
+    }
+
+    function lrHqPriority(kind) {
+      if (kind === 'quote') return 1;
+      if (kind === 'heading') return 2;
+      if (kind === 'link') return 9;
+      return 5;
+    }
+
+    function lrHqOpen(item) {
+      if (item.kind === 'heading') return '<h1>';
+      if (item.kind === 'quote') return '<blockquote>';
+      if (item.kind === 'bold') return '<b>';
+      if (item.kind === 'italic') return '<i>';
+      if (item.kind === 'underline') return '<u>';
+      if (item.kind === 'strike') return '<s>';
+      if (item.kind === 'code') return '<code>';
+      if (item.kind === 'mark') return '<mark>';
+      if (item.kind === 'link') return item.url ? '<a href="' + lrHqEsc(item.url) + '">' : '';
+      return '';
+    }
+
+    function lrHqClose(item) {
+      if (item.kind === 'heading') return '</h1>';
+      if (item.kind === 'quote') return '</blockquote>';
+      if (item.kind === 'bold') return '</b>';
+      if (item.kind === 'italic') return '</i>';
+      if (item.kind === 'underline') return '</u>';
+      if (item.kind === 'strike') return '</s>';
+      if (item.kind === 'code') return '</code>';
+      if (item.kind === 'mark') return '</mark>';
+      if (item.kind === 'link') return item.url ? '</a>' : '';
+      return '';
+    }
+
+    function lrHqTextFrom(update, content) {
+      const msg = update && (update.message?.link?.message || update.link?.message || update.message || update);
+      const values = [
+        msg?.body?.text,
+        msg?.text,
+        msg?.caption,
+        update?.message?.body?.text,
+        update?.message?.text,
+        content?.raw?.text,
+        content?.sourceText
+      ];
+      for (const value of values) {
+        const text = String(value == null ? '' : value);
+        if (text.trim()) return text;
+      }
+      const current = String(content?.text || '');
+      return /<[^>]+>/.test(current) ? '' : current;
+    }
+
+    function lrHqMarkupFrom(update, content) {
+      const msg = update && (update.message?.link?.message || update.link?.message || update.message || update);
+      const lists = [
+        msg?.body?.markup,
+        msg?.markup,
+        update?.message?.body?.markup,
+        update?.message?.markup,
+        content?.markup
+      ];
+      for (const list of lists) {
+        if (Array.isArray(list) && list.length) return list;
+      }
+      return [];
+    }
+
+    function lrHqAddManualQuoteRanges(text, ranges) {
+      let pos = 0;
+      for (const line of text.split('\n')) {
+        const m = line.match(/^\s*>\s*(.+)$/);
+        if (m) {
+          const start = pos + line.indexOf(m[1]);
+          ranges.push({ kind: 'quote', start, end: pos + line.length, priority: lrHqPriority('quote'), url: '' });
+        }
+        pos += line.length + 1;
+      }
+    }
+
+    function lrHqAddHeuristicQuote(text, ranges, originalMarkup) {
+      const hasQuote = ranges.some((x) => x.kind === 'quote');
+      if (hasQuote) return false;
+
+      const heading = ranges.find((x) => x.kind === 'heading' && x.start === 0);
+      if (!heading) return false;
+
+      const meaningful = (Array.isArray(originalMarkup) ? originalMarkup : []).filter((m) => lrHqKind(m));
+      if (meaningful.length !== 1 || lrHqKind(meaningful[0]) !== 'heading') return false;
+
+      let start = heading.end;
+      let sawBlank = false;
+
+      while (start < text.length && /[ \t\r\n]/.test(text[start])) {
+        if (text[start] === '\n' && text[start + 1] === '\n') sawBlank = true;
+        start++;
+      }
+
+      let end = text.length;
+      while (end > start && /[ \t\r\n]/.test(text[end - 1])) end--;
+
+      const quoteText = text.slice(start, end).trim();
+      if (!quoteText) return false;
+      if (!sawBlank && text.slice(heading.end, start).indexOf('\n') < 0) return false;
+      if (quoteText.length > 700) return false;
+
+      const nonEmptyLines = quoteText.split('\n').map((line) => line.trim()).filter(Boolean);
+      if (nonEmptyLines.length > 4) return false;
+
+      ranges.push({ kind: 'quote', start, end, priority: lrHqPriority('quote'), url: '' });
+      return true;
+    }
+
+    function lrHqBuildHtml(text, markup) {
+      const source = String(text || '');
+      const max = source.length;
+      const originalMarkup = Array.isArray(markup) ? markup : [];
+      const ranges = [];
+
+      for (const mark of originalMarkup) {
+        if (!mark || typeof mark !== 'object') continue;
+        const kind = lrHqKind(mark);
+        if (!kind) continue;
+
+        const start = lrHqStart(mark, max);
+        const end = lrHqEnd(mark, start, max);
+        const url = lrHqUrl(mark);
+
+        if (end <= start || start >= max) continue;
+        if (kind === 'link' && !url) continue;
+
+        ranges.push({ kind, start, end, url, priority: lrHqPriority(kind) });
+      }
+
+      lrHqAddManualQuoteRanges(source, ranges);
+      const heuristicQuote = lrHqAddHeuristicQuote(source, ranges, originalMarkup);
+
+      if (!ranges.length) return { html: lrHqEsc(source), changed: false, ranges };
+
+      const opens = new Map();
+      const closes = new Map();
+
+      for (const item of ranges) {
+        if (!opens.has(item.start)) opens.set(item.start, []);
+        if (!closes.has(item.end)) closes.set(item.end, []);
+        opens.get(item.start).push(item);
+        closes.get(item.end).push(item);
+      }
+
+      for (const arr of opens.values()) arr.sort((a, b) => a.priority - b.priority || b.end - a.end);
+      for (const arr of closes.values()) arr.sort((a, b) => b.priority - a.priority || b.start - a.start);
+
+      let out = '';
+
+      for (let i = 0; i <= max; i++) {
+        const closeItems = closes.get(i);
+        if (closeItems) for (const item of closeItems) out += lrHqClose(item);
+
+        const openItems = opens.get(i);
+        if (openItems) for (const item of openItems) out += lrHqOpen(item);
+
+        if (i < max) out += lrHqEsc(source[i]);
+      }
+
+      return { html: out, changed: true, ranges, heuristicQuote };
+    }
+
+    hydrateContent = async function lrHydrateContentHeadingQuote(update) {
+      const content = await __lrHydrateBeforeHeadingQuote(update);
+
+      try {
+        const rawText = lrHqTextFrom(update, content);
+        const markup = lrHqMarkupFrom(update, content);
+
+        if (!rawText || !Array.isArray(markup) || !markup.length) return content;
+
+        const result = lrHqBuildHtml(rawText, markup);
+        const types = result.ranges.map((x) => x.kind);
+
+        console.log('[heading quote heuristic]', JSON.stringify({
+          textLength: rawText.length,
+          markup: markup.length,
+          types,
+          heuristicQuote: !!result.heuristicQuote
+        }));
+
+        if (result.changed && result.html && result.html !== content?.text) {
+          return {
+            ...(content || {}),
+            text: result.html,
+            format: 'html',
+            markup: [],
+            raw: { ...((content && content.raw) || {}), text: rawText, markup }
+          };
+        }
+      } catch (error) {
+        console.error('[heading quote heuristic error]', error && (error.message || error));
+      }
+
+      return content;
+    };
+
+    console.log('[heading quote heuristic] hydrateContent wrapped');
+  }
+} catch (error) {
+  console.error('[heading quote heuristic install error]', error && (error.message || error));
+}
+// LR_HEADING_QUOTE_HEURISTIC_END
+
