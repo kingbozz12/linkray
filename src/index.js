@@ -816,6 +816,59 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
+
+/* LR_BUTTON_BACK_TO_EDITOR_FIX_V11_START */
+app.use(async function lrButtonBackToEditorFixV11(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = getCallbackPayload(update);
+
+    if (
+      payload !== 'editor:back' &&
+      payload !== 'lr_btn_clean:back' &&
+      payload !== 'lr_btn_stable:back'
+    ) {
+      return next();
+    }
+
+    const chatId = Number(getChatId(update) || 0);
+    const key = getSessionKey(update);
+    const session = await getSession(key);
+
+    if (!session || session.state !== 'wait_button') return next();
+
+    const data = session.data || {};
+    const draft = data.draft ? data.draft : (typeof safeDraft === 'function' ? safeDraft(data) : data);
+
+    await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+
+    try {
+      draft.previewMessageId = null;
+      if (typeof hasContent !== 'function' || hasContent(draft)) {
+        const mid = await sendDraftPreview(chatId, draft);
+        if (mid) draft.previewMessageId = mid;
+      }
+    } catch (e) {
+      console.error('[LR_BUTTON_BACK_TO_EDITOR_FIX_V11 preview]', e?.message || e);
+    }
+
+    await sendMaxMessage({
+      chatId,
+      text: editorMenuText(),
+      format: 'html',
+      attachments: inlineKeyboard(editorMenuRows(draft))
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('[LR_BUTTON_BACK_TO_EDITOR_FIX_V11]', e?.stack || e);
+    return next();
+  }
+});
+/* LR_BUTTON_BACK_TO_EDITOR_FIX_V11_END */
+
 /* LR_BUTTON_CLEAN_V9_START */
 app.use(async function lrButtonCleanV9(req, res, next) {
   try {
@@ -1064,7 +1117,14 @@ app.use(async function lrButtonCleanV9(req, res, next) {
         draft.previewMessageId = oldPreviewId;
       }
 
-      await sendButtonMenu(draft, notice);
+      await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+
+      await sendMaxMessage({
+        chatId,
+        text: (notice ? notice + '\\n\\n' : '') + editorMenuText(),
+        format: 'html',
+        attachments: inlineKeyboard(editorMenuRows(draft))
+      });
     }
 
     async function handleButtonInput() {
