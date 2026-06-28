@@ -818,569 +818,8 @@ const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
 
-/* LR_FORCE_AD_CALENDAR_CONTEXT_V2_START */
-app.use(async function lrForceAdCalendarContextV2(req, res, next) {
-  try {
-    if (req.method !== 'POST') return next();
-
-    const update = req.body || {};
-
-    function lrSafe(fn, fallback = '') {
-      try {
-        const v = fn();
-        return v == null ? fallback : v;
-      } catch {
-        return fallback;
-      }
-    }
-
-    const payload = String(lrSafe(() => getCallbackPayload(update), ''));
-    const callbackId = String(lrSafe(() => getCallbackId(update), ''));
-    const chatId = Number(lrSafe(() => getChatId(update), 0) || 0);
-    const key = String(lrSafe(() => getSessionKey(update), ''));
-
-    function lrLooksAdValue(v) {
-      const text = String(v ?? '').toLowerCase();
-
-      if (!text) return false;
-
-      return (
-        text.includes('реклам') ||
-        text.includes('cpm') ||
-        text.includes('ad_post') ||
-        text.includes('advertising') ||
-        text.includes('advertisement') ||
-        text.includes('ad-cpm') ||
-        text.includes('wait_cpm') ||
-        text.includes('wait_ad_cpm') ||
-        text.includes('ad_cpm')
-      );
-    }
-
-    function lrIsAdObject(obj, depth = 0) {
-      if (!obj || depth > 7) return false;
-
-      if (typeof obj === 'string' || typeof obj === 'number' || typeof obj === 'boolean') {
-        return lrLooksAdValue(obj);
-      }
-
-      if (Array.isArray(obj)) {
-        return obj.some(x => lrIsAdObject(x, depth + 1));
-      }
-
-      if (typeof obj !== 'object') return false;
-
-      for (const [k, v] of Object.entries(obj)) {
-        const key = String(k || '').toLowerCase();
-
-        if (
-          key === 'isad' ||
-          key === 'is_ad' ||
-          key === 'ad' ||
-          key === 'isadvertising' ||
-          key === 'advertising' ||
-          key === 'advertisement' ||
-          key === 'adpost' ||
-          key === 'ad_post' ||
-          key === 'iscpm' ||
-          key === 'cpm' ||
-          key === 'adcpm' ||
-          key === 'ad_cpm'
-        ) {
-          if (v === true) return true;
-          if (v !== false && v !== null && v !== undefined && String(v).trim() !== '') return true;
-        }
-
-        if ((key === 'type' || key === 'posttype' || key === 'post_type' || key === 'mode' || key === 'state') && lrLooksAdValue(v)) {
-          return true;
-        }
-
-        if (lrIsAdObject(v, depth + 1)) return true;
-      }
-
-      return false;
-    }
-
-    let session = null;
-
-    if (key && typeof getSession === 'function') {
-      try {
-        session = await getSession(key);
-      } catch {}
-    }
-
-    const isAd =
-      lrLooksAdValue(payload) ||
-      lrIsAdObject(session) ||
-      lrLooksAdValue(session && session.state);
-
-    globalThis.__lrForceAdCalendarModeV2 = globalThis.__lrForceAdCalendarModeV2 || {
-      byChat: new Map(),
-      byCallback: new Map()
-    };
-
-    const item = {
-      isAd: Boolean(isAd),
-      ts: Date.now(),
-      payload,
-      state: session && session.state ? String(session.state) : ''
-    };
-
-    if (chatId) {
-      globalThis.__lrForceAdCalendarModeV2.byChat.set(chatId, item);
-    }
-
-    if (callbackId) {
-      globalThis.__lrForceAdCalendarModeV2.byCallback.set(callbackId, item);
-    }
-
-    return next();
-  } catch (e) {
-    console.error('[LR_FORCE_AD_CALENDAR_CONTEXT_V2]', e?.stack || e);
-    return next();
-  }
-});
-/* LR_FORCE_AD_CALENDAR_CONTEXT_V2_END */
-
-
-
-/* LR_AD_TIME_FIRST_OPEN_FIX_V1_START */
-app.use(async function lrAdTimeFirstOpenFixV1(req, res, next) {
-  try {
-    if (req.method !== 'POST') return next();
-
-    const update = req.body || {};
-    const payload = String(getCallbackPayload(update) || '');
-    const callbackId = getCallbackId(update);
-    const key = getSessionKey(update);
-
-    if (!payload || !callbackId || !key) return next();
-
-    function lrDayFromPayload(value) {
-      const p = String(value || '');
-
-      if (
-        !p.includes('cal') &&
-        !p.includes('calendar') &&
-        !p.includes('date') &&
-        !p.includes('day') &&
-        !p.includes('schedule')
-      ) {
-        return null;
-      }
-
-      const m = p.match(/(\d{4}-\d{2}-\d{2})/);
-      return m ? m[1] : null;
-    }
-
-    const dayKey = lrDayFromPayload(payload);
-    if (!dayKey) return next();
-
-    // Уже наш новый роут — пусть его обработает основной календарный блок.
-    if (payload.startsWith('lr_cal:day:')) return next();
-
-    function lrEsc(v) {
-      try {
-        return escapeHtml(v);
-      } catch {
-        return String(v ?? '')
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;')
-          .replaceAll('"', '&quot;');
-      }
-    }
-
-    function lrRows(result) {
-      if (Array.isArray(result)) return result;
-      if (result && Array.isArray(result.rows)) return result.rows;
-      return [];
-    }
-
-    function lrDraftFromSession(session) {
-      const data = session && session.data ? session.data : {};
-      const raw = data.draft ? data.draft : data;
-
-      try {
-        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
-      } catch {
-        return raw || {};
-      }
-    }
-
-    function lrIsAdDraft(draft) {
-      if (!draft || typeof draft !== 'object') return false;
-
-      if (draft.isAd === true) return true;
-      if (draft.is_ad === true) return true;
-      if (draft.ad === true) return true;
-      if (draft.isAdvertising === true) return true;
-
-      if (String(draft.type || '').toLowerCase() === 'ad') return true;
-      if (String(draft.postType || '').toLowerCase() === 'ad') return true;
-
-      if (draft.cpm !== undefined && draft.cpm !== null && String(draft.cpm).trim() !== '') return true;
-
-      return false;
-    }
-
-    function lrChannelIds(draft) {
-      if (!draft || typeof draft !== 'object') return [];
-      if (Array.isArray(draft.channelIds)) return draft.channelIds.map(Number).filter(Boolean);
-      if (Array.isArray(draft.channel_ids)) return draft.channel_ids.map(Number).filter(Boolean);
-      if (draft.channelId) return [Number(draft.channelId)].filter(Boolean);
-      if (draft.channel_id) return [Number(draft.channel_id)].filter(Boolean);
-      return [];
-    }
-
-    function lrNormalizeTime(input) {
-      const raw = String(input || '').trim();
-
-      let m = raw.match(/^(\d{1,2})[:.\s](\d{2})$/);
-      if (!m) m = raw.match(/^(\d{1,2})(\d{2})$/);
-
-      if (!m) return null;
-
-      const hh = Number(m[1]);
-      const mm = Number(m[2]);
-
-      if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
-      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
-
-      return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
-    }
-
-    function lrTimeCompact(hhmm) {
-      return String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
-    }
-
-    function lrPublishDate(day, hhmm) {
-      const clean = lrTimeCompact(hhmm);
-
-      try {
-        if (typeof dateTimeFromDayTime === 'function') {
-          return dateTimeFromDayTime(day, clean);
-        }
-      } catch {}
-
-      const parts = String(day || '').split('-').map(Number);
-      const y = parts[0] || new Date().getFullYear();
-      const m = parts[1] || (new Date().getMonth() + 1);
-      const d = parts[2] || new Date().getDate();
-
-      return new Date(
-        `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}T${clean.slice(0, 2)}:${clean.slice(2, 4)}:00+03:00`
-      );
-    }
-
-    function lrDayTitle(day) {
-      const parts = String(day).split('-').map(Number);
-      const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12, 0, 0));
-
-      try {
-        return d.toLocaleDateString('ru-RU', {
-          weekday: 'short',
-          day: 'numeric',
-          month: 'long',
-          year: 'numeric',
-          timeZone: 'Europe/Moscow'
-        });
-      } catch {
-        return day;
-      }
-    }
-
-    function lrCleanPreviewText(value) {
-      let text = '';
-
-      function pick(obj) {
-        if (!obj || typeof obj !== 'object') return '';
-
-        return String(
-          obj.text ||
-          obj.caption ||
-          obj.body?.text ||
-          obj.content?.text ||
-          obj.draft?.text ||
-          obj.draft?.content?.text ||
-          obj.message?.text ||
-          obj.message?.body?.text ||
-          ''
-        );
-      }
-
-      if (typeof value === 'string') {
-        text = value;
-      } else {
-        text = pick(value);
-      }
-
-      text = String(text || '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      if (!text && value && typeof value === 'object') {
-        const raw = JSON.stringify(value);
-        if (/photo|video|image|attachment|media/i.test(raw)) text = 'медиа';
-      }
-
-      if (!text) text = 'пост без текста';
-      if (text.length > 58) text = text.slice(0, 58).trim() + '…';
-
-      return text;
-    }
-
-    function lrExtractPostText(rowJson) {
-      if (!rowJson || typeof rowJson !== 'object') return 'пост без текста';
-
-      const candidates = [
-        rowJson.text,
-        rowJson.caption,
-        rowJson.body,
-        rowJson.content,
-        rowJson.draft,
-        rowJson.payload,
-        rowJson.message,
-        rowJson.data
-      ];
-
-      for (const c of candidates) {
-        const t = lrCleanPreviewText(c);
-        if (t && t !== 'пост без текста') return t;
-      }
-
-      return lrCleanPreviewText(rowJson);
-    }
-
-    function lrExtractPostTime(rowJson, fallbackColumn) {
-      const value =
-        rowJson.publish_at ||
-        rowJson.published_at ||
-        rowJson.scheduled_at ||
-        rowJson.planned_at ||
-        rowJson.run_at ||
-        rowJson.send_at ||
-        rowJson.created_at ||
-        rowJson[fallbackColumn] ||
-        null;
-
-      if (!value) return '';
-
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) {
-        const m = String(value).match(/(\d{1,2}):(\d{2})/);
-        return m ? `${m[1].padStart(2, '0')}:${m[2]}` : '';
-      }
-
-      return d.toLocaleTimeString('ru-RU', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-        timeZone: 'Europe/Moscow'
-      });
-    }
-
-    async function lrEnsureSavedTimesTable() {
-      await query(`
-        CREATE TABLE IF NOT EXISTS public.channel_saved_times (
-          id serial PRIMARY KEY,
-          channel_id integer NOT NULL,
-          time_text text NOT NULL,
-          is_ad boolean NOT NULL DEFAULT false,
-          created_at timestamptz NOT NULL DEFAULT now(),
-          updated_at timestamptz NOT NULL DEFAULT now()
-        )
-      `);
-
-      await query(`ALTER TABLE public.channel_saved_times ADD COLUMN IF NOT EXISTS is_ad boolean NOT NULL DEFAULT false`);
-      await query(`ALTER TABLE public.channel_saved_times ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
-
-      await query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_saved_times_channel_time_ad
-        ON public.channel_saved_times(channel_id, time_text, is_ad)
-      `);
-    }
-
-    async function lrLoadSavedTimes(channelIds, isAd) {
-      await lrEnsureSavedTimesTable();
-
-      if (!channelIds.length) return [];
-
-      const result = await query(
-        `SELECT DISTINCT time_text
-         FROM public.channel_saved_times
-         WHERE channel_id = ANY($1::int[])
-           AND is_ad = $2
-         ORDER BY time_text ASC`,
-        [channelIds, Boolean(isAd)]
-      );
-
-      return lrRows(result)
-        .map(r => lrNormalizeTime(r.time_text))
-        .filter(Boolean);
-    }
-
-    async function lrTableExists(table) {
-      const result = await query(`SELECT to_regclass($1) AS name`, [`public.${table}`]);
-      return Boolean(lrRows(result)[0]?.name);
-    }
-
-    async function lrColumns(table) {
-      const result = await query(
-        `SELECT column_name
-         FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = $1`,
-        [table]
-      );
-
-      return lrRows(result).map(r => r.column_name);
-    }
-
-    async function lrPostsForDay(day, channelIds) {
-      const tables = ['scheduled_posts', 'posts', 'published_posts'];
-      const all = [];
-      const seen = new Set();
-
-      for (const table of tables) {
-        try {
-          if (!(await lrTableExists(table))) continue;
-
-          const cols = await lrColumns(table);
-          const timeCol =
-            ['publish_at', 'published_at', 'scheduled_at', 'planned_at', 'run_at', 'send_at', 'created_at']
-              .find(c => cols.includes(c));
-
-          if (!timeCol) continue;
-
-          const result = await query(
-            `SELECT to_jsonb(t) AS j, ${timeCol} AS post_time
-             FROM public.${table} t
-             WHERE (${timeCol} AT TIME ZONE 'Europe/Moscow')::date = $1::date
-             ORDER BY ${timeCol} ASC
-             LIMIT 50`,
-            [day]
-          );
-
-          for (const row of lrRows(result)) {
-            const j = row.j || {};
-            const id = `${table}:${j.id || j.post_id || j.message_id || JSON.stringify(j).slice(0, 80)}`;
-
-            if (seen.has(id)) continue;
-            seen.add(id);
-
-            const rowChannel = Number(j.channel_id || j.channelId || j.target_channel_id || 0);
-
-            if (channelIds.length && rowChannel && !channelIds.includes(rowChannel)) continue;
-
-            if (channelIds.length && !rowChannel) {
-              const raw = JSON.stringify(j);
-              const hasAny = channelIds.some(cid => raw.includes(String(cid)));
-              if (!hasAny && /channel/i.test(raw)) continue;
-            }
-
-            const time = lrExtractPostTime(j, 'post_time') || lrExtractPostTime({ post_time: row.post_time }, 'post_time');
-            const text = lrExtractPostText(j);
-
-            if (!time) continue;
-
-            all.push({ time, text });
-          }
-        } catch (e) {
-          console.error('[LR_AD_TIME_FIRST_OPEN_FIX_V1 posts]', table, e?.message || e);
-        }
-      }
-
-      all.sort((a, b) => String(a.time).localeCompare(String(b.time)));
-      return all.slice(0, 20);
-    }
-
-    function lrTimeIsPast(day, hhmm) {
-      const d = lrPublishDate(day, hhmm);
-      return !d || Number.isNaN(d.getTime()) || d.getTime() <= Date.now();
-    }
-
-    function lrTimeOccupied(posts, hhmm) {
-      const t = String(hhmm || '').slice(0, 5);
-      return posts.some(p => String(p.time || '').slice(0, 5) === t);
-    }
-
-    const session = await getSession(key);
-    const draft = lrDraftFromSession(session);
-    const channelIds = lrChannelIds(draft);
-    const isAd = lrIsAdDraft(draft);
-
-    const savedTimes = await lrLoadSavedTimes(channelIds, isAd);
-    const posts = await lrPostsForDay(dayKey, channelIds);
-
-    const visibleTimes = savedTimes.filter(t => {
-      if (lrTimeIsPast(dayKey, t)) return false;
-      if (lrTimeOccupied(posts, t)) return false;
-      return true;
-    });
-
-    const savedTitle = isAd ? 'Рекламное время' : 'Сохранённое время';
-    const savedIcon = isAd ? '💼' : '💾';
-
-    const postLines = posts.length
-      ? posts.map(p => `• <b>${lrEsc(p.time)}</b> — ${lrEsc(p.text)}`).join('\n')
-      : 'Постов на этот день пока нет';
-
-    const savedLines = savedTimes.length
-      ? savedTimes.map(t => `${savedIcon} ${lrEsc(t)}`).join('  ')
-      : 'пока нет';
-
-    const text =
-`━━━━━━━━━━━━━━
-📅 <b>${lrEsc(lrDayTitle(dayKey))}</b>
-
-<b>Посты на этот день:</b>
-${postLines}
-
-<b>${lrEsc(savedTitle)}:</b>
-${savedLines}
-
-Свободные времена показаны кнопками ниже.
-Если время занято постом или прошло, кнопкой оно не показывается.
-━━━━━━━━━━━━━━`;
-
-    const rows = [];
-
-    for (let i = 0; i < visibleTimes.length; i += 3) {
-      rows.push(
-        visibleTimes.slice(i, i + 3).map(t =>
-          callbackButton(`${savedIcon} ${t}`, `lr_cal:pick:${dayKey}:${lrTimeCompact(t)}`)
-        )
-      );
-    }
-
-    rows.push([callbackButton(`${savedIcon} ${savedTitle}`, `lr_advcal:add:${dayKey}:${isAd ? 'ad' : 'normal'}`)]);
-
-    if (savedTimes.length) {
-      rows.push([callbackButton('🗑 Удалить время', `lr_advcal:delete_menu:${dayKey}:${isAd ? 'ad' : 'normal'}`)]);
-    }
-
-    rows.push([callbackButton('✍️ Ввести время вручную', `lr_advcal:manual_publish:${dayKey}`)]);
-    rows.push([callbackButton('⬅️ К месяцу', 'schedule:calendar')]);
-
-    await cb(callbackId, text, rows);
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('[LR_AD_TIME_FIRST_OPEN_FIX_V1]', e?.stack || e);
-    return next();
-  }
-});
-/* LR_AD_TIME_FIRST_OPEN_FIX_V1_END */
-
-
-
-/* LR_CALENDAR_AD_TIMES_AND_DB_POSTS_V1_START */
-app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
+/* LR_CLEAN_CALENDAR_SPLIT_TIME_V1_START */
+app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
   try {
     if (req.method !== 'POST') return next();
 
@@ -1392,7 +831,7 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
 
     if (!key) return next();
 
-    function lrEscapeHtml(v) {
+    function esc(v) {
       try {
         return escapeHtml(v);
       } catch {
@@ -1404,7 +843,13 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       }
     }
 
-    function lrMessageText() {
+    function rowsOf(result) {
+      if (Array.isArray(result)) return result;
+      if (result && Array.isArray(result.rows)) return result.rows;
+      return [];
+    }
+
+    function textOfUpdate() {
       try {
         return String(getMessageText(update) || '').trim();
       } catch {
@@ -1412,13 +857,7 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       }
     }
 
-    function lrRows(result) {
-      if (Array.isArray(result)) return result;
-      if (result && Array.isArray(result.rows)) return result.rows;
-      return [];
-    }
-
-    function lrDraftFromSession(session) {
+    function draftFromSession(session) {
       const data = session && session.data ? session.data : {};
       const raw = data.draft ? data.draft : data;
 
@@ -1429,13 +868,25 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       }
     }
 
-    function lrIsAdDraft(draft) {
+    function isAdDraft(draft, session = null) {
+      const state = String(session?.state || '').toLowerCase();
+
+      if (
+        state.includes('cpm') ||
+        state.includes('ad_') ||
+        state.includes('advert') ||
+        state.includes('реклам')
+      ) {
+        return true;
+      }
+
       if (!draft || typeof draft !== 'object') return false;
 
       if (draft.isAd === true) return true;
       if (draft.is_ad === true) return true;
       if (draft.ad === true) return true;
       if (draft.isAdvertising === true) return true;
+      if (draft.adPost === true) return true;
 
       if (String(draft.type || '').toLowerCase() === 'ad') return true;
       if (String(draft.postType || '').toLowerCase() === 'ad') return true;
@@ -1445,16 +896,22 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       return false;
     }
 
-    function lrChannelIds(draft) {
+    function channelIdsOf(draft) {
       if (!draft || typeof draft !== 'object') return [];
+
       if (Array.isArray(draft.channelIds)) return draft.channelIds.map(Number).filter(Boolean);
       if (Array.isArray(draft.channel_ids)) return draft.channel_ids.map(Number).filter(Boolean);
+      if (Array.isArray(draft.channels)) {
+        return draft.channels.map(x => Number(x?.id || x?.channel_id || x)).filter(Boolean);
+      }
+
       if (draft.channelId) return [Number(draft.channelId)].filter(Boolean);
       if (draft.channel_id) return [Number(draft.channel_id)].filter(Boolean);
+
       return [];
     }
 
-    function lrNormalizeTime(input) {
+    function normalizeTime(input) {
       const raw = String(input || '').trim();
 
       let m = raw.match(/^(\d{1,2})[:.\s](\d{2})$/);
@@ -1471,12 +928,12 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
     }
 
-    function lrTimeCompact(hhmm) {
+    function compactTime(hhmm) {
       return String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
     }
 
-    function lrPublishDate(dayKey, hhmm) {
-      const clean = lrTimeCompact(hhmm);
+    function dateFromDayTime(dayKey, hhmm) {
+      const clean = compactTime(hhmm);
 
       try {
         if (typeof dateTimeFromDayTime === 'function') {
@@ -1494,7 +951,75 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       );
     }
 
-    function lrHasPostBody(draft) {
+    function dayKeyFromDate(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function dayTitle(dayKey) {
+      const [y, m, d] = String(dayKey).split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+
+      try {
+        return dt.toLocaleDateString('ru-RU', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'Europe/Moscow'
+        });
+      } catch {
+        return dayKey;
+      }
+    }
+
+    function monthTitle(year, monthIndex) {
+      const dt = new Date(Date.UTC(year, monthIndex, 1, 12, 0, 0));
+
+      try {
+        return dt.toLocaleDateString('ru-RU', {
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'Europe/Moscow'
+        });
+      } catch {
+        return `${monthIndex + 1}.${year}`;
+      }
+    }
+
+    function extractDayFromPayload(value) {
+      const p = String(value || '');
+      const m = p.match(/(\d{4}-\d{2}-\d{2})/);
+      if (!m) return null;
+
+      if (
+        p.includes('cal') ||
+        p.includes('calendar') ||
+        p.includes('date') ||
+        p.includes('day') ||
+        p.includes('schedule')
+      ) {
+        return m[1];
+      }
+
+      return null;
+    }
+
+    function extractMonthFromPayload(value) {
+      const p = String(value || '');
+      const m = p.match(/(\d{4})-(\d{2})/);
+
+      if (!m) return null;
+
+      return {
+        year: Number(m[1]),
+        month: Number(m[2]) - 1
+      };
+    }
+
+    function hasPostContent(draft) {
       if (!draft || typeof draft !== 'object') return false;
 
       const content = draft.content || {};
@@ -1503,6 +1028,7 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       if (text) return true;
       if (Array.isArray(content.attachments) && content.attachments.length) return true;
       if (Array.isArray(draft.attachments) && draft.attachments.length) return true;
+      if (draft.photo || draft.video || draft.media) return true;
 
       try {
         if (typeof hasContent === 'function') return Boolean(hasContent(draft));
@@ -1511,102 +1037,89 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       return false;
     }
 
-    function lrCleanPreviewText(value) {
-      let text = '';
+    function parseMaybeJson(value) {
+      if (typeof value !== 'string') return value;
 
-      function pick(obj) {
-        if (!obj || typeof obj !== 'object') return '';
+      const t = value.trim();
+      if (!t) return value;
 
-        return String(
-          obj.text ||
-          obj.caption ||
-          obj.body?.text ||
-          obj.content?.text ||
-          obj.draft?.text ||
-          obj.draft?.content?.text ||
-          obj.message?.text ||
-          obj.message?.body?.text ||
-          ''
-        );
+      if (
+        (t.startsWith('{') && t.endsWith('}')) ||
+        (t.startsWith('[') && t.endsWith(']'))
+      ) {
+        try {
+          return JSON.parse(t);
+        } catch {}
       }
+
+      return value;
+    }
+
+    function previewText(value, depth = 0) {
+      if (value === null || value === undefined || depth > 6) return '';
+
+      value = parseMaybeJson(value);
 
       if (typeof value === 'string') {
-        text = value;
-      } else {
-        text = pick(value);
+        let text = value
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (text.length > 60) text = text.slice(0, 60).trim() + '…';
+        return text;
       }
 
-      text = String(text || '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/\s+/g, ' ')
-        .trim();
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const t = previewText(item, depth + 1);
+          if (t) return t;
+        }
+        return '';
+      }
 
-      if (!text && value && typeof value === 'object') {
+      if (typeof value === 'object') {
+        const direct =
+          value.text ||
+          value.caption ||
+          value.title ||
+          value.body?.text ||
+          value.content?.text ||
+          value.draft?.text ||
+          value.draft?.content?.text ||
+          value.message?.text ||
+          value.message?.body?.text ||
+          value.payload?.text ||
+          value.data?.text ||
+          '';
+
+        const t = previewText(direct, depth + 1);
+        if (t) return t;
+
+        const keys = ['content', 'draft', 'payload', 'message', 'body', 'data'];
+        for (const k of keys) {
+          if (value[k]) {
+            const nested = previewText(value[k], depth + 1);
+            if (nested) return nested;
+          }
+        }
+
         const raw = JSON.stringify(value);
-        if (/photo|video|image|attachment|media/i.test(raw)) text = 'медиа';
+        if (/photo|video|image|attachment|media/i.test(raw)) return 'медиа';
       }
 
-      if (!text) text = 'пост без текста';
-      if (text.length > 58) text = text.slice(0, 58).trim() + '…';
-
-      return text;
+      return '';
     }
 
-    function lrExtractPostText(rowJson) {
-      if (!rowJson || typeof rowJson !== 'object') return 'пост без текста';
-
-      const candidates = [
-        rowJson.text,
-        rowJson.caption,
-        rowJson.body,
-        rowJson.content,
-        rowJson.draft,
-        rowJson.payload,
-        rowJson.message,
-        rowJson.data
-      ];
-
-      for (const c of candidates) {
-        const t = lrCleanPreviewText(c);
-        if (t && t !== 'пост без текста') return t;
-      }
-
-      return lrCleanPreviewText(rowJson);
+    function quoteIdent(name) {
+      return '"' + String(name).replaceAll('"', '""') + '"';
     }
 
-    function lrExtractPostTime(rowJson, fallbackColumn) {
-      const value =
-        rowJson.publish_at ||
-        rowJson.published_at ||
-        rowJson.scheduled_at ||
-        rowJson.planned_at ||
-        rowJson.run_at ||
-        rowJson.send_at ||
-        rowJson.created_at ||
-        rowJson[fallbackColumn] ||
-        null;
-
-      if (!value) return '';
-
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) {
-        const m = String(value).match(/(\d{1,2}):(\d{2})/);
-        return m ? `${m[1].padStart(2, '0')}:${m[2]}` : '';
-      }
-
-      return d.toLocaleTimeString('ru-RU', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-        timeZone: 'Europe/Moscow'
-      });
-    }
-
-    async function lrEnsureSavedTimesTable() {
+    async function ensureSavedTimesTable() {
       await query(`
         CREATE TABLE IF NOT EXISTS public.channel_saved_times (
           id serial PRIMARY KEY,
@@ -1640,16 +1153,16 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
         END $$;
       `);
 
-      await query(`DROP INDEX IF EXISTS public.idx_channel_saved_times_channel_owner`);
       await query(`DROP INDEX IF EXISTS public.idx_channel_saved_times_channel_time`);
+      await query(`DROP INDEX IF EXISTS public.idx_channel_saved_times_channel_owner`);
       await query(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_saved_times_channel_time_ad
         ON public.channel_saved_times(channel_id, time_text, is_ad)
       `);
     }
 
-    async function lrLoadSavedTimes(channelIds, isAd) {
-      await lrEnsureSavedTimesTable();
+    async function loadSavedTimes(channelIds, isAd) {
+      await ensureSavedTimesTable();
 
       if (!channelIds.length) return [];
 
@@ -1662,13 +1175,13 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
         [channelIds, Boolean(isAd)]
       );
 
-      return lrRows(result)
-        .map(r => lrNormalizeTime(r.time_text))
+      return rowsOf(result)
+        .map(r => normalizeTime(r.time_text))
         .filter(Boolean);
     }
 
-    async function lrSaveTimeForChannels(channelIds, hhmm, isAd) {
-      await lrEnsureSavedTimesTable();
+    async function saveTime(channelIds, hhmm, isAd) {
+      await ensureSavedTimesTable();
 
       for (const channelId of channelIds) {
         await query(
@@ -1681,8 +1194,8 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       }
     }
 
-    async function lrDeleteSavedTime(channelIds, hhmm, isAd) {
-      await lrEnsureSavedTimesTable();
+    async function deleteTime(channelIds, hhmm, isAd) {
+      await ensureSavedTimesTable();
 
       if (!channelIds.length) return;
 
@@ -1695,154 +1208,254 @@ app.use(async function lrCalendarAdTimesAndDbPostsV1(req, res, next) {
       );
     }
 
-    async function lrTableExists(table) {
-      const result = await query(`SELECT to_regclass($1) AS name`, [`public.${table}`]);
-      return Boolean(lrRows(result)[0]?.name);
+    async function tableExists(tableName) {
+      const result = await query(`SELECT to_regclass($1) AS name`, [`public.${tableName}`]);
+      return Boolean(rowsOf(result)[0]?.name);
     }
 
-    async function lrColumns(table) {
+    async function tableColumns(tableName) {
       const result = await query(
         `SELECT column_name
          FROM information_schema.columns
          WHERE table_schema = 'public'
            AND table_name = $1`,
-        [table]
+        [tableName]
       );
 
-      return lrRows(result).map(r => r.column_name);
+      return rowsOf(result).map(r => r.column_name);
     }
 
-    async function lrPostsForDay(dayKey, channelIds) {
-      const tables = ['scheduled_posts', 'posts', 'published_posts'];
+    async function candidatePostTables() {
+      const result = await query(`
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_type = 'BASE TABLE'
+          AND (
+            table_name ILIKE '%post%' OR
+            table_name ILIKE '%queue%' OR
+            table_name ILIKE '%schedule%' OR
+            table_name ILIKE '%publish%'
+          )
+        ORDER BY table_name
+      `);
+
+      const names = rowsOf(result).map(r => r.table_name);
+
+      for (const fixed of ['scheduled_posts', 'posts', 'published_posts', 'post_queue']) {
+        if (!names.includes(fixed) && await tableExists(fixed)) names.unshift(fixed);
+      }
+
+      return [...new Set(names)];
+    }
+
+    async function postsForDay(dayKey, channelIds) {
+      const tables = await candidatePostTables();
       const all = [];
       const seen = new Set();
 
+      const timeColumns = [
+        'publish_at',
+        'published_at',
+        'scheduled_at',
+        'planned_at',
+        'run_at',
+        'send_at',
+        'post_at',
+        'created_at',
+        'updated_at'
+      ];
+
       for (const table of tables) {
         try {
-          if (!(await lrTableExists(table))) continue;
-
-          const cols = await lrColumns(table);
-          const timeCol =
-            ['publish_at', 'published_at', 'scheduled_at', 'planned_at', 'run_at', 'send_at', 'created_at']
-              .find(c => cols.includes(c));
+          const cols = await tableColumns(table);
+          const timeCol = timeColumns.find(c => cols.includes(c));
 
           if (!timeCol) continue;
 
-          const sql =
-            `SELECT to_jsonb(t) AS j, ${timeCol} AS post_time
-             FROM public.${table} t
-             WHERE (${timeCol} AT TIME ZONE 'Europe/Moscow')::date = $1::date
-             ORDER BY ${timeCol} ASC
-             LIMIT 50`;
+          const qt = quoteIdent(table);
+          const qc = quoteIdent(timeCol);
 
-          const result = await query(sql, [dayKey]);
+          const result = await query(
+            `SELECT to_jsonb(t) AS j, ${qc} AS post_time
+             FROM public.${qt} t
+             WHERE ((${qc})::timestamptz AT TIME ZONE 'Europe/Moscow')::date = $1::date
+             ORDER BY ${qc} ASC
+             LIMIT 80`,
+            [dayKey]
+          );
 
-          for (const row of lrRows(result)) {
+          for (const row of rowsOf(result)) {
             const j = row.j || {};
-            const id = `${table}:${j.id || j.post_id || j.message_id || JSON.stringify(j).slice(0, 80)}`;
+            const raw = JSON.stringify(j);
+            const id = `${table}:${j.id || j.post_id || j.message_id || raw.slice(0, 100)}`;
 
             if (seen.has(id)) continue;
             seen.add(id);
 
-            const rowChannel =
-              Number(j.channel_id || j.channelId || j.target_channel_id || 0);
+            const rowChannel = Number(
+              j.channel_id ||
+              j.channelId ||
+              j.target_channel_id ||
+              j.targetChannelId ||
+              0
+            );
 
-            if (channelIds.length && rowChannel && !channelIds.includes(rowChannel)) {
-              continue;
-            }
+            if (channelIds.length && rowChannel && !channelIds.includes(rowChannel)) continue;
 
-            if (channelIds.length && !rowChannel) {
-              const raw = JSON.stringify(j);
-              const hasAny = channelIds.some(cid => raw.includes(String(cid)));
-              if (!hasAny && /channel/i.test(raw)) continue;
-            }
-
-            const time = lrExtractPostTime(j, 'post_time') || lrExtractPostTime({ post_time: row.post_time }, 'post_time');
-            const text = lrExtractPostText(j);
+            const d = new Date(row.post_time || j[timeCol]);
+            const time = Number.isNaN(d.getTime())
+              ? ''
+              : d.toLocaleTimeString('ru-RU', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: false,
+                  timeZone: 'Europe/Moscow'
+                });
 
             if (!time) continue;
 
             all.push({
-              table,
               time,
-              text,
-              raw: j
+              text: previewText(j) || 'пост без текста'
             });
           }
         } catch (e) {
-          console.error('[LR_CALENDAR_AD_TIMES_AND_DB_POSTS_V1 posts]', table, e?.message || e);
+          console.error('[LR_CLEAN_CALENDAR_SPLIT_TIME_V1 posts]', table, e?.message || e);
         }
       }
 
       all.sort((a, b) => String(a.time).localeCompare(String(b.time)));
-      return all.slice(0, 20);
+
+      return all.slice(0, 30);
     }
 
-    function lrDayTitle(dayKey) {
-      const parts = String(dayKey).split('-').map(Number);
-      const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12, 0, 0));
-
-      try {
-        return d.toLocaleDateString('ru-RU', {
-          weekday: 'short',
-          day: 'numeric',
-          month: 'long',
-          year: 'numeric',
-          timeZone: 'Europe/Moscow'
-        });
-      } catch {
-        return dayKey;
-      }
-    }
-
-    function lrTimeIsPast(dayKey, hhmm) {
-      const d = lrPublishDate(dayKey, hhmm);
+    function timeIsPast(dayKey, hhmm) {
+      const d = dateFromDayTime(dayKey, hhmm);
       return !d || Number.isNaN(d.getTime()) || d.getTime() <= Date.now();
     }
 
-    function lrTimeOccupied(posts, hhmm) {
+    function timeOccupied(posts, hhmm) {
       const t = String(hhmm || '').slice(0, 5);
       return posts.some(p => String(p.time || '').slice(0, 5) === t);
     }
 
-    async function lrRenderDay(dayKey) {
+    async function currentDraftContext() {
       const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
-      const channelIds = lrChannelIds(draft);
-      const isAd = lrIsAdDraft(draft);
+      const draft = draftFromSession(session);
+      const isAd = isAdDraft(draft, session);
+      const channelIds = channelIdsOf(draft);
 
-      const savedTimes = await lrLoadSavedTimes(channelIds, isAd);
-      const posts = await lrPostsForDay(dayKey, channelIds);
+      return { session, draft, isAd, channelIds };
+    }
+
+    async function renderMonth(year = null, monthIndex = null) {
+      const now = new Date();
+
+      if (year === null || monthIndex === null) {
+        year = now.getFullYear();
+        monthIndex = now.getMonth();
+      }
+
+      const title = monthTitle(year, monthIndex);
+      const first = new Date(year, monthIndex, 1);
+      const last = new Date(year, monthIndex + 1, 0);
+      const todayKey = dayKeyFromDate(now);
+
+      let startWeekday = first.getDay();
+      if (startWeekday === 0) startWeekday = 7;
+
+      const rows = [];
+      rows.push([
+        callbackButton('Пн', 'noop'),
+        callbackButton('Вт', 'noop'),
+        callbackButton('Ср', 'noop'),
+        callbackButton('Чт', 'noop'),
+        callbackButton('Пт', 'noop'),
+        callbackButton('Сб', 'noop'),
+        callbackButton('Вс', 'noop')
+      ]);
+
+      let row = [];
+
+      for (let i = 1; i < startWeekday; i++) {
+        row.push(callbackButton(' ', 'noop'));
+      }
+
+      for (let day = 1; day <= last.getDate(); day++) {
+        const d = new Date(year, monthIndex, day);
+        const dk = dayKeyFromDate(d);
+        const label = dk === todayKey ? `•${day}•` : String(day);
+
+        row.push(callbackButton(label, `lr_clean_cal:day:${dk}`));
+
+        if (row.length === 7) {
+          rows.push(row);
+          row = [];
+        }
+      }
+
+      if (row.length) {
+        while (row.length < 7) row.push(callbackButton(' ', 'noop'));
+        rows.push(row);
+      }
+
+      const prev = new Date(year, monthIndex - 1, 1);
+      const nextM = new Date(year, monthIndex + 1, 1);
+
+      rows.push([
+        callbackButton('⬅️', `lr_clean_cal:month:${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`),
+        callbackButton('📅 Сегодня', `lr_clean_cal:day:${todayKey}`),
+        callbackButton('➡️', `lr_clean_cal:month:${nextM.getFullYear()}-${String(nextM.getMonth() + 1).padStart(2, '0')}`)
+      ]);
+      rows.push([callbackButton('⬅️ К выпуску', 'editor:next')]);
+
+      return cb(
+        callbackId,
+        `━━━━━━━━━━━━━━
+📅 <b>${esc(title)}</b>
+
+Выберите день публикации.
+━━━━━━━━━━━━━━`,
+        rows
+      );
+    }
+
+    async function renderDay(dayKey) {
+      const { draft, isAd, channelIds } = await currentDraftContext();
+
+      const savedTimes = await loadSavedTimes(channelIds, isAd);
+      const posts = await postsForDay(dayKey, channelIds);
 
       const visibleTimes = savedTimes.filter(t => {
-        if (lrTimeIsPast(dayKey, t)) return false;
-        if (lrTimeOccupied(posts, t)) return false;
+        if (timeIsPast(dayKey, t)) return false;
+        if (timeOccupied(posts, t)) return false;
         return true;
       });
 
+      const icon = isAd ? '💼' : '💾';
+      const timeTitle = isAd ? 'Рекламное время' : 'Сохранённое время';
+
       const postLines = posts.length
-        ? posts.map(p => `• <b>${lrEscapeHtml(p.time)}</b> — ${lrEscapeHtml(p.text)}`).join('\n')
+        ? posts.map(p => `• <b>${esc(p.time)}</b> — ${esc(p.text)}`).join('\n')
         : 'Постов на этот день пока нет';
 
-      const savedTitle = isAd ? 'Рекламное время' : 'Сохранённое время';
-      const savedIcon = isAd ? '💼' : '💾';
-
-      const timeLines = savedTimes.length
-        ? savedTimes.map(t => `${savedIcon} ${lrEscapeHtml(t)}`).join('  ')
+      const savedLines = savedTimes.length
+        ? savedTimes.map(t => `${icon} ${esc(t)}`).join('  ')
         : 'пока нет';
 
       const text =
 `━━━━━━━━━━━━━━
-📅 <b>${lrEscapeHtml(lrDayTitle(dayKey))}</b>
+📅 <b>${esc(dayTitle(dayKey))}</b>
 
 <b>Посты на этот день:</b>
 ${postLines}
 
-<b>${lrEscapeHtml(savedTitle)}:</b>
-${timeLines}
+<b>${esc(timeTitle)}:</b>
+${savedLines}
 
 Свободные времена показаны кнопками ниже.
-Если время занято постом или прошло, кнопкой оно не показывается.
+Если время занято постом или прошло, оно не показывается кнопкой.
 ━━━━━━━━━━━━━━`;
 
       const rows = [];
@@ -1850,124 +1463,94 @@ ${timeLines}
       for (let i = 0; i < visibleTimes.length; i += 3) {
         rows.push(
           visibleTimes.slice(i, i + 3).map(t =>
-            callbackButton(`${savedIcon} ${t}`, `lr_cal:pick:${dayKey}:${lrTimeCompact(t)}`)
+            callbackButton(`${icon} ${t}`, `lr_clean_cal:pick:${dayKey}:${compactTime(t)}`)
           )
         );
       }
 
-      rows.push([callbackButton(`${savedIcon} ${savedTitle}`, `lr_advcal:add:${dayKey}:${isAd ? 'ad' : 'normal'}`)]);
-
-      if (savedTimes.length) {
-        rows.push([callbackButton('🗑 Удалить время', `lr_advcal:delete_menu:${dayKey}:${isAd ? 'ad' : 'normal'}`)]);
-      }
-
-      rows.push([callbackButton('✍️ Ввести время вручную', `lr_advcal:manual_publish:${dayKey}`)]);
-      rows.push([callbackButton('⬅️ К месяцу', 'schedule:calendar')]);
+      rows.push([callbackButton(`${icon} ${timeTitle}`, `lr_clean_cal:manage:${dayKey}`)]);
+      rows.push([callbackButton('⬅️ К месяцу', `lr_clean_cal:month:${dayKey.slice(0, 7)}`)]);
 
       return cb(callbackId, text, rows);
     }
 
-    async function lrRenderDeleteMenu(dayKey, mode) {
-      const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
-      const channelIds = lrChannelIds(draft);
-      const isAd = mode === 'ad' || lrIsAdDraft(draft);
+    async function renderManage(dayKey) {
+      const { isAd, channelIds } = await currentDraftContext();
 
-      const savedTimes = await lrLoadSavedTimes(channelIds, isAd);
+      const savedTimes = await loadSavedTimes(channelIds, isAd);
 
-      const savedTitle = isAd ? 'рекламное время' : 'сохранённое время';
       const icon = isAd ? '💼' : '💾';
+      const timeTitle = isAd ? 'Рекламное время' : 'Сохранённое время';
+
+      const text =
+`━━━━━━━━━━━━━━
+${icon} <b>${esc(timeTitle)}</b>
+
+Здесь можно добавить или удалить время для канала.
+Обычное и рекламное время хранятся отдельно.
+
+Сейчас:
+${savedTimes.length ? savedTimes.map(t => `${icon} ${esc(t)}`).join('\n') : 'времени пока нет'}
+━━━━━━━━━━━━━━`;
 
       const rows = [];
+      rows.push([callbackButton('➕ Добавить время', `lr_clean_cal:add:${dayKey}`)]);
 
       for (let i = 0; i < savedTimes.length; i += 2) {
         rows.push(
           savedTimes.slice(i, i + 2).map(t =>
-            callbackButton(`🗑 ${t}`, `lr_advcal:delete:${dayKey}:${isAd ? 'ad' : 'normal'}:${lrTimeCompact(t)}`)
+            callbackButton(`🗑 ${t}`, `lr_clean_cal:del:${dayKey}:${compactTime(t)}`)
           )
         );
       }
 
-      rows.push([callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]);
-
-      const text =
-`━━━━━━━━━━━━━━
-🗑 <b>Удалить ${lrEscapeHtml(savedTitle)}</b>
-
-${savedTimes.length ? savedTimes.map(t => `${icon} ${lrEscapeHtml(t)}`).join('\n') : 'Времени пока нет.'}
-━━━━━━━━━━━━━━`;
+      rows.push([callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]);
 
       return cb(callbackId, text, rows);
     }
 
-    async function lrAskAddSavedTime(dayKey, mode) {
-      const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
-      const isAd = mode === 'ad' || lrIsAdDraft(draft);
+    async function askAddTime(dayKey) {
+      const { draft, isAd } = await currentDraftContext();
 
-      await setSession(key, 'lr_wait_saved_time_ad_db_v1', {
+      await setSession(key, 'lr_clean_wait_add_saved_time_v1', {
         draft,
-        dayKey,
-        isAd
-      });
-
-      const title = isAd ? 'рекламное время' : 'сохранённое время';
-      const icon = isAd ? '💼' : '💾';
-
-      return cb(
-        callbackId,
-        `━━━━━━━━━━━━━━
-${icon} Введите ${lrEscapeHtml(title)} для канала.
-
-Пример: <b>18:30</b> или <b>1830</b>.
-
-Оно сохранится для канала и будет показываться кнопкой, если на выбранный день это время свободно.
-━━━━━━━━━━━━━━`,
-        [[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]]
-      );
-    }
-
-    async function lrAskManualPublish(dayKey) {
-      const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
-
-      await setSession(key, 'lr_wait_manual_publish_ad_db_v1', {
-        draft,
+        isAd,
         dayKey
       });
 
+      const icon = isAd ? '💼' : '💾';
+      const timeTitle = isAd ? 'рекламное время' : 'сохранённое время';
+
       return cb(
         callbackId,
         `━━━━━━━━━━━━━━
-✍️ Введите время публикации.
+${icon} Введите ${esc(timeTitle)}.
 
 Пример: <b>18:30</b> или <b>1830</b>.
 
-После ввода пост будет отложен на это время.
+После добавления оно появится кнопкой в меню даты, если время свободно.
 ━━━━━━━━━━━━━━`,
-        [[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]]
+        [[callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]]
       );
     }
 
-    async function lrScheduleDraftInplace(dayKey, hhmm, sourceSession = null) {
-      const nice = lrNormalizeTime(hhmm);
-      const publishAt = lrPublishDate(dayKey, nice);
+    async function scheduleAt(dayKey, hhmm) {
+      const nice = normalizeTime(hhmm);
+      const publishAt = dateFromDayTime(dayKey, nice);
 
       if (!nice || !publishAt || Number.isNaN(publishAt.getTime())) {
         return cb(callbackId, '⚠️ Не удалось разобрать время.', [
-          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
+          [callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]
         ]);
       }
 
       if (publishAt.getTime() <= Date.now()) {
-        return cb(callbackId, `⚠️ Это время уже прошло: ${nice}.`, [
-          [callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]
+        return cb(callbackId, `⚠️ Это время уже прошло: ${esc(nice)}.`, [
+          [callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]
         ]);
       }
 
-      const session = sourceSession || await getSession(key);
-      const draft = lrDraftFromSession(session);
-      const channelIds = lrChannelIds(draft);
+      const { draft, isAd, channelIds } = await currentDraftContext();
 
       if (!channelIds.length) {
         return cb(callbackId, '⚠️ Сначала выберите канал.', [
@@ -1975,40 +1558,39 @@ ${icon} Введите ${lrEscapeHtml(title)} для канала.
         ]);
       }
 
-      if (!lrHasPostBody(draft)) {
+      if (!hasPostContent(draft)) {
         return cb(callbackId, '⚠️ Пост пустой. Сначала добавьте текст или медиа.', [
           [callbackButton('⬅️ В редактор', 'editor:back')]
         ]);
       }
 
-      if (callbackId && typeof answerCallback === 'function') {
-        try {
-          await answerCallback({ callbackId, notification: `Планирую на ${nice}` });
-        } catch {}
-      }
+      try {
+        if (callbackId && typeof answerCallback === 'function') {
+          await answerCallback({ callbackId, notification: `Время выбрано: ${nice}` });
+        }
+      } catch {}
 
-      const ids = await scheduleDraft(draft, key, publishAt);
+      await scheduleDraft(draft, key, publishAt);
       await clearSession(key);
 
       const channels = await getChannelsByIds(channelIds);
-      const isAd = lrIsAdDraft(draft);
 
-      const plannedText = isAd
+      const text = isAd
         ? `━━━━━━━━━━━━━━
 ✅ <b>Рекламный пост запланирован</b>
 
-🕒 <b>${lrEscapeHtml(nice)}</b> · ${lrEscapeHtml(lrDayTitle(dayKey))}
+🕒 <b>${esc(nice)}</b> · ${esc(dayTitle(dayKey))}
 
 📡 Канал:
 ${channelsLines(channels)}
 
-CPM: ${lrEscapeHtml(draft.cpm || 'не указан')} ₽
+CPM: ${esc(draft.cpm || 'не указан')} ₽
 Пост добавлен в очередь.
 ━━━━━━━━━━━━━━`
         : `━━━━━━━━━━━━━━
 ✅ <b>Публикация запланирована</b>
 
-🕒 <b>${lrEscapeHtml(nice)}</b> · ${lrEscapeHtml(lrDayTitle(dayKey))}
+🕒 <b>${esc(nice)}</b> · ${esc(dayTitle(dayKey))}
 
 📡 Канал:
 ${channelsLines(channels)}
@@ -2016,149 +1598,132 @@ ${channelsLines(channels)}
 Пост добавлен в очередь.
 ━━━━━━━━━━━━━━`;
 
-      return cb(callbackId, plannedText, [
+      return cb(callbackId, text, [
         [callbackButton('📂 Посты', 'post:all')],
         [callbackButton('🧬 LinkRay Studio', 'main:posting')]
       ]);
     }
 
     if (!payload) {
-      const text = lrMessageText();
+      const text = textOfUpdate();
       if (!text) return next();
 
       const session = await getSession(key);
-      const state = String(session && session.state || '');
+      const state = String(session?.state || '');
 
-      if (state === 'lr_wait_saved_time_ad_db_v1') {
-        const dayKey = session.data?.dayKey;
-        const isAd = Boolean(session.data?.isAd);
-        const draft = lrDraftFromSession(session);
-        const channelIds = lrChannelIds(draft);
-        const nice = lrNormalizeTime(text);
+      if (state !== 'lr_clean_wait_add_saved_time_v1') return next();
 
-        if (!nice) {
-          await sendMaxMessage({
-            chatId,
-            text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
-            format: 'html',
-            attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
-          });
-          return res.json({ ok: true });
-        }
+      const nice = normalizeTime(text);
+      const data = session.data || {};
+      const draft = data.draft || {};
+      const dayKey = data.dayKey;
+      const isAd = Boolean(data.isAd);
+      const channelIds = channelIdsOf(draft);
 
-        await lrSaveTimeForChannels(channelIds, nice, isAd);
-        await setSession(key, 'publish_menu', { draft });
-
-        await sendMaxMessage({
-          chatId,
-          text: `${isAd ? '💼' : '✅'} ${isAd ? 'Рекламное время' : 'Сохранённое время'} добавлено:\n<b>${lrEscapeHtml(nice)}</b>`,
-          format: 'html'
-        });
-
-        await sendMaxMessage({
-          chatId,
-          text: 'Открой дату заново — время появится кнопкой, если оно свободно.',
-          format: 'html',
-          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
-        });
-
+      if (!nice) {
+        await msg(chatId, '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.', [
+          [callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]
+        ]);
         return res.json({ ok: true });
       }
 
-      if (state === 'lr_wait_manual_publish_ad_db_v1') {
-        const dayKey = session.data?.dayKey;
-        const nice = lrNormalizeTime(text);
-
-        if (!nice) {
-          await sendMaxMessage({
-            chatId,
-            text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
-            format: 'html',
-            attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
-          });
-          return res.json({ ok: true });
-        }
-
-        await lrScheduleDraftInplace(dayKey, nice, session);
+      if (!channelIds.length) {
+        await msg(chatId, '⚠️ Сначала выберите канал.', [
+          [callbackButton('⬅️ В редактор', 'editor:back')]
+        ]);
         return res.json({ ok: true });
       }
 
-      return next();
-    }
+      await saveTime(channelIds, nice, isAd);
+      await setSession(key, 'publish_menu', { draft });
 
-    if (payload.startsWith('lr_cal:day:')) {
-      const dayKey = payload.split(':')[2];
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) return next();
+      const icon = isAd ? '💼' : '✅';
+      const title = isAd ? 'Рекламное время добавлено' : 'Сохранённое время добавлено';
 
-      await lrRenderDay(dayKey);
+      await msg(
+        chatId,
+        `${icon} <b>${esc(title)}:</b>\n${esc(nice)}`,
+        [[callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]]
+      );
+
       return res.json({ ok: true });
     }
 
-    if (payload.startsWith('lr_advcal:add:')) {
-      const parts = payload.split(':');
-      const dayKey = parts[2];
-      const mode = parts[3] || 'normal';
-
-      await lrAskAddSavedTime(dayKey, mode);
-      return res.json({ ok: true });
-    }
-
-    if (payload.startsWith('lr_advcal:manual_publish:')) {
-      const dayKey = payload.split(':')[2];
-
-      await lrAskManualPublish(dayKey);
-      return res.json({ ok: true });
-    }
-
-    if (payload.startsWith('lr_advcal:delete_menu:')) {
-      const parts = payload.split(':');
-      const dayKey = parts[2];
-      const mode = parts[3] || 'normal';
-
-      await lrRenderDeleteMenu(dayKey, mode);
-      return res.json({ ok: true });
-    }
-
-    if (payload.startsWith('lr_advcal:delete:')) {
-      const parts = payload.split(':');
-      const dayKey = parts[2];
-      const mode = parts[3] || 'normal';
-      const time = lrNormalizeTime(parts[4] || '');
-
-      const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
-      const channelIds = lrChannelIds(draft);
-      const isAd = mode === 'ad';
-
-      if (time) {
-        await lrDeleteSavedTime(channelIds, time, isAd);
+    if (payload === 'noop') {
+      if (callbackId && typeof answerCallback === 'function') {
+        try {
+          await answerCallback({ callbackId, notification: 'Выберите дату' });
+        } catch {}
       }
-
-      await lrRenderDay(dayKey);
       return res.json({ ok: true });
     }
 
-    if (payload.startsWith('lr_cal:pick:')) {
+    if (
+      payload === 'schedule:calendar' ||
+      payload === 'calendar' ||
+      payload.startsWith('lr_clean_cal:month:')
+    ) {
+      const m = extractMonthFromPayload(payload);
+      await renderMonth(m?.year ?? null, m?.month ?? null);
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_clean_cal:pick:')) {
       const parts = payload.split(':');
       const dayKey = parts[2];
-      const time = lrNormalizeTime(parts[3] || '');
+      const hhmm = parts[3];
 
-      await lrScheduleDraftInplace(dayKey, time);
+      await scheduleAt(dayKey, hhmm);
       return res.json({ ok: true });
     }
 
     if (payload.startsWith('schedule:time:')) {
       const parts = payload.split(':');
       const dayKey = parts[2];
-      const time = lrNormalizeTime(parts[3] || '');
+      const hhmm = parts[3];
 
-      await lrScheduleDraftInplace(dayKey, time);
+      await scheduleAt(dayKey, hhmm);
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_clean_cal:manage:')) {
+      const dayKey = payload.split(':')[2];
+
+      await renderManage(dayKey);
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_clean_cal:add:')) {
+      const dayKey = payload.split(':')[2];
+
+      await askAddTime(dayKey);
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_clean_cal:del:')) {
+      const parts = payload.split(':');
+      const dayKey = parts[2];
+      const hhmm = normalizeTime(parts[3] || '');
+
+      const { isAd, channelIds } = await currentDraftContext();
+
+      if (hhmm) {
+        await deleteTime(channelIds, hhmm, isAd);
+      }
+
+      await renderManage(dayKey);
+      return res.json({ ok: true });
+    }
+
+    const dayFromAnyPayload = extractDayFromPayload(payload);
+    if (dayFromAnyPayload) {
+      await renderDay(dayFromAnyPayload);
       return res.json({ ok: true });
     }
 
     return next();
   } catch (e) {
-    console.error('[LR_CALENDAR_AD_TIMES_AND_DB_POSTS_V1]', e?.stack || e);
+    console.error('[LR_CLEAN_CALENDAR_SPLIT_TIME_V1]', e?.stack || e);
 
     try {
       const callbackId = getCallbackId(req.body || {});
@@ -2173,666 +1738,27 @@ ${channelsLines(channels)}
     return next();
   }
 });
-/* LR_CALENDAR_AD_TIMES_AND_DB_POSTS_V1_END */
+/* LR_CLEAN_CALENDAR_SPLIT_TIME_V1_END */
 
 
 
-/* LR_TOP_CALENDAR_SCHEDULE_FIX_V2_START */
-app.use(async function lrTopCalendarScheduleFixV2(req, res, next) {
-  try {
-    if (req.method !== 'POST') return next();
 
-    const update = req.body || {};
-    const payload = String(getCallbackPayload(update) || '');
-    const callbackId = getCallbackId(update);
-    const chatId = Number(getChatId(update) || 0);
-    const key = getSessionKey(update);
 
-    if (!key) return next();
 
-    function lrMsgText() {
-      try {
-        return String(getMessageText(update) || '').trim();
-      } catch {
-        return '';
-      }
-    }
 
-    function lrRows(r) {
-      return Array.isArray(r) ? r : ((r && Array.isArray(r.rows)) ? r.rows : []);
-    }
 
-    function lrEsc(v) {
-      try {
-        return typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '');
-      } catch {
-        return String(v ?? '');
-      }
-    }
 
-    function lrDraftFromSession(session) {
-      const data = session && session.data ? session.data : {};
-      const raw = data.draft ? data.draft : data;
 
-      try {
-        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
-      } catch {
-        return raw || {};
-      }
-    }
 
-    function lrChannelIds(draft) {
-      if (!draft || typeof draft !== 'object') return [];
-      if (Array.isArray(draft.channelIds)) return draft.channelIds.map(Number).filter(Boolean);
-      if (draft.channelId) return [Number(draft.channelId)].filter(Boolean);
-      return [];
-    }
 
-    function lrNormalizeTime(input) {
-      const raw = String(input || '').trim();
 
-      let m = raw.match(/^(\d{1,2})[:.\s](\d{2})$/);
-      if (!m) m = raw.match(/^(\d{1,2})(\d{2})$/);
 
-      if (!m) return null;
 
-      const hh = Number(m[1]);
-      const mm = Number(m[2]);
 
-      if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
-      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
 
-      return String(hh).padStart(2, '0') + String(mm).padStart(2, '0');
-    }
 
-    function lrNice(hhmm) {
-      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
-      return clean.slice(0, 2) + ':' + clean.slice(2, 4);
-    }
 
-    function lrPublishDate(dayKey, hhmm) {
-      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
 
-      try {
-        if (typeof dateTimeFromDayTime === 'function') {
-          return dateTimeFromDayTime(dayKey, clean);
-        }
-      } catch {}
-
-      const parts = String(dayKey || '').split('-').map(Number);
-      const y = parts[0] || new Date().getFullYear();
-      const m = parts[1] || (new Date().getMonth() + 1);
-      const d = parts[2] || new Date().getDate();
-
-      return new Date(
-        `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}T${clean.slice(0,2)}:${clean.slice(2,4)}:00+03:00`
-      );
-    }
-
-    function lrHasBody(draft) {
-      if (!draft || typeof draft !== 'object') return false;
-
-      const content = draft.content || {};
-      if (String(content.text || draft.text || '').trim()) return true;
-      if (Array.isArray(content.attachments) && content.attachments.length) return true;
-
-      try {
-        if (typeof hasContent === 'function') return Boolean(hasContent(draft));
-      } catch {}
-
-      return false;
-    }
-
-    async function lrEnsureSavedTable() {
-      await query(`
-        CREATE TABLE IF NOT EXISTS channel_saved_times (
-          id serial PRIMARY KEY,
-          channel_id integer NOT NULL,
-          time_text text NOT NULL,
-          created_at timestamptz NOT NULL DEFAULT now(),
-          updated_at timestamptz NOT NULL DEFAULT now(),
-          UNIQUE(channel_id, time_text)
-        )
-      `);
-    }
-
-    async function lrSaveChannelTime(session, dayKey, hhmm) {
-      const draft = lrDraftFromSession(session);
-      const channels = lrChannelIds(draft);
-      const nice = lrNice(hhmm);
-
-      if (!channels.length) {
-        await sendMaxMessage({
-          chatId,
-          text: '⚠️ Сначала выберите канал.',
-          format: 'html'
-        });
-        return true;
-      }
-
-      await lrEnsureSavedTable();
-
-      for (const channelId of channels) {
-        await query(
-          `INSERT INTO channel_saved_times(channel_id, time_text, updated_at)
-           VALUES($1, $2, now())
-           ON CONFLICT(channel_id, time_text)
-           DO UPDATE SET updated_at = now()`,
-          [channelId, nice]
-        );
-      }
-
-      await setSession(key, 'publish_menu', { draft });
-
-      await sendMaxMessage({
-        chatId,
-        text: `✅ Сохранённое время добавлено:\n<b>${lrEsc(nice)}</b>`,
-        format: 'html'
-      });
-
-      await sendMaxMessage({
-        chatId,
-        text:
-`━━━━━━━━━━━━━━
-💾 Время сохранено.
-
-Теперь нажмите кнопку этого времени в календаре, чтобы отложить пост.
-━━━━━━━━━━━━━━`,
-        format: 'html',
-        attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
-      });
-
-      return true;
-    }
-
-    async function lrSchedule(dayKey, hhmm, sourceSession = null) {
-      const clean = lrNormalizeTime(hhmm);
-      const nice = lrNice(clean || hhmm);
-      const publishAt = lrPublishDate(dayKey, clean || hhmm);
-
-      if (!clean || !publishAt || Number.isNaN(publishAt.getTime())) {
-        return cb(callbackId, '⚠️ Не удалось разобрать время.', [
-          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
-        ]);
-      }
-
-      if (publishAt.getTime() <= Date.now()) {
-        return cb(callbackId, `⚠️ Это время уже прошло: ${nice}.`, [
-          [callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]
-        ]);
-      }
-
-      const session = sourceSession || await getSession(key);
-      const draft = lrDraftFromSession(session);
-
-      if (!lrChannelIds(draft).length) {
-        return cb(callbackId, '⚠️ Сначала выберите канал.', [
-          [callbackButton('⬅️ В редактор', 'editor:back')]
-        ]);
-      }
-
-      if (!lrHasBody(draft)) {
-        return cb(callbackId, '⚠️ Пост пустой. Сначала добавьте текст или медиа.', [
-          [callbackButton('⬅️ В редактор', 'editor:back')]
-        ]);
-      }
-
-      try {
-        if (callbackId && typeof answerCallback === 'function') {
-          await answerCallback({
-            callbackId,
-            notification: `Планирую на ${nice}`
-          });
-        }
-      } catch {}
-
-      const ids = await scheduleDraft(draft, key, publishAt);
-
-      await clearSession(key);
-
-      console.log('[LR_TOP_CALENDAR_SCHEDULE_FIX_V2 scheduled]', JSON.stringify({
-        dayKey,
-        time: nice,
-        ids
-      }));
-
-      return lrInplaceAfterPlannedHelperV1(callbackId, chatId, draft, publishAt, ids);
-    }
-
-    async function lrAskManual(dayKey) {
-      const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
-
-      await setSession(key, 'lr_wait_manual_publish_time_v2', {
-        draft,
-        dayKey
-      });
-
-      return cb(
-        callbackId,
-        `━━━━━━━━━━━━━━
-✍️ Введите время публикации.
-
-Пример: <b>18:30</b> или <b>1830</b>.
-
-После ввода пост сразу будет отложен на это время.
-━━━━━━━━━━━━━━`,
-        [[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]]
-      );
-    }
-
-    if (!payload) {
-      const text = lrMsgText();
-      if (!text) return next();
-
-      const session = await getSession(key);
-      const state = String(session && session.state || '');
-      const dayKey = (session && session.data && session.data.dayKey) || '';
-
-      const clean = lrNormalizeTime(text);
-
-      if (
-        state === 'lr_wait_manual_publish_time_v2' ||
-        state === 'lr_wait_manual_schedule_day_v1' ||
-        state === 'lr_wait_manual_calendar_time_v7' ||
-        state === 'lr_wait_manual_calendar_time_v6' ||
-        state === 'lr_wait_manual_calendar_time_v5'
-      ) {
-        if (!clean) {
-          await sendMaxMessage({
-            chatId,
-            text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
-            format: 'html',
-            attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
-          });
-          return res.json({ ok: true });
-        }
-
-        await lrSchedule(dayKey, clean, session);
-        return res.json({ ok: true });
-      }
-
-      // ВАЖНО: ввод сохранённого времени только сохраняет время.
-      // Он не должен запускать планирование.
-      const lowerState = state.toLowerCase();
-      const isSavedTimeState =
-        lowerState.includes('saved') && lowerState.includes('time') ||
-        lowerState.includes('save') && lowerState.includes('time') ||
-        lowerState.includes('calendar_saved');
-
-      if (isSavedTimeState) {
-        if (!clean) {
-          await sendMaxMessage({
-            chatId,
-            text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
-            format: 'html',
-            attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
-          });
-          return res.json({ ok: true });
-        }
-
-        await lrSaveChannelTime(session, dayKey, clean);
-        return res.json({ ok: true });
-      }
-
-      return next();
-    }
-
-    // Нажатие на сохранённое время — сразу откладывает пост.
-    if (payload.startsWith('lr_cal:pick:')) {
-      const parts = payload.split(':');
-      const dayKey = parts[2];
-      const time = parts[3];
-
-      await lrSchedule(dayKey, time);
-      return res.json({ ok: true });
-    }
-
-    // Старые кнопки времени календаря — тоже через нормальное планирование.
-    if (payload.startsWith('schedule:time:')) {
-      const parts = payload.split(':');
-      const dayKey = parts[2];
-      const time = parts[3];
-
-      await lrSchedule(dayKey, time);
-      return res.json({ ok: true });
-    }
-
-    // Ручной ввод времени публикации только внутри даты.
-    if (payload.startsWith('lr_cal:manual_day:') || payload.startsWith('schedule:manual_day:')) {
-      const dayKey = payload.split(':')[2];
-
-      await lrAskManual(dayKey);
-      return res.json({ ok: true });
-    }
-
-    // Старую кнопку из меню выпуска глушим.
-    if (payload === 'schedule:manual') {
-      return cb(
-        callbackId,
-        `━━━━━━━━━━━━━━
-📅 Откройте календарь, выберите дату и нажмите «Ввести время вручную».
-━━━━━━━━━━━━━━`,
-        [[callbackButton('📅 Календарь', 'schedule:calendar')]]
-      );
-    }
-
-    return next();
-  } catch (e) {
-    console.error('[LR_TOP_CALENDAR_SCHEDULE_FIX_V2]', e?.stack || e);
-
-    try {
-      const callbackId = getCallbackId(req.body || {});
-      if (callbackId) {
-        await cb(callbackId, `⚠️ Ошибка планирования:\n${escapeHtml(e?.message || e)}`, [
-          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
-        ]);
-        return res.json({ ok: true });
-      }
-
-      const chatId = Number(getChatId(req.body || {}) || 0);
-      if (chatId) {
-        await sendMaxMessage({
-          chatId,
-          text: `⚠️ Ошибка планирования:\n${escapeHtml(e?.message || e)}`,
-          format: 'html',
-          attachments: inlineKeyboard([[callbackButton('⬅️ К календарю', 'schedule:calendar')]])
-        });
-        return res.json({ ok: true });
-      }
-    } catch {}
-
-    return next();
-  }
-});
-/* LR_TOP_CALENDAR_SCHEDULE_FIX_V2_END */
-
-
-
-/* LR_SAVED_TIME_REAL_SCHEDULE_V1_START */
-app.use(async function lrSavedTimeRealScheduleV1(req, res, next) {
-  try {
-    if (req.method !== 'POST') return next();
-
-    const update = req.body || {};
-    const payload = String(getCallbackPayload(update) || '');
-    const callbackId = getCallbackId(update);
-    const chatId = Number(getChatId(update) || 0);
-    const key = getSessionKey(update);
-
-    if (!key) return next();
-
-    function lrText(update) {
-      try {
-        return String(getMessageText(update) || '').trim();
-      } catch {
-        return '';
-      }
-    }
-
-    function lrDraftFromSession(session) {
-      const data = session && session.data ? session.data : {};
-      const raw = data.draft ? data.draft : data;
-
-      try {
-        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
-      } catch {
-        return raw || {};
-      }
-    }
-
-    function lrNormalizeTime(input) {
-      const raw = String(input || '').trim();
-
-      let m = raw.match(/^(\d{1,2})[:.\s](\d{2})$/);
-      if (!m) m = raw.match(/^(\d{1,2})(\d{2})$/);
-
-      if (!m) return null;
-
-      const hh = Number(m[1]);
-      const mm = Number(m[2]);
-
-      if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
-      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
-
-      return String(hh).padStart(2, '0') + String(mm).padStart(2, '0');
-    }
-
-    function lrPublishDate(dayKey, hhmm) {
-      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
-
-      try {
-        if (typeof dateTimeFromDayTime === 'function') {
-          return dateTimeFromDayTime(dayKey, clean);
-        }
-      } catch {}
-
-      const parts = String(dayKey || '').split('-').map(Number);
-      const y = parts[0] || new Date().getFullYear();
-      const m = parts[1] || (new Date().getMonth() + 1);
-      const d = parts[2] || new Date().getDate();
-      const hh = Number(clean.slice(0, 2));
-      const mm = Number(clean.slice(2, 4));
-
-      return new Date(`${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00+03:00`);
-    }
-
-    function lrNiceTime(hhmm) {
-      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
-      return clean.slice(0, 2) + ':' + clean.slice(2, 4);
-    }
-
-    function lrHasPostBody(draft) {
-      if (!draft || typeof draft !== 'object') return false;
-
-      const content = draft.content || {};
-      const text = String(content.text || draft.text || '').trim();
-      const attachments = Array.isArray(content.attachments) ? content.attachments : [];
-
-      if (text) return true;
-      if (attachments.length) return true;
-
-      try {
-        if (typeof hasContent === 'function') return Boolean(hasContent(draft));
-      } catch {}
-
-      return false;
-    }
-
-    async function lrSchedule(dayKey, hhmm, sourceSession = null) {
-      const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
-      const nice = lrNiceTime(clean);
-      const publishAt = lrPublishDate(dayKey, clean);
-
-      if (!publishAt || Number.isNaN(publishAt.getTime())) {
-        return cb(
-          callbackId,
-          '⚠️ Не удалось разобрать дату публикации.',
-          [[callbackButton('⬅️ Назад', 'editor:next')]]
-        );
-      }
-
-      if (publishAt.getTime() <= Date.now()) {
-        return cb(
-          callbackId,
-          `⚠️ Это время уже прошло: ${nice}.\n\nВыберите будущее время.`,
-          [[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]]
-        );
-      }
-
-      const session = sourceSession || await getSession(key);
-      const draft = lrDraftFromSession(session);
-
-      if (!draft || !Array.isArray(draft.channelIds) || !draft.channelIds.length) {
-        return cb(
-          callbackId,
-          '⚠️ Сначала выберите канал для публикации.',
-          [[callbackButton('⬅️ В редактор', 'editor:back')]]
-        );
-      }
-
-      if (!lrHasPostBody(draft)) {
-        return cb(
-          callbackId,
-          '⚠️ Пост пустой. Сначала добавьте текст или медиа.',
-          [[callbackButton('⬅️ В редактор', 'editor:back')]]
-        );
-      }
-
-      if (callbackId && typeof answerCallback === 'function') {
-        try {
-          await answerCallback({
-            callbackId,
-            notification: 'Планирую пост на ' + nice
-          });
-        } catch {}
-      }
-
-      const ids = await scheduleDraft(draft, key, publishAt);
-
-      await clearSession(key);
-
-      console.log('[LR_SAVED_TIME_REAL_SCHEDULE_V1 scheduled]', JSON.stringify({
-        dayKey,
-        time: nice,
-        ids
-      }));
-
-      return lrInplaceAfterPlannedHelperV1(callbackId, chatId, draft, publishAt, ids);
-    }
-
-    async function lrAskManualForDay(dayKey) {
-      const session = await getSession(key);
-      const draft = lrDraftFromSession(session);
-
-      await setSession(key, 'lr_wait_manual_schedule_day_v1', {
-        draft,
-        dayKey
-      });
-
-      return cb(
-        callbackId,
-        `━━━━━━━━━━━━━━
-✍️ Введите время публикации.
-
-Дата:
-<b>${escapeHtml(dayKey)}</b>
-
-Пример: <b>18:30</b> или <b>1830</b>.
-
-После ввода пост сразу будет отложен на это время.
-━━━━━━━━━━━━━━`,
-        [[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]]
-      );
-    }
-
-    async function lrHandleManualMessage() {
-      if (payload) return false;
-
-      const session = await getSession(key);
-      const state = String(session && session.state || '');
-
-      if (state !== 'lr_wait_manual_schedule_day_v1') return false;
-
-      const dayKey = session.data && session.data.dayKey;
-      const clean = lrNormalizeTime(lrText(update));
-
-      if (!clean) {
-        await sendMaxMessage({
-          chatId,
-          text: '⚠️ Введите время в формате <b>18:30</b> или <b>1830</b>.',
-          format: 'html',
-          attachments: inlineKeyboard([[callbackButton('⬅️ Назад к дате', `lr_cal:day:${dayKey}`)]])
-        });
-
-        return true;
-      }
-
-      await lrSchedule(dayKey, clean, session);
-      return true;
-    }
-
-    if (await lrHandleManualMessage()) {
-      return res.json({ ok: true });
-    }
-
-    if (!payload) return next();
-
-    // Сохранённое время: 💾 01:48
-    // Нажатие должно НЕ просто писать "время выбрано",
-    // а сразу создавать отложенный пост как обычное планирование.
-    if (payload.startsWith('lr_cal:pick:')) {
-      const parts = payload.split(':');
-      const dayKey = parts[2];
-      const clean = lrNormalizeTime(parts[3] || '');
-
-      if (!dayKey || !clean) {
-        return cb(callbackId, '⚠️ Не удалось выбрать время.', [
-          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
-        ]);
-      }
-
-      await lrSchedule(dayKey, clean);
-      return res.json({ ok: true });
-    }
-
-    // Старые кнопки времени календаря.
-    if (payload.startsWith('schedule:time:')) {
-      const parts = payload.split(':');
-      const dayKey = parts[2];
-      const clean = lrNormalizeTime(parts[3] || '');
-
-      if (!dayKey || !clean) {
-        return cb(callbackId, '⚠️ Не удалось выбрать время.', [
-          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
-        ]);
-      }
-
-      await lrSchedule(dayKey, clean);
-      return res.json({ ok: true });
-    }
-
-    // Ручной ввод внутри выбранной даты.
-    if (payload.startsWith('lr_cal:manual_day:') || payload.startsWith('schedule:manual_day:')) {
-      const dayKey = payload.split(':')[2];
-
-      if (!dayKey) {
-        return cb(callbackId, '⚠️ Не удалось определить дату.', [
-          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
-        ]);
-      }
-
-      await lrAskManualForDay(dayKey);
-      return res.json({ ok: true });
-    }
-
-    // Старую кнопку ручного ввода из меню выпуска больше не используем.
-    if (payload === 'schedule:manual') {
-      return cb(
-        callbackId,
-        '━━━━━━━━━━━━━━\n📅 Выберите дату в календаре, затем нажмите «Ввести время вручную».\n━━━━━━━━━━━━━━',
-        [[callbackButton('📅 Календарь', 'schedule:calendar')]]
-      );
-    }
-
-    return next();
-  } catch (error) {
-    console.error('[LR_SAVED_TIME_REAL_SCHEDULE_V1]', error && error.stack ? error.stack : error);
-
-    try {
-      const callbackId = getCallbackId(req.body || {});
-      if (callbackId) {
-        await cb(callbackId, '⚠️ Ошибка планирования. Проверь логи.', [
-          [callbackButton('⬅️ К календарю', 'schedule:calendar')]
-        ]);
-        return res.json({ ok: true });
-      }
-    } catch {}
-
-    return next();
-  }
-});
-/* LR_SAVED_TIME_REAL_SCHEDULE_V1_END */
 
 
 /* LR_CALENDAR_SAVED_TIME_DELETE_V1_START */
@@ -11251,199 +10177,5 @@ function normalizeAttachments(input) {
 /* LR_NORMALIZE_ATTACHMENTS_SAFE_V1_END */
 
 
-/* LR_FORCE_AD_CALENDAR_REWRITE_V2_START */
-(function lrForceAdCalendarRewriteV2Install() {
-  if (globalThis.__LR_FORCE_AD_CALENDAR_REWRITE_V2_INSTALLED) return;
-  globalThis.__LR_FORCE_AD_CALENDAR_REWRITE_V2_INSTALLED = true;
 
-  function lrStore() {
-    globalThis.__lrForceAdCalendarModeV2 = globalThis.__lrForceAdCalendarModeV2 || {
-      byChat: new Map(),
-      byCallback: new Map()
-    };
-
-    return globalThis.__lrForceAdCalendarModeV2;
-  }
-
-  function lrIsFresh(item) {
-    return Boolean(item && Date.now() - Number(item.ts || 0) < 5 * 60 * 1000);
-  }
-
-  function lrAdByChat(chatId) {
-    const item = lrStore().byChat.get(Number(chatId || 0));
-    return lrIsFresh(item) && item.isAd === true;
-  }
-
-  function lrAdByCallback(callbackId) {
-    const item = lrStore().byCallback.get(String(callbackId || ''));
-    return lrIsFresh(item) && item.isAd === true;
-  }
-
-  function lrHasCalendarText(value) {
-    const text = String(value ?? '');
-
-    return (
-      text.includes('Сохранённое время') ||
-      text.includes('сохранённое время') ||
-      text.includes('Сохраненное время') ||
-      text.includes('сохраненное время') ||
-      text.includes('Посты на этот день') ||
-      text.includes('Свободные времена')
-    );
-  }
-
-  function lrRewriteString(value, isAd) {
-    let text = String(value ?? '');
-
-    if (!isAd) return text;
-
-    text = text
-      .replaceAll('💾 Сохранённое время', '💼 Рекламное время')
-      .replaceAll('💾 Сохраненное время', '💼 Рекламное время')
-      .replaceAll('Сохранённое время', 'Рекламное время')
-      .replaceAll('Сохраненное время', 'Рекламное время')
-      .replaceAll('сохранённое время', 'рекламное время')
-      .replaceAll('сохраненное время', 'рекламное время');
-
-    text = text
-      .replace(/lr_advcal:add:(\d{4}-\d{2}-\d{2}):normal/g, 'lr_advcal:add:$1:ad')
-      .replace(/lr_advcal:delete_menu:(\d{4}-\d{2}-\d{2}):normal/g, 'lr_advcal:delete_menu:$1:ad')
-      .replace(/lr_advcal:delete:(\d{4}-\d{2}-\d{2}):normal:/g, 'lr_advcal:delete:$1:ad:');
-
-    return text;
-  }
-
-  function lrRewriteDeep(value, isAd) {
-    if (!isAd) return value;
-
-    if (typeof value === 'string') {
-      return lrRewriteString(value, isAd);
-    }
-
-    if (Array.isArray(value)) {
-      return value.map(x => lrRewriteDeep(x, isAd));
-    }
-
-    if (value && typeof value === 'object') {
-      const out = {};
-
-      for (const [k, v] of Object.entries(value)) {
-        out[k] = lrRewriteDeep(v, isAd);
-      }
-
-      return out;
-    }
-
-    return value;
-  }
-
-  function lrNeedsRewrite(args, isAd) {
-    if (!isAd) return false;
-
-    try {
-      return lrHasCalendarText(JSON.stringify(args));
-    } catch {
-      return true;
-    }
-  }
-
-  try {
-    const originalSendMaxMessage = sendMaxMessage;
-
-    sendMaxMessage = async function lrSendMaxMessageAdCalendarWrappedV2(params, ...rest) {
-      try {
-        const chatId = params && (params.chatId || params.chat_id || params.recipient?.chatId);
-        const isAd = lrAdByChat(chatId);
-
-        if (isAd && lrNeedsRewrite(params, true)) {
-          params = lrRewriteDeep(params, true);
-        }
-      } catch (e) {
-        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 sendMaxMessage]', e?.message || e);
-      }
-
-      return originalSendMaxMessage.call(this, params, ...rest);
-    };
-
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] sendMaxMessage wrapped');
-  } catch (e) {
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] sendMaxMessage wrap skipped:', e?.message || e);
-  }
-
-  try {
-    const originalEditMaxMessage = editMaxMessage;
-
-    editMaxMessage = async function lrEditMaxMessageAdCalendarWrappedV2(...args) {
-      try {
-        let isAd = false;
-
-        for (const a of args) {
-          if (a && typeof a === 'object') {
-            const chatId = a.chatId || a.chat_id || a.recipient?.chatId;
-            if (chatId && lrAdByChat(chatId)) isAd = true;
-          }
-        }
-
-        if (isAd && lrNeedsRewrite(args, true)) {
-          args = lrRewriteDeep(args, true);
-        }
-      } catch (e) {
-        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 editMaxMessage]', e?.message || e);
-      }
-
-      return originalEditMaxMessage.apply(this, args);
-    };
-
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] editMaxMessage wrapped');
-  } catch (e) {
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] editMaxMessage wrap skipped:', e?.message || e);
-  }
-
-  try {
-    const originalCb = cb;
-
-    cb = async function lrCbAdCalendarWrappedV2(callbackId, text, rows, ...rest) {
-      try {
-        const isAd = lrAdByCallback(callbackId);
-
-        if (isAd && lrNeedsRewrite([text, rows], true)) {
-          text = lrRewriteString(text, true);
-          rows = lrRewriteDeep(rows, true);
-        }
-      } catch (e) {
-        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 cb]', e?.message || e);
-      }
-
-      return originalCb.call(this, callbackId, text, rows, ...rest);
-    };
-
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] cb wrapped');
-  } catch (e) {
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] cb wrap skipped:', e?.message || e);
-  }
-
-  try {
-    const originalMsg = msg;
-
-    msg = async function lrMsgAdCalendarWrappedV2(chatId, text, rows, ...rest) {
-      try {
-        const isAd = lrAdByChat(chatId);
-
-        if (isAd && lrNeedsRewrite([text, rows], true)) {
-          text = lrRewriteString(text, true);
-          rows = lrRewriteDeep(rows, true);
-        }
-      } catch (e) {
-        console.error('[LR_FORCE_AD_CALENDAR_REWRITE_V2 msg]', e?.message || e);
-      }
-
-      return originalMsg.call(this, chatId, text, rows, ...rest);
-    };
-
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] msg wrapped');
-  } catch (e) {
-    console.log('[LR_FORCE_AD_CALENDAR_REWRITE_V2] msg wrap skipped:', e?.message || e);
-  }
-})();
-/* LR_FORCE_AD_CALENDAR_REWRITE_V2_END */
 
