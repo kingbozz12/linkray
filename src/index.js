@@ -817,6 +817,710 @@ globalThis.__lrSigRichV13 = (() => {
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
+/* LR_MONTH_CALENDAR_V1_START */
+app.use(async function lrMonthCalendarMiddleware(req, res, next) {
+  try {
+    const update = req.body || {};
+    const payload = getCallbackPayload(update);
+    const callbackId = getCallbackId(update);
+    const chatId = getChatId(update);
+    const key = getSessionKey(update);
+
+    function lrRows(r) {
+      return Array.isArray(r) ? r : (r && r.rows ? r.rows : []);
+    }
+
+    function lrEsc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function lrDateKeyLocal(date) {
+      const d = new Date(date);
+      return String(d.getFullYear()).padStart(4, '0') + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+    }
+
+    function lrMskNow() {
+      return new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+    }
+
+    function lrTodayKey() {
+      return lrDateKeyLocal(lrMskNow());
+    }
+
+    function lrParseDayKey(dayKey) {
+      const p = String(dayKey || lrTodayKey()).split('-').map(Number);
+      return new Date(p[0] || 2026, (p[1] || 1) - 1, p[2] || 1);
+    }
+
+    function lrMonthKeyFromDay(dayKey) {
+      const d = lrParseDayKey(dayKey);
+      return String(d.getFullYear()).padStart(4, '0') + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+
+    function lrMonthName(monthIndex) {
+      return ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'][monthIndex] || '';
+    }
+
+    function lrHumanDate(dayKey) {
+      const d = lrParseDayKey(dayKey);
+      const names = ['вс','пн','вт','ср','чт','пт','сб'];
+      const months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+      return names[d.getDay()] + ' ' + d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear() + ' г.';
+    }
+
+    function lrPrevMonth(monthKey) {
+      const p = String(monthKey).split('-').map(Number);
+      const d = new Date(p[0], (p[1] || 1) - 2, 1);
+      return String(d.getFullYear()).padStart(4, '0') + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+
+    function lrNextMonth(monthKey) {
+      const p = String(monthKey).split('-').map(Number);
+      const d = new Date(p[0], p[1] || 1, 1);
+      return String(d.getFullYear()).padStart(4, '0') + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+
+    function lrNormalizeTime(raw) {
+      const s = String(raw || '').trim();
+      let m = s.match(/^(\d{1,2})[:.\s](\d{2})$/);
+      if (!m) m = s.match(/^(\d{2})(\d{2})$/);
+      if (!m) return null;
+
+      const hh = Number(m[1]);
+      const mm = Number(m[2]);
+
+      if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+
+      return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+    }
+
+    function lrTimePayload(timeText) {
+      return String(timeText || '').replace(':', '');
+    }
+
+    function lrDayStartIso(dayKey) {
+      return dayKey + 'T00:00:00+03:00';
+    }
+
+    function lrDayEndIso(dayKey) {
+      return dayKey + 'T23:59:59+03:00';
+    }
+
+    async function lrEnsureSavedTimesTable() {
+      await query("CREATE TABLE IF NOT EXISTS channel_saved_times (id serial PRIMARY KEY, channel_id integer NOT NULL REFERENCES channels(id) ON DELETE CASCADE, time_text text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(channel_id, time_text))");
+    }
+
+    async function lrCb(text, rows) {
+      if (callbackId) {
+        return answerCallback({
+          callbackId: callbackId,
+          text: text,
+          format: 'html',
+          attachments: rows && rows.length ? inlineKeyboard(rows) : []
+        });
+      }
+
+      if (chatId) {
+        return sendMaxMessage({
+          chatId: chatId,
+          text: text,
+          format: 'html',
+          attachments: rows && rows.length ? inlineKeyboard(rows) : []
+        });
+      }
+    }
+
+    function lrDraftFromSession(session) {
+      const data = session && session.data ? session.data : {};
+      const raw = data.draft ? data.draft : data;
+      try {
+        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
+      } catch {
+        return raw || {};
+      }
+    }
+
+    async function lrCurrentDraft() {
+      const session = await getSession(key);
+      return lrDraftFromSession(session);
+    }
+
+    function lrChannelIdsFromDraft(draft) {
+      if (!draft) return [];
+      if (Array.isArray(draft.channelIds)) return draft.channelIds.map(Number).filter(Boolean);
+      if (draft.channelId) return [Number(draft.channelId)].filter(Boolean);
+      return [];
+    }
+
+    async function lrBusyTimes(dayKey, channelIds) {
+      if (!channelIds.length) return new Set();
+
+      const r = await query(
+        "SELECT to_char(publish_at AT TIME ZONE 'Europe/Moscow', 'HH24:MI') AS time_text FROM scheduled_posts WHERE channel_id = ANY($1::int[]) AND status IN ('scheduled','publishing') AND publish_at >= $2::timestamptz AND publish_at <= $3::timestamptz",
+        [channelIds, lrDayStartIso(dayKey), lrDayEndIso(dayKey)]
+      );
+
+      return new Set(lrRows(r).map(x => String(x.time_text || '').trim()).filter(Boolean));
+    }
+
+    async function lrSavedTimes(channelIds) {
+      await lrEnsureSavedTimesTable();
+
+      if (!channelIds.length) return [];
+
+      const r = await query(
+        "SELECT DISTINCT time_text FROM channel_saved_times WHERE channel_id = ANY($1::int[]) ORDER BY time_text",
+        [channelIds]
+      );
+
+      return lrRows(r).map(x => String(x.time_text || '').trim()).filter(Boolean);
+    }
+
+    async function lrFreeSavedTimes(dayKey, channelIds) {
+      const saved = await lrSavedTimes(channelIds);
+      const busy = await lrBusyTimes(dayKey, channelIds);
+      return saved.filter(t => !busy.has(t));
+    }
+
+    function lrMonthRows(monthKey, selectedDay) {
+      const p = String(monthKey || lrMonthKeyFromDay(lrTodayKey())).split('-').map(Number);
+      const year = p[0] || lrMskNow().getFullYear();
+      const month = (p[1] || 1) - 1;
+
+      const today = lrTodayKey();
+      const first = new Date(year, month, 1);
+      const last = new Date(year, month + 1, 0);
+      const start = new Date(first);
+
+      const mondayOffset = (first.getDay() || 7) - 1;
+      start.setDate(first.getDate() - mondayOffset);
+
+      const rows = [];
+
+      rows.push([
+        callbackButton('⬅️ ' + lrMonthName(new Date(year, month - 1, 1).getMonth()), 'lr_cal:month:' + lrPrevMonth(monthKey) + ':0'),
+        callbackButton(lrMonthName(month) + ' ' + year, 'noop'),
+        callbackButton(lrMonthName(new Date(year, month + 1, 1).getMonth()) + ' ➡️', 'lr_cal:month:' + lrNextMonth(monthKey) + ':0')
+      ]);
+
+      rows.push([
+        callbackButton('ПН', 'noop'),
+        callbackButton('ВТ', 'noop'),
+        callbackButton('СР', 'noop'),
+        callbackButton('ЧТ', 'noop'),
+        callbackButton('ПТ', 'noop'),
+        callbackButton('СБ', 'noop'),
+        callbackButton('ВС', 'noop')
+      ]);
+
+      for (let week = 0; week < 6; week++) {
+        const row = [];
+        for (let day = 0; day < 7; day++) {
+          const d = new Date(start);
+          d.setDate(start.getDate() + week * 7 + day);
+
+          const dk = lrDateKeyLocal(d);
+          const inMonth = d.getMonth() === month;
+          const isPast = dk < today;
+
+          let label = inMonth ? String(d.getDate()) : '·';
+          if (selectedDay && dk === selectedDay) label = '✅ ' + label;
+          if (isPast) label = '•';
+
+          row.push(callbackButton(label, (!inMonth || isPast) ? 'noop' : 'lr_cal:day:' + dk));
+        }
+        rows.push(row);
+
+        const weekEnd = new Date(start);
+        weekEnd.setDate(start.getDate() + week * 7 + 6);
+        if (weekEnd > last && week >= 4) break;
+      }
+
+      rows.push([callbackButton('✍️ Ввести время вручную', 'schedule:manual')]);
+      rows.push([callbackButton('⬅️ Назад', 'editor:next')]);
+
+      return rows;
+    }
+
+    async function lrShowMonth(monthKey, selectedDay) {
+      const p = String(monthKey || lrMonthKeyFromDay(lrTodayKey())).split('-').map(Number);
+      const title = lrMonthName((p[1] || 1) - 1) + ' ' + (p[0] || lrMskNow().getFullYear());
+
+      return lrCb(
+        '━━━━━━━━━━━━━━\n📅 <b>Календарь публикации</b>\n\n' +
+        title +
+        '\n\nВыберите день. Календарь идёт по неделям: 7 дней в ряд.\n' +
+        'Прошедшие дни отмечены точкой.\n━━━━━━━━━━━━━━',
+        lrMonthRows(monthKey, selectedDay)
+      );
+    }
+
+    async function lrShowDay(dayKey) {
+      const draft = await lrCurrentDraft();
+      const channelIds = lrChannelIdsFromDraft(draft);
+      const savedFree = await lrFreeSavedTimes(dayKey, channelIds);
+      const busy = await lrBusyTimes(dayKey, channelIds);
+
+      const rows = [];
+
+      if (savedFree.length) {
+        const line = [];
+        for (const t of savedFree.slice(0, 3)) {
+          line.push(callbackButton('💾 ' + t, 'schedule:time:' + dayKey + ':' + lrTimePayload(t)));
+        }
+        rows.push(line);
+
+        if (savedFree.length > 3) {
+          const line2 = [];
+          for (const t of savedFree.slice(3, 6)) {
+            line2.push(callbackButton('💾 ' + t, 'schedule:time:' + dayKey + ':' + lrTimePayload(t)));
+          }
+          rows.push(line2);
+        }
+      }
+
+      rows.push([callbackButton('💾 Сохранённое время', 'lr_cal:saved_time:' + dayKey)]);
+
+      rows.push([
+        callbackButton('09:00', 'schedule:time:' + dayKey + ':0900'),
+        callbackButton('12:00', 'schedule:time:' + dayKey + ':1200'),
+        callbackButton('15:00', 'schedule:time:' + dayKey + ':1500')
+      ]);
+
+      rows.push([
+        callbackButton('18:00', 'schedule:time:' + dayKey + ':1800'),
+        callbackButton('21:00', 'schedule:time:' + dayKey + ':2100'),
+        callbackButton('23:00', 'schedule:time:' + dayKey + ':2300')
+      ]);
+
+      rows.push([callbackButton('✍️ Ввести время вручную', 'schedule:manual_day:' + dayKey)]);
+      rows.push([callbackButton('⬅️ К месяцу', 'lr_cal:month:' + lrMonthKeyFromDay(dayKey) + ':' + dayKey)]);
+
+      let savedText = savedFree.length
+        ? savedFree.map(t => '💾 ' + t).join('  ')
+        : 'нет свободного сохранённого времени';
+
+      if (busy.size) {
+        savedText += '\n\nЗанято на этот день: ' + Array.from(busy).join(', ');
+      }
+
+      return lrCb(
+        '━━━━━━━━━━━━━━\n📅 <b>' + lrEsc(lrHumanDate(dayKey)) + '</b>\n\n' +
+        'Сохранённое время:\n' + lrEsc(savedText) +
+        '\n\nЕсли сохранённое время уже занято на этот день, оно не показывается кнопкой.\n━━━━━━━━━━━━━━',
+        rows
+      );
+    }
+
+    async function lrAskSavedTime(dayKey) {
+      const session = await getSession(key);
+      const draft = lrDraftFromSession(session);
+
+      await setSession(key, 'lr_wait_calendar_saved_time', {
+        draft: draft,
+        dayKey: dayKey
+      });
+
+      return lrCb(
+        '💾 Введите сохранённое время для канала.\n\nПример: 18:30 или 1830.\nОно сохранится для выбранного канала и будет показываться сверху при выборе даты, если время свободно.',
+        [[callbackButton('⬅️ Назад к дате', 'lr_cal:day:' + dayKey)]]
+      );
+    }
+
+    async function lrSaveTimeFromMessage() {
+      const session = await getSession(key);
+      if (!session || session.state !== 'lr_wait_calendar_saved_time') return false;
+
+      const text = getMessageText(update);
+      const time = lrNormalizeTime(text);
+
+      if (!time) {
+        await sendMaxMessage({
+          chatId: chatId,
+          text: '⚠️ Введите время в формате 18:30 или 1830.',
+          format: 'html',
+          attachments: inlineKeyboard([[callbackButton('⬅️ Назад', 'lr_cal:day:' + (session.data && session.data.dayKey ? session.data.dayKey : lrTodayKey()))]])
+        });
+        return true;
+      }
+
+      const draft = lrDraftFromSession(session);
+      const channelIds = lrChannelIdsFromDraft(draft);
+
+      if (!channelIds.length) {
+        await sendMaxMessage({
+          chatId: chatId,
+          text: '⚠️ Сначала выберите канал для поста.',
+          format: 'html'
+        });
+        await clearSession(key);
+        return true;
+      }
+
+      await lrEnsureSavedTimesTable();
+
+      for (const channelId of channelIds) {
+        await query(
+          "INSERT INTO channel_saved_times(channel_id, time_text, updated_at) VALUES($1, $2, now()) ON CONFLICT(channel_id, time_text) DO UPDATE SET updated_at=now()",
+          [channelId, time]
+        );
+      }
+
+      await setSession(key, 'publish_menu', { draft: draft });
+
+      await sendMaxMessage({
+        chatId: chatId,
+        text: '✅ Сохранённое время добавлено: <b>' + lrEsc(time) + '</b>',
+        format: 'html'
+      });
+
+      await lrShowDay(session.data && session.data.dayKey ? session.data.dayKey : lrTodayKey());
+      return true;
+    }
+
+    if (await lrSaveTimeFromMessage()) {
+      return res.json({ ok: true });
+    }
+
+    if (!payload) return next();
+
+    if (payload === 'noop') {
+      if (callbackId) {
+        await answerCallback({ callbackId, notification: 'Недоступно' }).catch(function(){});
+      }
+      return res.json({ ok: true });
+    }
+
+    if (payload === 'schedule:calendar') {
+      return lrShowMonth(lrMonthKeyFromDay(lrTodayKey()), null).then(function(){ return res.json({ ok: true }); });
+    }
+
+    if (payload.startsWith('schedule:week:')) {
+      const dayKey = payload.split(':')[2] || lrTodayKey();
+      return lrShowMonth(lrMonthKeyFromDay(dayKey), dayKey).then(function(){ return res.json({ ok: true }); });
+    }
+
+    if (payload.startsWith('schedule:day:')) {
+      const dayKey = payload.split(':')[2] || lrTodayKey();
+      return lrShowDay(dayKey).then(function(){ return res.json({ ok: true }); });
+    }
+
+    if (payload.startsWith('lr_cal:month:')) {
+      const parts = payload.split(':');
+      const monthKey = parts[2] || lrMonthKeyFromDay(lrTodayKey());
+      const selected = parts[3] && parts[3] !== '0' ? parts[3] : null;
+      return lrShowMonth(monthKey, selected).then(function(){ return res.json({ ok: true }); });
+    }
+
+    if (payload.startsWith('lr_cal:day:')) {
+      const dayKey = payload.split(':')[2] || lrTodayKey();
+      return lrShowDay(dayKey).then(function(){ return res.json({ ok: true }); });
+    }
+
+    if (payload.startsWith('lr_cal:saved_time:')) {
+      const dayKey = payload.split(':')[2] || lrTodayKey();
+      return lrAskSavedTime(dayKey).then(function(){ return res.json({ ok: true }); });
+    }
+
+    return next();
+  } catch (error) {
+    console.error('[LR_MONTH_CALENDAR_V1]', error && error.message ? error.message : error);
+    return next();
+  }
+});
+/* LR_MONTH_CALENDAR_V1_END */
+
+
+/* LR_CLEAN_SIGNATURE_FIX_START */
+app.use(async function lrCleanSignatureMiddleware(req, res, next) {
+  try {
+    const update = req.body || {};
+    const payload = getCallbackPayload(update);
+    const callbackId = getCallbackId(update);
+    const chatId = getChatId(update);
+    const key = getSessionKey(update);
+
+    function lrRows(r) {
+      return Array.isArray(r) ? r : (r && r.rows ? r.rows : []);
+    }
+
+    function lrEsc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function lrPlain(v) {
+      return String(v || '')
+        .replace(/<a[^>]*>([\s\S]*?)<\/a>/gi, '$1')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/?(b|strong|i|em|u|s|strike|code|pre|span|p|div|h1|h2|h3)[^>]*>/gi, '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .trim();
+    }
+
+    async function lrSigChannels(onlyIds) {
+      if (onlyIds && onlyIds.length) {
+        const r = await query(
+          'SELECT * FROM channels WHERE id = ANY($1::int[]) ORDER BY id',
+          [onlyIds.map(Number)]
+        );
+        return lrRows(r);
+      }
+
+      const r = await query('SELECT * FROM channels ORDER BY id');
+      return lrRows(r);
+    }
+
+    async function lrSigChannel(channelId) {
+      const r = await query('SELECT * FROM channels WHERE id=$1 LIMIT 1', [Number(channelId)]);
+      return lrRows(r)[0] || null;
+    }
+
+    async function lrLoadSig(channelId) {
+      const r = await query(
+        'SELECT * FROM channel_signatures WHERE channel_id=$1 ORDER BY is_active DESC, updated_at DESC, id DESC LIMIT 1',
+        [Number(channelId)]
+      );
+      return lrRows(r)[0] || null;
+    }
+
+    async function lrSaveSig(channelId, content) {
+      const markup = (Array.isArray(content.markup) ? content.markup : []).filter(function(m) {
+        const t = String((m && (m.type || m.kind)) || '').toLowerCase();
+        return !t.includes('quote') && !t.includes('blockquote') && !t.includes('citation') && !t.includes('cite');
+      });
+
+      await query(
+        'INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, updated_at) VALUES($1, $2, $3, $4, $5, $6::jsonb, true, now()) ON CONFLICT(channel_id, owner_key) DO UPDATE SET text=EXCLUDED.text, format=EXCLUDED.format, markup=EXCLUDED.markup, is_active=true, updated_at=now()',
+        [Number(channelId), 'global', 'Автоподпись', String(content.text || '').trim(), 'html', JSON.stringify(markup)]
+      );
+    }
+
+    function lrKb(rows) {
+      return inlineKeyboard(rows);
+    }
+
+    async function lrCb(text, rows) {
+      return answerCallback({
+        callbackId: callbackId,
+        text: text,
+        format: 'html',
+        attachments: lrKb(rows || [])
+      });
+    }
+
+    async function lrMsg(text, rows) {
+      return sendMaxMessage({
+        chatId: chatId,
+        text: text,
+        format: 'html',
+        attachments: rows && rows.length ? lrKb(rows) : []
+      });
+    }
+
+    function lrChName(ch) {
+      return lrEsc(ch && (ch.title || ch.name || ch.link || ('Канал ' + ch.id)));
+    }
+
+    function lrBack(mode) {
+      return mode === 'editor'
+        ? callbackButton('⬅️ В редактор', 'editor:back')
+        : callbackButton('⬅️ В Studio', 'main:posting');
+    }
+
+    async function lrShowSigList(mode, onlyIds) {
+      const channels = await lrSigChannels(onlyIds);
+
+      if (!channels.length) {
+        await lrCb('━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nКаналы не найдены.\n━━━━━━━━━━━━━━', [[lrBack(mode)]]);
+        return res.json({ ok: true });
+      }
+
+      const buttons = [];
+
+      for (const ch of channels) {
+        const sig = await lrLoadSig(ch.id);
+        const active = Boolean(sig && sig.text && sig.is_active);
+        buttons.push([
+          callbackButton((active ? '🟢 ' : '🔴 ') + lrPlain(ch.title || ch.name || ('Канал ' + ch.id)), 'lr:sig:channel:' + ch.id + ':' + mode)
+        ]);
+      }
+
+      buttons.push([lrBack(mode)]);
+
+      await lrCb(
+        '━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\n🟢 подпись включена\n🔴 подпись выключена или не создана\n\nВыберите канал.\n━━━━━━━━━━━━━━',
+        buttons
+      );
+
+      return res.json({ ok: true });
+    }
+
+    async function lrShowSigChannel(channelId, mode) {
+      const ch = await lrSigChannel(channelId);
+      const sig = await lrLoadSig(channelId);
+      const active = Boolean(sig && sig.text && sig.is_active);
+
+      const text = [
+        '━━━━━━━━━━━━━━',
+        '🏷 <b>Автоподпись</b>',
+        '',
+        'Канал:',
+        ch ? lrChName(ch) : ('Канал ' + channelId),
+        '',
+        'Статус: ' + (active ? '🟢 включена' : '🔴 выключена или не создана'),
+        '',
+        sig && sig.text ? String(sig.text) : '<i>подпись не создана</i>',
+        '━━━━━━━━━━━━━━'
+      ].join('\n');
+
+      const buttons = [
+        [callbackButton('✏️ Заменить подпись', 'lr:sig:add:' + channelId + ':' + mode)],
+        [callbackButton(active ? '🔴 Выключить' : '🟢 Включить', 'lr:sig:toggle:' + channelId + ':' + mode)],
+        [lrBack(mode)]
+      ];
+
+      await lrCb(text, buttons);
+      return res.json({ ok: true });
+    }
+
+    async function lrAskSignature(channelId, mode) {
+      const session = await getSession(key);
+      const draft = safeDraft(session && session.data && session.data.draft ? session.data.draft : (session && session.data ? session.data : {}));
+
+      await setSession(key, 'lr_wait_signature_clean', {
+        channelId: Number(channelId),
+        mode: mode,
+        draft: draft
+      });
+
+      await lrCb(
+        '🏷 Отправьте подпись. Ссылки, жирный, курсив, подчёркивание, зачёркивание, моно и заголовок MAX сохранятся.\n\nЦитата в подписи специально будет обычным текстом.',
+        [[callbackButton('⬅️ Назад', 'lr:sig:channel:' + channelId + ':' + mode)]]
+      );
+
+      return res.json({ ok: true });
+    }
+
+    if (payload === 'sig:menu') {
+      return lrShowSigList('studio', null);
+    }
+
+    if (payload === 'editor:signature') {
+      const session = await getSession(key);
+      const draft = safeDraft(session && session.data && session.data.draft ? session.data.draft : (session && session.data ? session.data : {}));
+      const ids = Array.isArray(draft.channelIds) ? draft.channelIds.map(Number).filter(Boolean) : [];
+
+      if (ids.length === 1) return lrShowSigChannel(ids[0], 'editor');
+      if (ids.length > 1) return lrShowSigList('editor', ids);
+
+      return lrShowSigList('editor', null);
+    }
+
+    if (payload.startsWith('lr:sig:channel:')) {
+      const p = payload.split(':');
+      return lrShowSigChannel(Number(p[3]), p[4] || 'studio');
+    }
+
+    if (payload.startsWith('lr:sig:add:')) {
+      const p = payload.split(':');
+      return lrAskSignature(Number(p[3]), p[4] || 'studio');
+    }
+
+    if (payload.startsWith('lr:sig:toggle:')) {
+      const p = payload.split(':');
+      const channelId = Number(p[3]);
+      const mode = p[4] || 'studio';
+      const sig = await lrLoadSig(channelId);
+      const nextActive = !(sig && sig.text && sig.is_active);
+
+      await query('UPDATE channel_signatures SET is_active=$2, updated_at=now() WHERE channel_id=$1', [channelId, nextActive]);
+
+      return lrShowSigChannel(channelId, mode);
+    }
+
+    if (payload.startsWith('sig:channel:')) {
+      return lrShowSigChannel(Number(payload.split(':')[2]), 'studio');
+    }
+
+    if (payload.startsWith('sig:add_channel:')) {
+      return lrAskSignature(Number(payload.split(':')[2]), 'studio');
+    }
+
+    if (payload.startsWith('sig:toggle_channel:')) {
+      const channelId = Number(payload.split(':')[2]);
+      const sig = await lrLoadSig(channelId);
+      await query('UPDATE channel_signatures SET is_active=$2, updated_at=now() WHERE channel_id=$1', [channelId, !(sig && sig.text && sig.is_active)]);
+      return lrShowSigChannel(channelId, 'studio');
+    }
+
+    const session = await getSession(key);
+
+    if (session && session.state === 'lr_wait_signature_clean') {
+      const channelId = Number(session.data && session.data.channelId);
+      const mode = (session.data && session.data.mode) || 'studio';
+      const draft = safeDraft(session.data && session.data.draft ? session.data.draft : {});
+
+      const content = await hydrateContent(update);
+      const markup = (Array.isArray(content.markup) ? content.markup : []).filter(function(m) {
+        const t = String((m && (m.type || m.kind)) || '').toLowerCase();
+        return !t.includes('quote') && !t.includes('blockquote') && !t.includes('citation') && !t.includes('cite');
+      });
+
+      const text = String(content.text || '').replace(/\\n/g, '\n').trim();
+
+      if (!text) {
+        await lrMsg('⚠️ Подпись пустая. Отправьте текст подписи.');
+        return res.json({ ok: true });
+      }
+
+      await lrSaveSig(channelId, {
+        text: text,
+        markup: markup
+      });
+
+      if (mode === 'editor') {
+        draft.signatureEnabled = true;
+        await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft: draft });
+        await lrMsg('✅ Подпись добавлена в канал.');
+        await sendDraftPreview(chatId, draft);
+        await msg(chatId, editorMenuText(), editorMenuRows(draft));
+      } else {
+        await clearSession(key);
+        await lrMsg('✅ Подпись добавлена в канал.');
+        if (typeof sendStudio === 'function') {
+          await sendStudio(chatId);
+        } else {
+          await lrMsg('━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━', [
+            [callbackButton('🧬 LinkRay Studio', 'main:posting')],
+            [callbackButton('🔗 Добавить канал', 'channel:add')],
+            [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]
+          ]);
+        }
+      }
+
+      return res.json({ ok: true });
+    }
+
+    return next();
+  } catch (e) {
+    console.error('[LR_CLEAN_SIGNATURE_FIX]', e && e.message ? e.message : e);
+    return next();
+  }
+});
+/* LR_CLEAN_SIGNATURE_FIX_END */
+
+
 // LR_CHANNEL_DB_SYNC_MIDDLEWARE_START
 app.use(async (req, res, next) => {
   try {
@@ -5714,4 +6418,61 @@ try {
   console.error('[heading quote heuristic install error]', error && (error.message || error));
 }
 // LR_HEADING_QUOTE_HEURISTIC_END
+
+
+/* LR_CLEAN_SIGNATURE_COMPOSE_START */
+{
+  const lrRowsCompose = function(r) {
+    return Array.isArray(r) ? r : (r && r.rows ? r.rows : []);
+  };
+
+  const lrLoadSigCompose = async function(channelId) {
+    const r = await query(
+      'SELECT * FROM channel_signatures WHERE channel_id=$1 AND is_active=true ORDER BY updated_at DESC, id DESC LIMIT 1',
+      [Number(channelId)]
+    );
+    return lrRowsCompose(r)[0] || null;
+  };
+
+  if (typeof composePostForChannel === 'function') {
+    const lrOldComposePostForChannelClean = composePostForChannel;
+
+    composePostForChannel = async function(draft, channelId) {
+      const result = await lrOldComposePostForChannelClean(draft, channelId);
+
+      if (!draft || draft.isAd || draft.signatureEnabled === false) {
+        return result;
+      }
+
+      const sig = await lrLoadSigCompose(channelId);
+
+      if (!sig || !sig.text || !sig.is_active) {
+        return result;
+      }
+
+      const baseText = String(result && result.text ? result.text : '');
+      const sigText = String(sig.text || '').trim();
+
+      if (!sigText) {
+        return result;
+      }
+
+      const basePlain = plain(baseText);
+      const sigPlain = plain(sigText);
+
+      if (sigPlain && basePlain.includes(sigPlain)) {
+        return result;
+      }
+
+      return {
+        ...(result || {}),
+        text: baseText ? baseText + '\n\n' + sigText : sigText,
+        format: 'html'
+      };
+    };
+
+    console.log('[LR_CLEAN_SIGNATURE_COMPOSE] installed');
+  }
+}
+/* LR_CLEAN_SIGNATURE_COMPOSE_END */
 
