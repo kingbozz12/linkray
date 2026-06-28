@@ -7472,3 +7472,169 @@ try {
 }
 /* LR_CLEAN_SIGNATURE_COMPOSE_END */
 
+/* LR_BUTTON_PAYLOAD_SAFE_V8_START */
+{
+  const __lrOrigComposePostForChannelV8 = composePostForChannel;
+  const __lrOrigSendDraftPreviewV8 = sendDraftPreview;
+
+  function __lrBtnTextV8(button, index = 0) {
+    return String(
+      button?.text ||
+      button?.title ||
+      button?.label ||
+      button?.name ||
+      `Кнопка ${index + 1}`
+    ).trim();
+  }
+
+  function __lrBtnUrlV8(button) {
+    return String(
+      button?.url ||
+      button?.link ||
+      button?.href ||
+      button?.targetUrl ||
+      button?.originalUrl ||
+      ''
+    ).trim();
+  }
+
+  function __lrCleanButtonRowsV8(buttons) {
+    const rows = [];
+    const source = Array.isArray(buttons) ? buttons : [];
+
+    for (const item of source) {
+      const rawRow = Array.isArray(item) ? item : [item];
+      const row = [];
+
+      for (let i = 0; i < rawRow.length; i++) {
+        const b = rawRow[i] || {};
+        const text = __lrBtnTextV8(b, i);
+        const url = __lrBtnUrlV8(b);
+
+        if (!text || !/^https?:\/\//i.test(url)) continue;
+
+        row.push(linkButton(text, url));
+      }
+
+      if (row.length) rows.push(row);
+    }
+
+    return rows;
+  }
+
+  function __lrCleanAttachmentsV8(attachments) {
+    let list = Array.isArray(attachments) ? attachments : [];
+
+    try {
+      if (typeof normalizeAttachments === 'function') {
+        list = normalizeAttachments(list);
+      }
+    } catch (e) {
+      console.error('[LR_BUTTON_PAYLOAD_SAFE_V8 normalizeAttachments]', e?.message || e);
+    }
+
+    const out = [];
+    const seen = new Set();
+
+    for (const item of list) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+      const type = String(item.type || item.kind || item.attachment_type || '').toLowerCase();
+
+      if (type.includes('inline_keyboard')) continue;
+      if (type.includes('keyboard')) continue;
+      if (type.includes('button')) continue;
+      if (type.includes('link_preview')) continue;
+      if (type.includes('web_page')) continue;
+
+      const key = JSON.stringify(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push(item);
+    }
+
+    return out;
+  }
+
+  function __lrKeyboardAttachmentsV8(draft) {
+    const rows = __lrCleanButtonRowsV8(draft?.buttons || []);
+    return rows.length ? inlineKeyboard(rows) : [];
+  }
+
+  function __lrMergeAttachmentsV8(base, draft) {
+    const media = __lrCleanAttachmentsV8(
+      base?.attachments && base.attachments.length
+        ? base.attachments
+        : draft?.content?.attachments
+    );
+
+    return media.concat(__lrKeyboardAttachmentsV8(draft));
+  }
+
+  async function __lrComposePostForChannelSafeV8(draft, channelId) {
+    const base = await __lrOrigComposePostForChannelV8(draft, channelId);
+
+    return {
+      text: String(base?.text ?? draft?.content?.text ?? ''),
+      format: base?.format || draft?.content?.format || 'html',
+      markup: Array.isArray(base?.markup) ? base.markup : [],
+      attachments: __lrMergeAttachmentsV8(base, draft)
+    };
+  }
+
+  composePostForChannel = __lrComposePostForChannelSafeV8;
+
+  sendDraftPreview = async function __lrSendDraftPreviewSafeV8(chatId, draft) {
+    try {
+      const channelId = Array.isArray(draft?.channelIds) ? draft.channelIds[0] : null;
+      const content = await composePostForChannel(draft, channelId);
+
+      if (draft?.previewMessageId) {
+        try {
+          await editMaxMessage(draft.previewMessageId, content);
+          return draft.previewMessageId;
+        } catch (editError) {
+          console.error('[LR_BUTTON_PAYLOAD_SAFE_V8 preview edit failed, sending new]', editError?.message || editError);
+        }
+      }
+
+      const sent = await sendMaxMessage({
+        chatId,
+        ...content
+      });
+
+      return extractMessageId(sent);
+    } catch (firstError) {
+      console.error('[LR_BUTTON_PAYLOAD_SAFE_V8 preview full failed]', firstError?.message || firstError);
+
+      try {
+        const fallbackText = String(draft?.content?.text || '').trim() || 'пост без текста';
+        const sent = await sendMaxMessage({
+          chatId,
+          text: fallbackText,
+          format: draft?.content?.format || 'html',
+          attachments: __lrKeyboardAttachmentsV8(draft),
+          markup: Array.isArray(draft?.content?.markup) ? draft.content.markup : []
+        });
+
+        return extractMessageId(sent);
+      } catch (secondError) {
+        console.error('[LR_BUTTON_PAYLOAD_SAFE_V8 preview text+buttons failed]', secondError?.message || secondError);
+
+        await msg(
+          chatId,
+          `⚠️ Не удалось вывести превью полностью: ${escapeHtml(secondError?.message || secondError)}\n\n${escapeHtml(short(draft?.content?.text || '', 900))}`,
+          [],
+          'html'
+        );
+
+        return null;
+      }
+    }
+  };
+
+  console.log('[LR_BUTTON_PAYLOAD_SAFE_V8] installed');
+}
+/* LR_BUTTON_PAYLOAD_SAFE_V8_END */
+
