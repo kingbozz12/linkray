@@ -817,6 +817,97 @@ globalThis.__lrSigRichV13 = (() => {
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
+/* LR_POST_EDITOR_ORDER_FINAL_START */
+app.use(async function lrPostEditorOrderFinal(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const chatId = Number(getChatId(update) || 0);
+    const key = getSessionKey(update);
+
+    if (!payload || !chatId || !key) return next();
+
+    const low = payload.toLowerCase();
+
+    const isPostEditor =
+      payload.startsWith('post:edit:') ||
+      payload.startsWith('post:editor:') ||
+      payload.startsWith('post:to_editor:') ||
+      payload.startsWith('post:open_editor:') ||
+      payload.startsWith('published:edit:') ||
+      payload.startsWith('scheduled:edit:') ||
+      (
+        payload.startsWith('post:') &&
+        /\d/.test(payload) &&
+        /(edit|editor|редакт)/i.test(payload)
+      );
+
+    if (!isPostEditor) return next();
+
+    const nums = payload.match(/\d+/g) || [];
+    const postId = Number(nums[nums.length - 1] || 0);
+
+    if (!postId) return next();
+
+    const rows = await query(
+      `SELECT *
+       FROM scheduled_posts
+       WHERE id = $1
+       LIMIT 1`,
+      [postId]
+    );
+
+    const row = rows?.[0];
+
+    if (!row) {
+      if (callbackId && typeof answerCallback === 'function') {
+        try {
+          await answerCallback({ callbackId, notification: 'Пост не найден' });
+        } catch {}
+      }
+      return res.json({ ok: true });
+    }
+
+    const draft = makeDraftFromPost(row);
+    draft.postId = Number(row.id);
+    draft.id = Number(row.id);
+    draft.status = row.status || draft.status || 'scheduled';
+    draft.publishedMessageId = row.published_message_id || draft.publishedMessageId || null;
+    draft.previewMessageId = null;
+
+    await setSession(key, 'edit_existing', { draft });
+
+    if (callbackId && typeof answerCallback === 'function') {
+      try {
+        await answerCallback({ callbackId, notification: 'Открываю редактор' });
+      } catch {}
+    }
+
+    try {
+      await sendDraftPreview(chatId, draft);
+    } catch (previewError) {
+      console.error('[LR_POST_EDITOR_ORDER_FINAL preview]', previewError?.message || previewError);
+    }
+
+    await sendMaxMessage({
+      chatId,
+      text: editorMenuText(),
+      format: 'html',
+      attachments: inlineKeyboard(editorMenuRows(draft))
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('[LR_POST_EDITOR_ORDER_FINAL]', e?.stack || e);
+    return next();
+  }
+});
+/* LR_POST_EDITOR_ORDER_FINAL_END */
+
+
 /* LR_BUTTONS_CLEAN_FINAL_START */
 app.use(async function lrButtonsCleanFinal(req, res, next) {
   try {
@@ -8307,4 +8398,79 @@ try {
   console.log('[LR_PUBLISHED_DB_SAVE_V15] installed');
 }
 /* LR_PUBLISHED_DB_SAVE_V15_END */
+
+/* LR_FINAL_ATTACHMENTS_SAFE_START */
+function finalAttachments(draft) {
+  const out = [];
+  const seen = new Set();
+
+  const src =
+    Array.isArray(draft?.content?.attachments) ? draft.content.attachments :
+    Array.isArray(draft?.attachments) ? draft.attachments :
+    [];
+
+  let normalized = src;
+
+  try {
+    if (typeof normalizeAttachments === 'function') {
+      normalized = normalizeAttachments(src);
+    }
+  } catch (e) {
+    console.error('[LR_FINAL_ATTACHMENTS_SAFE normalize]', e?.message || e);
+  }
+
+  for (const item of Array.isArray(normalized) ? normalized : []) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+    const type = String(
+      item.type ||
+      item.kind ||
+      item.attachment_type ||
+      item.attachmentType ||
+      ''
+    ).toLowerCase();
+
+    if (type.includes('inline_keyboard')) continue;
+    if (type.includes('keyboard')) continue;
+    if (type.includes('button')) continue;
+    if (type.includes('link_preview')) continue;
+    if (type.includes('web_page')) continue;
+
+    const key = JSON.stringify(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push(item);
+  }
+
+  const buttons = Array.isArray(draft?.buttons) ? draft.buttons : [];
+  const rows = [];
+
+  for (const item of buttons) {
+    const row = Array.isArray(item) ? item : [item];
+    const cleanRow = [];
+
+    for (const b of row) {
+      const text = String(b?.text || b?.title || b?.label || '').trim();
+      const url = String(b?.url || b?.link || b?.href || '').trim();
+
+      if (!text || !/^https?:\/\//i.test(url)) continue;
+
+      if (typeof linkButton === 'function') {
+        cleanRow.push(linkButton(text, url));
+      }
+    }
+
+    if (cleanRow.length) rows.push(cleanRow);
+  }
+
+  if (rows.length && typeof inlineKeyboard === 'function') {
+    const kb = inlineKeyboard(rows);
+    if (Array.isArray(kb)) out.push(...kb);
+    else if (kb) out.push(kb);
+  }
+
+  return out;
+}
+/* LR_FINAL_ATTACHMENTS_SAFE_END */
 
