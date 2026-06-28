@@ -1072,14 +1072,14 @@ app.use(async function lrMonthCalendarMiddleware(req, res, next) {
       if (savedFree.length) {
         const line = [];
         for (const t of savedFree.slice(0, 3)) {
-          line.push(callbackButton('💾 ' + t, 'schedule:time:' + dayKey + ':' + lrTimePayload(t)));
+          line.push(callbackButton('💾 ' + t, 'lr_cal:pick:' + dayKey + ':' + lrTimePayload(t)));
         }
         rows.push(line);
 
         if (savedFree.length > 3) {
           const line2 = [];
           for (const t of savedFree.slice(3, 6)) {
-            line2.push(callbackButton('💾 ' + t, 'schedule:time:' + dayKey + ':' + lrTimePayload(t)));
+            line2.push(callbackButton('💾 ' + t, 'lr_cal:pick:' + dayKey + ':' + lrTimePayload(t)));
           }
           rows.push(line2);
         }
@@ -1087,17 +1087,11 @@ app.use(async function lrMonthCalendarMiddleware(req, res, next) {
 
       rows.push([callbackButton('💾 Сохранённое время', 'lr_cal:saved_time:' + dayKey)]);
 
-      rows.push([
-        callbackButton('09:00', 'schedule:time:' + dayKey + ':0900'),
-        callbackButton('12:00', 'schedule:time:' + dayKey + ':1200'),
-        callbackButton('15:00', 'schedule:time:' + dayKey + ':1500')
-      ]);
+            // LR_CALENDAR_SAVED_TIMES_V4: стандартные времена 09/12/15/18/21/23 убраны
 
-      rows.push([
-        callbackButton('18:00', 'schedule:time:' + dayKey + ':1800'),
-        callbackButton('21:00', 'schedule:time:' + dayKey + ':2100'),
-        callbackButton('23:00', 'schedule:time:' + dayKey + ':2300')
-      ]);
+
+            // LR_CALENDAR_SAVED_TIMES_V4: стандартные времена 09/12/15/18/21/23 убраны
+
 
       rows.push([callbackButton('✍️ Ввести время вручную', 'schedule:manual_day:' + dayKey)]);
       rows.push([callbackButton('⬅️ К месяцу', 'lr_cal:month:' + lrMonthKeyFromDay(dayKey) + ':' + dayKey)]);
@@ -3632,6 +3626,23 @@ async function handleCallback(update) {
   if (payload === 'schedule:calendar') return showScheduleCalendar(callbackId, key, dateKey(new Date()));
   if (payload.startsWith('schedule:week:')) return showScheduleCalendar(callbackId, key, payload.split(':')[2]);
   if (payload.startsWith('schedule:day:')) return showScheduleTimes(callbackId, key, payload.split(':')[2]);
+  
+  if (payload.startsWith('lr_cal:pick:')) {
+    const [, , dayKey, hhmm] = payload.split(':');
+    const clean = String(hhmm || '').replace(/[^0-9]/g, '').padStart(4, '0').slice(0, 4);
+    const niceTime = clean.slice(0, 2) + ':' + clean.slice(2, 4);
+
+    const dt = dateTimeFromDayTime(dayKey, clean);
+    if (dt.getTime() > Date.now() && chatId) {
+      await sendMaxMessage({
+        chatId,
+        text: '✅ Время выбрано: <b>' + escapeHtml(niceTime) + '</b>',
+        format: 'html'
+      }).catch(() => {});
+    }
+
+    return scheduleFromCallbackTime(callbackId, chatId, key, dayKey, clean);
+  }
   if (payload.startsWith('schedule:time:')) { const [, , dayKey, hhmm] = payload.split(':'); return scheduleFromCallbackTime(callbackId, chatId, key, dayKey, hhmm); }
   if (payload.startsWith('schedule:manual_day:')) { const dayKey = payload.split(':')[2]; const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, `🕒 Введите время для ${dateText(keyToDate(dayKey))}: ${dayKey} 18:30`, [[callbackButton('⬅️ К календарю', `schedule:week:${dayKey}`)]]); }
   if (payload === 'publish:now') { const s = await getSession(key); const draft = safeDraft(s.data); const results = await publishDraftNow(draft, key); await clearSession(key); await answerCallback({ callbackId, notification: 'Публикация выполнена.' }).catch(()=>{}); return afterPublished(chatId, draft, results); }
