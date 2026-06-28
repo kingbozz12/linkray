@@ -816,6 +816,344 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
+/* LR_BUTTON_CLEAN_V9_START */
+app.use(async function lrButtonCleanV9(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = getCallbackPayload(update);
+    const callbackId = getCallbackId(update);
+    const chatId = Number(getChatId(update) || 0);
+    const key = getSessionKey(update);
+
+    function esc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function safePlain(v) {
+      try {
+        return typeof plain === 'function' ? plain(v) : String(v || '');
+      } catch {
+        return String(v || '');
+      }
+    }
+
+    function short(v, max = 26) {
+      const s = safePlain(v || '').replace(/\s+/g, ' ').trim();
+      return s.length > max ? s.slice(0, max) + '...' : s;
+    }
+
+    function draftFromSession(session) {
+      const data = session && session.data ? session.data : {};
+      const raw = data.draft ? data.draft : data;
+
+      try {
+        return typeof safeDraft === 'function' ? safeDraft(raw) : raw;
+      } catch {
+        return raw || {};
+      }
+    }
+
+    function normalizeButton(b) {
+      const text = String(b?.text || b?.title || b?.label || '').trim();
+      const url = String(b?.url || b?.link || b?.href || '').trim();
+
+      if (!text || !/^https?:\/\//i.test(url)) return null;
+      if (/^(⚠️|формат кнопки|добавить кнопку|отправьте сообщением|сейчас:)/i.test(text)) return null;
+
+      return { text, url };
+    }
+
+    function cleanButtons(buttons) {
+      const out = [];
+      const seen = new Set();
+
+      for (const b of Array.isArray(buttons) ? buttons : []) {
+        const n = normalizeButton(b);
+        if (!n) continue;
+
+        const id = n.text + '|' + n.url;
+        if (seen.has(id)) continue;
+        seen.add(id);
+
+        out.push(n);
+      }
+
+      return out;
+    }
+
+    function msgMarkup(u) {
+      const m =
+        u?.message?.body?.markup ||
+        u?.message?.markup ||
+        u?.body?.markup ||
+        u?.markup ||
+        [];
+
+      return Array.isArray(m) ? m : [];
+    }
+
+    function overlap(aStart, aLen, bStart, bLen) {
+      const a1 = Number(aStart) || 0;
+      const a2 = a1 + (Number(aLen) || 0);
+      const b1 = Number(bStart) || 0;
+      const b2 = b1 + (Number(bLen) || 0);
+      return a1 < b2 && b1 < a2;
+    }
+
+    function parseInputButtons(text) {
+      const raw = String(text || '').replace(/\r/g, '\n').trim();
+
+      if (!raw) {
+        return { ok: false, error: '⚠️ Формат кнопки:\n<b>Название - https://site.ru</b>' };
+      }
+
+      if (/^(⚠️|формат кнопки|добавить кнопку|отправьте сообщением|сейчас:)/i.test(raw.trim())) {
+        return { ok: false, error: '⚠️ Это подсказка, а не кнопка.\n\nОтправь так:\n<b>Название - https://site.ru</b>' };
+      }
+
+      const rawLines = raw.split(/\n|\|/g).map(x => x.trim()).filter(Boolean);
+      const merged = [];
+
+      for (let i = 0; i < rawLines.length; i++) {
+        let line = rawLines[i];
+
+        if (!/https?:\/\//i.test(line) && i + 1 < rawLines.length && /https?:\/\//i.test(rawLines[i + 1])) {
+          line = line + ' ' + rawLines[i + 1];
+          i++;
+        }
+
+        merged.push(line);
+      }
+
+      const buttons = [];
+
+      for (const line of merged) {
+        const m = line.match(/^(.*?)\s*[-–—:]\s*(https?:\/\/\S+)$/i) || line.match(/^(.*?)\s+(https?:\/\/\S+)$/i);
+
+        if (!m) {
+          return { ok: false, error: '⚠️ Формат кнопки:\n<b>Название - https://site.ru</b>' };
+        }
+
+        const title = String(m[1] || '').trim();
+        const url = String(m[2] || '').trim();
+
+        if (!title || !/^https?:\/\//i.test(url)) {
+          return { ok: false, error: '⚠️ Формат кнопки:\n<b>Название - https://site.ru</b>' };
+        }
+
+        if (/^(⚠️|формат кнопки|добавить кнопку|отправьте сообщением|сейчас:)/i.test(title)) {
+          return { ok: false, error: '⚠️ Это подсказка, а не название кнопки.' };
+        }
+
+        buttons.push({
+          text: title,
+          url,
+          titleFrom: raw.indexOf(title),
+          titleLength: title.length
+        });
+      }
+
+      return { ok: true, buttons };
+    }
+
+    function validateTitleMarkup(fullText, buttons, markup) {
+      for (const b of buttons) {
+        const bad = markup.find(m => {
+          const type = String(m.type || m.kind || '').toLowerCase();
+
+          if (!overlap(m.from || 0, m.length || 0, b.titleFrom, b.titleLength)) return false;
+
+          if (type === 'strong' || type === 'bold') return false;
+
+          return true;
+        });
+
+        if (bad) {
+          return '⚠️ Формат не поддерживается.\n\nВ названии кнопки можно использовать только обычный текст или жирный.';
+        }
+      }
+
+      return null;
+    }
+
+    function buttonRows(draft) {
+      const buttons = cleanButtons(draft.buttons);
+      const rows = [];
+
+      buttons.forEach((b, i) => {
+        rows.push([
+          callbackButton('❌ Удалить ' + (i + 1) + '. ' + short(b.text), 'lr_btn_clean:remove:' + i)
+        ]);
+      });
+
+      if (buttons.length) {
+        rows.push([callbackButton('🧹 Удалить все кнопки', 'lr_btn_clean:clear')]);
+      }
+
+      rows.push([callbackButton('⬅️ Назад', 'editor:back')]);
+
+      return rows;
+    }
+
+    function buttonsText(draft) {
+      const buttons = cleanButtons(draft.buttons);
+
+      if (!buttons.length) return 'Кнопок пока нет.';
+
+      return buttons.map((b, i) => {
+        return (i + 1) + '. ' + esc(b.text) + ' — ' + esc(b.url);
+      }).join('\n');
+    }
+
+    async function sendButtonMenu(draft, notice = '') {
+      draft.buttons = cleanButtons(draft.buttons);
+
+      await setSession(key, 'wait_button', { draft });
+
+      const text =
+        (notice ? notice + '\n\n' : '') +
+        '━━━━━━━━━━━━━━\n' +
+        '🔘 <b>Кнопки поста</b>\n\n' +
+        '<b>Сейчас:</b>\n' +
+        buttonsText(draft) +
+        '\n\n' +
+        '<b>Добавить кнопку:</b>\n' +
+        'Отправьте сообщением:\n' +
+        '<b>Название - https://site.ru</b>\n\n' +
+        'Можно отправить несколько кнопок, каждую с новой строки или через <b>|</b>.\n' +
+        'В названии поддерживается обычный текст и жирный.\n' +
+        '━━━━━━━━━━━━━━';
+
+      if (callbackId) {
+        await answerCallback({
+          callbackId,
+          text,
+          format: 'html',
+          attachments: inlineKeyboard(buttonRows(draft))
+        });
+        return;
+      }
+
+      await sendMaxMessage({
+        chatId,
+        text,
+        format: 'html',
+        attachments: inlineKeyboard(buttonRows(draft))
+      });
+    }
+
+    async function sendPreviewThenButtonMenu(draft, notice) {
+      draft.buttons = cleanButtons(draft.buttons);
+
+      const oldPreviewId = draft.previewMessageId || null;
+      draft.previewMessageId = null;
+
+      try {
+        if (typeof hasContent !== 'function' || hasContent(draft)) {
+          const mid = await sendDraftPreview(chatId, draft);
+          if (mid) draft.previewMessageId = mid;
+          else draft.previewMessageId = oldPreviewId;
+        }
+      } catch (e) {
+        console.error('[LR_BUTTON_CLEAN_V9 preview]', e?.message || e);
+        draft.previewMessageId = oldPreviewId;
+      }
+
+      await sendButtonMenu(draft, notice);
+    }
+
+    async function handleButtonInput() {
+      const session = await getSession(key);
+
+      if (!session || session.state !== 'wait_button') return false;
+
+      const draft = draftFromSession(session);
+      draft.buttons = cleanButtons(draft.buttons);
+
+      const text = getMessageText(update);
+
+      if (!text) return false;
+
+      const parsed = parseInputButtons(text);
+
+      if (!parsed.ok) {
+        await sendButtonMenu(draft, parsed.error);
+        return true;
+      }
+
+      const markupError = validateTitleMarkup(text, parsed.buttons, msgMarkup(update));
+
+      if (markupError) {
+        await sendButtonMenu(draft, markupError);
+        return true;
+      }
+
+      const add = parsed.buttons.map(b => ({ text: b.text, url: b.url }));
+      draft.buttons = cleanButtons([...(draft.buttons || []), ...add]);
+
+      console.log('[LR_BUTTON_CLEAN_V9 add]', JSON.stringify({ added: add.length, total: draft.buttons.length }));
+
+      await sendPreviewThenButtonMenu(draft, '✅ Кнопка добавлена.');
+      return true;
+    }
+
+    if (await handleButtonInput()) {
+      return res.json({ ok: true });
+    }
+
+    if (!payload) return next();
+
+    if (payload === 'editor:button') {
+      const session = await getSession(key);
+      const draft = draftFromSession(session);
+
+      await sendButtonMenu(draft);
+      return res.json({ ok: true });
+    }
+
+    if (payload.startsWith('lr_btn:remove:') || payload.startsWith('lr_btn_clean:remove:')) {
+      const session = await getSession(key);
+      const draft = draftFromSession(session);
+      const buttons = cleanButtons(draft.buttons);
+      const index = Number(payload.split(':').pop());
+
+      if (Number.isInteger(index) && index >= 0 && index < buttons.length) {
+        buttons.splice(index, 1);
+      }
+
+      draft.buttons = buttons;
+
+      console.log('[LR_BUTTON_CLEAN_V9 remove]', JSON.stringify({ index, total: buttons.length }));
+
+      await sendPreviewThenButtonMenu(draft, '✅ Кнопка удалена.');
+      return res.json({ ok: true });
+    }
+
+    if (payload === 'lr_btn:clear' || payload === 'lr_btn_clean:clear') {
+      const session = await getSession(key);
+      const draft = draftFromSession(session);
+
+      draft.buttons = [];
+
+      console.log('[LR_BUTTON_CLEAN_V9 clear]');
+
+      await sendPreviewThenButtonMenu(draft, '✅ Все кнопки удалены.');
+      return res.json({ ok: true });
+    }
+
+    return next();
+  } catch (error) {
+    console.error('[LR_BUTTON_CLEAN_V9]', error?.stack || error);
+    return next();
+  }
+});
+/* LR_BUTTON_CLEAN_V9_END */
+
 /* LR_BUTTON_PREVIEW_REFRESH_V7_START */
 app.use(async function lrButtonPreviewRefreshV7(req, res, next) {
   try {
