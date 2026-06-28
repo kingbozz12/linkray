@@ -5042,49 +5042,106 @@ function postAutoRows(postId) { return [[callbackButton('24', `post:auto_set:${p
 async function openPost(callbackId, chatId, id) { const p = await getPost(id); if (!p) { await cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); return; } await answerCallback({ callbackId, notification: 'Открываю пост...' }).catch(()=>{}); try { const d = postPreviewDraft(p); await sendMaxMessage({ ...lrBuildSendTarget(chatId), text: p.text || '', format: p.format || 'html', attachments: finalAttachments(d) }); await msg(chatId, postMenuText(p), postMenuRows(p)); } catch (e) { console.error('[open post]', e.message || e); await cb(callbackId, `${postMenuText(p)}\n\n⚠️ Пост не удалось вывести отдельно: ${escapeHtml(e.message || e)}`, postMenuRows(p)); } }
 async function editExisting(callbackId, key, id) { const p = await getPost(id); if (!p) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); if (olderThan24(p)) return cb(callbackId, '🔒 Редактирование недоступно: прошло больше 24 часов.', [[callbackButton('⬅️ Назад', `post:open:${id}`)]]); const draft = makeDraftFromPost(p); await showEditor(callbackId, key, draft); }
 
+
 async function saveExisting(callbackId, key, draft) {
   const chatId = Number(key || 0);
 
+  function lrSaveExistingJson(value, fallback) {
+    try {
+      if (value === undefined || value === null) return JSON.stringify(fallback);
+      return JSON.stringify(value);
+    } catch {
+      return JSON.stringify(fallback);
+    }
+  }
+
+  function lrSaveExistingAttachments(draft) {
+    let src = Array.isArray(draft?.content?.attachments) ? draft.content.attachments : [];
+
+    try {
+      if (typeof normalizeAttachments === 'function') {
+        src = normalizeAttachments(src);
+      }
+    } catch (e) {
+      console.error('[saveExisting normalizeAttachments]', e?.message || e);
+    }
+
+    const out = [];
+
+    for (const item of Array.isArray(src) ? src : []) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+      const type = String(
+        item.type ||
+        item.kind ||
+        item.attachment_type ||
+        item.attachmentType ||
+        ''
+      ).toLowerCase();
+
+      if (type.includes('inline_keyboard')) continue;
+      if (type.includes('keyboard')) continue;
+      if (type.includes('button')) continue;
+      if (type.includes('link_preview')) continue;
+      if (type.includes('web_page')) continue;
+
+      out.push(item);
+    }
+
+    return out;
+  }
+
+  function lrStudioSavedText(extra = '') {
+    return `━━━━━━━━━━━━━━
+✅ Пост сохранён.${extra ? '\n\n' + extra : ''}
+
+🧬 <b>LinkRay Studio</b>
+
+Собирайте посты, планируйте публикации и управляйте рекламными размещениями.
+━━━━━━━━━━━━━━`;
+  }
+
   try {
     if (!draft || !draft.postId) {
-      return cb(callbackId, '⚠️ Пост не найден в редакторе.', [
-        [callbackButton('🗂 Посты', 'post:all')]
-      ]);
+      return cb(callbackId, `━━━━━━━━━━━━━━
+⚠️ Пост не найден в редакторе.
+━━━━━━━━━━━━━━`, studioRows());
     }
 
     const post = await getPost(draft.postId);
 
     if (!post) {
-      return cb(callbackId, '⚠️ Пост не найден.', [
-        [callbackButton('🗂 Посты', 'post:all')]
-      ]);
+      return cb(callbackId, `━━━━━━━━━━━━━━
+⚠️ Пост не найден.
+━━━━━━━━━━━━━━`, studioRows());
     }
 
     draft.previewMessageId = null;
 
-    if (!Array.isArray(draft.buttons)) draft.buttons = [];
     if (!draft.content) draft.content = {};
     if (!Array.isArray(draft.content.attachments)) draft.content.attachments = [];
+    if (!Array.isArray(draft.buttons)) draft.buttons = [];
+
+    const channelId = Number(draft.channelIds?.[0] || post.channel_id || 0);
 
     let content;
+
     try {
-      content = await composePostForChannel(draft, draft.channelIds?.[0] || post.channel_id);
+      content = await composePostForChannel(draft, channelId);
     } catch (composeError) {
       console.error('[saveExisting compose failed]', composeError?.message || composeError);
+
+      const fallbackAttachments =
+        typeof finalAttachments === 'function'
+          ? finalAttachments(draft)
+          : lrSaveExistingAttachments(draft);
 
       content = {
         text: draft.content?.text || post.text || '',
         format: draft.content?.format || post.format || 'html',
-        attachments: finalAttachments(draft),
+        attachments: fallbackAttachments,
         markup: []
       };
-    }
-
-    let dbAttachments = [];
-    try {
-      dbAttachments = normalizeAttachments(draft.content.attachments || []);
-    } catch {
-      dbAttachments = draft.content.attachments || [];
     }
 
     await query(
@@ -5104,9 +5161,9 @@ async function saveExisting(callbackId, key, draft) {
         draft.postId,
         content.text || '',
         content.format || 'html',
-        JSON.stringify(dbAttachments),
-        JSON.stringify(draft.buttons || []),
-        JSON.stringify({ ...draft, previewMessageId: null }),
+        lrSaveExistingJson(lrSaveExistingAttachments(draft), []),
+        lrSaveExistingJson(draft.buttons || [], []),
+        lrSaveExistingJson({ ...draft, previewMessageId: null }, {}),
         Boolean(draft.isAd),
         draft.cpm || null,
         draft.autoDeleteMinutes || null,
@@ -5114,68 +5171,39 @@ async function saveExisting(callbackId, key, draft) {
       ]
     );
 
-    let warn = '';
+    let warning = '';
 
     if (post.status === 'published' && post.published_message_id) {
       try {
         await editMaxMessage(post.published_message_id, content);
       } catch (editError) {
-        warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение в канале:\n${escapeHtml(editError?.message || editError)}`;
+        warning =
+          `⚠️ В базе сохранено, но MAX не обновил сообщение в канале:\n` +
+          `${escapeHtml(editError?.message || editError)}`;
+
         console.error('[saveExisting edit published failed]', editError?.message || editError);
       }
     }
 
-    await setSession(key, 'edit_existing', { draft });
-
     try {
-      if (callbackId && typeof answerCallback === 'function') {
-        await answerCallback({
-          callbackId,
-          notification: warn ? 'Сохранено, но канал не обновился' : 'Пост сохранён'
-        });
+      if (typeof clearSession === 'function') {
+        await clearSession(key);
       }
-    } catch {}
-
-    // После сохранения НЕ уходим в меню постов.
-    // Открываем заново: сначала пост-превью, потом редактор.
-    if (chatId) {
-      try {
-        await sendDraftPreview(chatId, draft);
-      } catch (previewError) {
-        console.error('[saveExisting preview after save failed]', previewError?.message || previewError);
-      }
-
-      await sendMaxMessage({
-        chatId,
-        text:
-          `━━━━━━━━━━━━━━
-✅ Пост сохранён.${warn}
-
-🧬 <b>Редактор LinkRay</b>
-
-Пост-превью находится выше.
-При изменении текста, медиа, кнопок или автоподписи превью будет обновляться.
-
-Настройте оформление.
-━━━━━━━━━━━━━━`,
-        format: 'html',
-        attachments: inlineKeyboard(editorMenuRows(draft))
-      });
-
-      return;
+    } catch (clearError) {
+      console.error('[saveExisting clearSession failed]', clearError?.message || clearError);
     }
 
-    return cb(
-      callbackId,
-      `━━━━━━━━━━━━━━
-✅ Пост сохранён.${warn}
+    if (callbackId) {
+      return cb(callbackId, lrStudioSavedText(warning), studioRows());
+    }
 
-Редактор остаётся открытым.
-━━━━━━━━━━━━━━`,
-      editorMenuRows(draft)
-    );
+    if (chatId) {
+      return msg(chatId, lrStudioSavedText(warning), studioRows());
+    }
+
+    return null;
   } catch (e) {
-    console.error('[saveExisting direct fix error]', e?.stack || e);
+    console.error('[saveExisting to studio error]', e?.stack || e);
 
     return cb(
       callbackId,
@@ -5185,11 +5213,12 @@ ${escapeHtml(e?.message || e)}
 ━━━━━━━━━━━━━━`,
       [
         [callbackButton('⬅️ В редактор', 'editor:back')],
-        [callbackButton('🗂 Посты', 'post:all')]
+        [callbackButton('🧬 В Studio', 'main:posting')]
       ]
     );
   }
 }
+
 
 
 async function handleCallback(update) {
