@@ -8072,3 +8072,239 @@ try {
 }
 /* LR_PREVIEW_PAYLOAD_FIX_V13_END */
 
+
+/* LR_PUBLISHED_DB_SAVE_V15_START */
+{
+  const __lrOldPublishDraftNowV15 = publishDraftNow;
+
+  function lrPubJsonV15(value, fallback) {
+    try {
+      if (value === undefined || value === null) return JSON.stringify(fallback);
+      return JSON.stringify(value);
+    } catch {
+      return JSON.stringify(fallback);
+    }
+  }
+
+  function lrPubCleanButtonsV15(buttons) {
+    const out = [];
+    const seen = new Set();
+
+    for (const b of Array.isArray(buttons) ? buttons : []) {
+      const text = String(b?.text || b?.title || b?.label || '').trim();
+      const url = String(b?.url || b?.link || b?.href || '').trim();
+
+      if (!text || !/^https?:\/\//i.test(url)) continue;
+
+      const id = text + '|' + url;
+      if (seen.has(id)) continue;
+      seen.add(id);
+
+      out.push({ text, url });
+    }
+
+    return out;
+  }
+
+  function lrPubCleanAttachmentsV15(draft, content) {
+    let src =
+      Array.isArray(draft?.content?.attachments) ? draft.content.attachments :
+      Array.isArray(content?.attachments) ? content.attachments :
+      [];
+
+    try {
+      if (typeof normalizeAttachments === 'function') {
+        src = normalizeAttachments(src);
+      }
+    } catch (e) {
+      console.error('[LR_PUBLISHED_DB_SAVE_V15 normalizeAttachments]', e?.message || e);
+    }
+
+    const out = [];
+
+    for (const a of Array.isArray(src) ? src : []) {
+      if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+
+      const type = String(a.type || a.kind || a.attachment_type || '').toLowerCase();
+
+      if (type.includes('inline_keyboard')) continue;
+      if (type.includes('keyboard')) continue;
+      if (type.includes('button')) continue;
+
+      out.push(a);
+    }
+
+    return out;
+  }
+
+  async function lrPublishedColumnsV15() {
+    try {
+      const rows = await query(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema='public'
+           AND table_name='scheduled_posts'`
+      );
+
+      return new Set((rows || []).map(r => r.column_name));
+    } catch (e) {
+      console.error('[LR_PUBLISHED_DB_SAVE_V15 columns]', e?.message || e);
+      return new Set();
+    }
+  }
+
+  async function lrSavePublishedPostRowV15({ draft, key, channel, content, messageId }) {
+    const cols = await lrPublishedColumnsV15();
+
+    if (!cols.size) {
+      throw new Error('Не удалось прочитать columns scheduled_posts');
+    }
+
+    const text = String(
+      content?.text ??
+      draft?.content?.text ??
+      draft?.text ??
+      ''
+    );
+
+    const format = String(
+      content?.format ||
+      draft?.content?.format ||
+      draft?.format ||
+      'html'
+    );
+
+    const safeDraft = {
+      ...draft,
+      previewMessageId: null,
+      buttons: lrPubCleanButtonsV15(draft?.buttons || [])
+    };
+
+    const values = {
+      channel_id: Number(channel.id),
+      text,
+      format,
+      publish_at: new Date(),
+      status: 'published',
+      notify: false,
+      created_by_max_user_id: String(key || ''),
+      attachments: lrPubCleanAttachmentsV15(draft, content),
+      buttons: lrPubCleanButtonsV15(draft?.buttons || []),
+      draft: safeDraft,
+      is_ad: Boolean(draft?.isAd || draft?.is_ad),
+      cpm: draft?.cpm ?? null,
+      auto_delete_minutes: draft?.autoDeleteMinutes ?? draft?.auto_delete_minutes ?? null,
+      report_after_hours: draft?.reportAfterHours || draft?.report_after_hours || 24,
+      report_group_id: draft?.campaignId || draft?.campaign_id || null,
+      published_at: new Date(),
+      published_message_id: messageId || null,
+      updated_at: new Date(),
+      created_at: new Date()
+    };
+
+    const names = [];
+    const params = [];
+
+    for (const [name, value] of Object.entries(values)) {
+      if (!cols.has(name)) continue;
+
+      names.push(name);
+
+      if (['attachments', 'buttons', 'draft'].includes(name)) {
+        params.push(lrPubJsonV15(value, name === 'draft' ? {} : []));
+      } else {
+        params.push(value);
+      }
+    }
+
+    if (!names.includes('channel_id') || !names.includes('text') || !names.includes('publish_at') || !names.includes('status')) {
+      throw new Error('В scheduled_posts нет нужных колонок для сохранения поста');
+    }
+
+    const placeholders = names.map((_, i) => `$${i + 1}`).join(',');
+    const quoted = names.map(n => `"${n}"`).join(',');
+
+    const rows = await query(
+      `INSERT INTO scheduled_posts(${quoted})
+       VALUES(${placeholders})
+       RETURNING id`,
+      params
+    );
+
+    return rows?.[0]?.id || null;
+  }
+
+  publishDraftNow = async function lrPublishDraftNowDbSaveV15(draft, key) {
+    if (!draft.campaignId) {
+      draft.campaignId = `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    }
+
+    if (draft.isAd && !draft.autoDeleteMinutes) {
+      draft.autoDeleteMinutes = 2880;
+    }
+
+    const results = [];
+    const channels = await getChannelsByIds(draft.channelIds);
+
+    for (const channel of channels) {
+      let content = null;
+      let messageId = null;
+      let dbPostId = null;
+
+      try {
+        content = await composePostForChannel(draft, channel.id);
+
+        const sent = await sendMaxMessage({
+          chatId: channel.max_chat_id,
+          ...content
+        });
+
+        messageId = extractMessageId(sent);
+      } catch (sendError) {
+        console.error('[LR_PUBLISHED_DB_SAVE_V15 send failed]', sendError?.message || sendError);
+
+        results.push({
+          ok: false,
+          channel,
+          error: sendError?.message || String(sendError)
+        });
+
+        continue;
+      }
+
+      try {
+        dbPostId = await lrSavePublishedPostRowV15({
+          draft,
+          key,
+          channel,
+          content,
+          messageId
+        });
+
+        console.log('[LR_PUBLISHED_DB_SAVE_V15 saved]', JSON.stringify({
+          channelId: channel.id,
+          postId: dbPostId,
+          messageId
+        }));
+      } catch (dbError) {
+        console.error('[LR_PUBLISHED_DB_SAVE_V15 db failed]', dbError?.message || dbError);
+
+        // Пост уже вышел в канал, но если БД не сохранила — это важно видеть в логах.
+        // Пользователю всё равно показываем публикацию успешной, чтобы не было ложной ошибки MAX API.
+      }
+
+      results.push({
+        ok: true,
+        channel,
+        id: dbPostId,
+        messageId
+      });
+    }
+
+    return results;
+  };
+
+  console.log('[LR_PUBLISHED_DB_SAVE_V15] installed');
+}
+/* LR_PUBLISHED_DB_SAVE_V15_END */
+
