@@ -487,6 +487,17 @@ async function fetchJson(url, options) {
   return data;
 }
 
+
+function lrCleanOutgoingText(value) {
+  let text = String(value ?? '');
+
+  // Убираем только если undefined/null попал отдельной строкой в конец поста.
+  text = text.replace(/(?:\r?\n)+\s*undefined\s*$/i, '');
+  text = text.replace(/(?:\r?\n)+\s*null\s*$/i, '');
+
+  return text;
+}
+
 export async function sendMaxMessage({ chatId, userId, text = '', format = 'html', markup = [], attachments = [] }) {
   const url = new URL(`${MAX_API_URL}/messages`);
   if (chatId) url.searchParams.set('chat_id', String(chatId));
@@ -517,8 +528,8 @@ export async function answerCallback({ callbackId, text = '', format = 'html', a
   const clean = cleanAttachments(attachments);
   const attempts = [];
   if (notification) attempts.push({ notification: String(notification) });
-  attempts.push({ message: { text: String(text || ''), format: lrSafeOutgoingFormat(String(text || ''), format || 'html'), attachments: clean } });
-  attempts.push({ text: String(text || ''), format: format || 'html', attachments: clean });
+  attempts.push({ message: { text: lrCleanOutgoingText(text), format: lrSafeOutgoingFormat(String(text || ''), format || 'html'), attachments: clean } });
+  attempts.push({ text: lrCleanOutgoingText(text), format: format || 'html', attachments: clean });
 
   let lastError = null;
   for (const body of attempts) {

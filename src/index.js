@@ -842,7 +842,13 @@ function nowIso() { return new Date().toISOString(); }
 function log(scope, data) { console.log(`[${scope}]`, typeof data === 'string' ? data : JSON.stringify(data)); }
 function safeJson(value, fallback = {}) { try { if (!value) return fallback; if (typeof value === 'object') return value; return JSON.parse(value); } catch { return fallback; } }
 function rows(result) { return Array.isArray(result) ? result : (result?.rows || []); }
-function escapeHtml(v) { return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escapeHtml(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function attr(v) { return escapeHtml(v).replace(/"/g, '&quot;'); }
 function plain(v) {
   return String(v || '')
@@ -871,7 +877,7 @@ async function ensureDb() {
   await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_channel boolean DEFAULT true`);
   await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS owner_max_user_id text`);
   await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS bot_added_at timestamptz DEFAULT now()`);
-  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now()`);
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now()`); await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now()`);
 
   await query(`CREATE TABLE IF NOT EXISTS scheduled_posts (id serial PRIMARY KEY, channel_id integer REFERENCES channels(id) ON DELETE SET NULL, text text NOT NULL DEFAULT '', format text NOT NULL DEFAULT 'html', publish_at timestamptz NOT NULL DEFAULT now(), status text NOT NULL DEFAULT 'scheduled', notify boolean NOT NULL DEFAULT false, created_by_max_user_id text, error_message text, updated_at timestamptz NOT NULL DEFAULT now())`);
   await query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS channel_id integer`);
@@ -949,9 +955,118 @@ async function ensureDb() {
 }
 
 function getUpdateType(u) { return u.update_type || u.updateType || u.type || u.event_type || ''; }
-function getChatId(u) { return u.chat_id || u.chatId || u.chat?.id || u.chat?.chat_id || u.message?.recipient?.chat_id || u.message?.recipient?.chatId || u.message?.chat_id || u.message?.chatId || u.message?.chat?.id || u.callback?.chat?.id || u.callback?.message?.recipient?.chat_id || null; }
-function getUserId(u) { return u.user_id || u.userId || u.user?.id || u.message?.sender?.user_id || u.message?.sender?.userId || u.message?.sender?.id || u.callback?.user?.user_id || u.callback?.user?.id || null; }
-function getSessionKey(u) { return String(getChatId(u) || getUserId(u) || 'unknown'); }
+function lrFirstNonEmpty(...values) {
+  for (const v of values) {
+    if (v === undefined || v === null) continue;
+    const text = String(v).trim();
+    if (text && text !== 'undefined' && text !== 'null' && text !== 'NaN') return v;
+  }
+  return null;
+}
+
+function lrDeepFirst(obj, keys, seen = new Set(), depth = 0) {
+  if (!obj || typeof obj !== 'object' || seen.has(obj) || depth > 7) return null;
+  seen.add(obj);
+
+  for (const k of keys) {
+    const v = obj[k];
+    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+  }
+
+  for (const child of Object.values(obj)) {
+    if (child && typeof child === 'object') {
+      const found = lrDeepFirst(child, keys, seen, depth + 1);
+      if (found !== null && found !== undefined && String(found).trim() !== '') return found;
+    }
+  }
+
+  return null;
+}
+
+function getChatId(u) {
+  return lrFirstNonEmpty(
+    u?.chat_id,
+    u?.chatId,
+    u?.chat?.id,
+    u?.chat?.chat_id,
+    u?.chat?.chatId,
+    u?.recipient?.chat_id,
+    u?.recipient?.chatId,
+    u?.body?.chat_id,
+    u?.body?.chatId,
+    u?.message?.recipient?.chat_id,
+    u?.message?.recipient?.chatId,
+    u?.message?.chat_id,
+    u?.message?.chatId,
+    u?.message?.chat?.id,
+    u?.message?.chat?.chat_id,
+    u?.message?.chat?.chatId,
+    u?.callback?.chat?.id,
+    u?.callback?.chat?.chat_id,
+    u?.callback?.chat?.chatId,
+    u?.callback?.message?.recipient?.chat_id,
+    u?.callback?.message?.recipient?.chatId,
+    u?.callback?.message?.chat_id,
+    u?.callback?.message?.chatId,
+    u?.callback?.message?.chat?.id
+  );
+}
+
+function getUserId(u) {
+  return lrFirstNonEmpty(
+    u?.user_id,
+    u?.userId,
+    u?.user?.id,
+    u?.user?.user_id,
+    u?.user?.userId,
+    u?.sender?.id,
+    u?.sender?.user_id,
+    u?.sender?.userId,
+    u?.message?.sender?.user_id,
+    u?.message?.sender?.userId,
+    u?.message?.sender?.id,
+    u?.callback?.user?.user_id,
+    u?.callback?.user?.userId,
+    u?.callback?.user?.id,
+    lrDeepFirst(u, ['user_id', 'userId'])
+  );
+}
+
+function getSessionKey(u) {
+  const chat = getChatId(u);
+  if (chat) return String(chat);
+
+  const user = getUserId(u);
+  if (user) return `user:${user}`;
+
+  return 'unknown';
+}
+
+function lrResolveReplyChatId(update, fallback = '') {
+  const chat = update ? getChatId(update) : null;
+  if (chat) return String(chat);
+
+  const user = update ? getUserId(update) : null;
+  if (user) return `user:${user}`;
+
+  const f = String(fallback || '').trim();
+  return f || 'unknown';
+}
+
+function lrBuildSendTarget(target) {
+  const id = String(target || '').trim();
+
+  if (!id || id === 'unknown' || id === 'undefined' || id === 'null' || id === 'NaN') {
+    throw new Error('Не найден chat_id/user_id для отправки ответа');
+  }
+
+  if (id.startsWith('user:')) {
+    return { userId: id.slice(5) };
+  }
+
+  return { chatId: id };
+}
+
 function getCallbackId(u) { return u.callback?.callback_id || u.callback?.callbackId || u.callback_id || u.callbackId || null; }
 function getCallbackPayload(u) {
   const candidates = [u.callback?.payload, u.callback?.button?.payload, u.callback?.data, u.callback?.value, u.button?.payload, u.message?.body?.payload, u.message?.payload, u.payload, u.data];
@@ -972,7 +1087,20 @@ async function clearSession(key) { await setSession(key, 'idle', {}); }
 
 function buttonRows(rows) { return inlineKeyboard(rows); }
 async function cb(callbackId, text, rows = [], format = 'html') { return answerCallback({ callbackId, text, format, attachments: buttonRows(rows) }); }
-async function msg(chatId, text, rows = [], format = 'html') { return sendMaxMessage({ chatId, text, format, attachments: rows.length ? buttonRows(rows) : [] }); }
+async function msg(chatId, text, rows = [], format = 'html') {
+  const target = lrBuildSendTarget(chatId);
+  return sendMaxMessage({
+    ...target,
+    text,
+    format,
+    attachments: rows.length ? buttonRows(rows) : []
+  });
+}
+
+async function sendMessage(chatId, { text = '', buttons = [], format = 'html' } = {}) {
+  return msg(chatId, text, buttons, format);
+}
+
 async function cbOrMsg(callbackId, chatId, text, rows = [], format = 'html') {
   try {
     return await cb(callbackId, text, rows, format);
@@ -1109,7 +1237,15 @@ function safeDraft(data) {
   };
   return draft;
 }
-function hasContent(d) { return Boolean(String(d?.content?.text || '').trim() || (Array.isArray(d?.content?.attachments) && d.content.attachments.length)); }
+
+function hasContent(d) {
+  return Boolean(
+    String(d?.content?.text || '').trim() ||
+    (Array.isArray(d?.content?.attachments) && d.content.attachments.length) ||
+    d?.content?.link
+  );
+}
+
 
 
 function applyMarkupToHtml(text, markup = []) {
@@ -1617,7 +1753,7 @@ function lrCollectNativeMarkupDeep(root) {
 // LR_DEEP_NATIVE_MARKUP_END
 
 
-async function hydrateContent(u) {
+async function hydrateContentUnsafe(u) {
   const best = globalThis.__lrRichV7.bestContent(u);
   const rawText = String(best?.text || '').trim();
   const markup = Array.isArray(best?.markup) ? best.markup : [];
@@ -1638,6 +1774,360 @@ async function hydrateContent(u) {
     raw: null
   };
 }
+
+function lrForwardDeepSearchText(obj, seen = new Set(), depth = 0) {
+  if (!obj || typeof obj !== 'object' || seen.has(obj) || depth > 8) return '';
+  seen.add(obj);
+
+  const direct = [
+    obj?.bestContent?.text,
+    obj?.bestContent?.body?.text,
+    obj?.body?.bestContent?.text,
+    obj?.body?.text,
+    obj?.text,
+    obj?.caption,
+    obj?.html
+  ];
+
+  for (const v of direct) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+
+  for (const v of Object.values(obj)) {
+    if (v && typeof v === 'object') {
+      const found = lrForwardDeepSearchText(v, seen, depth + 1);
+      if (found) return found;
+    }
+  }
+
+  return '';
+}
+
+function lrForwardDeepSearchAttachments(obj, seen = new Set(), depth = 0) {
+  if (!obj || typeof obj !== 'object' || seen.has(obj) || depth > 8) return [];
+  seen.add(obj);
+
+  const out = [];
+
+  for (const [key, value] of Object.entries(obj)) {
+    const k = String(key).toLowerCase();
+
+    if (Array.isArray(value) && (k.includes('attachment') || k === 'media' || k.includes('bestcontent'))) {
+      for (const item of value) {
+        if (item && typeof item === 'object') out.push(item);
+      }
+    }
+
+    if (value && typeof value === 'object') {
+      out.push(...lrForwardDeepSearchAttachments(value, seen, depth + 1));
+    }
+  }
+
+  const unique = [];
+  const used = new Set();
+
+  for (const a of out) {
+    const sig = JSON.stringify(a).slice(0, 500);
+    if (used.has(sig)) continue;
+    used.add(sig);
+    unique.push(a);
+    if (unique.length >= MAX_PREVIEW_ATTACHMENTS) break;
+  }
+
+  return unique;
+}
+
+
+function lrExactGet(obj, path) {
+  try {
+    return path.split('.').reduce((a, k) => a && a[k], obj);
+  } catch {
+    return null;
+  }
+}
+
+function lrExactFirst(...values) {
+  for (const v of values) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'string' && !v.trim()) continue;
+    if (Array.isArray(v) && !v.length) continue;
+    return v;
+  }
+  return null;
+}
+
+function lrExactForwardLink(update) {
+  const link = lrExactFirst(
+    update?.message?.link,
+    update?.body?.message?.link,
+    update?.link,
+    update?.message_link,
+    update?.messageLink
+  );
+
+  return link && typeof link === 'object' && !Array.isArray(link) ? link : null;
+}
+
+function lrExactLinkedMessageFromLink(link) {
+  if (!link || typeof link !== 'object') return null;
+
+  return lrExactFirst(
+    link.message,
+    link.linked_message,
+    link.linkedMessage,
+    link.forwarded_message,
+    link.forwardedMessage,
+    link.original_message,
+    link.originalMessage,
+    link.source_message,
+    link.sourceMessage
+  );
+}
+
+function lrExactLinkedMessageId(link) {
+  if (!link || typeof link !== 'object') return null;
+
+  return lrExactFirst(
+    link.message_id,
+    link.messageId,
+    link.mid,
+    link.id,
+    link.message?.message_id,
+    link.message?.messageId,
+    link.message?.id,
+    link.linked_message?.message_id,
+    link.linked_message?.messageId,
+    link.linked_message?.id,
+    link.linkedMessage?.message_id,
+    link.linkedMessage?.messageId,
+    link.linkedMessage?.id
+  );
+}
+
+function lrExactLinkedChatId(link) {
+  if (!link || typeof link !== 'object') return null;
+
+  return lrExactFirst(
+    link.chat_id,
+    link.chatId,
+    link.chat?.id,
+    link.chat?.chat_id,
+    link.message?.recipient?.chat_id,
+    link.message?.recipient?.chatId,
+    link.linked_message?.recipient?.chat_id,
+    link.linked_message?.recipient?.chatId,
+    link.linkedMessage?.recipient?.chat_id,
+    link.linkedMessage?.recipient?.chatId
+  );
+}
+
+function lrExactHtmlEscape(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrExactApplyMarkup(text, markup) {
+  const src = String(text || '');
+  const items = Array.isArray(markup) ? markup.slice() : [];
+
+  if (!src || !items.length) return src;
+
+  const sorted = items
+    .map((m) => {
+      const from = Number(m.from ?? m.start ?? m.offset ?? 0);
+      const length = Number(m.length ?? m.len ?? 0);
+      const type = String(m.type || m.kind || m.markup_type || m.markupType || '').toLowerCase();
+      const url = m.url || m.href || m.link;
+      return { from, length, type, url };
+    })
+    .filter((m) => Number.isFinite(m.from) && Number.isFinite(m.length) && m.length > 0)
+    .sort((a, b) => b.from - a.from);
+
+  let out = src;
+
+  for (const m of sorted) {
+    const before = out.slice(0, m.from);
+    const mid = out.slice(m.from, m.from + m.length);
+    const after = out.slice(m.from + m.length);
+
+    let wrapped = mid;
+
+    if (m.type.includes('bold') || m.type.includes('strong')) wrapped = '<b>' + mid + '</b>';
+    else if (m.type.includes('italic') || m.type.includes('em')) wrapped = '<i>' + mid + '</i>';
+    else if (m.type.includes('under')) wrapped = '<u>' + mid + '</u>';
+    else if (m.type.includes('strike') || m.type.includes('del')) wrapped = '<s>' + mid + '</s>';
+    else if ((m.type.includes('link') || m.url) && m.url) wrapped = '<a href="' + lrExactHtmlEscape(m.url) + '">' + mid + '</a>';
+
+    out = before + wrapped + after;
+  }
+
+  return out;
+}
+
+function lrExactNormalizeAttachments(value) {
+  const arr = Array.isArray(value) ? value : [];
+  const out = [];
+  const seen = new Set();
+
+  for (const item of arr) {
+    if (!item || typeof item !== 'object') continue;
+
+    const type = String(item.type || '').toLowerCase();
+
+    if (type === 'inline_keyboard') continue;
+    if (type === 'link_preview') continue;
+    if (type === 'url_preview') continue;
+    if (type === 'share') continue;
+
+    const sig = JSON.stringify(item).slice(0, 1000);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+
+    out.push(item);
+    if (out.length >= MAX_PREVIEW_ATTACHMENTS) break;
+  }
+
+  return out;
+}
+
+
+function lrExactContentFromMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return { text: '', format: 'html', attachments: [], hasRealBody: false };
+  }
+
+  const bodyCandidate = lrExactFirst(
+    message.body,
+    message.bestContent,
+    message.best_content,
+    message.content,
+    message.payload
+  );
+
+  const body = bodyCandidate && typeof bodyCandidate === 'object'
+    ? bodyCandidate
+    : message;
+
+  const textRaw = lrExactFirst(
+    body?.text,
+    body?.html,
+    body?.caption,
+    message.text,
+    message.caption
+  );
+
+  const markup = lrExactFirst(
+    body?.markup,
+    body?.markups,
+    body?.entities,
+    message.markup,
+    message.entities
+  );
+
+  let text = String(textRaw || '');
+
+  if (markup && Array.isArray(markup) && markup.length && text && !/[<][a-zA-Z/]/.test(text)) {
+    text = lrExactApplyMarkup(text, markup);
+  }
+
+  const attachments = lrExactNormalizeAttachments(
+    lrExactFirst(
+      body?.attachments,
+      body?.media,
+      message.attachments,
+      message.media,
+      message.bestContent?.attachments,
+      message.best_content?.attachments
+    )
+  );
+
+  const format = lrExactFirst(body?.format, message.format, 'html') || 'html';
+
+  const hasRealBody = Boolean(
+    String(text || '').trim() ||
+    attachments.length
+  );
+
+  return {
+    text,
+    format,
+    attachments,
+    hasRealBody
+  };
+}
+
+
+async function lrExactLoadLinkedMessage(update) {
+  const link = lrExactForwardLink(update);
+  if (!link) return null;
+
+  const embedded = lrExactLinkedMessageFromLink(link);
+  if (embedded) return embedded;
+
+  const messageId = lrExactLinkedMessageId(link);
+  if (!messageId) return null;
+
+  try {
+    const linkedChatId = lrExactLinkedChatId(link);
+    return await getMaxMessage(messageId, linkedChatId ? { chatId: linkedChatId } : {});
+  } catch (e) {
+    console.error('[exact forward getMaxMessage]', e.message || e);
+    return null;
+  }
+}
+
+async function hydrateContent(update) {
+  await writeFile('/tmp/linkray_last_incoming.json', JSON.stringify(update, null, 2)).catch(() => {});
+
+  let unsafe = {};
+  try {
+    if (typeof hydrateContentUnsafe === 'function') {
+      unsafe = await hydrateContentUnsafe(update);
+    }
+  } catch (e) {
+    console.error('[hydrateContentUnsafe ignored]', e.message || e);
+  }
+
+  const link = unsafe?.link || lrExactForwardLink(update);
+  const linkedMessage = await lrExactLoadLinkedMessage(update);
+
+  const linkedContent = lrExactContentFromMessage(linkedMessage);
+  const embeddedContent = lrExactContentFromMessage(lrExactLinkedMessageFromLink(link));
+  const ownContent = lrExactContentFromMessage(update?.message || update);
+
+  const selected = linkedContent.hasRealBody
+    ? linkedContent
+    : embeddedContent.hasRealBody
+      ? embeddedContent
+      : ownContent.hasRealBody
+        ? ownContent
+        : { text: '', format: 'html', attachments: [], hasRealBody: false };
+
+  const unsafeAttachments = lrExactNormalizeAttachments(unsafe?.attachments);
+  const attachments = selected.attachments.length
+    ? selected.attachments
+    : unsafeAttachments;
+
+  const text = String(selected.text || unsafe?.text || '').trim();
+  const format = selected.format || unsafe?.format || 'html';
+
+  // Если body/attachments реально получили — пересобираем пост без заголовка пересылки.
+  // Если MAX не отдал body/attachments — отправляем через link, чтобы хотя бы сохранить оригинал.
+  const needLinkFallback = Boolean(link && !selected.hasRealBody && !attachments.length);
+
+  return {
+    ...unsafe,
+    text,
+    format,
+    attachments: attachments.slice(0, MAX_PREVIEW_ATTACHMENTS),
+    buttons: Array.isArray(unsafe?.buttons) ? unsafe.buttons : [],
+    link: needLinkFallback ? link : null
+  };
+}
+
+
 
 
 function parseButtonsInput(input) {
@@ -2183,7 +2673,7 @@ async function trackedButtonsForDraft(draft, channelId) {
 
 
 
-async function composePostForChannel(draft, channelId) {
+async function composePostForChannelUnsafe(draft, channelId) {
   let text = String(draft.content?.text || '');
 
   if (draft.isAd) {
@@ -2205,7 +2695,7 @@ async function composePostForChannel(draft, channelId) {
 
     if (sig?.text) {
       const cleanSignature = typeof signatureNoPreviewHtml === 'function'
-        ? globalThis.__lrRichV7.signatureForPost(sig.text, ((typeof format !== 'undefined' && format) || (typeof content !== 'undefined' && content?.format) || (typeof draft !== 'undefined' && draft?.content?.format) || 'html'))
+        ? globalThis.__lrRichV7?.signatureForPost(sig.text, ((typeof format !== 'undefined' && format) || (typeof content !== 'undefined' && content?.format) || (typeof draft !== 'undefined' && draft?.content?.format) || 'html'))
         : sig.text;
 
       text = `${text}\n\n${cleanSignature}`;
@@ -2218,6 +2708,26 @@ async function composePostForChannel(draft, channelId) {
     attachments: finalAttachments(draft),
   };
 }
+
+
+async function composePostForChannel(draft, channelId) {
+  try {
+    return await composePostForChannelUnsafe(draft, channelId);
+  } catch (e) {
+    const message = String(e?.message || e || '');
+    console.error('[composePostForChannel safe fallback]', message);
+
+    const content = lrSafePreviewContent(draft);
+    return {
+      text: content.text,
+      format: content.format || 'html',
+      attachments: content.attachments,
+      link: content.link || null
+    };
+  }
+}
+
+
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
 function mainMenuRows() { return [[callbackButton('🧬 LinkRay Studio', 'main:posting')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]]; }
@@ -2301,21 +2811,87 @@ async function showEditor(callbackId, key, draft) {
   }
 }
 
-async function sendDraftPreview(chatId, draft) {
+
+function lrSafePreviewContent(draft) {
+  const content = draft?.content || {};
+
+  let attachments = Array.isArray(content.attachments)
+    ? content.attachments.filter(Boolean)
+    : [];
+
+  try {
+    if (Array.isArray(draft?.buttons) && draft.buttons.length) {
+      const kb = buttonRows(draft.buttons);
+      if (Array.isArray(kb)) attachments = attachments.concat(kb);
+      else if (kb) attachments.push(kb);
+    }
+  } catch (e) {
+    console.error('[safe preview buttons]', e.message || e);
+  }
+
+  return {
+    text: String(content.text || ''),
+    format: content.format || 'html',
+    attachments,
+    link: content.link || null
+  };
+}
+
+async function lrSendSafePreview(chatId, draft) {
+  const content = lrSafePreviewContent(draft);
+
+  if (!String(content.text || '').trim() && !content.attachments.length && !content.link) {
+    return null;
+  }
+
+  const target = typeof lrBuildSendTarget === 'function'
+    ? lrBuildSendTarget(chatId)
+    : { chatId };
+
+  const sent = await sendMaxMessage({
+    ...target,
+    text: content.text,
+    format: content.format || 'html',
+    attachments: content.attachments,
+    link: content.link || null
+  });
+
+  if (typeof extractMessageId === 'function') {
+    return extractMessageId(sent);
+  }
+
+  return sent?.message?.body?.mid || sent?.message?.id || sent?.message_id || sent?.messageId || sent?.id || sent?.mid || null;
+}
+
+async function sendDraftPreviewUnsafe(chatId, draft) {
   try {
     const content = await composePostForChannel(draft, draft.channelIds[0]);
     if (draft.previewMessageId) {
       try { await editMaxMessage(draft.previewMessageId, content); return draft.previewMessageId; }
       catch (editError) { console.error('[preview edit failed, sending new]', editError.message || editError); }
     }
-    const sent = await sendMaxMessage({ chatId, ...content });
+    const sent = await sendMaxMessage({ ...lrBuildSendTarget(chatId), ...content });
     return extractMessageId(sent);
   } catch (e) {
     console.error('[preview]', e.message || e);
-    await msg(chatId, `⚠️ Не удалось вывести превью: ${escapeHtml(e.message || e)}\n\n${escapeHtml(short(draft.content.text, 900))}`, [], 'html');
+    await msg(chatId, `⚠️ Не удалось вывести превью полностью: ${escapeHtml(e.message || e)}\n\n${escapeHtml(short(draft.content.text, 900))}`, [], 'html');
     return null;
   }
 }
+
+
+async function sendDraftPreview(chatId, draft) {
+  try {
+    return await sendDraftPreviewUnsafe(chatId, draft);
+  } catch (e) {
+    const message = String(e?.message || e || '');
+    console.error('[sendDraftPreview safe fallback]', message);
+
+    return lrSendSafePreview(chatId, draft);
+  }
+}
+
+
 
 
 function parseDuration(input) {
@@ -2557,7 +3133,7 @@ function postMenuRows(p) {
 }
 function postAutoRows(postId) { return [[callbackButton('24', `post:auto_set:${postId}:1440`), callbackButton('48', `post:auto_set:${postId}:2880`), callbackButton('72', `post:auto_set:${postId}:4320`)],[callbackButton('Без удаления', `post:auto_set:${postId}:0`)],[callbackButton('✍️ Ввести вручную', `post:auto_manual:${postId}`)],[callbackButton('⬅️ Назад', `post:open:${postId}`)]]; }
 
-async function openPost(callbackId, chatId, id) { const p = await getPost(id); if (!p) { await cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); return; } await answerCallback({ callbackId, notification: 'Открываю пост...' }).catch(()=>{}); try { const d = postPreviewDraft(p); await sendMaxMessage({ chatId, text: p.text || '', format: p.format || 'html', attachments: finalAttachments(d) }); await msg(chatId, postMenuText(p), postMenuRows(p)); } catch (e) { console.error('[open post]', e.message || e); await cb(callbackId, `${postMenuText(p)}\n\n⚠️ Пост не удалось вывести отдельно: ${escapeHtml(e.message || e)}`, postMenuRows(p)); } }
+async function openPost(callbackId, chatId, id) { const p = await getPost(id); if (!p) { await cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); return; } await answerCallback({ callbackId, notification: 'Открываю пост...' }).catch(()=>{}); try { const d = postPreviewDraft(p); await sendMaxMessage({ ...lrBuildSendTarget(chatId), text: p.text || '', format: p.format || 'html', attachments: finalAttachments(d) }); await msg(chatId, postMenuText(p), postMenuRows(p)); } catch (e) { console.error('[open post]', e.message || e); await cb(callbackId, `${postMenuText(p)}\n\n⚠️ Пост не удалось вывести отдельно: ${escapeHtml(e.message || e)}`, postMenuRows(p)); } }
 async function editExisting(callbackId, key, id) { const p = await getPost(id); if (!p) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); if (olderThan24(p)) return cb(callbackId, '🔒 Редактирование недоступно: прошло больше 24 часов.', [[callbackButton('⬅️ Назад', `post:open:${id}`)]]); const draft = makeDraftFromPost(p); await showEditor(callbackId, key, draft); }
 async function saveExisting(callbackId, key, draft) { const post = await getPost(draft.postId); if (!post) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); const content = await composePostForChannel(draft, draft.channelIds[0]); await query(`UPDATE scheduled_posts SET text=$2, format=$3, attachments=$4::jsonb, buttons=$5::jsonb, draft=$6::jsonb, is_ad=$7, cpm=$8, auto_delete_minutes=$9, report_after_hours=$10, updated_at=now() WHERE id=$1`, [draft.postId, content.text, content.format, JSON.stringify(normalizeAttachments(draft.content.attachments)), JSON.stringify(draft.buttons || []), JSON.stringify(draft), Boolean(draft.isAd), draft.cpm, draft.autoDeleteMinutes, draft.reportAfterHours || 24]); let warn = ''; if (post.status === 'published' && post.published_message_id) { try { await editMaxMessage(post.published_message_id, content); } catch(e) { warn = `\n\n⚠️ В базе сохранено, но MAX не обновил сообщение: ${escapeHtml(e.message || e)}`; } } await clearSession(key); await cb(callbackId, `━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>${warn}\n━━━━━━━━━━━━━━`, [[callbackButton('👁 Открыть пост', `post:open:${draft.postId}`)],[callbackButton('🗂 Посты','post:all')]]); }
 
@@ -2565,7 +3141,7 @@ async function handleCallback(update) {
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
-  const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = Number(getChatId(update) || key);
+  const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = lrResolveReplyChatId(update, key);
   await __lrRememberPrivateChatId(chatId);
   await __lrNotifyNewChannels(chatId);
 
@@ -2844,20 +3420,22 @@ async function __lrIsKnownChannelChat(chatId) {
 
 async function __lrShouldIgnoreInboundChannelUpdate(update) {
   const chatId = getChatId(update);
+  const looksChannel = __lrLooksLikeChannelUpdate(update);
 
+  // Важно: пересланный пост может содержать внутри себя channel/chat,
+  // но сам апдейт пришёл в личку. Поэтому без явного channel-типа не игнорируем.
+  if (!looksChannel) return false;
   if (!chatId) return false;
 
   const knownChannel = await __lrIsKnownChannelChat(chatId);
-  const looksChannel = __lrLooksLikeChannelUpdate(update);
 
   if (knownChannel || looksChannel) {
-    console.log('[channel guard] ignored inbound channel update', JSON.stringify({
-      type: update?.type || '',
+    console.log('[channel guard] ignored real channel update', JSON.stringify({
+      type: update?.type || update?.update_type || '',
       chatId: String(chatId),
       knownChannel,
-      looksChannel,
+      looksChannel
     }));
-
     return true;
   }
 
@@ -3242,7 +3820,7 @@ async function handleMessage(update) {
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
-  const chatId = Number(getChatId(update));
+  const chatId = lrResolveReplyChatId(update, getSessionKey(update));
   await __lrRememberPrivateChatId(chatId);
   await __lrNotifyNewChannels(chatId);
 
@@ -3336,7 +3914,7 @@ ${error.message || error}`);
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
   if (session.state === 'wait_post_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); await query('UPDATE scheduled_posts SET auto_delete_minutes=$2, updated_at=now() WHERE id=$1', [session.data.postId, v]); await clearSession(key); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
   if (session.state === 'wait_post_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время.'); await query(`UPDATE scheduled_posts SET publish_at=$2, updated_at=now() WHERE id=$1`, [session.data.postId, publishAt]); await clearSession(key); return msg(chatId, '✅ Время обновлено.', [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
-  const content = await hydrateContent(update); if (content.text || content.attachments.length) { const d = emptyDraft(); d.content = { ...d.content, ...content }; await setSession(key, 'select_channels', { draft: d }); const channels = await getChannels(); const rs = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `post:single:${c.id}`)]); rs.push([callbackButton('🌐 Все каналы','post:all_channels')],[callbackButton('❌ Отмена','post:cancel')]); return msg(chatId, '📡 Пост принят. Теперь выберите канал для публикации.', rs); }
+  const content = await hydrateContent(update); if (String(content.text || '').trim() || (Array.isArray(content.attachments) && content.attachments.length) || content.link) { const d = emptyDraft(); d.content = { ...d.content, ...content }; await setSession(key, 'select_channels', { draft: d }); const channels = await getChannels(); const rs = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `post:single:${c.id}`)]); rs.push([callbackButton('🌐 Все каналы','post:all_channels')],[callbackButton('❌ Отмена','post:cancel')]); return msg(chatId, '📡 Пост принят. Теперь выберите канал для публикации.', rs); }
   return msg(chatId, 'Команда не найдена. Нажмите /start.');
 }
 async function sendStudioEditorMessage(chatId, draft) {
