@@ -8510,6 +8510,30 @@ PNG-карточки каналов, графики и ежедневный от
 ━━━━━━━━━━━━━━`;
 }
 
+
+function mainMenuTextV6() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`;
+}
+
 function mainMenuRows() {
   return [
     [callbackButton('🚀 LinkRay Studio', 'main:posting')],
@@ -8521,12 +8545,15 @@ function mainMenuRows() {
     ],
   ];
 }
+
 async function showMainCallback(callbackId) {
-  await cb(callbackId, mainMenuTextV5(), mainMenuRows());
+  await cb(callbackId, mainMenuTextV6(), mainMenuRows());
 }
+
 async function sendMain(chatId) {
-  await msg(chatId, mainMenuTextV5(), mainMenuRows());
+  await msg(chatId, mainMenuTextV6(), mainMenuRows());
 }
+
 function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
 async function showStudio(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nСобирайте посты, планируйте публикации и управляйте рекламными размещениями.\n━━━━━━━━━━━━━━`, studioRows()); }
 async function sendStudio(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━`, studioRows()); }
