@@ -8,11 +8,9 @@ backups/
 backups_*/
 *.backup
 *.bak
-
 linkray_*.tar.gz
 linkray_current_src.tar.gz
 linkray_last_update.json
-
 tmp/
 .cache/
 
@@ -20,14 +18,12 @@ tmp/
 *.bak*
 *.backup*
 *.broken*
+*backup_*
+*broken_*
 src/*.bak*
 src/*.backup*
 src/*.broken*
+src/*backup_*
+src/*broken_*
 
-# Local backup files
-*.bak*
-*.backup*
-*.broken*
-src/*.bak*
-src/*.backup*
-src/*.broken*
+# Local temp/build artifacts
