@@ -546,7 +546,7 @@ async function dueGroups() {
     : `true`;
 
   const statusExpr = cols.has('status')
-    ? `AND COALESCE(status,'') NOT IN ('deleted','canceled','cancelled','draft')`
+    ? `AND COALESCE(status::text,'') NOT IN ('deleted','canceled','cancelled','draft')`
     : ``;
 
   const result = await query(
