@@ -1037,26 +1037,9 @@ async function handleLinks(chatId, links) {
 
   await sendImage(chatId, image, caption);
 
-  await sendMaxMessage({
-    chatId,
-    text:
-      '━━━━━━━━━━━━━━\n' +
-      '⚙️ <b>Ежедневный отчёт ПДП</b>\n\n' +
-      'Бот может присылать сводку каждый день в 08:00 МСК по этим каналам.\n' +
-      '━━━━━━━━━━━━━━',
-    format: 'html',
-    attachments: [
-      {
-        type: 'inline_keyboard',
-        payload: {
-          buttons: [
-            [{ type: 'callback', text: ' Включить отчёт', payload: 'lrchan:on' }],
-            [{ type: 'callback', text: '⛔ Отключить отчёт', payload: 'lrchan:off' }],
-          ],
-        },
-      },
-    ],
-  });
+  
+  // daily PDP offer after image removed: report controls live only in analytics menu
+
 }
 
 async function sendDailyForRow(row) {
