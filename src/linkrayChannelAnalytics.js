@@ -1697,6 +1697,126 @@ ${lrFooterSvg()}
   return saveSvgPng(svg, `single-${ch.key}`);
 }
 
+
+/* LR_NETWORK_15_CHANNELS_V7_START */
+function lrSvgShellNetworkV7(inner) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+    <defs>
+      <linearGradient id="lrNetBgV7" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#061426"/>
+        <stop offset="44%" stop-color="#0b3147"/>
+        <stop offset="100%" stop-color="#12a06f"/>
+      </linearGradient>
+      <radialGradient id="lrNetGlowV7" cx="86%" cy="12%" r="72%">
+        <stop offset="0%" stop-color="#65ffc0" stop-opacity=".45"/>
+        <stop offset="64%" stop-color="#31f2cc" stop-opacity=".12"/>
+        <stop offset="100%" stop-color="#31f2cc" stop-opacity="0"/>
+      </radialGradient>
+      <filter id="lrNetShadowV7" x="-10%" y="-10%" width="120%" height="130%">
+        <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#00111b" flood-opacity=".34"/>
+      </filter>
+      <style>
+        text { font-family: DejaVu Sans, Arial, sans-serif; }
+      </style>
+    </defs>
+    <rect width="1280" height="900" fill="url(#lrNetBgV7)"/>
+    <rect width="1280" height="900" fill="url(#lrNetGlowV7)"/>
+    <path d="M-40 150 C220 70 420 215 640 110 C900 -15 1060 145 1320 50" fill="none" stroke="rgba(255,255,255,.065)" stroke-width="3"/>
+    <path d="M-30 760 C260 630 510 760 740 640 C980 520 1110 650 1320 560" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
+    ${inner}
+  </svg>`;
+}
+
+function lrMetricBoxNetV7(x, y, w, h, label, value, color = '#31f2cc') {
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="rgba(255,255,255,.13)" stroke="rgba(126,248,225,.34)" stroke-width="2"/>
+    <text x="${x + w / 2}" y="${y + 31}" text-anchor="middle" font-size="17" font-weight="900" fill="#d7eef2">${lrSvgEscV3(label)}</text>
+    <text x="${x + w / 2}" y="${y + 82}" text-anchor="middle" font-size="38" font-weight="1000" fill="${color}">${lrSvgEscV3(value)}</text>
+  `;
+}
+
+async function lrNetworkRowV7(ch, x, y, idx) {
+  const av = await lrSafeAvatarV3(ch, x, y - 23, 34, idx);
+  const title = lrSvgEscV3(lrSvgShortV3(ch.title || ch.link || 'MAX-канал', 28));
+  const subs = lrSvgEscV3(fmt(ch.subscribers));
+  const views = lrSvgEscV3(fmt(ch.views24));
+
+  return `
+    <g>
+      ${av}
+      <text x="${x + 46}" y="${y}" font-size="17" font-weight="1000" fill="#102033">${title}</text>
+      <text x="${x + 355}" y="${y}" text-anchor="middle" font-size="17" font-weight="1000" fill="#168eea">${subs}</text>
+      <text x="${x + 458}" y="${y}" text-anchor="middle" font-size="17" font-weight="1000" fill="#168eea">${views}</text>
+      <line x1="${x}" y1="${y + 13}" x2="${x + 486}" y2="${y + 13}" stroke="#e4eef4" stroke-width="1"/>
+    </g>
+  `;
+}
+
+async function lrSafeRenderNetworkV7(channels) {
+  const totalSubs = channels.reduce((s, ch) => s + num(ch.subscribers), 0);
+  const total24 = channels.reduce((s, ch) => s + num(ch.views24), 0);
+  const total48 = channels.reduce((s, ch) => s + num(ch.views48), 0);
+  const total72 = channels.reduce((s, ch) => s + num(ch.views72), 0);
+  const totalDelta = channels.reduce((s, ch) => s + num(ch.deltaDay), 0);
+  const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
+
+  const history = await networkHistory(channels);
+  const histValues = history.length ? history.map((x) => x.value) : [totalSubs, totalSubs];
+  const histLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
+
+  const sorted = channels
+    .slice()
+    .sort((a, b) => num(b.views24) - num(a.views24))
+    .slice(0, 15);
+
+  const dateText = lrSvgEscV3(nowMskHuman());
+  const logoSvg = await lrBrandLogoImageV6(1000, 42, 70);
+
+  const rows = [];
+  for (let i = 0; i < sorted.length; i++) {
+    rows.push(await lrNetworkRowV7(sorted[i], 696, 386 + i * 30, i));
+  }
+
+  const moreCount = Math.max(0, channels.length - 15);
+  const moreText = moreCount > 0
+    ? `<text x="1182" y="846" text-anchor="end" font-size="18" font-weight="1000" fill="#31f2cc">+ ещё ${moreCount} каналов</text>`
+    : '';
+
+  const inner = `
+    <text x="52" y="68" font-size="42" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
+    <text x="54" y="101" font-size="19" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по ${channels.length} каналам</text>
+
+    ${logoSvg}
+    <text x="1086" y="78" font-size="26" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+
+    <rect x="34" y="124" width="1212" height="638" rx="38" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrNetShadowV7)"/>
+
+    ${lrMetricBoxNetV7(70, 160, 250, 96, 'Подписчики', fmt(totalSubs), '#27d9ff')}
+    ${lrMetricBoxNetV7(342, 160, 250, 96, 'Просмотры 24ч', fmt(total24), '#31f2cc')}
+    ${lrMetricBoxNetV7(614, 160, 250, 96, 'Средний ER', pct(er24), '#27d9ff')}
+    ${lrMetricBoxNetV7(886, 160, 300, 96, 'Каналов', String(channels.length), '#31f2cc')}
+
+    <text x="70" y="314" font-size="27" font-weight="1000" fill="#fff">График подписчиков</text>
+    ${lrLineChartCompactV4(histValues, histLabels, 70, 340, 590, 300, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+
+    <rect x="682" y="308" width="520" height="402" rx="24" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    <text x="712" y="350" font-size="27" font-weight="1000" fill="#102033">Каналы сети</text>
+    <text x="742" y="374" font-size="14" font-weight="1000" fill="#7d8e9d">Название</text>
+    <text x="1051" y="374" text-anchor="middle" font-size="14" font-weight="1000" fill="#7d8e9d">ПДП</text>
+    <text x="1154" y="374" text-anchor="middle" font-size="14" font-weight="1000" fill="#7d8e9d">24ч</text>
+    <line x1="696" y1="379" x2="1182" y2="379" stroke="#dcebf2" stroke-width="2"/>
+    ${rows.join('')}
+
+    <text x="70" y="805" font-size="23" font-weight="1000" fill="#ffffff">Подписчики: ${fmt(totalSubs)} · Итог за сутки: ${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</text>
+    <text x="70" y="837" font-size="18" font-weight="900" fill="#d8f2f4">Охваты: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
+    ${moreText}
+    <text x="1210" y="875" text-anchor="end" font-size="18" font-weight="900" fill="#d8f2f4">Дата формирования: ${dateText} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrSvgShellNetworkV7(inner), `lr-network-v7-${hash(channels.map((x) => x.key).join('-'))}`);
+}
+/* LR_NETWORK_15_CHANNELS_V7_END */
+
 async function renderNetworkSvg(channels) {
   const totalSubs = channels.reduce((sum, ch) => sum + ch.subscribers, 0);
   const total24 = channels.reduce((sum, ch) => sum + ch.views24, 0);
@@ -1884,7 +2004,7 @@ async function renderSingle(ch) {
 }
 
 async function renderNetwork(channels) {
-  return lrSafeRenderNetworkV5(channels);
+  return lrSafeRenderNetworkV7(channels);
 }
 
 async function renderPng(html, name) {
