@@ -721,7 +721,6 @@ async function timelineFor(campaignId, rangeHours, totalViews, firstPost) {
   await ensureAnalyticsTables();
 
   const key = String(campaignId || firstPost?.id || 'unknown');
-
   const startRaw = firstPost?.published_at || firstPost?.publish_at || firstPost?.created_at;
   const start = startRaw ? new Date(startRaw) : new Date(Date.now() - rangeHours * 3600000);
   const end = new Date(start.getTime() + rangeHours * 3600000);
@@ -734,32 +733,44 @@ async function timelineFor(campaignId, rangeHours, totalViews, firstPost) {
         AND created_at <= $3
       ORDER BY created_at ASC`,
     [key, start.toISOString(), end.toISOString()]
-  ).catch(() => []));
+  ).catch(() => []))
+    .map((p) => ({
+      views: Math.max(0, Math.round(Number(p.views || 0))),
+      ts: new Date(p.created_at).getTime(),
+    }))
+    .filter((p) => Number.isFinite(p.ts))
+    .sort((a, b) => a.ts - b.ts);
 
-  const labels =
-    rangeHours === 24
-      ? [1, 3, 6, 9, 12, 18, 24]
-      : rangeHours === 48
-        ? [1, 6, 12, 18, 24, 36, 48]
-        : [1, 6, 12, 24, 36, 48, 60, 72];
+  const labels = rangeHours === 24
+    ? [1, 3, 6, 9, 12, 18, 24]
+    : rangeHours === 48
+      ? [1, 6, 12, 18, 24, 36, 48]
+      : [1, 6, 12, 24, 36, 48, 60, 72];
 
   const total = Math.max(0, Math.round(Number(totalViews || 0)));
+  const nowTs = Date.now();
+  const currentTs = Math.min(nowTs, end.getTime());
+
   let lastKnown = 0;
 
-  return labels.map((hour) => {
+  return labels.map((hour, index) => {
     const target = start.getTime() + hour * 3600000;
-    const before = points.filter((p) => new Date(p.created_at).getTime() <= target).pop();
+    const before = points.filter((p) => p.ts <= target).pop();
 
-    let views;
+    let views = lastKnown;
 
     if (before) {
-      views = Number(before.views || 0);
-      lastKnown = views;
-    } else {
-      views = Math.max(lastKnown, Math.round(total * Math.min(1, hour / Math.max(1, rangeHours)) * 0.92));
+      views = Math.max(lastKnown, before.views);
     }
 
-    if (hour === labels[labels.length - 1]) views = Math.max(views, total);
+    // Без фейкового роста: до первой реальной точки показываем 0.
+    // На последней точке всегда показываем текущий итог.
+    if (target >= currentTs || index === labels.length - 1) {
+      views = Math.max(views, total);
+    }
+
+    lastKnown = Math.max(lastKnown, views);
+
     return [hour + 'ч', Math.max(0, Math.round(views))];
   });
 }
@@ -1008,6 +1019,22 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
   justify-content:flex-end;
 }
 
+
+/* CHART_CLEAR_HINT_V2 */
+.chart-card::after{
+  content:"0 → текущие просмотры";
+  position:absolute;
+  left:12px;
+  top:12px;
+  padding:7px 10px;
+  border-radius:999px;
+  background:rgba(255,255,255,.76);
+  color:#607086;
+  font-size:10.5px;
+  font-weight:1000;
+  backdrop-filter:blur(10px);
+}
+
 </style>
 </head>
 <body>
@@ -1084,7 +1111,7 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
   <section class="panel" id="chart">
     <div class="panel-head">
       <div class="panel-title"><h2>График просмотров</h2></div>
-      <p class="sub">Нажмите на точку графика, чтобы увидеть количество просмотров на выбранном периоде.</p>
+      <p class="sub">График показывает накопление просмотров по времени. Нажмите на точку, чтобы увидеть значение.</p>
       <div class="segmented" id="ranges"></div>
     </div>
     <div class="chart-pad">
@@ -1162,7 +1189,7 @@ function drawChart(range=activeRange){
   activeRange=Number(range);
   const data=(report.ranges&&report.ranges[String(activeRange)])||[];
   const width=760,height=320,pad={left:58,right:30,top:42,bottom:54};
-  const iw=width-pad.left-pad.right, ih=height-pad.top-pad.bottom, maxViews=Math.max(...data.map(x=>x[1]),1), baseY=pad.top+ih;
+  const iw=width-pad.left-pad.right, ih=height-pad.top-pad.bottom, rawMax=Math.max(...data.map(x=>Number(x[1])||0),1),maxViews=Math.max(4,Math.ceil(rawMax*1.15)),baseY=pad.top+ih;
   const points=data.map((item,index)=>({label:item[0],views:item[1],x:pad.left+(data.length===1?iw/2:iw*index/(data.length-1)),y:pad.top+ih-(item[1]/maxViews)*ih}));
   currentPoints=points;
   $('#grid').innerHTML=[0,.25,.5,.75,1].map(t=>{const y=pad.top+ih-ih*t,value=Math.round(maxViews*t);return '<line class="axis" x1="'+pad.left+'" y1="'+y+'" x2="'+(width-pad.right)+'" y2="'+y+'"></line><text class="chart-label" x="18" y="'+(y+4)+'">'+num(value)+'</text>'}).join('');
