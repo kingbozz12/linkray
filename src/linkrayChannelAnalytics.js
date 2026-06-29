@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import express from 'express';
 import sharp from 'sharp';
 import { query } from './db.js';
-import { sendMaxMessage } from './maxClient.js';
+import { sendMaxMessage, answerCallback } from './maxClient.js';
 
 const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL ||
@@ -927,6 +927,348 @@ function lrFooterSvg() {
   `;
 }
 
+
+/* LR_ANALYTICS_EDIT_AND_SAFE_PNG_V3_START */
+function lrGetCallbackIdV3(update) {
+  return (
+    update?.callback?.callback_id ||
+    update?.callback?.id ||
+    update?.callback_id ||
+    update?.callbackId ||
+    update?.message_callback?.callback_id ||
+    update?.message_callback?.id ||
+    null
+  );
+}
+
+async function lrEditOrSendV3(update, chatId, text, buttons = []) {
+  const callbackId = lrGetCallbackIdV3(update);
+  const attachments = lrMenuButtons(buttons);
+
+  if (callbackId) {
+    try {
+      await answerCallback({
+        callbackId,
+        text,
+        format: 'html',
+        attachments,
+      });
+      return;
+    } catch (error) {
+      console.error('[LinkRay analytics edit callback failed]', error?.message || error);
+    }
+  }
+
+  return sendMaxMessage({
+    chatId,
+    text,
+    format: 'html',
+    attachments,
+  });
+}
+
+function lrSvgEscV3(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function lrSvgShortV3(value, max = 42) {
+  const text = String(value || 'Канал MAX').replace(/\s+/g, ' ').trim();
+  return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
+}
+
+function lrSvgWrapV3(value, max = 34, limit = 2) {
+  const words = String(value || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const lines = [];
+  let line = '';
+
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > max && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+    if (lines.length >= limit) break;
+  }
+
+  if (line && lines.length < limit) lines.push(line);
+  if (!lines.length) lines.push('Канал MAX');
+
+  return lines.map((x, i) => {
+    if (i === limit - 1 && words.join(' ').length > lines.join(' ').length) {
+      return lrSvgShortV3(x, max);
+    }
+    return x;
+  });
+}
+
+async function lrSafeAvatarV3(ch, x, y, size, idx = 0) {
+  const url = ch.avatarUrl || ch.avatar_url || ch.photo_url || ch.image_url || '';
+  const data = await lrImageUrlToPngDataUrl(url, size).catch(() => '');
+
+  if (data) {
+    const clip = `clip_${hash(String(ch.key || ch.link || ch.title || '') + x + y + size)}`;
+    return `
+      <clipPath id="${clip}"><circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}"/></clipPath>
+      <image href="${data}" x="${x}" y="${y}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})"/>
+      <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 - 1}" fill="none" stroke="#7ef8e1" stroke-width="3"/>
+    `;
+  }
+
+  const palettes = [
+    ['#11356b', '#22d5ff'],
+    ['#25125c', '#8662ff'],
+    ['#10382b', '#26e7a5'],
+    ['#512138', '#ff72a6'],
+  ];
+  const p = palettes[idx % palettes.length];
+  const gid = `grad_${hash(String(ch.key || ch.link || ch.title || '') + idx)}`;
+  const letter = lrSvgEscV3(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+
+  return `
+    <defs>
+      <linearGradient id="${gid}" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="${p[1]}"/>
+        <stop offset="100%" stop-color="${p[0]}"/>
+      </linearGradient>
+    </defs>
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="url(#${gid})"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + size * 0.14}" text-anchor="middle" font-size="${Math.round(size * 0.44)}" font-weight="900" fill="#fff">${letter}</text>
+  `;
+}
+
+function lrMetricBoxV3(x, y, w, h, label, value, color = '#31f2cc') {
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="24" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.38)" stroke-width="2"/>
+    <text x="${x + w / 2}" y="${y + 36}" text-anchor="middle" font-size="21" font-weight="900" fill="#cde8ef">${lrSvgEscV3(label)}</text>
+    <text x="${x + w / 2}" y="${y + 100}" text-anchor="middle" font-size="50" font-weight="1000" fill="${color}">${lrSvgEscV3(value)}</text>
+  `;
+}
+
+function lrLineChartV3(values, labels, x, y, w, h, color = '#31f2cc') {
+  let nums = values.map(num).filter((v) => Number.isFinite(v));
+  if (!nums.length) nums = [0, 0];
+  if (nums.length === 1) nums = [nums[0], nums[0]];
+
+  let min = Math.min(...nums);
+  let max = Math.max(...nums);
+  if (min === max) {
+    min = Math.max(0, min - 1);
+    max += 1;
+  }
+
+  const padX = 34;
+  const padY = 30;
+  const span = Math.max(1, max - min);
+
+  const pts = nums.map((v, i) => {
+    const px = x + padX + (w - padX * 2) * (i / Math.max(1, nums.length - 1));
+    const py = y + padY + (h - padY * 2 - 22) * (1 - ((v - min) / span));
+    return [px, py, v, labels[i] || ''];
+  });
+
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const area = `${d} L ${x + w - padX},${y + h - padY - 22} L ${x + padX},${y + h - padY - 22} Z`;
+
+  const grid = [0, 1, 2, 3].map((i) => {
+    const yy = y + padY + (h - padY * 2 - 22) * (i / 3);
+    return `<line x1="${x + padX}" y1="${yy}" x2="${x + w - padX}" y2="${yy}" stroke="rgba(118,154,170,.25)" stroke-width="1"/>`;
+  }).join('');
+
+  const dots = pts.map((p, i) => {
+    const show = i === 0 || i === pts.length - 1 || i % Math.ceil(pts.length / 4) === 0;
+    return `
+      <circle cx="${p[0]}" cy="${p[1]}" r="7" fill="#071a28" stroke="${color}" stroke-width="4"/>
+      ${show ? `<text x="${p[0]}" y="${Math.max(y + 24, p[1] - 14)}" text-anchor="middle" font-size="18" font-weight="900" fill="${color}">${fmt(p[2])}</text>` : ''}
+    `;
+  }).join('');
+
+  const labelEvery = Math.max(1, Math.ceil(pts.length / 5));
+  const axis = pts.map((p, i) => {
+    if (i % labelEvery !== 0 && i !== pts.length - 1) return '';
+    return `<text x="${p[0]}" y="${y + h - 8}" text-anchor="middle" font-size="16" font-weight="800" fill="#8ba1ae">${lrSvgEscV3(p[3])}</text>`;
+  }).join('');
+
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="24" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    ${grid}
+    <path d="${area}" fill="rgba(49,242,204,.17)"/>
+    <path d="${d}" fill="none" stroke="rgba(49,242,204,.22)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+    ${axis}
+  `;
+}
+
+function lrBarsV3(values, labels, x, y, w, h) {
+  const nums = values.map(num);
+  const max = Math.max(...nums, 1);
+  const gap = w / nums.length;
+  const barW = Math.min(72, gap * 0.48);
+  const colors = ['#27d9ff', '#31f2cc', '#4d8dff'];
+
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="24" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    ${nums.map((v, i) => {
+      const bh = Math.max(8, (h - 68) * (v / max));
+      const bx = x + gap * i + (gap - barW) / 2;
+      const by = y + h - 38 - bh;
+      return `
+        <rect x="${bx}" y="${by}" width="${barW}" height="${bh}" rx="12" fill="${colors[i % colors.length]}"/>
+        <text x="${bx + barW / 2}" y="${Math.max(y + 34, by - 10)}" text-anchor="middle" font-size="19" font-weight="900" fill="#102033">${fmt(v)}</text>
+        <text x="${bx + barW / 2}" y="${y + h - 14}" text-anchor="middle" font-size="16" font-weight="900" fill="#7e93a2">${lrSvgEscV3(labels[i] || '')}</text>
+      `;
+    }).join('')}
+  `;
+}
+
+function lrSvgShellV3(inner) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+    <defs>
+      <linearGradient id="bgV3" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#051525"/>
+        <stop offset="46%" stop-color="#0b2d43"/>
+        <stop offset="100%" stop-color="#0d8e69"/>
+      </linearGradient>
+      <radialGradient id="glowV3" cx="84%" cy="10%" r="70%">
+        <stop offset="0%" stop-color="rgba(95,255,188,.44)"/>
+        <stop offset="65%" stop-color="rgba(49,242,204,.12)"/>
+        <stop offset="100%" stop-color="rgba(49,242,204,0)"/>
+      </radialGradient>
+      <filter id="shadowV3" x="-10%" y="-10%" width="120%" height="130%">
+        <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000" flood-opacity=".30"/>
+      </filter>
+      <style>
+        text { font-family: DejaVu Sans, Arial, sans-serif; }
+      </style>
+    </defs>
+    <rect width="1600" height="1000" fill="url(#bgV3)"/>
+    <rect width="1600" height="1000" fill="url(#glowV3)"/>
+    <path d="M-40 150 C220 70 420 215 640 110 C900 -15 1110 145 1640 50" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
+    <path d="M-30 835 C260 708 510 850 740 730 C980 610 1200 715 1640 620" fill="none" stroke="rgba(255,255,255,.050)" stroke-width="3"/>
+    ${inner}
+  </svg>`;
+}
+
+async function lrSafeSaveSvgPngV3(svg, name) {
+  await fs.mkdir(OUT_DIR, { recursive: true });
+  const fileName = `${name}-${Date.now()}.png`;
+  const filePath = path.join(OUT_DIR, fileName);
+
+  await sharp(Buffer.from(svg))
+    .png()
+    .toFile(filePath);
+
+  return {
+    filePath,
+    publicUrl: `${PUBLIC_BASE_URL.replace(/\/+$/, '')}/generated/channel-analytics/${fileName}`,
+  };
+}
+
+async function lrSafeRenderSingleV3(ch) {
+  const history = await historyFor(ch.key, 'subscribers');
+  const subValues = history.length ? history.map((x) => x.value) : [ch.subscribers, ch.subscribers];
+  const subLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
+  const avatar = await lrSafeAvatarV3(ch, 82, 192, 92, 0);
+  const titleLines = lrSvgWrapV3(ch.title, 48, 2);
+
+  const inner = `
+    <text x="64" y="86" font-size="54" font-weight="1000" fill="#ffffff">LinkRay Analytics</text>
+    <text x="66" y="128" font-size="25" font-weight="900" fill="#cde8ef">карточка канала · реальные данные после подключения бота</text>
+    <rect x="1235" y="55" width="300" height="70" rx="26" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
+    <text x="1385" y="99" text-anchor="middle" font-size="28" font-weight="1000" fill="#31f2cc">1 КАНАЛ</text>
+
+    <rect x="42" y="170" width="1516" height="724" rx="44" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#shadowV3)"/>
+
+    ${avatar}
+    <text x="200" y="224" font-size="42" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[0])}</text>
+    ${titleLines[1] ? `<text x="200" y="270" font-size="42" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[1])}</text>` : ''}
+    <text x="202" y="314" font-size="24" font-weight="900" fill="#cde8ef">MAX-канал · отчёт сформирован LinkRay</text>
+
+    ${lrMetricBoxV3(82, 350, 330, 135, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
+    ${lrMetricBoxV3(436, 350, 330, 135, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrMetricBoxV3(790, 350, 330, 135, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
+    ${lrMetricBoxV3(1144, 350, 366, 135, 'ER24', pct(ch.er24), '#27d9ff')}
+
+    <text x="82" y="540" font-size="32" font-weight="1000" fill="#fff">Динамика подписчиков</text>
+    ${lrLineChartV3(subValues, subLabels, 82, 565, 920, 235, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+
+    <text x="1055" y="540" font-size="32" font-weight="1000" fill="#fff">Охваты</text>
+    ${lrBarsV3([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 1055, 565, 455, 235)}
+
+    <text x="82" y="850" font-size="25" font-weight="1000" fill="#fff">Просмотры: 24ч — ${fmt(ch.views24)} · 48ч — ${fmt(ch.views48)} · 72ч — ${fmt(ch.views72)}</text>
+    <text x="82" y="944" font-size="22" font-weight="900" fill="#d8f2f4">Данные собираются LinkRay с момента добавления бота администратором в канал</text>
+    <text x="1518" y="944" text-anchor="end" font-size="22" font-weight="900" fill="#d8f2f4">Дата формирования отчёта: ${lrSvgEscV3(nowMskHuman())} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrSvgShellV3(inner), `lr-single-${ch.key}`);
+}
+
+async function lrSafeRenderNetworkV3(channels) {
+  const totalSubs = channels.reduce((s, ch) => s + num(ch.subscribers), 0);
+  const total24 = channels.reduce((s, ch) => s + num(ch.views24), 0);
+  const total48 = channels.reduce((s, ch) => s + num(ch.views48), 0);
+  const total72 = channels.reduce((s, ch) => s + num(ch.views72), 0);
+  const totalDelta = channels.reduce((s, ch) => s + num(ch.deltaDay), 0);
+  const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
+  const history = await networkHistory(channels);
+  const histValues = history.length ? history.map((x) => x.value) : [totalSubs, totalSubs];
+  const histLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
+
+  const sorted = channels.slice().sort((a, b) => num(b.views24) - num(a.views24)).slice(0, 5);
+  const rowSvg = [];
+
+  for (let i = 0; i < sorted.length; i++) {
+    const ch = sorted[i];
+    const y = 618 + i * 48;
+    const av = await lrSafeAvatarV3(ch, 842, y - 30, 38, i);
+    rowSvg.push(`
+      ${av}
+      <text x="894" y="${y}" font-size="24" font-weight="1000" fill="#102033">${lrSvgEscV3(lrSvgShortV3(ch.title, 31))}</text>
+      <text x="1258" y="${y}" text-anchor="middle" font-size="25" font-weight="1000" fill="#168eea">${fmt(ch.subscribers)}</text>
+      <text x="1462" y="${y}" text-anchor="middle" font-size="25" font-weight="1000" fill="#168eea">${fmt(ch.views24)}</text>
+    `);
+  }
+
+  const inner = `
+    <text x="64" y="86" font-size="54" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
+    <text x="66" y="128" font-size="25" font-weight="900" fill="#cde8ef">LinkRay Analytics · сводка по ${channels.length} каналам</text>
+    <rect x="1220" y="55" width="315" height="70" rx="26" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
+    <text x="1378" y="99" text-anchor="middle" font-size="28" font-weight="1000" fill="#31f2cc">СЕТКА</text>
+
+    <rect x="42" y="170" width="1516" height="724" rx="44" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#shadowV3)"/>
+
+    ${lrMetricBoxV3(82, 220, 330, 135, 'Подписчики', fmt(totalSubs), '#27d9ff')}
+    ${lrMetricBoxV3(436, 220, 330, 135, 'Просмотры 24ч', fmt(total24), '#31f2cc')}
+    ${lrMetricBoxV3(790, 220, 330, 135, 'Средний ER', pct(er24), '#27d9ff')}
+    ${lrMetricBoxV3(1144, 220, 366, 135, 'Каналов', String(channels.length), '#31f2cc')}
+
+    <text x="82" y="420" font-size="32" font-weight="1000" fill="#fff">График подписчиков</text>
+    ${lrLineChartV3(histValues, histLabels, 82, 445, 705, 355, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+
+    <rect x="818" y="445" width="692" height="355" rx="26" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    <text x="856" y="496" font-size="31" font-weight="1000" fill="#102033">Каналы</text>
+    <text x="895" y="545" font-size="18" font-weight="1000" fill="#7d8e9d">Название</text>
+    <text x="1258" y="545" text-anchor="middle" font-size="18" font-weight="1000" fill="#7d8e9d">ПДП</text>
+    <text x="1462" y="545" text-anchor="middle" font-size="18" font-weight="1000" fill="#7d8e9d">24ч</text>
+    <line x1="842" y1="565" x2="1484" y2="565" stroke="#dcebf2" stroke-width="2"/>
+    ${rowSvg.join('')}
+
+    <text x="82" y="850" font-size="25" font-weight="1000" fill="#fff">Всего подписчиков: ${fmt(totalSubs)} · Итог за сутки: ${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</text>
+    <text x="82" y="884" font-size="25" font-weight="1000" fill="#fff">Просмотры: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
+    <text x="82" y="944" font-size="22" font-weight="900" fill="#d8f2f4">Данные собираются LinkRay с момента добавления бота администратором в канал</text>
+    <text x="1518" y="944" text-anchor="end" font-size="22" font-weight="900" fill="#d8f2f4">Дата формирования отчёта: ${lrSvgEscV3(nowMskHuman())} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrSvgShellV3(inner), `lr-network-${hash(channels.map((x) => x.key).join('-'))}`);
+}
+/* LR_ANALYTICS_EDIT_AND_SAFE_PNG_V3_END */
+
 async function renderSingleSvg(ch) {
   const avatar = await lrSvgAvatar(ch, 84, 214, 92, 1);
   const history = await historyFor(ch.key, 'subscribers');
@@ -1151,11 +1493,11 @@ function lrExtractPreviewMap(update, links) {
 /* LR_ANALYTICS_CARDS_V2_END */
 
 async function renderSingle(ch) {
-  return renderSingleSvg(ch);
+  return lrSafeRenderSingleV3(ch);
 }
 
 async function renderNetwork(channels) {
-  return renderNetworkSvg(channels);
+  return lrSafeRenderNetworkV3(channels);
 }
 
 async function renderPng(html, name) {
@@ -1514,71 +1856,63 @@ async function getAnalyticsSettingsForKeys(keys) {
   };
 }
 
-async function showAnalyticsMainMenu(chatId, keys) {
+async function showAnalyticsMainMenu(chatId, keys, update = null) {
   await setAnalyticsModeForKeys(keys, '');
 
-  await sendMaxMessage({
-    chatId,
-    text:
-      '━━━━━━━━━━━━━━\n' +
-      ' <b>LinkRay Analytics</b>\n\n' +
-      'Выберите раздел:\n\n' +
-      ' <b>Картинка по ссылке</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.\n\n' +
-      ' <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.\n' +
-      '━━━━━━━━━━━━━━',
-    format: 'html',
-    attachments: lrMenuButtons([
-      [lrCb(' Картинка по ссылке', 'lrchan:links')],
-      [lrCb(' Ежедневный отчёт ПДП', 'lrchan:daily')],
+  await lrEditOrSendV3(update, chatId,
+    '━━━━━━━━━━━━━━\n' +
+    '📊 <b>LinkRay Analytics</b>\n\n' +
+    'Выберите раздел:\n\n' +
+    '🖼 <b>Картинка по ссылке</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.\n\n' +
+    '📆 <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.\n' +
+    '━━━━━━━━━━━━━━',
+    [
+      [lrCb('🖼 Картинка по ссылке', 'lrchan:links')],
+      [lrCb('📆 Ежедневный отчёт ПДП', 'lrchan:daily')],
       [lrCb('⬅️ Главное меню', 'main:menu')],
-    ]),
-  });
+    ]
+  );
 }
 
-async function showAnalyticsLinkInput(chatId, keys) {
+async function showAnalyticsLinkInput(chatId, keys, update = null) {
   await setAnalyticsModeForKeys(keys, 'await_links');
 
-  await sendMaxMessage({
-    chatId,
-    text:
-      '━━━━━━━━━━━━━━\n' +
-      ' <b>Картинка аналитики</b>\n\n' +
-      'Отправьте ссылку MAX-канала.\n\n' +
-      'Можно отправить несколько ссылок сразу — каждую с новой строки. Тогда бот сделает сводную карточку сети каналов.\n' +
-      '━━━━━━━━━━━━━━',
-    format: 'html',
-    attachments: lrMenuButtons([
+  await lrEditOrSendV3(update, chatId,
+    '━━━━━━━━━━━━━━\n' +
+    '🖼 <b>Картинка аналитики</b>\n\n' +
+    'Отправьте ссылку MAX-канала.\n\n' +
+    'Можно отправить несколько ссылок сразу — каждую с новой строки.\n' +
+    'Тогда бот сделает сводную карточку сети каналов.\n' +
+    '━━━━━━━━━━━━━━',
+    [
       [lrCb('⬅️ В аналитику', 'lrchan:menu')],
       [lrCb('⬅️ Главное меню', 'main:menu')],
-    ]),
-  });
+    ]
+  );
 }
 
-async function showDailyPdpMenu(chatId, keys) {
+async function showDailyPdpMenu(chatId, keys, update = null) {
   const settings = await getAnalyticsSettingsForKeys(keys);
   const status = settings.dailyEnabled ? 'включён' : 'выключен';
-  const icon = settings.dailyEnabled ? '' : '⛔';
+  const icon = settings.dailyEnabled ? '✅' : '⛔';
 
-  await sendMaxMessage({
-    chatId,
-    text:
-      '━━━━━━━━━━━━━━\n' +
-      ' <b>Ежедневный отчёт ПДП</b>\n\n' +
-      `${icon} Сейчас отчёт: <b>${status}</b>\n` +
-      `📌 Каналов сохранено: <b>${settings.links.length}</b>\n\n` +
-      'Каждый день в 08:00 МСК бот будет присылать:\n' +
-      ' сколько подписалось;\n' +
-      ' сколько отписалось;\n' +
-      ' общий итог за сутки;\n' +
-      ' карточку LinkRay Analytics.\n' +
-      '━━━━━━━━━━━━━━',
-    format: 'html',
-    attachments: lrMenuButtons([
-      [lrCb(' Включить отчёт', 'lrchan:on'), lrCb('⛔ Отключить отчёт', 'lrchan:off')],
-      [lrCb(' Изменить каналы', 'lrchan:links')],
+  await lrEditOrSendV3(update, chatId,
+    '━━━━━━━━━━━━━━\n' +
+    '📆 <b>Ежедневный отчёт ПДП</b>\n\n' +
+    `${icon} Сейчас отчёт: <b>${status}</b>\n` +
+    `📌 Каналов сохранено: <b>${settings.links.length}</b>\n\n` +
+    'Каждый день в 08:00 МСК бот будет присылать:\n' +
+    '✅ сколько подписалось;\n' +
+    '➖ сколько отписалось;\n' +
+    '📈 общий итог за сутки;\n' +
+    '🖼 карточку LinkRay Analytics.\n' +
+    '━━━━━━━━━━━━━━',
+    [
+      [lrCb('✅ Включить отчёт', 'lrchan:on'), lrCb('⛔ Отключить отчёт', 'lrchan:off')],
+      [lrCb('🖼 Изменить каналы', 'lrchan:links')],
       [lrCb('⬅️ В аналитику', 'lrchan:menu')],
-    ]),
-  });
+    ]
+  );
 }
 
 async function showFallbackMainMenu(chatId, keys) {
@@ -1619,34 +1953,34 @@ async function handleAnalyticsMenu(update) {
 
 
   if (payload === 'main:analytics' || payload === 'analytics:menu' || payload === 'lrchan:menu') {
-    await showAnalyticsMainMenu(chatId, keys);
+    await showAnalyticsMainMenu(chatId, keys, update);
     return true;
   }
 
   if (payload === 'lrchan:links') {
-    await showAnalyticsLinkInput(chatId, keys);
+    await showAnalyticsLinkInput(chatId, keys, update);
     return true;
   }
 
   if (payload === 'lrchan:daily' || payload === 'lrchan:notifications') {
-    await showDailyPdpMenu(chatId, keys);
+    await showDailyPdpMenu(chatId, keys, update);
     return true;
   }
 
   if (payload === 'lrchan:on') {
     await setDaily(chatId, true);
-    await showDailyPdpMenu(chatId, keys);
+    await showDailyPdpMenu(chatId, keys, update);
     return true;
   }
 
   if (payload === 'lrchan:off') {
     await setDaily(chatId, false);
-    await showDailyPdpMenu(chatId, keys);
+    await showDailyPdpMenu(chatId, keys, update);
     return true;
   }
 
   if (lrIsAnalyticsText(text)) {
-    await showAnalyticsMainMenu(chatId, keys);
+    await showAnalyticsMainMenu(chatId, keys, update);
     return true;
   }
 
