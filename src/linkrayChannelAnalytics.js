@@ -60,8 +60,8 @@ function fmt(value) {
 
 function compact(value) {
   const n = num(value);
-  if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1).replace('.', ',') + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace('.', ',') + 'k';
+  if (n >= 900000) return (n / 900000).toFixed(n >= 9000000 ? 0 : 1).replace('.', ',') + 'M';
+  if (n >= 900) return (n / 900).toFixed(n >= 9000 ? 0 : 1).replace('.', ',') + 'k';
   return String(n);
 }
 
@@ -574,8 +574,8 @@ function chartSvg(values, labels, options = {}) {
     <path d="${area}" fill="rgba(36,217,255,.13)"/>
     <path d="${d}" fill="none" stroke="#24bff2" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
     <g fill="#fff" stroke="#31d986" stroke-width="4">${circles}</g>
-    <text x="${first[0] + 4}" y="${Math.max(18, first[1] - 10)}" fill="#111827" font-size="18" font-weight="1000">${fmt(first[2])}</text>
-    <text x="${Math.max(22, last[0] - 92)}" y="${Math.max(18, last[1] - 10)}" fill="#111827" font-size="18" font-weight="1000">${fmt(last[2])}</text>
+    <text x="${first[0] + 4}" y="${Math.max(18, first[1] - 10)}" fill="#111827" font-size="18" font-weight="900">${fmt(first[2])}</text>
+    <text x="${Math.max(22, last[0] - 92)}" y="${Math.max(18, last[1] - 10)}" fill="#111827" font-size="18" font-weight="900">${fmt(last[2])}</text>
   </svg>`;
 }
 
@@ -597,7 +597,7 @@ function barSvg(values, labels) {
 
     return `
       <rect x="${x}" y="${y}" width="${barW}" height="${bh}" rx="13" fill="${colors[i % colors.length]}"/>
-      <text x="${x + barW / 2}" y="${Math.max(18, y - 8)}" text-anchor="middle" fill="#111827" font-size="19" font-weight="1000">${fmt(v)}</text>
+      <text x="${x + barW / 2}" y="${Math.max(18, y - 8)}" text-anchor="middle" fill="#111827" font-size="19" font-weight="900">${fmt(v)}</text>
       <text x="${x + barW / 2}" y="${height - 4}" text-anchor="middle" fill="#758397" font-size="15" font-weight="900">${esc(labels[i] || '')}</text>
     `;
   }).join('');
@@ -632,16 +632,16 @@ linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-siz
 .sheet{background:#fff;border-radius:20px;padding:18px;box-shadow:0 16px 42px rgba(0,0,0,.20);border:1px solid rgba(0,0,0,.06);overflow:hidden}
 .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
 .left{display:flex;align-items:center;gap:10px;min-width:0}
-.av{width:42px;height:42px;border-radius:50%;overflow:hidden;display:grid;place-items:center;flex:0 0 auto;color:#fff;font-weight:1000;background:radial-gradient(circle at 30% 25%,#ffe08a,#b8751d 42%,#291a0d 100%)}
+.av{width:42px;height:42px;border-radius:50%;overflow:hidden;display:grid;place-items:center;flex:0 0 auto;color:#fff;font-weight:900;background:radial-gradient(circle at 30% 25%,#ffe08a,#b8751d 42%,#291a0d 100%)}
 .av img{width:100%;height:100%;object-fit:cover}
 .title{min-width:0}
 .title b{display:block;font-size:21px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.03em}
 .title span{display:block;font-size:12px;color:#758397;font-weight:850;margin-top:2px}
-.lr{font-size:15px;font-weight:1000;color:#5b62ff;white-space:nowrap}
+.lr{font-size:15px;font-weight:900;color:#5b62ff;white-space:nowrap}
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
 .metric{min-height:86px;border:1px solid #e5edf6;border-radius:14px;background:#fff;padding:12px;text-align:center}
-.metric .k{font-size:11px;text-transform:uppercase;color:#8793a3;font-weight:1000;line-height:1.12}
-.metric .v{margin-top:8px;font-size:30px;line-height:1;font-weight:1000;letter-spacing:-.06em;color:#168eea}
+.metric .k{font-size:11px;text-transform:uppercase;color:#8793a3;font-weight:900;line-height:1.12}
+.metric .v{margin-top:8px;font-size:30px;line-height:1;font-weight:900;letter-spacing:-.06em;color:#168eea}
 .metric.green .v{color:#20c77b}.metric.red .v{color:#d9635d}
 .grid{display:grid;grid-template-columns:1.25fr .75fr;gap:12px}
 .grid.net{grid-template-columns:1fr 1fr}
@@ -653,13 +653,13 @@ linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-siz
 .row{display:grid;grid-template-columns:42px 1fr 70px 56px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #e9f0f7}
 .row:last-child{border-bottom:0}
 .row .name{font-weight:950;color:#263447;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.row b{text-align:right;color:#168eea}.row em{font-style:normal;text-align:right;font-weight:1000}.plus{color:#20c77b}.minus{color:#d9635d}
+.row b{text-align:right;color:#168eea}.row em{font-style:normal;text-align:right;font-weight:900}.plus{color:#20c77b}.minus{color:#d9635d}
 .txt{display:grid;grid-template-columns:1fr auto;gap:14px;color:#fff;align-items:end}
 .cap{font-size:24px;line-height:1.24}
-.cap .red{color:#d9635d;font-weight:1000;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
-.cap b{font-weight:1000}
+.cap .red{color:#d9635d;font-weight:900;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.cap b{font-weight:900}
 .foot{border-left:4px solid rgba(255,255,255,.85);background:rgba(255,255,255,.12);border-radius:6px;padding:9px 12px;color:#fff;font-size:17px;line-height:1.25;min-width:310px}
-.foot .red{color:#d9635d;text-decoration:underline;font-weight:1000}
+.foot .red{color:#d9635d;text-decoration:underline;font-weight:900}
 .time{text-align:right;color:rgba(255,255,255,.55);font-size:13px;font-weight:800;margin-top:6px}
 </style>
 </head>
@@ -671,8 +671,8 @@ linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-siz
 
 
 /* LR_ANALYTICS_CARDS_V2 */
-const LR_CARD_W = 1600;
-const LR_CARD_H = 1000;
+const LR_CARD_W = 1280;
+const LR_CARD_H = 900;
 
 function lrCardEsc(value) {
   return String(value ?? '')
@@ -779,15 +779,15 @@ async function lrSvgAvatar(ch, x, y, size, idx = 0) {
       </radialGradient>
     </defs>
     <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="url(#${gid})"/>
-    <text x="${x + size / 2}" y="${y + size / 2 + size * 0.14}" text-anchor="middle" font-size="${Math.round(size * 0.42)}" font-weight="1000" fill="#fff">${letter}</text>
+    <text x="${x + size / 2}" y="${y + size / 2 + size * 0.14}" text-anchor="middle" font-size="${Math.round(size * 0.42)}" font-weight="900" fill="#fff">${letter}</text>
   `;
 }
 
 function lrMetricSvg(x, y, w, h, label, value, color = '#27e6c7') {
   return `
     <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="26" fill="rgba(255,255,255,.105)" stroke="rgba(128,245,232,.34)" stroke-width="2"/>
-    <text x="${x + w / 2}" y="${y + 38}" text-anchor="middle" font-size="22" font-weight="1000" fill="#c5d9e4">${lrCardEsc(label)}</text>
-    <text x="${x + w / 2}" y="${y + h - 42}" text-anchor="middle" font-size="52" font-weight="1000" fill="${color}">${lrCardEsc(value)}</text>
+    <text x="${x + w / 2}" y="${y + 38}" text-anchor="middle" font-size="22" font-weight="900" fill="#c5d9e4">${lrCardEsc(label)}</text>
+    <text x="${x + w / 2}" y="${y + h - 42}" text-anchor="middle" font-size="52" font-weight="900" fill="${color}">${lrCardEsc(value)}</text>
   `;
 }
 
@@ -827,7 +827,7 @@ function lrChartSvg(values, labels, x, y, w, h, color = '#27e6c7') {
     const show = i === 0 || i === pts.length - 1 || i % Math.ceil(pts.length / 5) === 0;
     return `
       <circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="8" fill="#061726" stroke="${color}" stroke-width="4"/>
-      ${show ? `<text x="${p[0].toFixed(1)}" y="${Math.max(y + 22, p[1] - 18).toFixed(1)}" text-anchor="middle" font-size="18" font-weight="1000" fill="${color}">${fmt(p[2])}</text>` : ''}
+      ${show ? `<text x="${p[0].toFixed(1)}" y="${Math.max(y + 22, p[1] - 18).toFixed(1)}" text-anchor="middle" font-size="18" font-weight="900" fill="${color}">${fmt(p[2])}</text>` : ''}
     `;
   }).join('');
 
@@ -863,8 +863,8 @@ function lrBarsSvg(values, labels, x, y, w, h) {
 
     return `
       <rect x="${bx}" y="${by}" width="${barW}" height="${bh}" rx="12" fill="${colors[i % colors.length]}"/>
-      <text x="${bx + barW / 2}" y="${Math.max(y + 34, by - 10)}" text-anchor="middle" font-size="20" font-weight="1000" fill="#0b1b2b">${fmt(v)}</text>
-      <text x="${bx + barW / 2}" y="${y + h - 14}" text-anchor="middle" font-size="17" font-weight="1000" fill="#76899a">${lrCardEsc(labels[i] || '')}</text>
+      <text x="${bx + barW / 2}" y="${Math.max(y + 34, by - 10)}" text-anchor="middle" font-size="20" font-weight="900" fill="#0b1b2b">${fmt(v)}</text>
+      <text x="${bx + barW / 2}" y="${y + h - 14}" text-anchor="middle" font-size="17" font-weight="900" fill="#76899a">${lrCardEsc(labels[i] || '')}</text>
     `;
   }).join('');
 
@@ -902,8 +902,8 @@ function lrBaseSvgStart() {
 
   <rect width="${LR_CARD_W}" height="${LR_CARD_H}" fill="url(#lrBg)"/>
   <rect width="${LR_CARD_W}" height="${LR_CARD_H}" fill="url(#lrGlow)"/>
-  <path d="M0 160 C230 80 370 230 580 125 C820 2 1030 165 1600 45" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
-  <path d="M0 815 C300 700 500 830 730 720 C970 602 1180 720 1600 620" fill="none" stroke="rgba(255,255,255,.05)" stroke-width="3"/>
+  <path d="M0 160 C230 80 370 230 580 125 C820 2 1030 165 1280 45" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
+  <path d="M0 815 C300 700 500 830 730 720 C970 602 1180 720 1280 620" fill="none" stroke="rgba(255,255,255,.05)" stroke-width="3"/>
   `;
 }
 
@@ -912,10 +912,10 @@ async function lrHeaderSvg(label) {
 
   return `
     ${logo ? `<image href="${logo}" x="52" y="42" width="116" height="116" preserveAspectRatio="xMidYMid slice"/>` : ''}
-    <text x="188" y="86" font-size="42" font-weight="1000" fill="#fff">LinkRay Analytics</text>
+    <text x="188" y="86" font-size="42" font-weight="900" fill="#fff">LinkRay Analytics</text>
     <text x="190" y="124" font-size="24" font-weight="900" fill="#c4d9e4">аналитика каналов и размещений MAX</text>
     <rect x="1188" y="58" width="356" height="70" rx="26" fill="rgba(255,255,255,.12)" stroke="rgba(111,255,229,.44)" stroke-width="2"/>
-    <text x="1366" y="101" font-size="29" font-weight="1000" text-anchor="middle" fill="#34e7c6">${lrCardEsc(label)}</text>
+    <text x="1366" y="101" font-size="29" font-weight="900" text-anchor="middle" fill="#34e7c6">${lrCardEsc(label)}</text>
   `;
 }
 
@@ -1046,7 +1046,7 @@ function lrMetricBoxV3(x, y, w, h, label, value, color = '#31f2cc') {
   return `
     <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="24" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.38)" stroke-width="2"/>
     <text x="${x + w / 2}" y="${y + 36}" text-anchor="middle" font-size="21" font-weight="900" fill="#cde8ef">${lrSvgEscV3(label)}</text>
-    <text x="${x + w / 2}" y="${y + 100}" text-anchor="middle" font-size="50" font-weight="1000" fill="${color}">${lrSvgEscV3(value)}</text>
+    <text x="${x + w / 2}" y="${y + 100}" text-anchor="middle" font-size="50" font-weight="900" fill="${color}">${lrSvgEscV3(value)}</text>
   `;
 }
 
@@ -1128,7 +1128,7 @@ function lrBarsV3(values, labels, x, y, w, h) {
 }
 
 function lrSvgShellV3(inner) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
     <defs>
       <linearGradient id="bgV3" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0%" stop-color="#051525"/>
@@ -1147,10 +1147,10 @@ function lrSvgShellV3(inner) {
         text { font-family: DejaVu Sans, Arial, sans-serif; }
       </style>
     </defs>
-    <rect width="1600" height="1000" fill="url(#bgV3)"/>
-    <rect width="1600" height="1000" fill="url(#glowV3)"/>
-    <path d="M-40 150 C220 70 420 215 640 110 C900 -15 1110 145 1640 50" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
-    <path d="M-30 835 C260 708 510 850 740 730 C980 610 1200 715 1640 620" fill="none" stroke="rgba(255,255,255,.050)" stroke-width="3"/>
+    <rect width="1280" height="900" fill="url(#bgV3)"/>
+    <rect width="1280" height="900" fill="url(#glowV3)"/>
+    <path d="M-40 150 C220 70 420 215 640 110 C900 -15 1110 145 1320 50" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
+    <path d="M-30 835 C260 708 510 850 740 730 C980 610 1200 715 1320 620" fill="none" stroke="rgba(255,255,255,.050)" stroke-width="3"/>
     ${inner}
   </svg>`;
 }
@@ -1174,34 +1174,34 @@ async function lrSafeRenderSingleV3(ch) {
   const history = await historyFor(ch.key, 'subscribers');
   const subValues = history.length ? history.map((x) => x.value) : [ch.subscribers, ch.subscribers];
   const subLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
-  const avatar = await lrSafeAvatarV3(ch, 82, 192, 92, 0);
+  const avatar = await lrSafeAvatarV3(ch, 66, 172, 76, 0);
   const titleLines = lrSvgWrapV3(ch.title, 48, 2);
 
   const inner = `
-    <text x="64" y="86" font-size="54" font-weight="1000" fill="#ffffff">LinkRay Analytics</text>
-    <text x="66" y="128" font-size="25" font-weight="900" fill="#cde8ef">карточка канала · реальные данные после подключения бота</text>
-    <rect x="1235" y="55" width="300" height="70" rx="26" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
-    <text x="1385" y="99" text-anchor="middle" font-size="28" font-weight="1000" fill="#31f2cc">1 КАНАЛ</text>
+    <text x="46" y="78" font-size="54" font-weight="900" fill="#ffffff">LinkRay Analytics</text>
+    <text x="48" y="118" font-size="25" font-weight="900" fill="#cde8ef">карточка канала · реальные данные после подключения бота</text>
+    <rect x="980" y="48" width="240" height="70" rx="26" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
+    <text x="1100" y="99" text-anchor="middle" font-size="28" font-weight="900" fill="#31f2cc">1 КАНАЛ</text>
 
-    <rect x="42" y="170" width="1516" height="724" rx="44" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#shadowV3)"/>
+    <rect x="34" y="150" width="1212" height="650" rx="44" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#shadowV3)"/>
 
     ${avatar}
-    <text x="200" y="224" font-size="42" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[0])}</text>
-    ${titleLines[1] ? `<text x="200" y="270" font-size="42" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[1])}</text>` : ''}
-    <text x="202" y="314" font-size="24" font-weight="900" fill="#cde8ef">MAX-канал · отчёт сформирован LinkRay</text>
+    <text x="160" y="207" font-size="42" font-weight="900" fill="#fff">${lrSvgEscV3(titleLines[0])}</text>
+    ${titleLines[1] ? `<text x="160" y="248" font-size="42" font-weight="900" fill="#fff">${lrSvgEscV3(titleLines[1])}</text>` : ''}
+    <text x="162" y="286" font-size="24" font-weight="900" fill="#cde8ef">MAX-канал · отчёт сформирован LinkRay</text>
 
-    ${lrMetricBoxV3(82, 350, 330, 135, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
-    ${lrMetricBoxV3(436, 350, 330, 135, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
-    ${lrMetricBoxV3(790, 350, 330, 135, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
-    ${lrMetricBoxV3(1144, 350, 366, 135, 'ER24', pct(ch.er24), '#27d9ff')}
+    ${lrMetricBoxV3(66, 330, 260, 118, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
+    ${lrMetricBoxV3(350, 330, 260, 118, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrMetricBoxV3(634, 330, 260, 118, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
+    ${lrMetricBoxV3(918, 330, 282, 118, 'ER24', pct(ch.er24), '#27d9ff')}
 
-    <text x="82" y="540" font-size="32" font-weight="1000" fill="#fff">Динамика подписчиков</text>
-    ${lrLineChartV3(subValues, subLabels, 82, 565, 920, 235, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    <text x="66" y="500" font-size="32" font-weight="900" fill="#fff">Динамика подписчиков</text>
+    ${lrLineChartV3(subValues, subLabels, 66, 525, 690, 200, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
 
-    <text x="1055" y="540" font-size="32" font-weight="1000" fill="#fff">Охваты</text>
-    ${lrBarsV3([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 1055, 565, 455, 235)}
+    <text x="800" y="500" font-size="32" font-weight="900" fill="#fff">Охваты</text>
+    ${lrBarsV3([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 800, 525, 400, 200)}
 
-    <text x="82" y="850" font-size="25" font-weight="1000" fill="#fff">Просмотры: 24ч — ${fmt(ch.views24)} · 48ч — ${fmt(ch.views48)} · 72ч — ${fmt(ch.views72)}</text>
+    <text x="82" y="850" font-size="25" font-weight="900" fill="#fff">Просмотры: 24ч — ${fmt(ch.views24)} · 48ч — ${fmt(ch.views48)} · 72ч — ${fmt(ch.views72)}</text>
     <text x="82" y="944" font-size="22" font-weight="900" fill="#d8f2f4">Данные собираются LinkRay с момента добавления бота администратором в канал</text>
     <text x="1518" y="944" text-anchor="end" font-size="22" font-weight="900" fill="#d8f2f4">Дата формирования отчёта: ${lrSvgEscV3(nowMskHuman())} МСК</text>
   `;
@@ -1225,42 +1225,42 @@ async function lrSafeRenderNetworkV3(channels) {
 
   for (let i = 0; i < sorted.length; i++) {
     const ch = sorted[i];
-    const y = 618 + i * 48;
-    const av = await lrSafeAvatarV3(ch, 842, y - 30, 38, i);
+    const y = 566 + i * 40;
+    const av = await lrSafeAvatarV3(ch, 692, y - 27, 32, i);
     rowSvg.push(`
       ${av}
-      <text x="894" y="${y}" font-size="24" font-weight="1000" fill="#102033">${lrSvgEscV3(lrSvgShortV3(ch.title, 31))}</text>
-      <text x="1258" y="${y}" text-anchor="middle" font-size="25" font-weight="1000" fill="#168eea">${fmt(ch.subscribers)}</text>
-      <text x="1462" y="${y}" text-anchor="middle" font-size="25" font-weight="1000" fill="#168eea">${fmt(ch.views24)}</text>
+      <text x="736" y="${y}" font-size="24" font-weight="900" fill="#102033">${lrSvgEscV3(lrSvgShortV3(ch.title, 24))}</text>
+      <text x="1010" y="${y}" text-anchor="middle" font-size="25" font-weight="900" fill="#168eea">${fmt(ch.subscribers)}</text>
+      <text x="1140" y="${y}" text-anchor="middle" font-size="25" font-weight="900" fill="#168eea">${fmt(ch.views24)}</text>
     `);
   }
 
   const inner = `
-    <text x="64" y="86" font-size="54" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
-    <text x="66" y="128" font-size="25" font-weight="900" fill="#cde8ef">LinkRay Analytics · сводка по ${channels.length} каналам</text>
-    <rect x="1220" y="55" width="315" height="70" rx="26" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
-    <text x="1378" y="99" text-anchor="middle" font-size="28" font-weight="1000" fill="#31f2cc">СЕТКА</text>
+    <text x="46" y="78" font-size="54" font-weight="900" fill="#ffffff">Статистика сети каналов</text>
+    <text x="48" y="118" font-size="25" font-weight="900" fill="#cde8ef">LinkRay Analytics · сводка по ${channels.length} каналам</text>
+    <rect x="970" y="48" width="250" height="70" rx="26" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
+    <text x="1095" y="99" text-anchor="middle" font-size="28" font-weight="900" fill="#31f2cc">СЕТКА</text>
 
-    <rect x="42" y="170" width="1516" height="724" rx="44" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#shadowV3)"/>
+    <rect x="34" y="150" width="1212" height="650" rx="44" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#shadowV3)"/>
 
-    ${lrMetricBoxV3(82, 220, 330, 135, 'Подписчики', fmt(totalSubs), '#27d9ff')}
-    ${lrMetricBoxV3(436, 220, 330, 135, 'Просмотры 24ч', fmt(total24), '#31f2cc')}
-    ${lrMetricBoxV3(790, 220, 330, 135, 'Средний ER', pct(er24), '#27d9ff')}
-    ${lrMetricBoxV3(1144, 220, 366, 135, 'Каналов', String(channels.length), '#31f2cc')}
+    ${lrMetricBoxV3(66, 200, 260, 118, 'Подписчики', fmt(totalSubs), '#27d9ff')}
+    ${lrMetricBoxV3(350, 200, 260, 118, 'Просмотры 24ч', fmt(total24), '#31f2cc')}
+    ${lrMetricBoxV3(634, 200, 260, 118, 'Средний ER', pct(er24), '#27d9ff')}
+    ${lrMetricBoxV3(918, 200, 282, 118, 'Каналов', String(channels.length), '#31f2cc')}
 
-    <text x="82" y="420" font-size="32" font-weight="1000" fill="#fff">График подписчиков</text>
-    ${lrLineChartV3(histValues, histLabels, 82, 445, 705, 355, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+    <text x="66" y="385" font-size="32" font-weight="900" fill="#fff">График подписчиков</text>
+    ${lrLineChartV3(histValues, histLabels, 66, 410, 560, 300, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
 
-    <rect x="818" y="445" width="692" height="355" rx="26" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
-    <text x="856" y="496" font-size="31" font-weight="1000" fill="#102033">Каналы</text>
-    <text x="895" y="545" font-size="18" font-weight="1000" fill="#7d8e9d">Название</text>
-    <text x="1258" y="545" text-anchor="middle" font-size="18" font-weight="1000" fill="#7d8e9d">ПДП</text>
-    <text x="1462" y="545" text-anchor="middle" font-size="18" font-weight="1000" fill="#7d8e9d">24ч</text>
-    <line x1="842" y1="565" x2="1484" y2="565" stroke="#dcebf2" stroke-width="2"/>
+    <rect x="660" y="410" width="540" height="300" rx="26" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    <text x="696" y="455" font-size="31" font-weight="900" fill="#102033">Каналы</text>
+    <text x="730" y="502" font-size="18" font-weight="900" fill="#7d8e9d">Название</text>
+    <text x="1010" y="502" text-anchor="middle" font-size="18" font-weight="900" fill="#7d8e9d">ПДП</text>
+    <text x="1140" y="502" text-anchor="middle" font-size="18" font-weight="900" fill="#7d8e9d">24ч</text>
+    <line x1="690" y1="520" x2="1168" y2="520" stroke="#dcebf2" stroke-width="2"/>
     ${rowSvg.join('')}
 
-    <text x="82" y="850" font-size="25" font-weight="1000" fill="#fff">Всего подписчиков: ${fmt(totalSubs)} · Итог за сутки: ${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</text>
-    <text x="82" y="884" font-size="25" font-weight="1000" fill="#fff">Просмотры: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
+    <text x="82" y="850" font-size="25" font-weight="900" fill="#fff">Всего подписчиков: ${fmt(totalSubs)} · Итог за сутки: ${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</text>
+    <text x="82" y="884" font-size="25" font-weight="900" fill="#fff">Просмотры: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
     <text x="82" y="944" font-size="22" font-weight="900" fill="#d8f2f4">Данные собираются LinkRay с момента добавления бота администратором в канал</text>
     <text x="1518" y="944" text-anchor="end" font-size="22" font-weight="900" fill="#d8f2f4">Дата формирования отчёта: ${lrSvgEscV3(nowMskHuman())} МСК</text>
   `;
@@ -1284,7 +1284,7 @@ ${await lrHeaderSvg('1 КАНАЛ')}
 <rect x="40" y="175" width="1520" height="720" rx="44" fill="rgba(255,255,255,.105)" stroke="rgba(111,255,229,.28)" stroke-width="2" filter="url(#shadow)"/>
 
 ${avatar}
-<text x="200" y="252" font-size="42" font-weight="1000" fill="#fff">${lrCardEsc(title)}</text>
+<text x="200" y="252" font-size="42" font-weight="900" fill="#fff">${lrCardEsc(title)}</text>
 <text x="202" y="292" font-size="24" font-weight="900" fill="#c4d9e4">карточка канала · данные LinkRay</text>
 
 ${lrMetricSvg(84, 340, 330, 145, 'Подписчики', fmt(ch.subscribers), '#24d9ff')}
@@ -1293,16 +1293,16 @@ ${lrMetricSvg(800, 340, 330, 145, 'Охват 24ч', fmt(ch.views24), '#27e6c7')
 ${lrMetricSvg(1158, 340, 350, 145, 'ER24', pct(ch.er24), '#24d9ff')}
 
 <rect x="84" y="525" width="938" height="320" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
-<text x="128" y="580" font-size="31" font-weight="1000" fill="#102033">Динамика подписчиков</text>
+<text x="128" y="580" font-size="31" font-weight="900" fill="#102033">Динамика подписчиков</text>
 <text x="128" y="615" font-size="21" font-weight="900" fill="#6d7f90">реальный график по ежедневным замерам</text>
 ${lrChartSvg(subValues, subLabels, 128, 640, 850, 170, ch.deltaDay < 0 ? '#ff7280' : '#27e6c7')}
 
 <rect x="1050" y="525" width="458" height="320" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
-<text x="1092" y="580" font-size="31" font-weight="1000" fill="#102033">Охваты поста</text>
+<text x="1092" y="580" font-size="31" font-weight="900" fill="#102033">Охваты поста</text>
 <text x="1092" y="615" font-size="21" font-weight="900" fill="#6d7f90">последние замеры MAX</text>
 ${lrBarsSvg([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 1090, 638, 378, 160)}
 
-<text x="88" y="878" font-size="25" font-weight="1000" fill="#fff">Просмотры: 24ч — ${fmt(ch.views24)} · 48ч — ${fmt(ch.views48)} · 72ч — ${fmt(ch.views72)}  |  ER24 — ${pct(ch.er24)}</text>
+<text x="88" y="878" font-size="25" font-weight="900" fill="#fff">Просмотры: 24ч — ${fmt(ch.views24)} · 48ч — ${fmt(ch.views48)} · 72ч — ${fmt(ch.views72)}  |  ER24 — ${pct(ch.er24)}</text>
 
 ${lrFooterSvg()}
 </svg>`;
@@ -1329,9 +1329,9 @@ async function renderNetworkSvg(channels) {
     const av = await lrSvgAvatar(ch, 835, y - 22, 36, i);
     rows.push(`
       ${av}
-      <text x="885" y="${y}" font-size="23" font-weight="1000" fill="#102033">${lrCardEsc(lrCardShort(ch.title, 34))}</text>
-      <text x="1245" y="${y}" font-size="25" font-weight="1000" text-anchor="middle" fill="#168eea">${fmt(ch.subscribers)}</text>
-      <text x="1454" y="${y}" font-size="25" font-weight="1000" text-anchor="middle" fill="#168eea">${fmt(ch.views24)}</text>
+      <text x="885" y="${y}" font-size="23" font-weight="900" fill="#102033">${lrCardEsc(lrCardShort(ch.title, 34))}</text>
+      <text x="1245" y="${y}" font-size="25" font-weight="900" text-anchor="middle" fill="#168eea">${fmt(ch.subscribers)}</text>
+      <text x="1454" y="${y}" font-size="25" font-weight="900" text-anchor="middle" fill="#168eea">${fmt(ch.views24)}</text>
     `);
   }
 
@@ -1341,7 +1341,7 @@ ${await lrHeaderSvg('СЕТКА КАНАЛОВ')}
 
 <rect x="40" y="175" width="1520" height="720" rx="44" fill="rgba(255,255,255,.105)" stroke="rgba(111,255,229,.28)" stroke-width="2" filter="url(#shadow)"/>
 
-<text x="84" y="238" font-size="52" font-weight="1000" fill="#fff">Статистика по всей сетке каналов</text>
+<text x="84" y="238" font-size="52" font-weight="900" fill="#fff">Статистика по всей сетке каналов</text>
 <text x="86" y="278" font-size="25" font-weight="900" fill="#c4d9e4">сводка по ${channels.length} каналам · только накопленные данные LinkRay</text>
 
 ${lrMetricSvg(84, 320, 330, 145, 'Подписчики', fmt(totalSubs), '#24d9ff')}
@@ -1350,19 +1350,19 @@ ${lrMetricSvg(800, 320, 330, 145, 'Средний ER', pct(er24), '#24d9ff')}
 ${lrMetricSvg(1158, 320, 350, 145, 'Каналов', String(channels.length), '#27e6c7')}
 
 <rect x="84" y="505" width="704" height="340" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
-<text x="126" y="560" font-size="31" font-weight="1000" fill="#102033">Общий график подписчиков</text>
+<text x="126" y="560" font-size="31" font-weight="900" fill="#102033">Общий график подписчиков</text>
 <text x="126" y="595" font-size="21" font-weight="900" fill="#6d7f90">рост и падение по всем каналам</text>
 ${lrChartSvg(histValues, histLabels, 126, 620, 620, 170, totalDelta < 0 ? '#ff7280' : '#27e6c7')}
 
 <rect x="814" y="505" width="694" height="340" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
-<text x="852" y="560" font-size="31" font-weight="1000" fill="#102033">Каналы</text>
-<text x="852" y="595" font-size="20" font-weight="1000" fill="#6d7f90">аватарки подтягиваются из MAX/данных канала</text>
-<text x="885" y="623" font-size="18" font-weight="1000" fill="#7c8d9e">Название</text>
-<text x="1245" y="623" font-size="18" font-weight="1000" text-anchor="middle" fill="#7c8d9e">ПДП</text>
-<text x="1454" y="623" font-size="18" font-weight="1000" text-anchor="middle" fill="#7c8d9e">24ч</text>
+<text x="852" y="560" font-size="31" font-weight="900" fill="#102033">Каналы</text>
+<text x="852" y="595" font-size="20" font-weight="900" fill="#6d7f90">аватарки подтягиваются из MAX/данных канала</text>
+<text x="885" y="623" font-size="18" font-weight="900" fill="#7c8d9e">Название</text>
+<text x="1245" y="623" font-size="18" font-weight="900" text-anchor="middle" fill="#7c8d9e">ПДП</text>
+<text x="1454" y="623" font-size="18" font-weight="900" text-anchor="middle" fill="#7c8d9e">24ч</text>
 ${rows.join('')}
 
-<text x="88" y="878" font-size="25" font-weight="1000" fill="#fff">Всего подписчиков: ${fmt(totalSubs)}  |  Просмотры: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
+<text x="88" y="878" font-size="25" font-weight="900" fill="#fff">Всего подписчиков: ${fmt(totalSubs)}  |  Просмотры: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
 
 ${lrFooterSvg()}
 </svg>`;
