@@ -818,50 +818,954 @@ const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
 
-/* LR_AD_SIGNATURE_GUARD_V2_START */
-app.use(async function lrAdSignatureGuardV2(req, res, next) {
+/* LR_EDITOR_CORE_V1_START */
+app.use(async function lrEditorCoreV1(req, res, next) {
   try {
     if (req.method !== 'POST') return next();
 
     const update = req.body || {};
     const payload = String(getCallbackPayload(update) || '');
-
-    if (payload !== 'editor:signature') return next();
-
     const callbackId = getCallbackId(update);
     const chatId = Number(getChatId(update) || 0);
     const key = getSessionKey(update);
-    const session = await getSession(key);
-    const draft = safeDraft(session.data);
 
-    if (!draft || !draft.isAd) return next();
+    if (!key) return next();
 
-    draft.signatureEnabled = false;
-    draft.signature = null;
-    draft.signatureText = '';
+    function rowsOf(result) {
+      if (Array.isArray(result)) return result;
+      if (result && Array.isArray(result.rows)) return result.rows;
+      return [];
+    }
 
-    await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+    function esc(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
 
-    if (callbackId) {
+    function plain(value) {
+      return String(value ?? '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function short(value, max = 64) {
+      const t = plain(value);
+      if (!t) return 'пост без текста';
+      return t.length > max ? t.slice(0, max).trim() + '…' : t;
+    }
+
+    function sessionDraft(session) {
+      const data = session && session.data ? session.data : {};
+      const raw = data.draft ? data.draft : data;
+
       try {
-        await answerCallback({
-          callbackId,
-          notification: 'У рекламного поста автоподпись отключена.'
+        return typeof safeDraft === 'function' ? safeDraft(raw) : (raw || {});
+      } catch {
+        return raw || {};
+      }
+    }
+
+    function normalizeTime(input) {
+      const raw = String(input || '').trim();
+      let m = raw.match(/^(\d{1,2})[:.\s](\d{2})$/);
+      if (!m) m = raw.match(/^(\d{1,2})(\d{2})$/);
+      if (!m) return null;
+
+      const h = Number(m[1]);
+      const min = Number(m[2]);
+
+      if (!Number.isInteger(h) || !Number.isInteger(min)) return null;
+      if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+
+      return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    }
+
+    function compactTime(value) {
+      const t = normalizeTime(value);
+      return t ? t.replace(':', '') : '';
+    }
+
+    function isAdDraft(draft) {
+      return Boolean(
+        draft &&
+        (
+          draft.isAd === true ||
+          draft.is_ad === true ||
+          draft.ad === true ||
+          String(draft.type || '').toLowerCase() === 'ad' ||
+          String(draft.postType || '').toLowerCase() === 'ad' ||
+          draft.cpm
+        )
+      );
+    }
+
+    function forceAd(draft) {
+      if (!draft || typeof draft !== 'object') draft = {};
+      draft.isAd = true;
+      draft.is_ad = true;
+      draft.signatureEnabled = false;
+      draft.signature = null;
+      draft.signatureText = '';
+      draft.reportAfterHours = 24;
+      if (!draft.autoDeleteMinutes) draft.autoDeleteMinutes = 2880;
+      if (!draft.campaignId) draft.campaignId = `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      draft.reportGroupId = draft.campaignId;
+      return draft;
+    }
+
+    function channelIds(draft) {
+      if (!draft || typeof draft !== 'object') return [];
+
+      if (Array.isArray(draft.channelIds)) {
+        return draft.channelIds.map(Number).filter(Boolean);
+      }
+
+      if (Array.isArray(draft.channel_ids)) {
+        return draft.channel_ids.map(Number).filter(Boolean);
+      }
+
+      if (draft.channelId) return [Number(draft.channelId)].filter(Boolean);
+      if (draft.channel_id) return [Number(draft.channel_id)].filter(Boolean);
+
+      return [];
+    }
+
+    function hasDraftContent(draft) {
+      try {
+        if (typeof hasContent === 'function') return Boolean(hasContent(draft));
+      } catch {}
+
+      return Boolean(
+        String(draft?.content?.text || draft?.text || '').trim() ||
+        (Array.isArray(draft?.content?.attachments) && draft.content.attachments.length) ||
+        (Array.isArray(draft?.attachments) && draft.attachments.length)
+      );
+    }
+
+    function todayKey() {
+      const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    function monthFromDay(dayKey) {
+      return String(dayKey || todayKey()).slice(0, 7);
+    }
+
+    function dateFromDayTime(dayKey, hhmm) {
+      const clean = String(hhmm || '').replace(/\D/g, '').padStart(4, '0').slice(0, 4);
+      return new Date(`${dayKey}T${clean.slice(0, 2)}:${clean.slice(2)}:00+03:00`);
+    }
+
+    function humanDay(dayKey) {
+      try {
+        const [y, m, d] = String(dayKey).split('-').map(Number);
+        const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+        return dt.toLocaleDateString('ru-RU', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'Europe/Moscow'
         });
+      } catch {
+        return String(dayKey || '');
+      }
+    }
+
+    function humanMonth(monthKey) {
+      try {
+        const [y, m] = String(monthKey).split('-').map(Number);
+        const dt = new Date(Date.UTC(y, m - 1, 1, 12, 0, 0));
+        return dt.toLocaleDateString('ru-RU', {
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'Europe/Moscow'
+        });
+      } catch {
+        return String(monthKey || '');
+      }
+    }
+
+    async function reply(text, rows = []) {
+      const safeText = String(text || 'LinkRay');
+
+      if (callbackId && typeof cb === 'function') {
+        return cb(callbackId, safeText, rows);
+      }
+
+      if (chatId && typeof msg === 'function') {
+        return msg(chatId, safeText, rows);
+      }
+
+      if (chatId && typeof sendMaxMessage === 'function') {
+        return sendMaxMessage({
+          chatId,
+          text: safeText,
+          format: 'html',
+          attachments: rows && rows.length && typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : []
+        });
+      }
+
+      return null;
+    }
+
+    async function notice(text) {
+      if (!callbackId || typeof answerCallback !== 'function') return;
+      try {
+        await answerCallback({ callbackId, notification: String(text || '') });
       } catch {}
     }
 
-    if (chatId && typeof sendStudioEditorMessage === 'function') {
-      await sendStudioEditorMessage(chatId, draft);
+    async function currentDraft() {
+      const session = await getSession(key);
+      const draft = sessionDraft(session);
+      if (isAdDraft(draft)) forceAd(draft);
+      return { session, draft, isAd: isAdDraft(draft), channelIds: channelIds(draft) };
     }
 
-    return res.json({ ok: true });
+    async function ensureTimesTable() {
+      await query(`
+        CREATE TABLE IF NOT EXISTS public.channel_saved_times (
+          id serial PRIMARY KEY,
+          channel_id integer NOT NULL,
+          time_text text NOT NULL,
+          is_ad boolean NOT NULL DEFAULT false,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+
+      await query(`ALTER TABLE public.channel_saved_times ADD COLUMN IF NOT EXISTS is_ad boolean NOT NULL DEFAULT false`);
+      await query(`ALTER TABLE public.channel_saved_times ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+
+      await query(`
+        DO $$
+        DECLARE
+          cname text;
+        BEGIN
+          FOR cname IN
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'public.channel_saved_times'::regclass
+              AND contype = 'u'
+              AND pg_get_constraintdef(oid) ILIKE '%channel_id%'
+              AND pg_get_constraintdef(oid) ILIKE '%time_text%'
+          LOOP
+            EXECUTE format('ALTER TABLE public.channel_saved_times DROP CONSTRAINT IF EXISTS %I', cname);
+          END LOOP;
+        END $$;
+      `);
+
+      await query(`DROP INDEX IF EXISTS public.idx_channel_saved_times_channel_time`);
+      await query(`DROP INDEX IF EXISTS public.idx_channel_saved_times_channel_owner`);
+      await query(`DROP INDEX IF EXISTS public.idx_channel_saved_times_channel_time_ad`);
+
+      await query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_saved_times_channel_time_ad
+        ON public.channel_saved_times(channel_id, time_text, is_ad)
+      `);
+    }
+
+    async function loadTimes(ids, isAd) {
+      await ensureTimesTable();
+      if (!ids.length) return [];
+
+      const result = await query(
+        `SELECT DISTINCT time_text
+         FROM public.channel_saved_times
+         WHERE channel_id = ANY($1::int[])
+           AND is_ad = $2
+         ORDER BY time_text ASC`,
+        [ids.map(Number), Boolean(isAd)]
+      );
+
+      return rowsOf(result)
+        .map(r => normalizeTime(r.time_text))
+        .filter(Boolean);
+    }
+
+    async function saveTime(ids, timeText, isAd) {
+      await ensureTimesTable();
+
+      for (const id of ids.map(Number).filter(Boolean)) {
+        await query(
+          `INSERT INTO public.channel_saved_times(channel_id, time_text, is_ad, updated_at)
+           VALUES($1, $2, $3, now())
+           ON CONFLICT(channel_id, time_text, is_ad)
+           DO UPDATE SET updated_at = now()`,
+          [id, timeText, Boolean(isAd)]
+        );
+      }
+    }
+
+    async function deleteTime(ids, timeText, isAd) {
+      await ensureTimesTable();
+      if (!ids.length) return;
+
+      await query(
+        `DELETE FROM public.channel_saved_times
+         WHERE channel_id = ANY($1::int[])
+           AND time_text = $2
+           AND is_ad = $3`,
+        [ids.map(Number), timeText, Boolean(isAd)]
+      );
+    }
+
+    async function postsForDay(dayKey, ids, isAd) {
+      try {
+        const result = await query(
+          `SELECT id,
+                  text,
+                  status,
+                  is_ad,
+                  to_char(publish_at AT TIME ZONE 'Europe/Moscow', 'HH24:MI') AS time_text
+           FROM public.scheduled_posts
+           WHERE publish_at >= $1::date
+             AND publish_at < ($1::date + interval '1 day')
+             AND COALESCE(is_ad,false) = $3
+             AND ($2::int[] IS NULL OR channel_id = ANY($2::int[]))
+           ORDER BY publish_at ASC, id ASC
+           LIMIT 80`,
+          [dayKey, ids.length ? ids.map(Number) : null, Boolean(isAd)]
+        );
+
+        return rowsOf(result).map(p => ({
+          id: p.id,
+          time: String(p.time_text || '').slice(0, 5),
+          text: short(p.text || '', 52),
+          status: String(p.status || 'scheduled')
+        }));
+      } catch (e) {
+        console.error('[LR_EDITOR_CORE_V1 postsForDay]', e?.message || e);
+        return [];
+      }
+    }
+
+    async function showEditorClean(draft, msgText = '') {
+      if (isAdDraft(draft)) forceAd(draft);
+
+      if (chatId && draft.previewMessageId && typeof sendDraftPreview === 'function') {
+        try {
+          const mid = await sendDraftPreview(chatId, draft);
+          if (mid) draft.previewMessageId = mid;
+        } catch (e) {
+          console.error('[LR_EDITOR_CORE_V1 preview edit]', e?.message || e);
+        }
+      }
+
+      await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+
+      if (msgText) await notice(msgText);
+
+      if (callbackId && typeof showEditor === 'function') {
+        return showEditor(callbackId, key, draft);
+      }
+
+      if (chatId && typeof sendStudioEditorMessage === 'function') {
+        return sendStudioEditorMessage(chatId, draft);
+      }
+
+      return reply(
+        typeof editorMenuText === 'function' ? editorMenuText() : 'Редактор LinkRay',
+        typeof editorMenuRows === 'function' ? editorMenuRows(draft) : []
+      );
+    }
+
+    async function showMonth(monthKey = null) {
+      const ctx = await currentDraft();
+      const isAd = ctx.isAd;
+      const mk = monthKey || monthFromDay(todayKey());
+
+      const [year, month] = mk.split('-').map(Number);
+      const first = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
+      const last = new Date(Date.UTC(year, month, 0, 12, 0, 0));
+
+      let weekday = first.getUTCDay();
+      if (weekday === 0) weekday = 7;
+
+      const rows = [
+        [
+          callbackButton('Пн', 'lr_core:noop'),
+          callbackButton('Вт', 'lr_core:noop'),
+          callbackButton('Ср', 'lr_core:noop'),
+          callbackButton('Чт', 'lr_core:noop'),
+          callbackButton('Пт', 'lr_core:noop'),
+          callbackButton('Сб', 'lr_core:noop'),
+          callbackButton('Вс', 'lr_core:noop')
+        ]
+      ];
+
+      let line = [];
+
+      for (let i = 1; i < weekday; i++) {
+        line.push(callbackButton('·', 'lr_core:noop'));
+      }
+
+      for (let day = 1; day <= last.getUTCDate(); day++) {
+        const dayKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const label = dayKey === todayKey() ? `•${day}•` : String(day);
+
+        line.push(callbackButton(label, `lr_core:day:${dayKey}`));
+
+        if (line.length === 7) {
+          rows.push(line);
+          line = [];
+        }
+      }
+
+      if (line.length) {
+        while (line.length < 7) line.push(callbackButton('·', 'lr_core:noop'));
+        rows.push(line);
+      }
+
+      const prev = new Date(Date.UTC(year, month - 2, 1, 12, 0, 0));
+      const nextMonth = new Date(Date.UTC(year, month, 1, 12, 0, 0));
+
+      const prevKey = `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, '0')}`;
+      const nextKey = `${nextMonth.getUTCFullYear()}-${String(nextMonth.getUTCMonth() + 1).padStart(2, '0')}`;
+
+      rows.push([
+        callbackButton('⬅️', `lr_core:month:${prevKey}`),
+        callbackButton('Сегодня', `lr_core:day:${todayKey()}`),
+        callbackButton('➡️', `lr_core:month:${nextKey}`)
+      ]);
+
+      rows.push([callbackButton('⬅️ К выпуску', 'editor:next')]);
+
+      return reply(
+        `━━━━━━━━━━━━━━
+${isAd ? '💼 Рекламный календарь' : '📅 Календарь'}
+
+${esc(humanMonth(mk))}
+
+Календарь идёт по неделям: 7 дней в ряд.
+Выберите день публикации.
+━━━━━━━━━━━━━━`,
+        rows
+      );
+    }
+
+    async function showDay(dayKey) {
+      const ctx = await currentDraft();
+      const saved = await loadTimes(ctx.channelIds, ctx.isAd);
+      const posts = await postsForDay(dayKey, ctx.channelIds, ctx.isAd);
+      const busy = new Set(posts.map(p => p.time).filter(Boolean));
+
+      const visibleTimes = saved.filter(t => {
+        if (busy.has(t)) return false;
+        if (dateFromDayTime(dayKey, t).getTime() <= Date.now()) return false;
+        return true;
+      });
+
+      const rows = [];
+
+      for (let i = 0; i < visibleTimes.length; i += 3) {
+        rows.push(
+          visibleTimes.slice(i, i + 3).map(t =>
+            callbackButton(`${ctx.isAd ? '💼' : '💾'} ${t}`, `lr_core:pick:${dayKey}:${compactTime(t)}`)
+          )
+        );
+      }
+
+      rows.push([
+        callbackButton(
+          ctx.isAd ? '💼 Рекламное время' : '💾 Сохранённое время',
+          `lr_core:manage:${dayKey}`
+        )
+      ]);
+
+      rows.push([callbackButton('⬅️ К месяцу', `lr_core:month:${monthFromDay(dayKey)}`)]);
+
+      const postsText = posts.length
+        ? posts.map(p => {
+            const status =
+              p.status === 'published' ? 'опубликован' :
+              p.status === 'deleted' ? 'удалён' :
+              'отложен';
+
+            return `• ${esc(p.time)} — ${esc(p.text)} (${status})`;
+          }).join('\n')
+        : 'постов на этот день нет';
+
+      const savedText = saved.length
+        ? saved.map(t => `${ctx.isAd ? '💼' : '💾'} ${esc(t)}`).join(' ')
+        : 'пока нет';
+
+      return reply(
+        `━━━━━━━━━━━━━━
+📅 ${esc(humanDay(dayKey))}
+
+<b>Посты на этот день:</b>
+${postsText}
+
+<b>${ctx.isAd ? 'Рекламное время' : 'Сохранённое время'}:</b>
+${savedText}
+
+Если время занято постом или уже прошло, кнопкой оно не показывается.
+━━━━━━━━━━━━━━`,
+        rows
+      );
+    }
+
+    async function showManage(dayKey) {
+      const ctx = await currentDraft();
+      const saved = await loadTimes(ctx.channelIds, ctx.isAd);
+
+      const rows = [
+        [callbackButton('➕ Добавить время', `lr_core:add:${dayKey}`)]
+      ];
+
+      for (let i = 0; i < saved.length; i += 2) {
+        rows.push(
+          saved.slice(i, i + 2).map(t =>
+            callbackButton(`🗑 ${t}`, `lr_core:del:${dayKey}:${compactTime(t)}`)
+          )
+        );
+      }
+
+      rows.push([callbackButton('⬅️ Назад к дате', `lr_core:day:${dayKey}`)]);
+
+      return reply(
+        `━━━━━━━━━━━━━━
+${ctx.isAd ? '💼 Рекламное время' : '💾 Сохранённое время'}
+
+Можно добавить или удалить время.
+
+Обычное и рекламное время хранятся отдельно.
+
+Сейчас:
+${saved.length ? saved.map(t => `• ${esc(t)}`).join('\n') : 'времени пока нет'}
+━━━━━━━━━━━━━━`,
+        rows
+      );
+    }
+
+    async function askAddTime(dayKey) {
+      const ctx = await currentDraft();
+
+      await setSession(key, 'lr_core_wait_time_v1', {
+        draft: ctx.draft,
+        isAd: ctx.isAd,
+        dayKey
+      });
+
+      return reply(
+        `━━━━━━━━━━━━━━
+${ctx.isAd ? '💼 Введите рекламное время.' : '💾 Введите сохранённое время.'}
+
+Пример: <b>18:30</b> или <b>1830</b>.
+
+После добавления оно появится кнопкой в меню даты, если время свободно.
+━━━━━━━━━━━━━━`,
+        [[callbackButton('⬅️ Назад к дате', `lr_core:day:${dayKey}`)]]
+      );
+    }
+
+    async function channelsText(ids) {
+      try {
+        const channels = await getChannelsByIds(ids);
+        if (typeof channelsLines === 'function') return channelsLines(channels);
+
+        return channels.map(ch => `• ${esc(ch.title || ch.name || ('Канал ' + ch.id))}`).join('\n');
+      } catch {
+        return ids.map(id => `• Канал #${id}`).join('\n');
+      }
+    }
+
+    function publicBase() {
+      return String(
+        process.env.PUBLIC_BASE_URL ||
+        process.env.SITE_URL ||
+        process.env.WEBAPP_URL ||
+        process.env.LINKRAY_PUBLIC_URL ||
+        'https://linkray.ru'
+      ).replace(/\/+$/, '');
+    }
+
+    async function scheduleAt(dayKey, rawTime) {
+      const ctx = await currentDraft();
+      const nice = normalizeTime(rawTime);
+
+      if (!nice) {
+        return reply(
+          '⚠️ Некорректное время.',
+          [[callbackButton('⬅️ К календарю', 'schedule:calendar')]]
+        );
+      }
+
+      const publishAt = dateFromDayTime(dayKey, nice);
+
+      if (publishAt.getTime() <= Date.now()) {
+        await notice('Это время уже прошло');
+        return showDay(dayKey);
+      }
+
+      if (!ctx.channelIds.length) {
+        return reply(
+          `━━━━━━━━━━━━━━
+⚠️ Сначала выберите канал.
+━━━━━━━━━━━━━━`,
+          [[callbackButton('⬅️ В редактор', 'editor:back')]]
+        );
+      }
+
+      if (!hasDraftContent(ctx.draft)) {
+        return reply(
+          `━━━━━━━━━━━━━━
+⚠️ Пост пустой. Сначала добавьте текст или медиа.
+━━━━━━━━━━━━━━`,
+          [[callbackButton('⬅️ В редактор', 'editor:back')]]
+        );
+      }
+
+      if (ctx.isAd) {
+        forceAd(ctx.draft);
+
+        if (!ctx.draft.cpm) {
+          await setSession(key, ctx.draft.postId ? 'edit_existing' : 'edit_draft', { draft: ctx.draft });
+
+          return reply(
+            `━━━━━━━━━━━━━━
+⚠️ Для рекламного поста сначала укажите CPM.
+━━━━━━━━━━━━━━`,
+            [
+              [callbackButton('💰 Указать CPM', 'editor:cpm')],
+              [callbackButton('⬅️ В редактор', 'editor:back')]
+            ]
+          );
+        }
+
+        ctx.draft.trackingUrl = `${publicBase()}/analytics/stats/${ctx.draft.campaignId}`;
+        ctx.draft.analyticsUrl = ctx.draft.trackingUrl;
+        ctx.draft.observerUrl = ctx.draft.trackingUrl;
+      }
+
+      let ids = [];
+
+      try {
+        ids = await scheduleDraft(ctx.draft, key, publishAt);
+      } catch (e) {
+        console.error('[LR_EDITOR_CORE_V1 scheduleDraft]', e?.stack || e);
+
+        return reply(
+          `⚠️ Ошибка планирования:\n${esc(e?.message || e)}`,
+          [[callbackButton('⬅️ К календарю', 'schedule:calendar')]]
+        );
+      }
+
+      await clearSession(key);
+
+      const chLines = await channelsText(ctx.channelIds);
+
+      if (ctx.isAd) {
+        return reply(
+          `━━━━━━━━━━━━━━
+💼 <b>Рекламный пост отложен</b>
+
+📝 Сообщение «${esc(short(ctx.draft.content?.text || '', 80))}»
+
+📌 <b>Статус:</b> отложено
+🕒 <b>Публикация:</b> ${esc(humanDay(dayKey))}, ${esc(nice)} МСК
+
+📡 <b>Канал:</b>
+${chLines}
+
+💰 <b>CPM:</b> ${esc(ctx.draft.cpm)} ₽
+🗑 <b>Автоудаление:</b> ${ctx.draft.autoDeleteMinutes ? Math.round(Number(ctx.draft.autoDeleteMinutes) / 60) + 'ч' : 'без удаления'}
+📊 <b>Отчёт:</b> через 24ч после публикации
+
+🔗 <b>Ссылка наблюдателя:</b>
+<a href="${esc(ctx.draft.trackingUrl)}">${esc(ctx.draft.trackingUrl)}</a>
+
+━━━━━━━━━━━━━━
+🧬 <a href="https://max.ru/se13353901_bot">LinkRay</a> — постинг, рекламные выходы и аналитика в MAX`,
+          [
+            [callbackButton('📁 Посты', 'post:all')],
+            [callbackButton('🧬 LinkRay Studio', 'main:posting')]
+          ]
+        );
+      }
+
+      return reply(
+        `━━━━━━━━━━━━━━
+✅ <b>Пост отложен</b>
+
+🕒 <b>Публикация:</b> ${esc(humanDay(dayKey))}, ${esc(nice)} МСК
+
+📡 <b>Канал:</b>
+${chLines}
+
+Пост добавлен в очередь.
+━━━━━━━━━━━━━━`,
+        [
+          [callbackButton('📁 Посты', 'post:all')],
+          [callbackButton('🧬 LinkRay Studio', 'main:posting')]
+        ]
+      );
+    }
+
+    // ===== MESSAGE STATES =====
+    if (!payload) {
+      const text = String(getMessageText(update) || '').trim();
+      if (!text) return next();
+
+      const session = await getSession(key);
+      const state = String(session?.state || '');
+
+      if (state === 'lr_core_wait_cpm_v1' || state === 'wait_cpm') {
+        const cpm = Number(text.replace(',', '.').replace(/[^0-9.]/g, ''));
+
+        if (!Number.isFinite(cpm) || cpm <= 0) {
+          return msg(chatId, '⚠️ Введите число, например 1000.');
+        }
+
+        const draft = forceAd(sessionDraft(session));
+        draft.cpm = cpm;
+
+        await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+
+        if (chatId && typeof sendStudioEditorMessage === 'function') {
+          await msg(chatId, `✅ CPM установлен: <b>${esc(cpm)} ₽</b>`);
+          await sendStudioEditorMessage(chatId, draft);
+          return res.json({ ok: true });
+        }
+
+        await msg(chatId, `✅ CPM установлен: <b>${esc(cpm)} ₽</b>`, editorMenuRows(draft));
+        return res.json({ ok: true });
+      }
+
+      const isWaitTime =
+        state === 'lr_core_wait_time_v1' ||
+        state === 'lr_clean_wait_add_saved_time_v1' ||
+        state === 'lr_wait_calendar_saved_time' ||
+        state === 'lr_wait_saved_time' ||
+        state === 'lr_wait_ad_time' ||
+        state === 'wait_saved_time' ||
+        state === 'wait_ad_time';
+
+      if (isWaitTime) {
+        const nice = normalizeTime(text);
+        const data = session?.data || {};
+        const draft = sessionDraft(session);
+        const ids = channelIds(draft);
+        const isAd = Boolean(data.isAd || isAdDraft(draft));
+        const dayKey = data.dayKey || todayKey();
+
+        if (!nice) {
+          await msg(
+            chatId,
+            '⚠️ Введите время в формате 18:30 или 1830.',
+            [[callbackButton('⬅️ Назад к дате', `lr_core:day:${dayKey}`)]]
+          );
+          return res.json({ ok: true });
+        }
+
+        if (!ids.length) {
+          await msg(
+            chatId,
+            '⚠️ Сначала выберите канал.',
+            [[callbackButton('⬅️ В редактор', 'editor:back')]]
+          );
+          return res.json({ ok: true });
+        }
+
+        await saveTime(ids, nice, isAd);
+        await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
+
+        await msg(
+          chatId,
+          `${isAd ? '✅ Рекламное время добавлено' : '✅ Сохранённое время добавлено'}:\n<b>${esc(nice)}</b>`
+        );
+
+        await showDay(dayKey);
+        return res.json({ ok: true });
+      }
+
+      return next();
+    }
+
+    // ===== CALLBACK CORE =====
+    if (payload === 'lr_core:noop' || payload === 'noop') {
+      await notice('Выберите день');
+      return res.json({ ok: true });
+    }
+
+    if (payload === 'editor:ad') {
+      const ctx = await currentDraft();
+      ctx.draft.isAd = !isAdDraft(ctx.draft);
+      ctx.draft.is_ad = ctx.draft.isAd;
+
+      if (ctx.draft.isAd) {
+        forceAd(ctx.draft);
+      } else {
+        ctx.draft.isAd = false;
+        ctx.draft.is_ad = false;
+        ctx.draft.cpm = null;
+      }
+
+      await showEditorClean(
+        ctx.draft,
+        ctx.draft.isAd ? 'Рекламный пост включён. Автоподпись отключена.' : 'Рекламный режим выключен.'
+      );
+
+      return res.json({ ok: true });
+    }
+
+    if (payload === 'editor:signature') {
+      const ctx = await currentDraft();
+
+      if (ctx.isAd) {
+        forceAd(ctx.draft);
+        await setSession(key, ctx.draft.postId ? 'edit_existing' : 'edit_draft', { draft: ctx.draft });
+        await showEditorClean(ctx.draft, 'У рекламного поста автоподпись отключена.');
+        return res.json({ ok: true });
+      }
+
+      return next();
+    }
+
+    if (payload === 'editor:cpm') {
+      const ctx = await currentDraft();
+      forceAd(ctx.draft);
+
+      await setSession(key, 'lr_core_wait_cpm_v1', { draft: ctx.draft });
+
+      await reply(
+        '💰 Введите цену за 1000 просмотров.',
+        [[callbackButton('⬅️ Назад', 'editor:back')]]
+      );
+
+      return res.json({ ok: true });
+    }
+
+    if (
+      payload === 'schedule:calendar' ||
+      payload === 'calendar' ||
+      payload === 'lr_cal:calendar' ||
+      payload.startsWith('lr_core:month:') ||
+      payload.startsWith('lr_clean_cal:month:') ||
+      payload.startsWith('lr_cal:month:')
+    ) {
+      const m = payload.match(/(\d{4}-\d{2})/);
+      await showMonth(m ? m[1] : monthFromDay(todayKey()));
+      return res.json({ ok: true });
+    }
+
+    if (
+      payload.startsWith('lr_core:day:') ||
+      payload.startsWith('lr_clean_cal:day:') ||
+      payload.startsWith('lr_cal:day:') ||
+      payload.startsWith('schedule:day:')
+    ) {
+      const m = payload.match(/(\d{4}-\d{2}-\d{2})/);
+      await showDay(m ? m[1] : todayKey());
+      return res.json({ ok: true });
+    }
+
+    if (
+      payload.startsWith('lr_core:manage:') ||
+      payload.startsWith('lr_clean_cal:manage:') ||
+      payload.startsWith('lr_cal:saved_time:')
+    ) {
+      const m = payload.match(/(\d{4}-\d{2}-\d{2})/);
+      await showManage(m ? m[1] : todayKey());
+      return res.json({ ok: true });
+    }
+
+    if (
+      payload.startsWith('lr_core:add:') ||
+      payload.startsWith('lr_clean_cal:add:') ||
+      payload.startsWith('lr_cal:add_saved:') ||
+      payload.startsWith('lr_cal:saved_add:')
+    ) {
+      const m = payload.match(/(\d{4}-\d{2}-\d{2})/);
+      await askAddTime(m ? m[1] : todayKey());
+      return res.json({ ok: true });
+    }
+
+    if (
+      payload.startsWith('lr_core:del:') ||
+      payload.startsWith('lr_clean_cal:del:') ||
+      payload.startsWith('lr_cal:delete_saved:') ||
+      payload.startsWith('lr_cal:del_saved:')
+    ) {
+      const m = payload.match(/(\d{4}-\d{2}-\d{2}):(\d{4})/);
+      const dayKey = m ? m[1] : todayKey();
+      const t = m ? normalizeTime(m[2]) : null;
+
+      const ctx = await currentDraft();
+
+      if (t) {
+        await deleteTime(ctx.channelIds, t, ctx.isAd);
+        await notice('Время удалено: ' + t);
+      }
+
+      await showManage(dayKey);
+      return res.json({ ok: true });
+    }
+
+    if (
+      payload.startsWith('lr_core:pick:') ||
+      payload.startsWith('lr_clean_cal:pick:') ||
+      payload.startsWith('lr_cal:pick:') ||
+      payload.startsWith('schedule:time:')
+    ) {
+      const m = payload.match(/(\d{4}-\d{2}-\d{2}):(\d{4})/);
+
+      if (!m) {
+        await reply('⚠️ Не удалось прочитать выбранное время.', [[callbackButton('⬅️ К календарю', 'schedule:calendar')]]);
+        return res.json({ ok: true });
+      }
+
+      await scheduleAt(m[1], m[2]);
+      return res.json({ ok: true });
+    }
+
+    if (
+      payload === 'schedule:manual' ||
+      payload.startsWith('schedule:manual_day:') ||
+      payload.startsWith('lr_cal:manual_day:') ||
+      payload.startsWith('lr_clean_cal:manual_day:')
+    ) {
+      const m = payload.match(/(\d{4}-\d{2}-\d{2})/);
+      await showManage(m ? m[1] : todayKey());
+      return res.json({ ok: true });
+    }
+
+    return next();
   } catch (e) {
-    console.error('[LR_AD_SIGNATURE_GUARD_V2]', e?.message || e);
+    console.error('[LR_EDITOR_CORE_V1]', e?.stack || e);
+
+    try {
+      const update = req.body || {};
+      const callbackId = getCallbackId(update);
+
+      if (callbackId && typeof cb === 'function') {
+        await cb(
+          callbackId,
+          `⚠️ Ошибка ядра:\n${String(e?.message || e)}`,
+          [[callbackButton('⬅️ В Studio', 'main:posting')]]
+        );
+        return res.json({ ok: true });
+      }
+    } catch {}
+
     return next();
   }
 });
-/* LR_AD_SIGNATURE_GUARD_V2_END */
+/* LR_EDITOR_CORE_V1_END */
+
+
+
+
 
 
 
