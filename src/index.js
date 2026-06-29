@@ -831,6 +831,138 @@ app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
 
     if (!key) return next();
 
+
+    /* LR_CALENDAR_ANSWER_PAYLOAD_FIX_V2_START */
+    function lrCalendarTokenV2() {
+      const envKeys = [
+        'MAX_TOKEN',
+        'MAX_BOT_TOKEN',
+        'MAX_ACCESS_TOKEN',
+        'BOT_TOKEN',
+        'ACCESS_TOKEN',
+        'API_TOKEN',
+        'TOKEN'
+      ];
+
+      for (const k of envKeys) {
+        if (process.env[k]) return String(process.env[k]);
+      }
+
+      try {
+        if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN);
+      } catch {}
+
+      try {
+        if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN);
+      } catch {}
+
+      try {
+        if (typeof TOKEN !== 'undefined' && TOKEN) return String(TOKEN);
+      } catch {}
+
+      try {
+        if (typeof API_TOKEN !== 'undefined' && API_TOKEN) return String(API_TOKEN);
+      } catch {}
+
+      return '';
+    }
+
+    function lrCalendarApiBaseV2() {
+      let base = '';
+
+      try {
+        if (typeof MAX_API_BASE !== 'undefined' && MAX_API_BASE) base = String(MAX_API_BASE);
+      } catch {}
+
+      if (!base) {
+        base =
+          process.env.MAX_API_BASE ||
+          process.env.MAX_BASE_URL ||
+          process.env.MAX_PLATFORM_API ||
+          'https://platform-api2.max.ru';
+      }
+
+      return String(base).replace(/\/+$/, '');
+    }
+
+    function lrCalendarCleanRowsV2(rows) {
+      if (!Array.isArray(rows)) return [];
+
+      return rows
+        .map(row => {
+          if (!Array.isArray(row)) return [];
+
+          return row.filter(btn => {
+            if (!btn || typeof btn !== 'object') return false;
+
+            const text = String(btn.text || btn.label || '').trim();
+            return Boolean(text);
+          });
+        })
+        .filter(row => row.length > 0);
+    }
+
+    async function lrCalendarAnswer(text, rows = []) {
+      const safeText = String(text ?? '').trim() || ' ';
+      const safeRows = lrCalendarCleanRowsV2(rows);
+
+      const body = {
+        message: {
+          text: safeText,
+          format: 'html',
+          attachments: []
+        }
+      };
+
+      if (safeRows.length) {
+        body.message.attachments.push({
+          type: 'inline_keyboard',
+          payload: {
+            buttons: safeRows
+          }
+        });
+      }
+
+      const token = lrCalendarTokenV2();
+      const base = lrCalendarApiBaseV2();
+
+      if (callbackId && token && typeof fetch === 'function') {
+        try {
+          const r = await fetch(`${base}/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+            method: 'POST',
+            headers: {
+              Authorization: token,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          });
+
+          if (r.ok) return;
+
+          const raw = await r.text().catch(() => '');
+          console.error('[LR_CALENDAR_ANSWER_PAYLOAD_FIX_V2 direct failed]', r.status, raw.slice(0, 800));
+        } catch (e) {
+          console.error('[LR_CALENDAR_ANSWER_PAYLOAD_FIX_V2 direct error]', e?.message || e);
+        }
+      }
+
+      if (callbackId && typeof cb === 'function') {
+        try {
+          return await cb(callbackId, safeText, safeRows);
+        } catch (e) {
+          console.error('[LR_CALENDAR_ANSWER_PAYLOAD_FIX_V2 cb fallback failed]', e?.message || e);
+        }
+      }
+
+      if (chatId && typeof msg === 'function') {
+        return await msg(chatId, safeText, safeRows);
+      }
+
+      throw new Error('Не удалось ответить календарём: нет callbackId/chatId или токена');
+    }
+    /* LR_CALENDAR_ANSWER_PAYLOAD_FIX_V2_END */
+
+
     function esc(v) {
       try {
         return escapeHtml(v);
@@ -1410,8 +1542,7 @@ app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
       ]);
       rows.push([callbackButton('⬅️ К выпуску', 'editor:next')]);
 
-      return cb(
-        callbackId,
+      return lrCalendarAnswer(
         `━━━━━━━━━━━━━━
 📅 <b>${esc(title)}</b>
 
@@ -1471,7 +1602,7 @@ ${savedLines}
       rows.push([callbackButton(`${icon} ${timeTitle}`, `lr_clean_cal:manage:${dayKey}`)]);
       rows.push([callbackButton('⬅️ К месяцу', `lr_clean_cal:month:${dayKey.slice(0, 7)}`)]);
 
-      return cb(callbackId, text, rows);
+      return lrCalendarAnswer( text, rows);
     }
 
     async function renderManage(dayKey) {
@@ -1506,7 +1637,7 @@ ${savedTimes.length ? savedTimes.map(t => `${icon} ${esc(t)}`).join('\n') : 'в�
 
       rows.push([callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]);
 
-      return cb(callbackId, text, rows);
+      return lrCalendarAnswer( text, rows);
     }
 
     async function askAddTime(dayKey) {
@@ -1521,8 +1652,7 @@ ${savedTimes.length ? savedTimes.map(t => `${icon} ${esc(t)}`).join('\n') : 'в�
       const icon = isAd ? '💼' : '💾';
       const timeTitle = isAd ? 'рекламное время' : 'сохранённое время';
 
-      return cb(
-        callbackId,
+      return lrCalendarAnswer(
         `━━━━━━━━━━━━━━
 ${icon} Введите ${esc(timeTitle)}.
 
@@ -1539,13 +1669,13 @@ ${icon} Введите ${esc(timeTitle)}.
       const publishAt = dateFromDayTime(dayKey, nice);
 
       if (!nice || !publishAt || Number.isNaN(publishAt.getTime())) {
-        return cb(callbackId, '⚠️ Не удалось разобрать время.', [
+        return lrCalendarAnswer( '⚠️ Не удалось разобрать время.', [
           [callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]
         ]);
       }
 
       if (publishAt.getTime() <= Date.now()) {
-        return cb(callbackId, `⚠️ Это время уже прошло: ${esc(nice)}.`, [
+        return lrCalendarAnswer( `⚠️ Это время уже прошло: ${esc(nice)}.`, [
           [callbackButton('⬅️ Назад к дате', `lr_clean_cal:day:${dayKey}`)]
         ]);
       }
@@ -1553,13 +1683,13 @@ ${icon} Введите ${esc(timeTitle)}.
       const { draft, isAd, channelIds } = await currentDraftContext();
 
       if (!channelIds.length) {
-        return cb(callbackId, '⚠️ Сначала выберите канал.', [
+        return lrCalendarAnswer( '⚠️ Сначала выберите канал.', [
           [callbackButton('⬅️ В редактор', 'editor:back')]
         ]);
       }
 
       if (!hasPostContent(draft)) {
-        return cb(callbackId, '⚠️ Пост пустой. Сначала добавьте текст или медиа.', [
+        return lrCalendarAnswer( '⚠️ Пост пустой. Сначала добавьте текст или медиа.', [
           [callbackButton('⬅️ В редактор', 'editor:back')]
         ]);
       }
@@ -1598,7 +1728,7 @@ ${channelsLines(channels)}
 Пост добавлен в очередь.
 ━━━━━━━━━━━━━━`;
 
-      return cb(callbackId, text, [
+      return lrCalendarAnswer( text, [
         [callbackButton('📂 Посты', 'post:all')],
         [callbackButton('🧬 LinkRay Studio', 'main:posting')]
       ]);
@@ -1728,7 +1858,7 @@ ${channelsLines(channels)}
     try {
       const callbackId = getCallbackId(req.body || {});
       if (callbackId) {
-        await cb(callbackId, `⚠️ Ошибка календаря:\n${escapeHtml(e?.message || e)}`, [
+        await lrCalendarAnswer( `⚠️ Ошибка календаря:\n${escapeHtml(e?.message || e)}`, [
           [callbackButton('⬅️ К календарю', 'schedule:calendar')]
         ]);
         return res.json({ ok: true });
