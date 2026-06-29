@@ -1269,6 +1269,232 @@ async function lrSafeRenderNetworkV3(channels) {
 }
 /* LR_ANALYTICS_EDIT_AND_SAFE_PNG_V3_END */
 
+
+/* LR_COMPACT_ANALYTICS_CARD_V4_START */
+function lrSvgShellV4(inner) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+    <defs>
+      <linearGradient id="lrBgV4" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#061426"/>
+        <stop offset="45%" stop-color="#0b3147"/>
+        <stop offset="100%" stop-color="#12a06f"/>
+      </linearGradient>
+      <radialGradient id="lrGlowV4" cx="86%" cy="12%" r="72%">
+        <stop offset="0%" stop-color="#65ffc0" stop-opacity=".45"/>
+        <stop offset="64%" stop-color="#31f2cc" stop-opacity=".12"/>
+        <stop offset="100%" stop-color="#31f2cc" stop-opacity="0"/>
+      </radialGradient>
+      <filter id="lrShadowV4" x="-10%" y="-10%" width="120%" height="130%">
+        <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#00111b" flood-opacity=".34"/>
+      </filter>
+      <style>
+        text { font-family: DejaVu Sans, Arial, sans-serif; }
+      </style>
+    </defs>
+    <rect width="1280" height="720" fill="url(#lrBgV4)"/>
+    <rect width="1280" height="720" fill="url(#lrGlowV4)"/>
+    <path d="M-40 150 C220 70 420 215 640 110 C900 -15 1060 145 1320 50" fill="none" stroke="rgba(255,255,255,.065)" stroke-width="3"/>
+    <path d="M-30 610 C260 500 510 620 740 520 C980 410 1110 520 1320 430" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
+    ${inner}
+  </svg>`;
+}
+
+function lrMetricBoxV4(x, y, w, h, label, value, color = '#31f2cc') {
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="rgba(255,255,255,.13)" stroke="rgba(126,248,225,.34)" stroke-width="2"/>
+    <text x="${x + w / 2}" y="${y + 31}" text-anchor="middle" font-size="17" font-weight="900" fill="#d7eef2">${lrSvgEscV3(label)}</text>
+    <text x="${x + w / 2}" y="${y + 83}" text-anchor="middle" font-size="38" font-weight="1000" fill="${color}">${lrSvgEscV3(value)}</text>
+  `;
+}
+
+function lrMiniLogoV4(x, y) {
+  return `
+    <circle cx="${x + 26}" cy="${y + 26}" r="26" fill="rgba(49,242,204,.18)" stroke="#7ef8e1" stroke-width="2"/>
+    <path d="M${x + 14} ${y + 34} L${x + 30} ${y + 18} L${x + 34} ${y + 28} L${x + 45} ${y + 15}" fill="none" stroke="#31f2cc" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M${x + 42} ${y + 15} L${x + 47} ${y + 15} L${x + 47} ${y + 20}" fill="none" stroke="#31f2cc" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  `;
+}
+
+function lrLineChartCompactV4(values, labels, x, y, w, h, color = '#31f2cc') {
+  let nums = values.map(num).filter((v) => Number.isFinite(v));
+  if (!nums.length) nums = [0, 0];
+  if (nums.length === 1) nums = [nums[0], nums[0]];
+
+  let min = Math.min(...nums);
+  let max = Math.max(...nums);
+  if (min === max) {
+    min = Math.max(0, min - 1);
+    max += 1;
+  }
+
+  const padX = 28;
+  const padY = 24;
+  const span = Math.max(1, max - min);
+
+  const pts = nums.map((v, i) => {
+    const px = x + padX + (w - padX * 2) * (i / Math.max(1, nums.length - 1));
+    const py = y + padY + (h - padY * 2 - 22) * (1 - ((v - min) / span));
+    return [px, py, v, labels[i] || ''];
+  });
+
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const area = `${d} L ${x + w - padX},${y + h - padY - 22} L ${x + padX},${y + h - padY - 22} Z`;
+
+  const grid = [0, 1, 2].map((i) => {
+    const yy = y + padY + (h - padY * 2 - 22) * (i / 2);
+    return `<line x1="${x + padX}" y1="${yy}" x2="${x + w - padX}" y2="${yy}" stroke="rgba(118,154,170,.22)" stroke-width="1"/>`;
+  }).join('');
+
+  const dots = pts.map((p, i) => {
+    const show = i === 0 || i === pts.length - 1;
+    return `
+      <circle cx="${p[0]}" cy="${p[1]}" r="6" fill="#071a28" stroke="${color}" stroke-width="4"/>
+      ${show ? `<text x="${p[0]}" y="${Math.max(y + 23, p[1] - 12)}" text-anchor="middle" font-size="16" font-weight="900" fill="${color}">${fmt(p[2])}</text>` : ''}
+    `;
+  }).join('');
+
+  const axis = pts.map((p, i) => {
+    if (i !== 0 && i !== pts.length - 1) return '';
+    return `<text x="${p[0]}" y="${y + h - 7}" text-anchor="middle" font-size="14" font-weight="900" fill="#7d93a0">${lrSvgEscV3(p[3])}</text>`;
+  }).join('');
+
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    ${grid}
+    <path d="${area}" fill="rgba(49,242,204,.16)"/>
+    <path d="${d}" fill="none" stroke="rgba(49,242,204,.20)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+    ${axis}
+  `;
+}
+
+function lrBarsCompactV4(values, labels, x, y, w, h) {
+  const nums = values.map(num);
+  const max = Math.max(...nums, 1);
+  const gap = w / nums.length;
+  const barW = Math.min(64, gap * .46);
+  const colors = ['#27d9ff', '#31f2cc', '#4d8dff'];
+
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    ${nums.map((v, i) => {
+      const bh = Math.max(8, (h - 56) * (v / max));
+      const bx = x + gap * i + (gap - barW) / 2;
+      const by = y + h - 32 - bh;
+      return `
+        <rect x="${bx}" y="${by}" width="${barW}" height="${bh}" rx="11" fill="${colors[i % colors.length]}"/>
+        <text x="${bx + barW / 2}" y="${Math.max(y + 28, by - 9)}" text-anchor="middle" font-size="16" font-weight="900" fill="#102033">${fmt(v)}</text>
+        <text x="${bx + barW / 2}" y="${y + h - 10}" text-anchor="middle" font-size="14" font-weight="900" fill="#7e93a2">${lrSvgEscV3(labels[i] || '')}</text>
+      `;
+    }).join('')}
+  `;
+}
+
+async function lrSafeRenderSingleV4(ch) {
+  const history = await historyFor(ch.key, 'subscribers');
+  const subValues = history.length ? history.map((x) => x.value) : [ch.subscribers, ch.subscribers];
+  const subLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
+  const avatar = await lrSafeAvatarV3(ch, 76, 136, 72, 0);
+  const titleLines = lrSvgWrapV3(ch.title, 42, 2);
+  const dateText = lrSvgEscV3(nowMskHuman());
+
+  const inner = `
+    <text x="52" y="64" font-size="40" font-weight="1000" fill="#ffffff">LinkRay Analytics</text>
+    <text x="54" y="96" font-size="18" font-weight="900" fill="#d5edf2">карточка канала · реальные данные после подключения бота</text>
+
+    <rect x="1000" y="38" width="218" height="56" rx="22" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
+    <text x="1109" y="73" text-anchor="middle" font-size="22" font-weight="1000" fill="#31f2cc">1 КАНАЛ</text>
+
+    ${lrMiniLogoV4(892, 40)}
+    <text x="952" y="72" font-size="22" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+
+    <rect x="34" y="118" width="1212" height="492" rx="38" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrShadowV4)"/>
+
+    ${avatar}
+    <text x="168" y="164" font-size="30" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[0])}</text>
+    ${titleLines[1] ? `<text x="168" y="199" font-size="30" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[1])}</text>` : ''}
+    <text x="170" y="229" font-size="18" font-weight="900" fill="#d1edf1">MAX-канал · отчёт сформирован LinkRay</text>
+
+    ${lrMetricBoxV4(70, 262, 250, 96, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
+    ${lrMetricBoxV4(342, 262, 250, 96, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrMetricBoxV4(614, 262, 250, 96, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
+    ${lrMetricBoxV4(886, 262, 300, 96, 'ER24', pct(ch.er24), '#27d9ff')}
+
+    <text x="70" y="406" font-size="26" font-weight="1000" fill="#fff">Динамика подписчиков</text>
+    ${lrLineChartCompactV4(subValues, subLabels, 70, 426, 610, 140, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+
+    <text x="724" y="406" font-size="26" font-weight="1000" fill="#fff">Охваты</text>
+    ${lrBarsCompactV4([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 724, 426, 462, 140)}
+
+    <text x="70" y="648" font-size="22" font-weight="1000" fill="#ffffff">Просмотры: 24ч — ${fmt(ch.views24)} · 48ч — ${fmt(ch.views48)} · 72ч — ${fmt(ch.views72)}</text>
+    <text x="70" y="682" font-size="18" font-weight="900" fill="#d8f2f4">Данные собираются LinkRay с момента добавления бота в канал</text>
+    <text x="1210" y="682" text-anchor="end" font-size="18" font-weight="900" fill="#d8f2f4">Дата формирования: ${dateText} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrSvgShellV4(inner), `lr-single-v4-${ch.key}`);
+}
+
+async function lrSafeRenderNetworkV4(channels) {
+  const totalSubs = channels.reduce((s, ch) => s + num(ch.subscribers), 0);
+  const total24 = channels.reduce((s, ch) => s + num(ch.views24), 0);
+  const total48 = channels.reduce((s, ch) => s + num(ch.views48), 0);
+  const total72 = channels.reduce((s, ch) => s + num(ch.views72), 0);
+  const totalDelta = channels.reduce((s, ch) => s + num(ch.deltaDay), 0);
+  const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
+  const history = await networkHistory(channels);
+  const histValues = history.length ? history.map((x) => x.value) : [totalSubs, totalSubs];
+  const histLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
+  const sorted = channels.slice().sort((a, b) => num(b.views24) - num(a.views24)).slice(0, 4);
+  const dateText = lrSvgEscV3(nowMskHuman());
+
+  const rows = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const ch = sorted[i];
+    const y = 433 + i * 42;
+    const av = await lrSafeAvatarV3(ch, 718, y - 25, 32, i);
+    rows.push(`
+      ${av}
+      <text x="762" y="${y}" font-size="21" font-weight="1000" fill="#102033">${lrSvgEscV3(lrSvgShortV3(ch.title, 24))}</text>
+      <text x="1040" y="${y}" text-anchor="middle" font-size="22" font-weight="1000" fill="#168eea">${fmt(ch.subscribers)}</text>
+      <text x="1158" y="${y}" text-anchor="middle" font-size="22" font-weight="1000" fill="#168eea">${fmt(ch.views24)}</text>
+    `);
+  }
+
+  const inner = `
+    <text x="52" y="64" font-size="40" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
+    <text x="54" y="96" font-size="18" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по ${channels.length} каналам</text>
+
+    ${lrMiniLogoV4(1020, 40)}
+    <text x="1082" y="72" font-size="24" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+
+    <rect x="34" y="118" width="1212" height="492" rx="38" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrShadowV4)"/>
+
+    ${lrMetricBoxV4(70, 154, 250, 96, 'Подписчики', fmt(totalSubs), '#27d9ff')}
+    ${lrMetricBoxV4(342, 154, 250, 96, 'Просмотры 24ч', fmt(total24), '#31f2cc')}
+    ${lrMetricBoxV4(614, 154, 250, 96, 'Средний ER', pct(er24), '#27d9ff')}
+    ${lrMetricBoxV4(886, 154, 300, 96, 'Каналов', String(channels.length), '#31f2cc')}
+
+    <text x="70" y="306" font-size="26" font-weight="1000" fill="#fff">График подписчиков</text>
+    ${lrLineChartCompactV4(histValues, histLabels, 70, 326, 590, 210, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+
+    <rect x="696" y="326" width="490" height="210" rx="22" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    <text x="724" y="365" font-size="25" font-weight="1000" fill="#102033">Топ каналов</text>
+    <text x="762" y="395" font-size="15" font-weight="1000" fill="#7d8e9d">Название</text>
+    <text x="1040" y="395" text-anchor="middle" font-size="15" font-weight="1000" fill="#7d8e9d">ПДП</text>
+    <text x="1158" y="395" text-anchor="middle" font-size="15" font-weight="1000" fill="#7d8e9d">24ч</text>
+    <line x1="718" y1="405" x2="1168" y2="405" stroke="#dcebf2" stroke-width="2"/>
+    ${rows.join('')}
+
+    <text x="70" y="648" font-size="22" font-weight="1000" fill="#ffffff">Подписчики: ${fmt(totalSubs)} · Итог за сутки: ${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</text>
+    <text x="70" y="682" font-size="18" font-weight="900" fill="#d8f2f4">Охваты: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
+    <text x="1210" y="682" text-anchor="end" font-size="18" font-weight="900" fill="#d8f2f4">Дата формирования: ${dateText} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrSvgShellV4(inner), `lr-network-v4-${hash(channels.map((x) => x.key).join('-'))}`);
+}
+/* LR_COMPACT_ANALYTICS_CARD_V4_END */
+
 async function renderSingleSvg(ch) {
   const avatar = await lrSvgAvatar(ch, 84, 214, 92, 1);
   const history = await historyFor(ch.key, 'subscribers');
@@ -1493,11 +1719,11 @@ function lrExtractPreviewMap(update, links) {
 /* LR_ANALYTICS_CARDS_V2_END */
 
 async function renderSingle(ch) {
-  return lrSafeRenderSingleV3(ch);
+  return lrSafeRenderSingleV4(ch);
 }
 
 async function renderNetwork(channels) {
-  return lrSafeRenderNetworkV3(channels);
+  return lrSafeRenderNetworkV4(channels);
 }
 
 async function renderPng(html, name) {
