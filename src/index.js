@@ -798,15 +798,6 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express();
 
-// LINKRAY_CHANNEL_ANALYTICS_START
-import('./linkrayChannelAnalytics.js')
-  .then((mod) => {
-    if (typeof mod.mountLinkRayChannelAnalytics === 'function') {
-      mod.mountLinkRayChannelAnalytics(app);
-    }
-  })
-  .catch((error) => console.error('[LinkRay channel analytics mount]', error?.stack || error));
-// LINKRAY_CHANNEL_ANALYTICS_END
 
 // LINKRAY_24H_REPORT_START
 import('./linkray24hReport.js')
@@ -8344,7 +8335,14 @@ async function composePostForChannel(draft, channelId) {
 
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
-function mainMenuRows() { return [[callbackButton('🧬 LinkRay Studio', 'main:posting')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]]; }
+function mainMenuRows() {
+  return [
+    [callbackButton(' LinkRay Studio', 'main:posting')],
+    [callbackButton('📊 Аналитика', 'main:analytics')],
+    [callbackButton(' Добавить канал', 'post:add_channel')],
+    [callbackButton(' Отчёты', 'reports:menu'), callbackButton(' Антифрод', 'fraud:menu')],
+  ];
+}
 async function showMainCallback(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
 async function sendMain(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
 function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
@@ -10222,6 +10220,17 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
 });
 
 app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.json({ ok: true, service: 'linkray-bot', db: true, time: nowIso() }); } catch(e) { res.status(500).json({ ok:false, error: e.message }); } });
+
+// LINKRAY_CHANNEL_ANALYTICS_START
+import('./linkrayChannelAnalytics.js')
+  .then((mod) => {
+    if (typeof mod.mountLinkRayChannelAnalytics === 'function') {
+      mod.mountLinkRayChannelAnalytics(app);
+    }
+  })
+  .catch((error) => console.error('[LinkRay channel analytics mount]', error?.stack || error));
+// LINKRAY_CHANNEL_ANALYTICS_END
+
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
   if (process.env.WEBHOOK_SECRET && incomingSecret !== process.env.WEBHOOK_SECRET) return res.status(401).json({ ok: false });

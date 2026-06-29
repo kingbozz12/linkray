@@ -977,6 +977,219 @@ function startDailyWorker() {
   console.log('[LinkRay channel analytics] daily worker mounted');
 }
 
+
+/* LR_CHANNEL_ANALYTICS_MENU_V1 */
+function lrMenuButtons(rows) {
+  return [{
+    type: 'inline_keyboard',
+    payload: { buttons: rows },
+  }];
+}
+
+function lrCb(text, payload) {
+  return { type: 'callback', text, payload };
+}
+
+function lrTextNorm(value) {
+  return String(value || '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function lrIsAnalyticsMenuText(text) {
+  const t = lrTextNorm(text);
+  return (
+    t === 'аналитика' ||
+    t === 'linkray analytics' ||
+    t === 'статистика' ||
+    t === 'стата' ||
+    t === 'аналитика каналов'
+  );
+}
+
+async function ensureAnalyticsMenuTables() {
+  await ensureTables();
+
+  await query(`
+    ALTER TABLE public.lr_channel_analytics_settings
+    ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT ''
+  `).catch(() => {});
+}
+
+async function getAnalyticsSettings(chatId) {
+  await ensureAnalyticsMenuTables();
+
+  const result = await query(
+    `SELECT *
+       FROM public.lr_channel_analytics_settings
+      WHERE chat_id=$1
+      LIMIT 1`,
+    [String(chatId)]
+  ).catch(() => []);
+
+  const row = rows(result)[0] || {};
+
+  let links = [];
+
+  try {
+    links = Array.isArray(row.links) ? row.links : JSON.parse(row.links || '[]');
+  } catch {
+    links = [];
+  }
+
+  return {
+    dailyEnabled: Boolean(row.daily_enabled),
+    links,
+    mode: String(row.mode || ''),
+  };
+}
+
+async function setAnalyticsMode(chatId, mode) {
+  await ensureAnalyticsMenuTables();
+
+  await query(
+    `
+    INSERT INTO public.lr_channel_analytics_settings(chat_id, mode, updated_at)
+    VALUES($1, $2, now())
+    ON CONFLICT(chat_id)
+    DO UPDATE SET mode=$2, updated_at=now()
+    `,
+    [String(chatId), String(mode || '')]
+  );
+}
+
+async function showAnalyticsMainMenu(chatId) {
+  await setAnalyticsMode(chatId, '');
+
+  await sendMaxMessage({
+    chatId,
+    text:
+      '━━━━━━━━━━━━━━\n' +
+      '📊 <b>LinkRay Analytics</b>\n\n' +
+      'Здесь можно сделать картинку-аналитику по каналу или включить ежедневные уведомления по подпискам и отпискам.\n\n' +
+      'Выберите раздел.\n' +
+      '━━━━━━━━━━━━━━',
+    format: 'html',
+    attachments: lrMenuButtons([
+      [lrCb('🖼 Картинка по ссылке', 'lrchan:links')],
+      [lrCb('🔔 Уведомления', 'lrchan:notifications')],
+      [lrCb('⬅️ Главное меню', 'main:menu')],
+    ]),
+  });
+}
+
+async function showAnalyticsLinkInput(chatId) {
+  await setAnalyticsMode(chatId, 'await_links');
+
+  await sendMaxMessage({
+    chatId,
+    text:
+      '━━━━━━━━━━━━━━\n' +
+      '🖼 <b>Картинка аналитики</b>\n\n' +
+      'Отправьте ссылку MAX-канала.\n\n' +
+      'Можно отправить несколько ссылок сразу — каждую с новой строки. Тогда бот сделает сводную карточку сети каналов.\n\n' +
+      'Пример:\n' +
+      'https://max.ru/...\n' +
+      'https://max.ru/...\n' +
+      '━━━━━━━━━━━━━━',
+    format: 'html',
+    attachments: lrMenuButtons([
+      [lrCb('⬅️ В аналитику', 'lrchan:menu')],
+      [lrCb('⬅️ Главное меню', 'main:menu')],
+    ]),
+  });
+}
+
+async function showAnalyticsNotifications(chatId) {
+  const settings = await getAnalyticsSettings(chatId);
+  const status = settings.dailyEnabled ? 'включены' : 'выключены';
+  const icon = settings.dailyEnabled ? '✅' : '⛔';
+  const linksCount = settings.links.length;
+
+  await sendMaxMessage({
+    chatId,
+    text:
+      '━━━━━━━━━━━━━━\n' +
+      '🔔 <b>Уведомления по подпискам</b>\n\n' +
+      `${icon} Сейчас уведомления: <b>${status}</b>\n` +
+      `📌 Каналов сохранено: <b>${linksCount}</b>\n\n` +
+      'Каждый день в 08:00 МСК бот будет присылать:\n' +
+      '• сколько подписалось;\n' +
+      '• сколько отписалось;\n' +
+      '• общий итог за сутки;\n' +
+      '• красивую карточку LinkRay Analytics.\n' +
+      '━━━━━━━━━━━━━━',
+    format: 'html',
+    attachments: lrMenuButtons([
+      [lrCb('✅ Включить', 'lrchan:on'), lrCb('⛔ Отключить', 'lrchan:off')],
+      [lrCb('🖼 Изменить каналы', 'lrchan:links')],
+      [lrCb('⬅️ В аналитику', 'lrchan:menu')],
+    ]),
+  });
+}
+
+async function handleAnalyticsMenuMiddleware(update, chatId, payload, text) {
+  if (payload === 'main:analytics' || payload === 'analytics:menu' || payload === 'lrchan:menu') {
+    await showAnalyticsMainMenu(chatId);
+    return true;
+  }
+
+  if (payload === 'lrchan:links') {
+    await showAnalyticsLinkInput(chatId);
+    return true;
+  }
+
+  if (payload === 'lrchan:notifications') {
+    await showAnalyticsNotifications(chatId);
+    return true;
+  }
+
+  if (payload === 'lrchan:on') {
+    await setDaily(chatId, true);
+    await showAnalyticsNotifications(chatId);
+    return true;
+  }
+
+  if (payload === 'lrchan:off') {
+    await setDaily(chatId, false);
+    await showAnalyticsNotifications(chatId);
+    return true;
+  }
+
+  if (lrIsAnalyticsMenuText(text)) {
+    await showAnalyticsMainMenu(chatId);
+    return true;
+  }
+
+  const settings = await getAnalyticsSettings(chatId);
+  const links = extractMaxLinks(text);
+
+  if (settings.mode === 'await_links') {
+    if (!links.length) {
+      await sendMaxMessage({
+        chatId,
+        text:
+          '⚠️ Не вижу ссылку MAX-канала.\n\n' +
+          'Отправьте одну или несколько ссылок вида https://max.ru/...',
+        format: 'html',
+        attachments: lrMenuButtons([
+          [lrCb('⬅️ В аналитику', 'lrchan:menu')],
+        ]),
+      });
+      return true;
+    }
+
+    await setAnalyticsMode(chatId, '');
+    await handleLinks(chatId, links);
+    return true;
+  }
+
+  return false;
+}
+/* LR_CHANNEL_ANALYTICS_MENU_V1_END */
+
 export function mountLinkRayChannelAnalytics(app) {
   if (mounted) return;
   mounted = true;
@@ -987,6 +1200,33 @@ export function mountLinkRayChannelAnalytics(app) {
     maxAge: '30d',
     immutable: true,
   }));
+
+  
+  app.use(async function lrChannelAnalyticsMenuMiddleware(req, res, next) {
+    try {
+      if (req.method !== 'POST') return next();
+
+      const update = req.body || {};
+      const payload = getPayload(update);
+      const chatId = getChatId(update);
+
+      if (!chatId) return next();
+
+      const text = getText(update);
+
+      const handled = await handleAnalyticsMenuMiddleware(update, chatId, payload, text);
+
+      if (handled) {
+        return res.json({ ok: true });
+      }
+
+      return next();
+    } catch (error) {
+      console.error('[LinkRay channel analytics menu]', error.stack || error);
+      return next();
+    }
+  });
+
 
   app.use(async function lrChannelAnalyticsMiddleware(req, res, next) {
     try {
