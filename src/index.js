@@ -798,6 +798,16 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express();
 
+// LINKRAY_24H_REPORT_START
+import('./linkray24hReport.js')
+  .then((mod) => {
+    if (typeof mod.mountLinkRay24hReports === 'function') {
+      mod.mountLinkRay24hReports();
+    }
+  })
+  .catch((error) => console.error('[LinkRay 24h report mount]', error?.stack || error));
+// LINKRAY_24H_REPORT_END
+
 // LINKRAY_BRAND_STATIC_START
 app.use('/brand', express.static('public/brand', { maxAge: '1h', fallthrough: true }));
 // LINKRAY_BRAND_STATIC_END
