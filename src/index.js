@@ -798,6 +798,10 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express();
 
+// LINKRAY_BRAND_STATIC_START
+app.use('/brand', express.static('public/brand', { maxAge: '1h', fallthrough: true }));
+// LINKRAY_BRAND_STATIC_END
+
 // LINKRAY_PREEMPT_ANALYTICS_START
 app.get('/analytics/stats/:groupId', async (req, res, next) => {
   try {
@@ -814,7 +818,6 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
   }
 });
 // LINKRAY_PREEMPT_ANALYTICS_END
-
 
 app.use(express.json({ limit: '50mb' }));
 

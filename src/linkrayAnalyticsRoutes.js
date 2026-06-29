@@ -699,7 +699,7 @@ function mediaHtml(data) {
     return '<img src="' + attr(data.media.url) + '" alt="Медиа поста">';
   }
 
-  return '<img src="/brand/linkray-logo.webp?v=4" alt="LinkRay">';
+  return '<img src="/brand/linkray-logo.webp?v=4" alt="">';
 }
 
 function page(data) {
@@ -748,13 +748,22 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
 .toast{position:fixed;left:50%;bottom:calc(86px + var(--safe-bottom));z-index:80;transform:translateX(-50%) translateY(18px);opacity:0;pointer-events:none;padding:11px 14px;border-radius:999px;background:rgba(8,22,38,.94);color:#fff;font-size:12px;font-weight:950;box-shadow:0 18px 50px rgba(5,18,35,.25);transition:.18s;white-space:nowrap}.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .modal{position:fixed;inset:0;z-index:70;display:none;align-items:flex-end;background:rgba(4,16,30,.58);backdrop-filter:blur(10px)}.modal.show{display:flex}.modal-card{width:100%;max-height:min(82vh,720px);overflow:auto;border-radius:30px 30px 0 0;background:#fff;padding-bottom:var(--safe-bottom);box-shadow:0 -24px 70px rgba(0,0,0,.25)}.modal-head{position:sticky;top:0;background:#fff;z-index:2;padding:15px 14px 0;display:flex;justify-content:space-between;gap:12px;align-items:center}.modal-head h3{margin:0;font-size:22px;letter-spacing:-.04em}.close{width:42px;height:42px;border-radius:16px;background:#eef5ff;color:var(--ink);font-size:22px;font-weight:1000}.modal-body{padding:12px 14px 18px;color:#405066;font-size:14px;line-height:1.48}.modal-list{display:grid;gap:8px;margin-top:12px}.modal-list div{display:flex;justify-content:space-between;gap:12px;padding:12px;border-radius:17px;background:#f8fbff;border:1px solid #e6eef8}.modal-list span{color:var(--muted);font-size:12px;font-weight:850}.modal-list b{text-align:right;font-size:13px;color:var(--ink)}
 @media(max-width:370px){.app{padding-left:8px;padding-right:8px}.topbar{margin-left:-8px;margin-right:-8px;padding-left:8px;padding-right:8px}h1{font-size:31px}.hero-metric b{font-size:21px}.btn{font-size:12px}.brand b{font-size:15px}.logo-stage{min-height:170px}}
+
+/* LOGO_FIX_CSS_V5 */
+.brand-logo img,
+.logo-stage img,
+.media img{display:block;background:transparent}
+.logo-stage img,
+.media img{object-fit:cover}
+.brand-logo img{object-fit:cover}
+
 </style>
 </head>
 <body>
 <main class="app">
   <header class="topbar">
     <a class="brand" href="#top">
-      <div class="brand-logo"><img src="/brand/linkray-logo.webp?v=4" alt="LinkRay"></div>
+      <div class="brand-logo"><img src="/brand/linkray-logo.webp?v=4" alt=""></div>
       <div><b>LinkRay Analytics</b><span>отчёт по рекламному посту</span></div>
     </a>
     <div class="top-actions">
@@ -785,7 +794,7 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
         <a class="btn bot" href="${botLink}" target="_blank" rel="noopener">💬 Перейти в бота</a>
       </div>
 
-      <div class="logo-stage"><img src="/brand/linkray-logo.webp?v=4" alt="LinkRay logo"></div>
+      <div class="logo-stage"><img src="/brand/linkray-logo.webp?v=4" alt=""></div>
     </div>
   </section>
 
