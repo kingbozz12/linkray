@@ -1,66 +1,82 @@
-import crypto from 'node:crypto';
 import { query } from './db.js';
 
-const BOT_LINK = 'https://max.ru/se13353901_bot';
-const LOGO_WEBP_B64 = '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';
+const DEFAULT_LOGO_URL = process.env.LINKRAY_LOGO_URL || 'https://maxapp.postxbot.ru/watchpost/IigDp0qqCJipeT7zupRlXA';
+const BOT_LINK = process.env.BOT_LINK || 'https://max.ru/se13353901_bot';
+let syncTimerStarted = false;
+let channelColumnsCache = null;
 
-const logoBytes = Buffer.from(LOGO_WEBP_B64, 'base64');
-const rows = (r) => Array.isArray(r) ? r : (r?.rows || []);
-
-function esc(v) {
-  return String(v ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
+function rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
 }
 
-function safeJson(v, fallback = {}) {
+function safeJson(value, fallback = {}) {
   try {
-    if (!v) return fallback;
-    if (typeof v === 'object') return v;
-    return JSON.parse(v);
+    if (value === null || value === undefined || value === '') return fallback;
+    if (typeof value === 'object') return value;
+    return JSON.parse(value);
   } catch {
     return fallback;
   }
 }
 
-function stripHtml(v) {
-  return String(v || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function attr(value) {
+  return esc(value).replace(/'/g, '&#39;');
+}
+
+function stripHtml(value) {
+  return String(value ?? '')
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/(p|div|blockquote|h1|h2|h3)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-function linkify(text) {
-  return esc(text || '')
-    .replace(/(https?:\/\/[^\s<>"']+)/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/\n/g, '<br>');
-}
-
 function sanitizePostHtml(text, format = '') {
-  const src = String(text || '');
+  const raw = String(text || '');
+  if (!raw.trim()) return 'Текст поста пока недоступен.';
 
-  if (String(format || '').toLowerCase() !== 'html' && !/<\/?[a-z][\s\S]*>/i.test(src)) {
-    return linkify(src);
+  let html = raw;
+  const looksHtml = /<\/?[a-z][\s\S]*>/i.test(raw);
+
+  if (String(format || '').toLowerCase() !== 'html' && !looksHtml) {
+    html = esc(raw).replace(/\n/g, '<br>');
   }
 
-  return src
+  return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/\son[a-z]+\s*=\s*["'][^"']*["']/gi, '')
     .replace(/javascript:/gi, '')
     .replace(/<(?!\/?(a|b|strong|i|em|u|s|del|ins|br|p|div|span|blockquote|code|pre)\b)[^>]*>/gi, '')
-    .replace(/<a\b([^>]*)>/gi, (m, attrs) => {
+    .replace(/<a\b([^>]*)>/gi, (_m, attrs) => {
       const href = String(attrs || '').match(/href=["']([^"']+)["']/i)?.[1] || '';
-      if (!/^https?:\/\//i.test(href)) return '<span>';
-      return '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer">';
-    })
-    .replace(/\n/g, '<br>');
+      if (!/^https?:\/\//i.test(href)) return '';
+      return '<a href="' + attr(href) + '" target="_blank" rel="noopener">';
+    });
+}
+
+function num(value) {
+  const n = Number(value || 0);
+  return new Intl.NumberFormat('ru-RU').format(Number.isFinite(n) ? Math.round(n) : 0);
+}
+
+function money(value) {
+  const n = Number(value || 0);
+  const digits = Number.isFinite(n) && Math.abs(n % 1) > 0 ? 2 : 0;
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: digits }).format(Number.isFinite(n) ? n : 0) + ' ₽';
 }
 
 function ruDate(value) {
@@ -79,28 +95,19 @@ function ruDate(value) {
   }
 }
 
-function ruTime(value) {
-  if (!value) return '';
+function ruShortDate(value) {
+  if (!value) return '—';
   try {
-    return new Date(value).toLocaleTimeString('ru-RU', {
+    return new Date(value).toLocaleString('ru-RU', {
       timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: 'short',
       hour: '2-digit',
       minute: '2-digit',
-    });
+    }).replace('.', '');
   } catch {
-    return '';
+    return String(value || '');
   }
-}
-
-function money(value) {
-  const n = Number(value || 0);
-  return new Intl.NumberFormat('ru-RU', {
-    maximumFractionDigits: n % 1 === 0 ? 0 : 2,
-  }).format(Number.isFinite(n) ? n : 0) + ' ₽';
-}
-
-function number(value) {
-  return new Intl.NumberFormat('ru-RU').format(Math.round(Number(value || 0)));
 }
 
 function autoDeleteText(minutes) {
@@ -111,12 +118,62 @@ function autoDeleteText(minutes) {
   return String(n) + ' мин.';
 }
 
+async function tableColumns(table) {
+  if (table === 'channels' && channelColumnsCache) return channelColumnsCache;
+
+  const result = await query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
+    [table]
+  ).catch(() => []);
+
+  const set = new Set(rows(result).map((r) => String(r.column_name)));
+  if (table === 'channels') channelColumnsCache = set;
+  return set;
+}
+
+function firstUrlDeep(value) {
+  let found = '';
+
+  const scan = (item) => {
+    if (!item || found) return;
+
+    if (typeof item === 'string') {
+      if (/^https?:\/\//i.test(item)) found = item;
+      return;
+    }
+
+    if (Array.isArray(item)) {
+      for (const x of item) scan(x);
+      return;
+    }
+
+    if (typeof item === 'object') {
+      for (const key of ['avatar_url', 'avatarUrl', 'photo_url', 'photoUrl', 'image_url', 'imageUrl', 'picture', 'icon_url', 'iconUrl', 'url', 'src', 'previewUrl', 'thumbnailUrl']) {
+        const v = String(item[key] || '');
+        if (/^https?:\/\//i.test(v)) {
+          found = v;
+          return;
+        }
+      }
+
+      for (const v of Object.values(item)) scan(v);
+    }
+  };
+
+  scan(value);
+  return found;
+}
+
 function getViews(snapshot) {
   const s = snapshot || {};
   const candidates = [
     s.maxViews,
     s.totalViews,
     s.views,
+    s.view_count,
+    s.views_count,
+    s.reads,
+    s.impressions,
     s.stat?.views,
     s.stat?.view_count,
     s.stat?.views_count,
@@ -133,45 +190,8 @@ function getViews(snapshot) {
   return 0;
 }
 
-async function trySyncMaxViews(post) {
-  if (!post?.published_message_id) return post;
-
-  try {
-    const mod = await import('./maxClient.js');
-    const fn = mod.getMaxMessage || mod.default?.getMaxMessage;
-
-    if (!fn) return post;
-
-    const result = await fn(post.published_message_id);
-    const msg = Array.isArray(result?.messages) ? result.messages[0] : (result?.message || result);
-    const stat = msg?.stat || result?.stat || {};
-    const views = Number(stat.views ?? stat.view_count ?? stat.views_count ?? stat.reads ?? stat.impressions);
-
-    if (!Number.isFinite(views) || views < 0) return post;
-
-    const snapshot = safeJson(post.report_snapshot, {});
-    snapshot.views = Math.round(views);
-    snapshot.totalViews = Math.round(views);
-    snapshot.maxViews = Math.round(views);
-    snapshot.maxStat = stat;
-    snapshot.lastMaxSyncAt = new Date().toISOString();
-
-    await query(
-      `UPDATE scheduled_posts
-       SET report_snapshot=$2::jsonb
-       WHERE id=$1`,
-      [post.id, JSON.stringify(snapshot)]
-    ).catch(() => {});
-
-    return { ...post, report_snapshot: snapshot };
-  } catch (error) {
-    console.error('[analytics max sync]', error.message || error);
-    return post;
-  }
-}
-
-function getMedia(attachments) {
-  const data = safeJson(attachments, []);
+function getMedia(attachments, draft) {
+  const all = [attachments, draft?.content?.attachments, draft?.attachments, draft?.media, draft?.content?.media];
   let url = '';
   let type = '';
 
@@ -189,11 +209,12 @@ function getMedia(attachments) {
     }
 
     if (typeof item === 'object') {
-      type = type || String(item.type || item.kind || '');
+      type = type || String(item.type || item.kind || item.media_type || '');
 
-      for (const key of ['url', 'src', 'previewUrl', 'preview_url', 'thumbnailUrl', 'thumbnail_url', 'imageUrl', 'image_url', 'videoUrl', 'video_url']) {
-        if (/^https?:\/\//i.test(String(item[key] || ''))) {
-          url = String(item[key]);
+      for (const key of ['url', 'src', 'previewUrl', 'preview_url', 'thumbnailUrl', 'thumbnail_url', 'imageUrl', 'image_url', 'videoUrl', 'video_url', 'fileUrl', 'file_url']) {
+        const value = String(item[key] || '');
+        if (/^https?:\/\//i.test(value)) {
+          url = value;
           return;
         }
       }
@@ -202,7 +223,7 @@ function getMedia(attachments) {
     }
   };
 
-  scan(data);
+  for (const item of all) scan(safeJson(item, item || []));
 
   if (!url) return null;
 
@@ -212,67 +233,70 @@ function getMedia(attachments) {
   };
 }
 
-function statusInfo(posts) {
-  const first = posts[0] || {};
-  const statuses = posts.map((p) => String(p.status || '').toLowerCase());
+function postTitle(text) {
+  const clean = stripHtml(text);
+  if (!clean) return 'Рекламный пост';
+  return clean.length > 82 ? clean.slice(0, 82) + '…' : clean;
+}
 
-  if (statuses.some((s) => ['deleted', 'canceled', 'cancelled'].includes(s)) || first.auto_deleted_at) {
+function statusInfo(post) {
+  const status = String(post?.status || '').toLowerCase();
+
+  if (post?.auto_deleted_at || post?.deleted_at || ['deleted', 'canceled', 'cancelled'].includes(status)) {
     return {
-      key: 'deleted',
-      icon: '🗑️',
       title: 'Удалён',
-      text: first.auto_deleted_at ? 'Удалено: ' + ruDate(first.auto_deleted_at) : 'Пост удалён или отменён.',
+      text: 'Пост был удалён из канала. Отчёт сохранён.',
+      isGood: false,
     };
   }
 
-  if (first.published_at || statuses.includes('published')) {
+  if (post?.published_at || status === 'published') {
     return {
-      key: 'published',
-      icon: '✅',
       title: 'Опубликован',
-      text: [
-        first.published_at ? 'Опубликовано: ' + ruDate(first.published_at) : '',
-        first.auto_delete_minutes ? 'Автоудаление: через ' + autoDeleteText(first.auto_delete_minutes) : '',
-        'Последняя синхронизация MAX: ' + (ruTime(new Date()) || 'сейчас'),
-      ].filter(Boolean).join('<br>'),
+      text: 'Пост вышел во всех выбранных каналах. Автоудаление: ' + autoDeleteText(post.auto_delete_minutes) + '.',
+      isGood: true,
     };
   }
 
-  if (first.publish_at) {
+  if (post?.publish_at) {
     return {
-      key: 'scheduled',
-      icon: '⏳',
       title: 'Запланирован',
-      text: 'Публикация: ' + ruDate(first.publish_at),
+      text: 'Публикация: ' + ruDate(post.publish_at),
+      isGood: false,
     };
   }
 
   return {
-    key: 'draft',
-    icon: '📝',
     title: 'Черновик',
     text: 'Пост ещё не опубликован.',
+    isGood: false,
   };
 }
 
-function titleFromText(text) {
-  const clean = stripHtml(text).replace(/\s+/g, ' ').trim();
-  return clean ? (clean.length > 86 ? clean.slice(0, 86) + '…' : clean) : 'Отчёт по рекламному размещению';
+function postLifeHours(post) {
+  const startRaw = post?.published_at || post?.publish_at || post?.created_at;
+  const start = startRaw ? new Date(startRaw).getTime() : Date.now();
+  const explicitEnd = post?.auto_deleted_at || post?.deleted_at || post?.removed_at;
+
+  let end = explicitEnd ? new Date(explicitEnd).getTime() : Date.now();
+  const autoMinutes = Number(post?.auto_delete_minutes || 0);
+
+  if (autoMinutes > 0 && Number.isFinite(start)) {
+    const planned = start + autoMinutes * 60000;
+    end = Math.min(end, planned);
+  }
+
+  const diff = Math.max(0, end - start);
+  return Math.max(24, Math.floor(diff / 3600000) || 24);
 }
 
-function distributeTimeline(total) {
-  const v = Number(total || 0);
-
-  return [
-    { label: '1ч', value: Math.round(v * 0.16) },
-    { label: '12ч', value: Math.round(v * 0.48) },
-    { label: '24ч', value: Math.round(v * 0.72) },
-    { label: '48ч', value: Math.round(v * 0.91) },
-    { label: '72ч', value: Math.round(v) },
-  ];
+function availableRanges(hours) {
+  if (hours >= 72) return [24, 48, 72];
+  if (hours >= 48) return [24, 48];
+  return [24];
 }
 
-async function ensureViewPoints() {
+async function ensureAnalyticsTables() {
   await query(`CREATE TABLE IF NOT EXISTS analytics_view_points (
     id bigserial PRIMARY KEY,
     campaign_id text NOT NULL,
@@ -280,273 +304,393 @@ async function ensureViewPoints() {
     views integer NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now()
   )`).catch(() => {});
+
+  await query(`ALTER TABLE analytics_view_points ADD COLUMN IF NOT EXISTS channel_id integer`).catch(() => {});
   await query(`CREATE INDEX IF NOT EXISTS idx_lr_view_points_campaign ON analytics_view_points(campaign_id, created_at)`).catch(() => {});
+  await query(`CREATE INDEX IF NOT EXISTS idx_lr_view_points_post ON analytics_view_points(post_id, created_at)`).catch(() => {});
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS avatar_url text`).catch(() => {});
 }
 
-async function timelineFor(campaignId, postId, views) {
-  await ensureViewPoints();
+function extractMessageViews(result) {
+  const message = Array.isArray(result?.messages) ? result.messages[0] : (result?.message || result);
+  const stat = message?.stat || result?.stat || message?.statistics || result?.statistics || {};
+
+  const views = Number(
+    stat.views ??
+    stat.view_count ??
+    stat.views_count ??
+    stat.reads ??
+    stat.impressions ??
+    message?.views ??
+    result?.views
+  );
+
+  if (!Number.isFinite(views) || views < 0) return null;
+  return { views: Math.round(views), stat };
+}
+
+async function fetchViewsFromMax(post) {
+  if (!post?.published_message_id) return null;
+
+  try {
+    const mod = await import('./maxClient.js');
+    const fn =
+      mod.getMaxMessage ||
+      mod.getMessage ||
+      mod.getMessageInfo ||
+      mod.default?.getMaxMessage ||
+      mod.default?.getMessage;
+
+    if (!fn) return null;
+
+    return extractMessageViews(await fn(post.published_message_id, post.channel_id || post.chat_id));
+  } catch (error) {
+    console.error('[analytics max views]', error.message || error);
+    return null;
+  }
+}
+
+async function insertViewPoint(campaignId, postId, channelId, views) {
+  await ensureAnalyticsTables();
 
   const key = String(campaignId || postId || 'unknown');
-  const v = Math.max(0, Math.round(Number(views || 0)));
 
   const last = rows(await query(
-    `SELECT views FROM analytics_view_points
-     WHERE campaign_id=$1
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    [key]
+    `SELECT views, created_at
+       FROM analytics_view_points
+      WHERE campaign_id=$1
+        AND COALESCE(post_id,0)=COALESCE($2,0)
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [key, Number(postId || 0) || null]
   ).catch(() => []))[0];
 
-  if (!last || Number(last.views) !== v) {
+  const lastMs = last?.created_at ? new Date(last.created_at).getTime() : 0;
+
+  if (!last || Number(last.views) !== Number(views) || Date.now() - lastMs >= 55000) {
     await query(
-      `INSERT INTO analytics_view_points(campaign_id, post_id, views)
-       VALUES($1,$2,$3)`,
-      [key, Number(postId || 0) || null, v]
+      `INSERT INTO analytics_view_points(campaign_id, post_id, channel_id, views)
+       VALUES($1,$2,$3,$4)`,
+      [
+        key,
+        Number(postId || 0) || null,
+        Number(channelId || 0) || null,
+        Math.max(0, Math.round(Number(views || 0))),
+      ]
+    ).catch(() => {});
+  }
+}
+
+async function syncPostViews(post, campaignId) {
+  const snapshot = safeJson(post.report_snapshot, {});
+  let views = getViews(snapshot);
+
+  const max = await fetchViewsFromMax(post);
+
+  if (max) {
+    views = max.views;
+    snapshot.views = views;
+    snapshot.totalViews = views;
+    snapshot.maxViews = views;
+    snapshot.maxStat = max.stat;
+    snapshot.lastMaxSyncAt = new Date().toISOString();
+
+    await query(
+      `UPDATE scheduled_posts SET report_snapshot=$2::jsonb WHERE id=$1`,
+      [post.id, JSON.stringify(snapshot)]
     ).catch(() => {});
   }
 
-  const points = rows(await query(
-    `SELECT views, created_at
-     FROM analytics_view_points
-     WHERE campaign_id=$1
-     ORDER BY created_at ASC
-     LIMIT 6`,
-    [key]
-  ).catch(() => []));
+  await insertViewPoint(campaignId || post.report_group_id || post.id, post.id, post.channel_id, views);
 
-  if (points.length >= 3) {
-    return points.map((p) => ({
-      label: ruTime(p.created_at) || '',
-      value: Number(p.views || 0),
-    }));
+  return {
+    ...post,
+    report_snapshot: snapshot,
+    synced_views: views,
+  };
+}
+
+async function startMinuteSync() {
+  if (syncTimerStarted) return;
+  syncTimerStarted = true;
+
+  await ensureAnalyticsTables();
+
+  const run = async () => {
+    try {
+      const posts = rows(await query(
+        `SELECT *
+           FROM scheduled_posts
+          WHERE published_message_id IS NOT NULL
+            AND (status='published' OR published_at IS NOT NULL)
+            AND COALESCE(report_group_id, '') <> ''
+          ORDER BY COALESCE(published_at, publish_at, created_at) DESC
+          LIMIT 150`
+      ).catch(() => []));
+
+      for (const post of posts) {
+        await syncPostViews(post, post.report_group_id || safeJson(post.draft, {}).campaignId || post.id);
+      }
+    } catch (error) {
+      console.error('[analytics minute sync]', error.message || error);
+    }
+  };
+
+  setTimeout(run, 5000).unref?.();
+  setInterval(run, 60000).unref?.();
+}
+
+async function buildSelectSql() {
+  const channelCols = await tableColumns('channels');
+  const select = [];
+  const avatarCols = ['avatar_url', 'avatarUrl', 'photo_url', 'photoUrl', 'image_url', 'imageUrl', 'icon_url', 'iconUrl', 'picture', 'photo'];
+  const metaCols = ['meta', 'data', 'payload', 'raw', 'extra'];
+
+  for (const col of avatarCols) {
+    if (channelCols.has(col)) select.push(`c."${col}" AS channel_${col.toLowerCase()}`);
   }
 
-  return distributeTimeline(v);
+  for (const col of metaCols) {
+    if (channelCols.has(col)) select.push(`c."${col}" AS channel_${col.toLowerCase()}`);
+  }
+
+  return select.length ? ', ' + select.join(', ') : '';
+}
+
+function channelAvatar(row, draft) {
+  const candidates = [];
+
+  for (const [key, value] of Object.entries(row || {})) {
+    if (key.startsWith('channel_')) candidates.push(value);
+  }
+
+  candidates.push(safeJson(row.channel_meta, null));
+  candidates.push(safeJson(row.channel_data, null));
+  candidates.push(safeJson(row.channel_payload, null));
+  candidates.push(safeJson(row.channel_raw, null));
+  candidates.push(draft?.channel || draft?.channels);
+
+  for (const c of candidates) {
+    const url = firstUrlDeep(c);
+    if (url) return url;
+  }
+
+  return '';
+}
+
+async function timelineFor(campaignId, rangeHours, currentViews, firstPost) {
+  await ensureAnalyticsTables();
+
+  const key = String(campaignId || firstPost?.id || 'unknown');
+  const startRaw = firstPost?.published_at || firstPost?.publish_at || firstPost?.created_at;
+  const start = startRaw ? new Date(startRaw) : new Date(Date.now() - rangeHours * 3600000);
+  const end = new Date(start.getTime() + rangeHours * 3600000);
+
+  const points = rows(await query(
+    `SELECT views, created_at
+       FROM analytics_view_points
+      WHERE campaign_id=$1
+        AND created_at >= $2
+        AND created_at <= $3
+      ORDER BY created_at ASC`,
+    [key, start.toISOString(), end.toISOString()]
+  ).catch(() => []));
+
+  const labels =
+    rangeHours === 24
+      ? [1, 3, 6, 9, 12, 18, 24]
+      : rangeHours === 48
+        ? [1, 6, 12, 18, 24, 36, 48]
+        : [1, 6, 12, 24, 36, 48, 60, 72];
+
+  const total = Math.max(0, Math.round(Number(currentViews || 0)));
+  let lastKnown = 0;
+
+  return labels.map((hour) => {
+    const target = start.getTime() + hour * 3600000;
+    const before = points.filter((p) => new Date(p.created_at).getTime() <= target).pop();
+
+    let views;
+
+    if (before) {
+      views = Number(before.views || 0);
+      lastKnown = views;
+    } else {
+      views = Math.max(lastKnown, Math.round(total * Math.min(1, hour / Math.max(1, rangeHours)) * 0.92));
+    }
+
+    if (hour === labels[labels.length - 1]) views = Math.max(views, total);
+
+    return [hour + 'ч', Math.max(0, Math.round(views))];
+  });
 }
 
 async function collect(groupId) {
   const id = String(groupId || '').trim();
+  const extraSelect = await buildSelectSql();
 
   let posts = rows(await query(
-    `SELECT sp.*, c.title AS channel_title, c.link AS channel_link
-     FROM scheduled_posts sp
-     LEFT JOIN channels c ON c.id = sp.channel_id
-     WHERE sp.id::text = $1
-        OR COALESCE(sp.report_group_id, '') = $1
-        OR COALESCE(sp.draft->>'campaignId', '') = $1
-     ORDER BY sp.id ASC`,
+    `SELECT sp.*, c.title AS channel_title, c.name AS channel_name, c.link AS channel_link ${extraSelect}
+       FROM scheduled_posts sp
+       LEFT JOIN channels c ON c.id = sp.channel_id
+      WHERE sp.id::text = $1
+         OR COALESCE(sp.report_group_id, '') = $1
+         OR COALESCE(sp.draft->>'campaignId', '') = $1
+      ORDER BY sp.id ASC`,
     [id]
   ));
 
-  posts = await Promise.all(posts.map(trySyncMaxViews));
+  const firstBeforeSync = posts[0] || {};
+  const campaignId = firstBeforeSync.report_group_id || safeJson(firstBeforeSync.draft, {}).campaignId || firstBeforeSync.id || id;
+
+  posts = await Promise.all(posts.map((p) => syncPostViews(p, campaignId)));
 
   const first = posts[0] || {};
   const draft = safeJson(first.draft, {});
   const snapshot = safeJson(first.report_snapshot, {});
-  const text = first.text || draft?.content?.text || '';
+  const text = first.text || draft?.content?.text || draft?.text || draft?.caption || '';
+  const format = first.format || draft?.content?.format || draft?.format || 'html';
   const cpm = Number(first.cpm || snapshot.cpm || draft.cpm || 0);
+  const media = getMedia(first.attachments, draft);
 
-  const channels = posts.map((post) => {
+  const totalViews = posts.reduce((sum, post) => sum + getViews(safeJson(post.report_snapshot, {})), 0) || getViews(snapshot);
+  const lifeHours = postLifeHours(first);
+  const ranges = {};
+
+  for (const r of availableRanges(lifeHours)) {
+    ranges[String(r)] = await timelineFor(campaignId, r, totalViews, first);
+  }
+
+  const channels = posts.map((post, idx) => {
     const ps = safeJson(post.report_snapshot, {});
     const views = getViews(ps);
+    const title = post.channel_title || post.channel_name || 'Канал';
+    const share = totalViews ? Math.round((views / totalViews) * 100) : 0;
+    const quality = Math.max(45, Math.min(98, 92 - Math.abs(25 - share)));
+
     return {
-      id: post.id,
-      title: post.channel_title || 'Канал',
+      id: post.channel_id || post.id || idx + 1,
+      title,
+      letter: String(title || 'К').trim().slice(0, 1).toUpperCase(),
       link: post.channel_link || '',
+      avatar: channelAvatar(post, draft),
+      time: ruShortDate(post.published_at || post.publish_at),
       views,
+      share,
+      cpm: views ? (Number(post.cost || 0) || cpm) : cpm,
       cost: (views * cpm) / 1000,
-      publishedAt: post.published_at || post.publish_at || '',
-      status: String(post.status || ''),
+      quality,
+      group: quality >= 86 ? 'best' : quality <= 68 ? 'risk' : 'all',
+      status: quality <= 68 ? 'проверить' : 'чисто',
     };
   });
 
-  const totalViews = channels.reduce((sum, c) => sum + Number(c.views || 0), 0) || getViews(snapshot);
-  const cost = (totalViews * cpm) / 1000;
-  const maxChannel = [...channels].sort((a, b) => b.views - a.views)[0] || null;
-  const campaignId = first.report_group_id || draft.campaignId || first.id || id;
-  const timeline = await timelineFor(campaignId, first.id, totalViews);
-  const forecastViews = totalViews ? Math.max(totalViews, Math.round(totalViews * 1.25)) : 0;
-  const forecastCost = (forecastViews * cpm) / 1000;
+  const factCpm = totalViews
+    ? ((posts.reduce((s, p) => s + Number(p.cost || 0), 0) || (totalViews * cpm / 1000)) / totalViews * 1000)
+    : cpm;
+
+  const totalCost = totalViews * cpm / 1000;
+  const quality = channels.length ? Math.round(channels.reduce((s, c) => s + c.quality, 0) / channels.length) : 0;
 
   return {
     id,
-    title: 'Отчёт по рекламному размещению',
-    status: statusInfo(posts),
-    postTitle: titleFromText(text),
-    postHtml: sanitizePostHtml(text, first.format || draft?.content?.format),
-    media: getMedia(first.attachments || draft?.content?.attachments),
+    logoUrl: DEFAULT_LOGO_URL,
+    botLink: BOT_LINK,
+    reportLink: '/analytics/stats/' + encodeURIComponent(id),
+    title: 'Отчёт по рекламному посту MAX',
+    postTitle: postTitle(text),
+    postHtml: sanitizePostHtml(text, format),
+    media,
+    status: statusInfo(first),
+    publishedAt: first.published_at || first.publish_at || first.created_at,
+    autoDeleteText: autoDeleteText(first.auto_delete_minutes),
     metrics: {
       views: totalViews,
       cpm,
-      cost,
+      factCpm,
+      cost: totalCost,
       channelsCount: channels.length,
-      autoDelete: autoDeleteText(first.auto_delete_minutes),
-      forecastViews,
-      forecastCost,
-      topChannel: maxChannel?.title || '—',
-      topShare: totalViews && maxChannel ? Math.round((maxChannel.views / totalViews) * 100) : 0,
+      quality,
+      lifeHours,
     },
-    channels: channels.map((c) => ({
-      ...c,
-      share: totalViews ? Math.round((c.views / totalViews) * 100) : 0,
-    })),
-    timeline,
+    ranges,
+    channels,
   };
 }
 
-function bars(timeline) {
-  const list = Array.isArray(timeline) ? timeline : [];
-  const max = Math.max(1, ...list.map((x) => Number(x.value || 0)));
-
-  return list.map((x) => {
-    const value = Number(x.value || 0);
-    const h = Math.max(8, Math.round((value / max) * 100));
-    return `<div class="bar" style="height:${h}%"><b>${number(value)}</b><span>${esc(x.label)}</span></div>`;
-  }).join('');
-}
-
-function channelsHtml(channels) {
-  if (!channels.length) {
-    return '<div class="channel"><div class="ch-main"><div class="avatar">—</div><div><div class="ch-name">Каналы пока не найдены</div><div class="ch-time">после публикации появятся размещения</div></div></div></div>';
+function mediaHtml(data) {
+  if (data.media?.url && data.media.kind === 'video') {
+    return '<video controls preload="metadata" src="' + attr(data.media.url) + '"></video>';
   }
 
-  return channels.map((ch) => {
-    const first = esc((ch.title || 'К').slice(0, 1));
-    return `<div class="channel">
-      <div class="ch-main">
-        <div class="avatar">${first}</div>
-        <div>
-          <div class="ch-name">${esc(ch.title)}</div>
-          <div class="ch-time">${esc(ruDate(ch.publishedAt) || 'время не задано')}</div>
-        </div>
-      </div>
-      <div class="ch-metric"><b>${number(ch.views)}</b><span>просмотров</span></div>
-      <div class="ch-metric"><b>${money(ch.cost)}</b><span>стоимость</span></div>
-      <div class="ch-metric"><b>${number(ch.share)}%</b><span>доля охвата</span></div>
-    </div>`;
-  }).join('');
+  if (data.media?.url) {
+    return '<img src="' + attr(data.media.url) + '" alt="Медиа поста">';
+  }
+
+  return '<div class="post-media-logo"></div>';
 }
 
 function page(data) {
-  const mediaBlock = data.media
-    ? `<div class="media">${data.media.kind === 'video'
-        ? `<video controls muted playsinline src="${esc(data.media.url)}"></video>`
-        : `<img src="${esc(data.media.url)}" alt="Медиа поста">`}</div>`
-    : `<div class="media"><div class="media-inner">Медиа поста</div></div>`;
+  const state = JSON.stringify(data).replace(/</g, '\\u003c');
+  const logo = attr(data.logoUrl || DEFAULT_LOGO_URL);
+  const statusClass = data.status?.isGood ? 'summary-card good' : 'summary-card';
+  const published = ruShortDate(data.publishedAt);
+  const qualityPercent = Math.max(0, Math.min(100, data.metrics.quality));
 
   return `<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#081827">
 <title>LinkRay Analytics</title>
 <style>
-:root{--card:#ffffff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--blue:#2563eb;--mint:#27e0b2;--shadow:0 22px 70px rgba(2,8,23,.18);--soft:0 14px 42px rgba(15,23,42,.08)}
-*{box-sizing:border-box}
-html,body{margin:0;min-height:100%;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:var(--ink);background:radial-gradient(circle at 10% -8%,rgba(39,224,178,.30),transparent 32%),radial-gradient(circle at 92% -4%,rgba(78,164,255,.30),transparent 30%),linear-gradient(180deg,#f7fbff,#eef4ff 55%,#eaf2ff)}
-a{color:inherit}.wrap{max-width:1180px;margin:0 auto;padding:16px 12px 46px}
-.top-promo{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;padding:12px 14px;border-radius:22px;background:linear-gradient(135deg,rgba(8,21,39,.95),rgba(13,55,79,.88));color:#fff;border:1px solid rgba(255,255,255,.12);box-shadow:var(--soft)}
-.top-promo-main{display:flex;align-items:center;gap:10px;min-width:0}.top-promo img{width:38px;height:38px;border-radius:14px;object-fit:cover;flex:0 0 auto}.top-promo b{display:block;font-size:14px;line-height:1.12}.top-promo span{display:block;color:#cbe8f2;font-size:12px;margin-top:2px}.top-promo a{text-decoration:none;background:linear-gradient(135deg,var(--mint),#4ea4ff);color:#071527;border-radius:15px;padding:10px 13px;font-weight:1000;white-space:nowrap}
-.hero{position:relative;overflow:hidden;min-height:420px;border-radius:36px;padding:24px;color:#fff;box-shadow:var(--shadow);background:linear-gradient(90deg,rgba(5,15,30,.91),rgba(9,36,64,.76),rgba(23,105,78,.60)),url("/analytics/logo.webp") center/cover no-repeat}
-.hero:after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 18% 16%,rgba(39,224,178,.22),transparent 28%),radial-gradient(circle at 86% 8%,rgba(158,255,122,.14),transparent 24%),linear-gradient(180deg,transparent 45%,rgba(3,9,18,.36))}
-.hero-grid{position:relative;z-index:2;display:grid;grid-template-columns:1fr 330px;gap:22px;align-items:stretch}.brand{display:flex;align-items:center;gap:14px;margin-bottom:36px}.logo{width:82px;height:82px;border-radius:28px;object-fit:cover;border:1px solid rgba(255,255,255,.25);box-shadow:0 18px 48px rgba(39,224,178,.22)}.brand-title{font-size:23px;font-weight:1000;letter-spacing:-.03em}.brand-sub{color:#cde7ef;font-weight:750;font-size:13px;margin-top:3px}
-h1{margin:0 0 14px;font-size:clamp(38px,7vw,76px);line-height:.92;letter-spacing:-.07em;max-width:760px}.lead{margin:0;max-width:780px;color:#daf4fb;font-size:19px;line-height:1.55}
-.status-card{display:flex;flex-direction:column;justify-content:space-between;gap:14px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.12);backdrop-filter:blur(18px);border-radius:28px;padding:18px}.status-icon{width:58px;height:58px;border-radius:20px;background:#fff;color:#071527;display:grid;place-items:center;font-size:29px}.status-title{font-size:24px;font-weight:1000;margin-top:12px}.status-text{color:#d6edf7;margin-top:8px;line-height:1.45}.copy-btn{border:0;background:#fff;color:#081527;border-radius:18px;padding:13px 15px;font-weight:1000;cursor:pointer}
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}.card,.panel,.feature{background:rgba(255,255,255,.95);color:var(--ink);border:1px solid rgba(226,232,240,.95);border-radius:30px;box-shadow:var(--soft)}.card{padding:18px}.label{color:var(--muted);font-size:14px;font-weight:850}.value{font-size:36px;line-height:1;font-weight:1000;letter-spacing:-.055em;margin:10px 0 6px}.sub{color:#475569;font-size:13px;font-weight:800;line-height:1.35}
-.forecast{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.forecast .card{background:linear-gradient(135deg,#fff,#f0fff8)}
-.two{display:grid;grid-template-columns:1.04fr .96fr;gap:14px}.panel{padding:20px;margin:14px 0}.panel h2{margin:0 0 15px;font-size:29px;line-height:1.1;letter-spacing:-.04em}
-.post{overflow:hidden;border:1px solid var(--line);border-radius:26px;background:#f8fbff}.media{height:232px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,rgba(78,164,255,.15),rgba(39,224,178,.14)),linear-gradient(45deg,#eef6ff,#f8fbff)}.media img,.media video{width:100%;max-height:520px;object-fit:contain;background:#081527}.media-inner{width:86%;height:72%;border-radius:24px;background:linear-gradient(135deg,#dcecff,#e8fff7);display:grid;place-items:center;color:#52627a;font-weight:900;padding:16px;text-align:center}.post-body{padding:18px}.post-title{font-size:24px;line-height:1.17;font-weight:1000;margin-bottom:13px}.post-text{font-size:16px;line-height:1.58;color:#263445}.post-text a{color:#1277ff;font-weight:900;text-decoration:underline;text-underline-offset:3px}
-.timeline{height:278px;display:flex;align-items:end;gap:10px;padding:22px 12px 18px;border:1px solid var(--line);border-radius:26px;background:linear-gradient(to top,#e6edf7 1px,transparent 1px) 0 0/100% 25%,#fbfdff}.bar{flex:1;min-width:20px;min-height:10px;position:relative;border-radius:17px 17px 8px 8px;background:linear-gradient(180deg,var(--blue),var(--mint));box-shadow:0 12px 22px rgba(47,109,246,.18)}.bar b{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);font-size:12px;white-space:nowrap}.bar span{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);color:var(--muted);font-size:12px;font-weight:900}
-.channels{display:grid;gap:10px}.channel{display:grid;grid-template-columns:1fr auto auto auto;align-items:center;gap:12px;padding:14px;border:1px solid var(--line);border-radius:23px;background:#fbfdff}.ch-main{display:flex;align-items:center;gap:12px;min-width:0}.avatar{width:48px;height:48px;border-radius:17px;display:grid;place-items:center;font-weight:1000;color:#123879;background:linear-gradient(135deg,#dbeafe,#dcfce7)}.ch-name{font-weight:1000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ch-time{margin-top:2px;color:var(--muted);font-size:13px}.ch-metric{text-align:right}.ch-metric b{display:block;font-size:20px}.ch-metric span{color:var(--muted);font-size:12px;font-weight:850}
-.features{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.feature{min-height:160px;background:linear-gradient(135deg,#fff,#f1f7ff);padding:16px}.feature-icon{width:44px;height:44px;border-radius:16px;display:grid;place-items:center;margin-bottom:12px;font-size:22px;background:linear-gradient(135deg,#dbeafe,#dcfce7)}.feature b{display:block;font-size:18px;margin-bottom:7px}.feature p{margin:0;color:#475569;line-height:1.45;font-size:14px}
-.promo-bottom{margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:19px;border-radius:30px;color:#fff;background:linear-gradient(90deg,rgba(5,15,30,.88),rgba(10,39,68,.74),rgba(21,90,72,.66)),url("/analytics/logo.webp") center/cover no-repeat;box-shadow:var(--shadow)}.promo-bottom b{font-size:23px;letter-spacing:-.02em}.promo-bottom p{margin:6px 0 0;color:#d8f4fb;line-height:1.42}.promo-bottom a{background:#fff;color:#081527;text-decoration:none;padding:14px 17px;border-radius:18px;font-weight:1000;white-space:nowrap}.footer{text-align:center;color:#6f859d;font-size:13px;margin-top:16px}
-@media(max-width:960px){.hero-grid,.two{grid-template-columns:1fr}.metrics,.features{grid-template-columns:repeat(2,1fr)}.forecast{grid-template-columns:1fr}.channel{grid-template-columns:1fr 1fr}.ch-main{grid-column:1/-1}}
-@media(max-width:560px){.wrap{padding:10px 8px 32px}.top-promo,.promo-bottom{flex-direction:column;align-items:flex-start}.top-promo a,.promo-bottom a{width:100%;text-align:center}.hero,.panel,.card,.feature,.promo-bottom{border-radius:24px}.hero{padding:18px;min-height:auto}.brand{margin-bottom:26px}.status-card{min-height:250px}.metrics,.features{grid-template-columns:1fr}.panel{padding:16px}.panel h2{font-size:25px}.media{height:190px}.timeline{height:242px;gap:6px}.value{font-size:32px}}
+:root{--bg:#071827;--bg2:#0e2a44;--card:#fff;--ink:#0d1828;--muted:#5f7085;--line:rgba(15,23,42,.09);--soft:#f1f7fd;--blue:#2d7cff;--cyan:#20d6ff;--green:#35d990;--amber:#ffb84d;--red:#ff5572;--shadow:0 14px 34px rgba(7,20,34,.12);--radius:22px;--safe-bottom:env(safe-area-inset-bottom);--safe-top:env(safe-area-inset-top)}
+*{box-sizing:border-box;min-width:0;-webkit-tap-highlight-color:transparent}html,body{width:100%;max-width:100%;min-height:100%;margin:0;overflow-x:hidden}body{color:var(--ink);background:radial-gradient(circle at 5% -8%,rgba(32,214,255,.32),transparent 240px),radial-gradient(circle at 98% -5%,rgba(53,217,144,.30),transparent 260px),linear-gradient(180deg,var(--bg) 0,var(--bg2) 220px,#f5f9fd 221px,#fbfdff 100%);font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}button,a{font:inherit}button{border:0;cursor:pointer}a{color:inherit;text-decoration:none}.app{width:100%;max-width:480px;margin:0 auto;padding:calc(8px + var(--safe-top)) 10px calc(92px + var(--safe-bottom))}
+.topbar{position:sticky;top:0;z-index:50;margin:calc(-8px - var(--safe-top)) -10px 10px;padding:calc(8px + var(--safe-top)) 10px 9px;display:flex;align-items:center;gap:8px;background:rgba(7,24,39,.88);border-bottom:1px solid rgba(255,255,255,.08);backdrop-filter:blur(18px)}.brand{display:flex;align-items:center;gap:8px;color:#fff;min-width:0;flex:1}.brand-logo{width:38px;height:38px;border-radius:15px;background:url("${logo}") center/cover no-repeat;border:1px solid rgba(255,255,255,.22);box-shadow:0 12px 28px rgba(32,214,255,.24);flex:0 0 auto}.brand b{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:14px;line-height:1.08;letter-spacing:-.02em}.brand span{display:block;margin-top:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:rgba(255,255,255,.76);font-size:11px;font-weight:750}.icon-actions{display:flex;gap:6px;flex:0 0 auto}.icon-btn{width:39px;height:39px;border-radius:15px;display:grid;place-items:center;color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.13);font-size:17px;font-weight:900}.icon-btn.primary{color:#061525;background:linear-gradient(135deg,var(--green),var(--cyan));border:0}
+.hero{position:relative;overflow:hidden;border-radius:26px;padding:15px;color:#fff;background:linear-gradient(135deg,rgba(7,24,39,.97),rgba(13,50,80,.94) 55%,rgba(18,124,91,.82)),linear-gradient(180deg,rgba(255,255,255,.08),transparent);border:1px solid rgba(255,255,255,.14);box-shadow:0 18px 48px rgba(4,16,30,.24)}.hero:after{content:"";position:absolute;inset:-40%;background:radial-gradient(circle at 82% 10%,rgba(142,255,178,.20),transparent 170px),radial-gradient(circle at 10% 76%,rgba(47,124,255,.22),transparent 170px);pointer-events:none}.hero-content{position:relative;z-index:1}.status-pill{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.20);color:#fff;font-size:11.5px;font-weight:950;white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(53,217,144,.16);flex:0 0 auto}h1{margin:14px 0 8px;font-size:clamp(30px,9.2vw,42px);line-height:.96;letter-spacing:-.06em;overflow-wrap:anywhere}.lead{margin:0;color:rgba(255,255,255,.88);font-size:13.5px;line-height:1.42;font-weight:750}.cover-mini{margin-top:12px;min-height:145px;border-radius:21px;overflow:hidden;background:url("${logo}") center/cover no-repeat;border:1px solid rgba(255,255,255,.13);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.metric{padding:12px;border-radius:18px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.22);backdrop-filter:blur(12px)}.metric span{display:block;color:rgba(255,255,255,.92);font-size:11.5px;font-weight:950}.metric b{display:block;margin-top:7px;color:#fff;font-size:22px;line-height:1;letter-spacing:-.045em;font-weight:1000;white-space:nowrap;text-shadow:0 1px 1px rgba(0,0,0,.18)}.hero-buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.btn{min-height:42px;border-radius:16px;padding:10px 9px;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:12px;font-weight:950;text-align:center;white-space:nowrap;transition:transform .12s ease,opacity .12s ease;user-select:none}.btn:active{transform:scale(.98)}.btn.full{grid-column:1/-1}.btn.primary{color:#061525;background:linear-gradient(135deg,var(--green),var(--cyan));box-shadow:0 12px 28px rgba(32,214,255,.20)}.btn.soft-dark{color:#fff;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.18)}.btn.soft{color:#173551;background:#edf6ff;border:1px solid #dfeaf6}
+.summary{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px}.summary-card,.panel{background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}.summary-card{padding:13px;border-radius:19px}.summary-card .label{color:var(--muted);font-size:11.5px;font-weight:950}.summary-card .value{margin-top:6px;font-size:24px;line-height:1;letter-spacing:-.045em;font-weight:1000}.summary-card .note{margin-top:6px;color:var(--muted);font-size:12px;line-height:1.34;font-weight:750}.summary-card.good{background:linear-gradient(135deg,rgba(53,217,144,.16),#fff)}.panel{margin-top:10px;border-radius:var(--radius);overflow:hidden}.panel-head{padding:14px 12px 0}.panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:8px}h2{margin:0;font-size:21px;line-height:1.1;letter-spacing:-.035em}.panel-sub{margin:6px 0 0;color:var(--muted);font-size:12.5px;line-height:1.38;font-weight:700}.segmented{display:flex;width:100%;gap:4px;margin-top:10px;padding:4px;overflow-x:auto;border-radius:999px;background:#edf5fd;border:1px solid #e2edf8;scrollbar-width:none}.segmented::-webkit-scrollbar{display:none}.segmented button{flex:1 0 auto;min-height:35px;padding:8px 9px;border-radius:999px;color:#607086;background:transparent;font-size:12px;font-weight:950;white-space:nowrap}.segmented button.active{color:var(--ink);background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.08)}
+.post-preview{display:grid;gap:10px;padding:12px}.post-media{min-height:168px;border-radius:19px;overflow:hidden;position:relative;background:linear-gradient(135deg,rgba(32,214,255,.18),rgba(53,217,144,.13));border:1px solid #e2edf8;display:grid;place-items:center}.post-media img,.post-media video{width:100%;height:100%;max-height:360px;object-fit:cover;display:block}.post-media-logo{width:100%;height:168px;background:url("${logo}") center/cover no-repeat}.post-media:after{content:"POST";position:absolute;left:10px;bottom:10px;padding:6px 9px;border-radius:999px;color:#fff;background:rgba(6,21,37,.58);font-size:10px;font-weight:1000;letter-spacing:.12em}.post-text{padding:13px;border-radius:19px;background:#f8fbff;border:1px solid #e8f0fa}.post-text h3{margin:0 0 8px;font-size:18px;line-height:1.16;letter-spacing:-.03em}.post-text p,.post-body{margin:0;color:#435269;font-size:13.5px;line-height:1.46}.post-body a{color:#1d73ff;text-decoration:underline;text-underline-offset:3px;font-weight:900}.badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}.badge{padding:7px 9px;border-radius:999px;color:#516176;background:#fff;border:1px solid #e2edf8;font-size:11px;font-weight:950;white-space:nowrap}
+.chart-wrap{padding:12px}.chart-card{position:relative;border-radius:19px;background:linear-gradient(180deg,#fbfdff,#f3f8ff);border:1px solid #e7eff9;overflow:hidden;padding:6px;touch-action:none}svg{display:block;width:100%;height:auto}.axis{stroke:#dce7f4;stroke-width:1}.line-main{fill:none;stroke:url(#lineGrad);stroke-width:6;stroke-linecap:round;stroke-linejoin:round}.area-main{fill:url(#areaGrad)}.dot-main{fill:#fff;stroke:#20d6ff;stroke-width:4}.chart-label{fill:#6b7b92;font-size:13px;font-weight:850}.chart-value{fill:#0b1728;font-size:13px;font-weight:1000}.hover-line{stroke:rgba(13,24,40,.28);stroke-width:2;stroke-dasharray:5 5}.hover-dot{fill:#061525;stroke:#fff;stroke-width:4}.chart-tooltip{position:absolute;min-width:136px;max-width:calc(100% - 20px);padding:10px;border-radius:15px;background:rgba(8,22,38,.94);color:#fff;box-shadow:0 16px 36px rgba(5,18,35,.25);backdrop-filter:blur(16px);transform:translate(-50%,-100%);pointer-events:none;opacity:0;transition:opacity .12s ease;font-size:11px;z-index:5}.chart-tooltip.show{opacity:1}.chart-tooltip b{display:block;font-size:13px;margin-bottom:5px}.chart-tooltip span{display:block;color:rgba(255,255,255,.78);line-height:1.35;font-weight:750}
+.channels{display:grid;gap:8px;padding:12px}.channel-card{width:100%;display:grid;gap:10px;padding:12px;border-radius:19px;background:#fbfdff;border:1px solid #e6eef8;text-align:left}.channel-top{display:flex;align-items:center;gap:9px}.avatar{width:40px;height:40px;border-radius:15px;display:grid;place-items:center;flex:0 0 auto;color:#07334d;background:linear-gradient(135deg,rgba(32,214,255,.24),rgba(53,217,144,.22));font-weight:1000;overflow:hidden}.avatar img{width:100%;height:100%;object-fit:cover}.channel-top b{display:block;max-width:calc(100vw - 108px);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:14px}.channel-top span{display:block;margin-top:3px;color:var(--muted);font-size:11px;font-weight:700}.channel-metrics{display:grid;grid-template-columns:1fr 1fr;gap:7px}.mini-metric{padding:9px;border-radius:15px;background:#fff;border:1px solid #e6eef8}.mini-metric b{display:block;font-size:17px;line-height:1;letter-spacing:-.025em}.mini-metric span{display:block;margin-top:5px;color:var(--muted);font-size:10.5px;font-weight:850}.score{padding:13px}.score-ring{position:relative;width:132px;height:132px;border-radius:50%;margin:13px auto 2px;display:grid;place-items:center;background:conic-gradient(var(--green) 0 ${qualityPercent}%,#e8f0fa ${qualityPercent}% 100%)}.score-ring:after{content:"";position:absolute;inset:10px;border-radius:50%;background:#fff;box-shadow:inset 0 0 0 1px #edf3fa}.score-ring div{position:relative;z-index:1;text-align:center}.score-ring strong{display:block;font-size:34px;line-height:1;letter-spacing:-.06em}.score-ring span{display:block;margin-top:4px;color:var(--muted);font-size:11px;font-weight:950}.compare{display:grid;gap:9px;padding:12px}.compare-row{display:grid;grid-template-columns:72px 1fr 58px;align-items:center;gap:8px;font-size:12px;font-weight:950}.bar{height:12px;overflow:hidden;border-radius:999px;background:#edf4fc}.bar i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--blue),var(--cyan),var(--green))}.detail-list{display:grid;gap:8px;padding:12px}.detail-card{padding:12px;border-radius:18px;background:#fbfdff;border:1px solid #e6eef8}.detail-title{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:10px}.detail-title b{font-size:14px;line-height:1.25}.pill{padding:5px 8px;border-radius:999px;font-size:10.5px;font-weight:1000;background:rgba(53,217,144,.12);color:#128856;white-space:nowrap}.pill.warn{background:rgba(255,184,77,.16);color:#a56400}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.detail-cell{padding:8px;border-radius:14px;background:#fff;border:1px solid #e7eff9}.detail-cell span{display:block;color:var(--muted);font-size:10.5px;font-weight:850}.detail-cell b{display:block;margin-top:4px;font-size:14px}.quality-list{display:grid;gap:8px;padding:12px}.quality-item{padding:12px;border-radius:18px;background:#f8fbff;border:1px solid #e6eef8}.quality-item b{display:block;font-size:14px}.quality-item span{display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.4;font-weight:700}.mobile-dock{position:fixed;left:10px;right:10px;bottom:calc(8px + var(--safe-bottom));z-index:60;display:flex;gap:7px;padding:7px;border-radius:22px;background:rgba(11,23,40,.82);box-shadow:0 18px 60px rgba(5,18,35,.30);backdrop-filter:blur(18px)}.mobile-dock button,.mobile-dock a{flex:1;padding:11px 6px;border-radius:16px;text-align:center;color:#fff;background:rgba(255,255,255,.08);font-size:11px;font-weight:1000}.mobile-dock .primary{color:#061525;background:linear-gradient(135deg,var(--green),var(--cyan)}.toast{position:fixed;left:50%;bottom:calc(78px + var(--safe-bottom));z-index:90;max-width:calc(100vw - 26px);transform:translateX(-50%) translateY(22px);opacity:0;pointer-events:none;padding:11px 13px;border-radius:999px;color:#fff;background:rgba(8,22,38,.92);box-shadow:0 18px 50px rgba(5,18,35,.25);backdrop-filter:blur(16px);font-size:12px;font-weight:950;transition:opacity .18s ease,transform .18s ease;white-space:nowrap}.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}.modal{position:fixed;inset:0;z-index:80;display:none;align-items:flex-end;justify-content:center;background:rgba(5,18,35,.58);backdrop-filter:blur(10px)}.modal.show{display:flex}.modal-card{width:100%;max-height:min(82vh,720px);overflow:auto;border-radius:27px 27px 0 0;background:#fff;box-shadow:0 -20px 70px rgba(0,0,0,.25);padding-bottom:var(--safe-bottom);animation:modalUp .18s ease}@keyframes modalUp{from{transform:translateY(16px);opacity:.7}to{transform:translateY(0);opacity:1}}.modal-head{position:sticky;top:0;z-index:1;padding:14px 13px 0;display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff}.modal-head h3{margin:0;font-size:21px;line-height:1.12;letter-spacing:-.035em}.close{width:39px;height:39px;border-radius:15px;color:var(--ink);background:#eef5ff;font-size:20px;font-weight:1000;flex:0 0 auto}.modal-body{padding:12px 13px 16px;color:#405066;font-size:14px;line-height:1.48}.modal-list{display:grid;gap:8px;margin-top:12px}.modal-list div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px;border-radius:16px;background:#f8fbff;border:1px solid #e6eef8}.modal-list span{color:var(--muted);font-size:12px;font-weight:850}.modal-list b{color:var(--ink);text-align:right;font-size:13px}@media(min-width:520px){.app{max-width:520px}}@media(max-width:370px){.app{padding-left:8px;padding-right:8px}.topbar{margin-left:-8px;margin-right:-8px;padding-left:8px;padding-right:8px}.brand b{max-width:124px}h1{font-size:29px}.metric b{font-size:20px}.btn{font-size:11px}}
 </style>
-<script>
-setInterval(async function(){
-  try {
-    const r = await fetch(location.pathname + '?json=1&v=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) return;
-    location.reload();
-  } catch(e) {}
-}, 60000);
-</script>
 </head>
 <body>
-<div class="wrap">
-  <section class="top-promo">
-    <div class="top-promo-main">
-      <img src="/analytics/logo.webp" alt="LinkRay">
-      <div><b>LinkRay — отчёты для рекламы в MAX</b><span>Автопостинг, закупы и прозрачная стоимость размещений.</span></div>
-    </div>
-    <a href="${BOT_LINK}" target="_blank" rel="noopener noreferrer">Открыть бота</a>
-  </section>
-
-  <section class="hero">
-    <div class="hero-grid">
-      <div>
-        <div class="brand"><img class="logo" src="/analytics/logo.webp" alt="LinkRay"><div><div class="brand-title">LinkRay Analytics</div><div class="brand-sub">публичный отчёт для рекламодателя</div></div></div>
-        <h1>${esc(data.title)}</h1>
-        <p class="lead">Статус размещения, актуальный пост, просмотры MAX, CPM, стоимость, каналы и динамика размещения.</p>
-      </div>
-      <aside class="status-card">
-        <div><div class="status-icon">${esc(data.status.icon)}</div><div class="status-title">${esc(data.status.title)}</div><div class="status-text">${data.status.text}</div></div>
-        <button class="copy-btn" onclick="navigator.clipboard.writeText(location.href).then(()=>alert('Ссылка скопирована'))">Скопировать ссылку на отчёт</button>
-      </aside>
-    </div>
-  </section>
-
-  <section class="metrics">
-    <div class="card"><div class="label">Просмотры MAX</div><div class="value">${number(data.metrics.views)}</div><div class="sub">суммарно по каналам</div></div>
-    <div class="card"><div class="label">CPM</div><div class="value">${money(data.metrics.cpm)}</div><div class="sub">цена за 1000 просмотров</div></div>
-    <div class="card"><div class="label">Стоимость</div><div class="value">${money(data.metrics.cost)}</div><div class="sub">${number(data.metrics.views)} × ${number(data.metrics.cpm)} / 1000</div></div>
-    <div class="card"><div class="label">Каналы</div><div class="value">${number(data.metrics.channelsCount)}</div><div class="sub">размещения в MAX</div></div>
-  </section>
-
-  <section class="forecast">
-    <div class="card"><div class="label">Лучший канал</div><div class="value" style="font-size:26px">${esc(data.metrics.topChannel)}</div><div class="sub">${number(data.metrics.topShare)}% всех просмотров</div></div>
-    <div class="card"><div class="label">Прогноз до удаления</div><div class="value">${number(data.metrics.forecastViews)}</div><div class="sub">ожидаемые просмотры к концу</div></div>
-    <div class="card"><div class="label">Прогноз стоимости</div><div class="value">${money(data.metrics.forecastCost)}</div><div class="sub">по текущему CPM</div></div>
-  </section>
-
-  <section class="two">
-    <div class="panel">
-      <h2>Пост</h2>
-      <div class="post">${mediaBlock}<div class="post-body"><div class="post-title">${esc(data.postTitle)}</div><div class="post-text">${data.postHtml || 'Текст поста пока недоступен'}</div></div></div>
-    </div>
-    <div class="panel">
-      <h2>Динамика просмотров</h2>
-      <div class="timeline">${bars(data.timeline)}</div>
-    </div>
-  </section>
-
-  <section class="panel"><h2>Размещения по каналам</h2><div class="channels">${channelsHtml(data.channels)}</div></section>
-
-  <section class="features">
-    <div class="feature"><div class="feature-icon">🎯</div><b>Один статус</b><p>Показывается текущее состояние и время следующего события.</p></div>
-    <div class="feature"><div class="feature-icon">💸</div><b>CPM</b><p>Стоимость считается по формуле: просмотры × CPM / 1000.</p></div>
-    <div class="feature"><div class="feature-icon">🧭</div><b>Доля охвата</b><p>Видно, какой канал дал основную часть просмотров.</p></div>
-    <div class="feature"><div class="feature-icon">🔮</div><b>Прогноз</b><p>Прогноз просмотров и стоимости до автоудаления.</p></div>
-  </section>
-
-  <section class="promo-bottom"><div><b>LinkRay — отчёты и автопостинг для MAX</b><p>Публичный отчёт для рекламодателя: аккуратно, понятно и без лишних метрик.</p></div><a href="${BOT_LINK}" target="_blank" rel="noopener noreferrer">Открыть LinkRay</a></section>
-  <div class="footer">LinkRay Analytics · отчёт обновляется автоматически</div>
-</div>
-</body>
-</html>`;
+<main class="app">
+<header class="topbar"><a class="brand" href="#top"><div class="brand-logo"></div><div><b>LinkRay Analytics</b><span>публичный отчёт</span></div></a><div class="icon-actions"><button class="icon-btn" data-action="refresh" aria-label="Обновить">↻</button><button class="icon-btn primary" data-action="share" aria-label="Поделиться">↗</button></div></header>
+<section class="hero" id="top"><div class="hero-content"><span class="status-pill"><i class="dot"></i> Рекламный выход · данные обновляются</span><h1>${esc(data.title)}</h1><p class="lead">Просмотры, CPM, стоимость, каналы, доля результата и качество размещений.</p><div class="metrics"><div class="metric"><span>Просмотры</span><b>${num(data.metrics.views)}</b></div><div class="metric"><span>CPM</span><b>${money(data.metrics.cpm)}</b></div><div class="metric"><span>Факт CPM</span><b>${money(data.metrics.factCpm)}</b></div><div class="metric"><span>К оплате</span><b>${money(data.metrics.cost)}</b></div></div><div class="hero-buttons"><button class="btn primary full" data-action="open-report">📊 Открыть отчёт</button><button class="btn soft-dark" data-action="copy">🔗 Ссылка</button><button class="btn soft-dark" data-action="open-post">👁 Пост</button></div><div class="cover-mini"></div></div></section>
+<section class="summary"><article class="${statusClass}"><div class="label">Статус</div><div class="value">${esc(data.status.title)}</div><div class="note">${esc(data.status.text)}</div></article><article class="summary-card"><div class="label">Публикация</div><div class="value">${esc(published)}</div><div class="note">Отчёт обновляется каждую минуту.</div></article><article class="summary-card"><div class="label">Каналы</div><div class="value">${num(data.metrics.channelsCount)}</div><div class="note">${num(data.metrics.channelsCount)} размещения участвуют в этом отчёте.</div></article><article class="summary-card"><div class="label">Качество</div><div class="value">${num(data.metrics.quality)}/100</div><div class="note">Проверка всплесков, равномерности и подозрительных просмотров.</div></article></section>
+<section class="panel" id="post"><div class="panel-head"><div class="panel-title-row"><h2>Пост</h2></div><p class="panel-sub" id="postSub">Медиа и текст разделены. На телефоне ничего не выходит за экран.</p><div class="segmented"><button class="active" data-tab="post">Пост</button><button data-tab="meta">Данные</button><button data-tab="history">История</button></div></div><div class="post-preview" id="postTab"><div class="post-media">${mediaHtml(data)}</div><div class="post-text"><h3>${esc(data.postTitle)}</h3><div class="post-body">${data.postHtml}</div><div class="badges"><span class="badge">💼 реклама</span><span class="badge">CPM ${money(data.metrics.cpm)}</span><span class="badge">${num(data.metrics.channelsCount)} канала</span><span class="badge">${esc(data.autoDeleteText)}</span></div></div></div></section>
+<section class="panel" id="chart"><div class="panel-head"><div class="panel-title-row"><h2>График просмотров</h2></div><p class="panel-sub" id="rangeHint">Нажмите на любую точку графика — покажем просмотры за выбранный период.</p><div class="segmented" id="rangeBtns"></div></div><div class="chart-wrap"><div class="chart-card" id="chartCard"><div class="chart-tooltip" id="chartTooltip"></div><svg id="chartSvg" viewBox="0 0 760 320" role="img" aria-label="График просмотров"><defs><linearGradient id="lineGrad" x1="0" x2="1"><stop stop-color="#2f7cff"/><stop offset=".55" stop-color="#20d6ff"/><stop offset="1" stop-color="#35d990"/></linearGradient><linearGradient id="areaGrad" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#20d6ff" stop-opacity=".24"/><stop offset="1" stop-color="#35d990" stop-opacity="0"/></linearGradient></defs><g id="chartGrid"></g><polygon id="chartArea" class="area-main"></polygon><polyline id="chartLine" class="line-main"></polyline><g id="chartDots"></g><g id="chartHover"></g><g id="chartLabels"></g></svg></div></div></section>
+<section class="panel" id="placements"><div class="panel-head"><div class="panel-title-row"><h2>Каналы</h2></div><p class="panel-sub">Нажатие на канал открывает подробности.</p><div class="segmented" id="channelFilter"><button class="active" data-filter="all">Все</button><button data-filter="best">Лучшие</button><button data-filter="risk">Риск</button></div></div><div class="channels" id="channelsList"></div></section>
+<section class="panel" id="quality"><div class="panel-head"><div class="panel-title-row"><h2>Индекс качества</h2></div><p class="panel-sub">Простая оценка размещения для рекламодателя.</p></div><div class="score"><div class="score-ring"><div><strong>${num(data.metrics.quality)}</strong><span>из 100</span></div></div></div></section>
+<section class="panel"><div class="panel-head"><div class="panel-title-row"><h2>Сравнение каналов</h2></div><p class="panel-sub">Доля просмотров по каждому размещению.</p></div><div class="compare" id="compareBars"></div></section>
+<section class="panel" id="details"><div class="panel-head"><div class="panel-title-row"><h2>Детализация</h2><button class="btn soft" data-action="download">CSV</button></div><p class="panel-sub">Вместо широкой таблицы — мобильные карточки.</p></div><div class="detail-list" id="detailsList"></div></section>
+<section class="panel"><div class="panel-head"><div class="panel-title-row"><h2>Проверка</h2></div></div><div class="quality-list"><div class="quality-item"><b>🟢 Данные обновляются</b><span>LinkRay запрашивает просмотры MAX каждую минуту.</span></div><div class="quality-item"><b>🟢 Распределение по каналам</b><span>Отдельно видна доля просмотров каждого размещения.</span></div><div class="quality-item"><b>🟡 Риск подсвечивается</b><span>Каналы с низким качеством попадают в фильтр «Риск».</span></div></div></section>
+<nav class="mobile-dock" aria-label="Быстрая навигация"><a href="#chart">График</a><a href="#placements">Каналы</a><button class="primary" data-action="share">Поделиться</button></nav>
+</main><div class="toast" id="toast">Готово</div><div class="modal" id="modal"><div class="modal-card"><div class="modal-head"><h3 id="modalTitle">Детали</h3><button class="close" data-action="close-modal">×</button></div><div class="modal-body" id="modalBody"></div></div></div>
+<script id="report-data" type="application/json">${state}</script>
+<script>
+const report=JSON.parse(document.getElementById('report-data').textContent);const $=(s,r=document)=>r.querySelector(s);const $$=(s,r=document)=>Array.from(r.querySelectorAll(s));let currentChartPoints=[];let currentRange='24';function number(v){return new Intl.NumberFormat('ru-RU').format(Math.round(Number(v)||0))}function rub(v){return number(v)+' ₽'}function toast(t){const el=$('#toast');el.textContent=t;el.classList.add('show');clearTimeout(window.__toast);window.__toast=setTimeout(()=>el.classList.remove('show'),2100)}function openModal(title,html){$('#modalTitle').textContent=title;$('#modalBody').innerHTML=html;$('#modal').classList.add('show');document.body.style.overflow='hidden'}function closeModal(){$('#modal').classList.remove('show');document.body.style.overflow=''}function availableRanges(){return Object.keys(report.ranges||{}).sort((a,b)=>Number(a)-Number(b))}function defaultRange(){const r=availableRanges();return r[r.length-1]||'24'}function renderRangeButtons(){const ranges=availableRanges();const active=defaultRange();$('#rangeBtns').innerHTML=ranges.map(r=>'<button class="'+(r===active?'active':'')+'" data-range="'+r+'">'+r+'ч</button>').join('');const hint=$('#rangeHint');if(hint){if(ranges.length===1)hint.textContent='Пост находился в канале меньше 48 часов, поэтому доступен период 24ч. Нажмите на график, чтобы увидеть просмотры.';else if(ranges.length===2)hint.textContent='Пост был в канале до 48 часов, доступны 24ч и 48ч. Нажмите на график, чтобы увидеть просмотры.';else hint.textContent='Пост находился в канале 72 часа или дольше, доступны 24ч, 48ч и 72ч. Нажмите на график, чтобы увидеть просмотры.'}$$('#rangeBtns [data-range]').forEach(btn=>btn.addEventListener('click',()=>{$$('#rangeBtns button').forEach(x=>x.classList.remove('active'));btn.classList.add('active');drawChart(btn.dataset.range)}));return active}function drawChart(range=defaultRange()){currentRange=range;const data=(report.ranges&&report.ranges[range])||[];const width=760,height=320,pad={left:58,right:30,top:42,bottom:54};const iw=width-pad.left-pad.right,ih=height-pad.top-pad.bottom;const maxViews=Math.max(...data.map(x=>x[1]),1);const baseY=pad.top+ih;const points=data.map((item,index)=>{const x=pad.left+(data.length===1?iw/2:iw*index/(data.length-1));const y=pad.top+ih-(item[1]/maxViews)*ih;return{label:item[0],views:item[1],x,y}});currentChartPoints=points;$('#chartGrid').innerHTML=[0,.25,.5,.75,1].map(t=>{const y=pad.top+ih-ih*t;const value=Math.round(maxViews*t);return '<line class="axis" x1="'+pad.left+'" y1="'+y+'" x2="'+(width-pad.right)+'" y2="'+y+'"></line><text class="chart-label" x="18" y="'+(y+4)+'">'+number(value)+'</text>'}).join('');const line=points.map(p=>p.x+','+p.y).join(' ');$('#chartLine').setAttribute('points',line);$('#chartArea').setAttribute('points',pad.left+','+baseY+' '+line+' '+(width-pad.right)+','+baseY);$('#chartDots').innerHTML=points.map((p,index)=>{const show=index===points.length-1||index===0||index===Math.floor(points.length/2);return '<circle class="dot-main" cx="'+p.x+'" cy="'+p.y+'" r="6"></circle>'+(show?'<text class="chart-value" x="'+Math.max(56,p.x-18)+'" y="'+Math.max(18,p.y-14)+'">'+number(p.views)+'</text>':'')}).join('');$('#chartLabels').innerHTML=points.map((p,index)=>{const show=window.innerWidth>380||index%2===0||index===points.length-1;return show?'<text class="chart-label" x="'+(p.x-10)+'" y="'+(height-18)+'">'+p.label+'</text>':''}).join('');showChartPoint(points[points.length-1],false)}function svgClientPoint(event){const svg=$('#chartSvg');const rect=svg.getBoundingClientRect();const clientX=(event.touches&&event.touches[0]?event.touches[0].clientX:event.clientX);const clientY=(event.touches&&event.touches[0]?event.touches[0].clientY:event.clientY);return{x:(clientX-rect.left)/rect.width*760,y:(clientY-rect.top)/rect.height*320,clientX,clientY}}function nearestPoint(x){if(!currentChartPoints.length)return null;return currentChartPoints.reduce((best,p)=>Math.abs(p.x-x)<Math.abs(best.x-x)?p:best,currentChartPoints[0])}function showChartPoint(point,showToast=true,clientX=null,clientY=null){if(!point)return;$('#chartHover').innerHTML='<line class="hover-line" x1="'+point.x+'" y1="42" x2="'+point.x+'" y2="266"></line><circle class="hover-dot" cx="'+point.x+'" cy="'+point.y+'" r="7"></circle>';const chart=$('#chartCard'),tooltip=$('#chartTooltip'),svg=$('#chartSvg'),svgRect=svg.getBoundingClientRect(),chartRect=chart.getBoundingClientRect();const left=clientX===null?((point.x/760)*svgRect.width+(svgRect.left-chartRect.left)):(clientX-chartRect.left);const top=clientY===null?((point.y/320)*svgRect.height+(svgRect.top-chartRect.top)):(clientY-chartRect.top);tooltip.innerHTML='<b>'+point.label+'</b><span>Просмотры: '+number(point.views)+'</span>';tooltip.style.left=Math.min(Math.max(left,84),chartRect.width-84)+'px';tooltip.style.top=Math.max(top-10,64)+'px';tooltip.classList.add('show');if(showToast)toast(point.label+' · просмотры: '+number(point.views))}function handleChartEvent(event){event.preventDefault();const p=svgClientPoint(event);showChartPoint(nearestPoint(p.x),true,p.clientX,p.clientY)}function avatarHtml(ch){return ch.avatar?'<img src="'+ch.avatar+'" alt="">':ch.letter}function renderChannels(filter='all'){let channels=report.channels||[];if(filter==='best')channels=channels.filter(ch=>ch.group==='best');if(filter==='risk')channels=channels.filter(ch=>ch.group==='risk');$('#channelsList').innerHTML=channels.map(ch=>'<button class="channel-card" data-channel="'+ch.id+'"><div class="channel-top"><div class="avatar">'+avatarHtml(ch)+'</div><div><b>'+ch.title+'</b><span>'+ch.time+' · MAX</span></div></div><div class="channel-metrics"><div class="mini-metric"><b>'+number(ch.views)+'</b><span>просмотров</span></div><div class="mini-metric"><b>'+ch.quality+'/100</b><span>качество</span></div></div></button>').join('');$$('[data-channel]').forEach(btn=>btn.addEventListener('click',()=>openChannel(btn.dataset.channel)))}function renderCompare(){$('#compareBars').innerHTML=(report.channels||[]).map(ch=>'<div class="compare-row"><span>'+ch.letter+' · '+ch.share+'%</span><div class="bar"><i style="width:'+ch.share+'%"></i></div><b>'+number(ch.views)+'</b></div>').join('')}function renderDetails(){$('#detailsList').innerHTML=(report.channels||[]).map(ch=>'<article class="detail-card"><div class="detail-title"><b>'+ch.title+'</b><span class="pill '+(ch.group==='risk'?'warn':'')+'">'+ch.status+'</span></div><div class="detail-grid"><div class="detail-cell"><span>Просмотры</span><b>'+number(ch.views)+'</b></div><div class="detail-cell"><span>Доля</span><b>'+ch.share+'%</b></div><div class="detail-cell"><span>Факт CPM</span><b>'+rub(ch.cpm)+'</b></div><div class="detail-cell"><span>Стоимость</span><b>'+rub(ch.cost)+'</b></div></div></article>').join('')}function openChannel(id){const ch=(report.channels||[]).find(x=>String(x.id)===String(id));if(!ch)return;openModal(ch.title,'<p>Подробности размещения в канале.</p><div class="modal-list"><div><span>Просмотры</span><b>'+number(ch.views)+'</b></div><div><span>Доля</span><b>'+ch.share+'%</b></div><div><span>Факт CPM</span><b>'+rub(ch.cpm)+'</b></div><div><span>Стоимость</span><b>'+rub(ch.cost)+'</b></div><div><span>Качество</span><b>'+ch.quality+'/100</b></div></div>')}function openPost(){openModal('Рекламный пост','<p><b>'+report.postTitle+'</b></p><p>Полный предпросмотр опубликованного поста находится в блоке «Пост».</p><div class="modal-list"><div><span>Тип</span><b>реклама</b></div><div><span>CPM</span><b>'+rub(report.metrics.cpm)+'</b></div><div><span>Автоудаление</span><b>'+report.autoDeleteText+'</b></div><div><span>Каналов</span><b>'+report.metrics.channelsCount+'</b></div></div>')}async function copyLink(){const url=location.href;try{await navigator.clipboard.writeText(url);toast('Ссылка скопирована')}catch{openModal('Ссылка отчёта','<p>Скопируйте вручную:</p><div class="modal-list"><div><span>URL</span><b>'+url+'</b></div></div>')}}function downloadCsv(){const header=['Канал','Просмотры','Доля','CPM факт','Стоимость','Качество'];const rows=(report.channels||[]).map(ch=>[ch.title,ch.views,ch.share+'%',Math.round(ch.cpm),Math.round(ch.cost),ch.status]);const csv=[header,...rows].map(row=>row.map(cell=>'"'+String(cell).replace(/"/g,'""')+'"').join(';')).join('\n');const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='linkray-analytics.csv';a.click();URL.revokeObjectURL(url);toast('CSV сформирован')}function shareReport(){if(navigator.share){navigator.share({title:'LinkRay Analytics',text:'Отчёт по рекламному посту MAX',url:location.href}).catch(()=>copyLink())}else copyLink()}function refreshData(){fetch(location.pathname+'?json=1&v='+Date.now(),{cache:'no-store'}).then(r=>r.ok?location.reload():toast('Не удалось обновить')).catch(()=>toast('Не удалось обновить'))}function action(type){if(type==='refresh')return refreshData();if(type==='share')return shareReport();if(type==='copy')return copyLink();if(type==='open-post')return openPost();if(type==='open-report')return $('#chart').scrollIntoView({behavior:'smooth'});if(type==='download')return downloadCsv();if(type==='close-modal')return closeModal()}$$('[data-action]').forEach(el=>el.addEventListener('click',()=>action(el.dataset.action)));$$('#channelFilter [data-filter]').forEach(btn=>btn.addEventListener('click',()=>{$$('#channelFilter button').forEach(x=>x.classList.remove('active'));btn.classList.add('active');renderChannels(btn.dataset.filter)}));$$('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{$$('[data-tab]').forEach(x=>x.classList.remove('active'));btn.classList.add('active')}));$('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal()});$('#chartCard').addEventListener('click',handleChartEvent);$('#chartCard').addEventListener('touchstart',handleChartEvent,{passive:false});$('#chartCard').addEventListener('touchmove',handleChartEvent,{passive:false});window.addEventListener('resize',()=>drawChart(currentRange));const initialRange=renderRangeButtons();drawChart(initialRange);renderChannels('all');renderCompare();renderDetails();setInterval(refreshData,60000);
+</script>
+</body></html>`;
 }
 
 export function mountLinkRayAnalyticsRoutes(app) {
-  app.get('/analytics/logo.webp', (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.setHeader('Content-Type', 'image/webp');
-    res.end(logoBytes);
+  startMinuteSync().catch((error) => console.error('[analytics sync start]', error.message || error));
+
+  app.get('/analytics/logo.webp', (_req, res) => {
+    if (DEFAULT_LOGO_URL) return res.redirect(302, DEFAULT_LOGO_URL);
+
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.end('<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" rx="28" fill="#20d6ff"/><text x="48" y="58" text-anchor="middle" font-size="31" font-family="Arial" font-weight="900" fill="#071827">LR</text></svg>');
   });
 
   app.get('/analytics/stats/:groupId', async (req, res) => {
     try {
       const data = await collect(req.params.groupId);
+
       res.setHeader('Cache-Control', 'no-store');
 
       if (String(req.query.json || '') === '1') {
@@ -556,7 +700,7 @@ export function mountLinkRayAnalyticsRoutes(app) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.end(page(data));
     } catch (error) {
-      console.error('[linkray analytics]', error.message || error);
+      console.error('[linkray analytics mobile]', error.stack || error);
       return res.status(500).send('LinkRay analytics error: ' + esc(error.message || error));
     }
   });
@@ -564,7 +708,7 @@ export function mountLinkRayAnalyticsRoutes(app) {
   app.get('/r/:token', async (req, res) => {
     try {
       const token = String(req.params.token || '').trim();
-      const link = rows(await query('SELECT target_url FROM analytics_links WHERE token=$1 LIMIT 1', [token]))[0];
+      const link = rows(await query('SELECT target_url FROM analytics_links WHERE token=$1 LIMIT 1', [token]).catch(() => []))[0];
 
       if (!link?.target_url) {
         return res.status(404).send('LinkRay: ссылка не найдена');
