@@ -477,15 +477,204 @@ async function findLatestUserChatId() {
   return '';
 }
 
+
+/* LR_24H_USE_WEB_ANALYTICS_V2 */
+function deepViews(value) {
+  let best = 0;
+
+  const goodKeys = /^(views|view_count|views_count|viewCount|viewsCount|totalViews|total_views|views24h|views_24h)$/i;
+  const okKey = /(view|views|read|reads|impression|show|watch)/i;
+  const badKey = /(id|chat|channel|user|owner|date|time|price|cost|cpm|amount|status|url|link|token|hash)/i;
+
+  function asNum(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? Math.round(v) : null;
+    if (typeof v === 'string') {
+      const t = v.replace(/\s+/g, '').replace(',', '.');
+      if (!/^\d+(\.\d+)?$/.test(t)) return null;
+      const n = Number(t);
+      return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+    }
+    return null;
+  }
+
+  function walk(node, key = '') {
+    if (node === null || node === undefined) return;
+
+    if (typeof node === 'number' || typeof node === 'string') {
+      const n = asNum(node);
+      if (n !== null && (goodKeys.test(key) || (okKey.test(key) && !badKey.test(key)))) {
+        best = Math.max(best, n);
+      }
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const x of node) walk(x, key);
+      return;
+    }
+
+    if (typeof node === 'object') {
+      for (const [k, v] of Object.entries(node)) {
+        if (goodKeys.test(k)) {
+          const n = asNum(v);
+          if (n !== null) best = Math.max(best, n);
+        }
+      }
+      for (const [k, v] of Object.entries(node)) walk(v, k);
+    }
+  }
+
+  walk(value);
+  return best;
+}
+
+function findArrayDeep(value) {
+  const names = ['channels', 'publications', 'posts', 'items', 'rows', 'list'];
+
+  function walk(node) {
+    if (!node || typeof node !== 'object') return null;
+
+    if (Array.isArray(node)) {
+      if (node.some((x) => x && typeof x === 'object' && deepViews(x) > 0)) return node;
+      for (const x of node) {
+        const found = walk(x);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    for (const name of names) {
+      if (Array.isArray(node[name])) return node[name];
+    }
+
+    for (const v of Object.values(node)) {
+      const found = walk(v);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  return walk(value);
+}
+
+function titleFromAny(value, fallback = 'Канал') {
+  const keys = ['title', 'name', 'channel_title', 'channelTitle', 'chat_title', 'chatTitle'];
+  if (!value || typeof value !== 'object') return fallback;
+
+  for (const key of keys) {
+    const v = value[key];
+    if (v !== null && v !== undefined && String(v).trim()) return String(v).trim();
+  }
+
+  return fallback;
+}
+
+function linkFromAny(value) {
+  const keys = ['link', 'url', 'public_link', 'publicLink', 'channel_link', 'channelLink', 'invite_link', 'inviteLink'];
+  if (!value || typeof value !== 'object') return '';
+
+  for (const key of keys) {
+    const v = value[key];
+    if (v !== null && v !== undefined && /^https?:\/\//i.test(String(v))) return String(v);
+  }
+
+  return '';
+}
+
+async function loadViewsFromWebAnalytics(groupId) {
+  if (!groupId) return null;
+
+  const base = PUBLIC_BASE_URL.replace(/\/+$/, '');
+  const url = `${base}/analytics/stats/${encodeURIComponent(groupId)}?json=1&v=${Date.now()}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        accept: 'application/json,text/plain,*/*',
+      },
+    });
+
+    if (!response.ok) {
+      console.error('[LinkRay 24h report web views] bad response', response.status, url);
+      return null;
+    }
+
+    const text = await response.text();
+    let data;
+
+    try {
+      data = JSON.parse(text);
+    } catch {
+      console.error('[LinkRay 24h report web views] not json');
+      return null;
+    }
+
+    const total = deepViews(data);
+    const arr = findArrayDeep(data) || [];
+
+    const channels = arr
+      .map((item) => ({
+        title: titleFromAny(item),
+        link: linkFromAny(item),
+        views: deepViews(item),
+      }))
+      .filter((x) => x.views > 0);
+
+    if (total > 0 || channels.length) {
+      console.log('[LinkRay 24h report web views] group', groupId, 'total', total, 'channels', channels.length);
+      return {
+        totalViews24h: total || channels.reduce((sum, x) => sum + x.views, 0),
+        channels,
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error('[LinkRay 24h report web views]', error.message || error);
+    return null;
+  }
+}
+
+
 async function buildGroupReport(groupPosts, forcedGroupId = '') {
   const first = groupPosts[0] || {};
   const groupId = forcedGroupId || String(first.lr_group_id || first.report_group_id || first.campaign_id || first.id || 'report');
-  const channelMap = await loadChannelMap(groupPosts);
 
   const title = first.text || safeJson(first.report_snapshot, {}).title || 'рекламный пост';
   const cpm = Number(first.cpm || safeJson(first.report_snapshot, {}).cpm || 0);
   const publishedAt = first.published_at || first.publish_at || first.created_at || new Date().toISOString();
 
+  const fromWeb = await loadViewsFromWebAnalytics(groupId);
+
+  if (fromWeb && Number(fromWeb.totalViews24h || 0) > 0) {
+    const channels = fromWeb.channels.length
+      ? fromWeb.channels
+      : [{
+          title: first.channel_title || first.title || 'Канал',
+          link: first.channel_link || '',
+          views: Number(fromWeb.totalViews24h || 0),
+        }];
+
+    channels.sort((a, b) => b.views - a.views);
+
+    const totalViews24h = Number(fromWeb.totalViews24h || channels.reduce((sum, c) => sum + Number(c.views || 0), 0));
+    const cost = cpm > 0 ? (totalViews24h / 1000) * cpm : 0;
+
+    return {
+      groupId,
+      title,
+      cpm,
+      publishedAt,
+      totalViews24h,
+      cost,
+      channels,
+      reportUrl: reportLink(groupId),
+    };
+  }
+
+  const channelMap = await loadChannelMap(groupPosts);
   const channels = [];
 
   for (const post of groupPosts) {
