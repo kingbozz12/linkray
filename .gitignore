@@ -23,3 +23,11 @@ tmp/
 src/*.bak*
 src/*.backup*
 src/*.broken*
+
+# Local backup files
+*.bak*
+*.backup*
+*.broken*
+src/*.bak*
+src/*.backup*
+src/*.broken*
