@@ -308,7 +308,10 @@ async function ensureAnalyticsTables() {
   await query(`ALTER TABLE analytics_view_points ADD COLUMN IF NOT EXISTS channel_id integer`).catch(() => {});
   await query(`CREATE INDEX IF NOT EXISTS idx_lr_view_points_campaign ON analytics_view_points(campaign_id, created_at)`).catch(() => {});
   await query(`CREATE INDEX IF NOT EXISTS idx_lr_view_points_post ON analytics_view_points(post_id, created_at)`).catch(() => {});
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS name text`).catch(() => {});
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS link text`).catch(() => {});
   await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS avatar_url text`).catch(() => {});
+  await query(`UPDATE channels SET name = COALESCE(NULLIF(name, ''), title::text) WHERE (name IS NULL OR name = '') AND title IS NOT NULL`).catch(() => {});
 }
 
 function extractMessageViews(result) {
@@ -440,6 +443,39 @@ async function startMinuteSync() {
   setInterval(run, 60000).unref?.();
 }
 
+
+async function buildChannelBaseSelect() {
+  const channelCols = await tableColumns('channels');
+
+  const q = (col) => `c."${col}"`;
+
+  const titleExpr =
+    channelCols.has('title') ? q('title') :
+    channelCols.has('name') ? q('name') :
+    channelCols.has('channel_title') ? q('channel_title') :
+    channelCols.has('chat_title') ? q('chat_title') :
+    'NULL';
+
+  const nameExpr =
+    channelCols.has('name') ? q('name') :
+    channelCols.has('title') ? q('title') :
+    channelCols.has('channel_title') ? q('channel_title') :
+    channelCols.has('chat_title') ? q('chat_title') :
+    'NULL';
+
+  const linkExpr =
+    channelCols.has('link') ? q('link') :
+    channelCols.has('public_link') ? q('public_link') :
+    channelCols.has('invite_link') ? q('invite_link') :
+    channelCols.has('channel_link') ? q('channel_link') :
+    channelCols.has('url') ? q('url') :
+    channelCols.has('username') ? q('username') :
+    channelCols.has('handle') ? q('handle') :
+    'NULL';
+
+  return `${titleExpr} AS channel_title, ${nameExpr} AS channel_name, ${linkExpr} AS channel_link`;
+}
+
 async function buildSelectSql() {
   const channelCols = await tableColumns('channels');
   const select = [];
@@ -526,11 +562,13 @@ async function timelineFor(campaignId, rangeHours, currentViews, firstPost) {
 }
 
 async function collect(groupId) {
+  await ensureAnalyticsTables();
   const id = String(groupId || '').trim();
+  const baseSelect = await buildChannelBaseSelect();
   const extraSelect = await buildSelectSql();
 
   let posts = rows(await query(
-    `SELECT sp.*, c.title AS channel_title, c.name AS channel_name, c.link AS channel_link ${extraSelect}
+    `SELECT sp.*, ${baseSelect}${extraSelect}
        FROM scheduled_posts sp
        LEFT JOIN channels c ON c.id = sp.channel_id
       WHERE sp.id::text = $1
