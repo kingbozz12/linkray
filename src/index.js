@@ -798,10 +798,27 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express();
 
+// LINKRAY_PREEMPT_ANALYTICS_START
+app.get('/analytics/stats/:groupId', async (req, res, next) => {
+  try {
+    const mod = await import('./linkrayAnalyticsRoutes.js');
+
+    if (typeof mod.renderLinkRayAnalyticsRequest === 'function') {
+      return mod.renderLinkRayAnalyticsRequest(req, res, next);
+    }
+
+    return next();
+  } catch (error) {
+    console.error('[linkray analytics preempt]', error?.stack || error);
+    return next(error);
+  }
+});
+// LINKRAY_PREEMPT_ANALYTICS_END
+
+
 import('./linkrayAnalyticsRoutes.js')
   .then(({ mountLinkRayAnalyticsRoutes }) => mountLinkRayAnalyticsRoutes(app))
   .catch((error) => console.error('[linkray analytics mount]', error?.stack || error));
-
 
 app.use(express.json({ limit: '50mb' }));
 

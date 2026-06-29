@@ -524,6 +524,47 @@ async function timelineFor(campaignId, rangeHours, totalViews, firstPost) {
   });
 }
 
+
+function fallbackData(id) {
+  return {
+    id,
+    reportLink: '/analytics/stats/' + encodeURIComponent(id || ''),
+    title: 'Отчёт по рекламному посту MAX',
+    postTitle: 'Отчёт готовится',
+    postHtml: 'Данные по этому рекламному посту пока не найдены. Как только пост будет опубликован и просмотры подтянутся, отчёт обновится автоматически.',
+    media: null,
+    status: {
+      title: 'Готовится',
+      text: 'LinkRay ожидает данные публикации. Проверьте, что ссылка отчёта создана для рекламного поста.',
+      good: false,
+    },
+    publishedAt: null,
+    autoDeleteText: 'не задано',
+    metrics: {
+      views: 0,
+      cpm: 0,
+      factCpm: 0,
+      cost: 0,
+      channelsCount: 0,
+      quality: 0,
+      lifeHours: 24,
+    },
+    ranges: {
+      '24': [
+        ['1ч', 0],
+        ['3ч', 0],
+        ['6ч', 0],
+        ['9ч', 0],
+        ['12ч', 0],
+        ['18ч', 0],
+        ['24ч', 0],
+      ],
+    },
+    channels: [],
+  };
+}
+
+
 async function collect(groupId) {
   await ensureAnalyticsTables();
 
@@ -538,6 +579,8 @@ async function collect(groupId) {
       ORDER BY id ASC`,
     [id]
   ));
+
+  if (!posts.length) return fallbackData(id);
 
   posts = await Promise.all(posts.map(trySyncMaxViews));
 
@@ -653,7 +696,7 @@ function page(data) {
   const published = ruShortDate(data.publishedAt);
   const qualityPercent = Math.max(0, Math.min(100, data.metrics.quality));
 
-  return `<!doctype html>
+  return `<!doctype html>\n<!-- ANALYTICS_TEMPLATE_CLEAN_V100 -->
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -1307,6 +1350,30 @@ setInterval(refreshData, 60000);
 </body>
 </html>`;
 }
+
+
+export async function renderLinkRayAnalyticsRequest(req, res) {
+  try {
+    const data = await collect(req.params.groupId);
+
+    res.setHeader('Cache-Control', 'no-store');
+
+    if (String(req.query.json || '') === '1') {
+      return res.json(data);
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.end(page(data));
+  } catch (error) {
+    console.error('[linkray analytics render]', error.stack || error);
+    const data = fallbackData(req.params.groupId);
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).end(page(data));
+  }
+}
+
 
 export function mountLinkRayAnalyticsRoutes(app) {
   app.get('/brand/linkray-logo.svg', (_req, res) => {
