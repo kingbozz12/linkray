@@ -1225,6 +1225,20 @@ function lrOnlyMaxLinksText(text, links) {
   return !t;
 }
 
+
+function lrIsStartText(text) {
+  const raw = String(text || '').trim().toLowerCase();
+
+  return (
+    raw === '/start' ||
+    raw.startsWith('/start ') ||
+    raw === 'start' ||
+    raw === 'старт' ||
+    raw === 'главное меню' ||
+    raw === 'меню'
+  );
+}
+
 function lrIsAnalyticsText(text) {
   const t = lrNormText(text);
 
@@ -1417,13 +1431,16 @@ async function handleAnalyticsMenu(update) {
   const text = getText(update);
   const links = lrLinksDeep(update, text);
 
-  if (payload === 'main:analytics' || payload === 'analytics:menu' || payload === 'lrchan:menu') {
-    await showAnalyticsMainMenu(chatId, keys);
+
+  if (lrIsStartText(text) || payload === 'main:menu' || payload === 'start' || payload === '/start') {
+    await showFallbackMainMenu(chatId, keys);
     return true;
   }
 
-  if (payload === 'main:menu') {
-    await showFallbackMainMenu(chatId, keys);
+
+
+  if (payload === 'main:analytics' || payload === 'analytics:menu' || payload === 'lrchan:menu') {
+    await showAnalyticsMainMenu(chatId, keys);
     return true;
   }
 
