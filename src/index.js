@@ -818,6 +818,156 @@ const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
 
+/* LR_AD_TRACKER_LINK_V2_ROUTE_START */
+app.get('/analytics/stats/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+
+    if (!token || !/^[a-zA-Z0-9_-]{12,120}$/.test(token)) {
+      return res.status(404).send('LinkRay: отчёт не найден');
+    }
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS public.ad_post_trackers (
+        id serial PRIMARY KEY,
+        token text NOT NULL UNIQUE,
+        post_id text,
+        schedule_ref text,
+        channel_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+        cpm numeric DEFAULT 0,
+        views bigint NOT NULL DEFAULT 0,
+        status text NOT NULL DEFAULT 'planned',
+        publish_at timestamptz,
+        draft_json jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+
+    const result = await query(
+      `SELECT *
+       FROM public.ad_post_trackers
+       WHERE token = $1
+       LIMIT 1`,
+      [token]
+    );
+
+    const rows = Array.isArray(result) ? result : (result && Array.isArray(result.rows) ? result.rows : []);
+    const item = rows[0];
+
+    if (!item) {
+      return res.status(404).send('LinkRay: отчёт не найден');
+    }
+
+    const cpm = Number(item.cpm || 0);
+    const views = Number(item.views || 0);
+    const price = Math.round((views * cpm / 1000) * 100) / 100;
+
+    let publishText = 'не указано';
+    try {
+      if (item.publish_at) {
+        publishText = new Date(item.publish_at).toLocaleString('ru-RU', {
+          timeZone: 'Europe/Moscow',
+          day: '2-digit',
+          month: 'long',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }) + ' МСК';
+      }
+    } catch {}
+
+    function h(v) {
+      return String(v ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    const statusRu =
+      item.status === 'published' || item.status === 'done' ? 'опубликован' :
+      item.status === 'failed' ? 'ошибка' :
+      item.status === 'planned' ? 'отложен' :
+      String(item.status || 'отложен');
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.end(`<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LinkRay — наблюдатель рекламы</title>
+  <style>
+    body{margin:0;background:#080b12;color:#eef6ff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    .wrap{max-width:760px;margin:0 auto;padding:28px 16px}
+    .card{background:linear-gradient(180deg,#151b28,#0d121d);border:1px solid rgba(255,255,255,.08);border-radius:26px;padding:24px;box-shadow:0 22px 70px rgba(0,0,0,.45)}
+    .brand{font-size:30px;font-weight:900;margin-bottom:6px}
+    .muted{color:#95a8c2}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:22px}
+    .box{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.05);border-radius:18px;padding:16px}
+    .label{color:#95a8c2;font-size:14px;margin-bottom:7px}
+    .value{font-size:25px;font-weight:900}
+    .wide{grid-column:1/-1}
+    .link{word-break:break-all;color:#8bd7ff}
+    .footer{margin-top:20px;color:#95a8c2;font-size:14px;line-height:1.45}
+    @media(max-width:560px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}.brand{font-size:26px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="brand">🧬 LinkRay</div>
+      <div class="muted">Наблюдатель рекламного поста в MAX</div>
+
+      <div class="grid">
+        <div class="box">
+          <div class="label">Статус</div>
+          <div class="value">${h(statusRu)}</div>
+        </div>
+
+        <div class="box">
+          <div class="label">Публикация</div>
+          <div class="value" style="font-size:18px">${h(publishText)}</div>
+        </div>
+
+        <div class="box">
+          <div class="label">Просмотры</div>
+          <div class="value">${h(views.toLocaleString('ru-RU'))}</div>
+        </div>
+
+        <div class="box">
+          <div class="label">CPM</div>
+          <div class="value">${h(cpm.toLocaleString('ru-RU'))} ₽</div>
+        </div>
+
+        <div class="box wide">
+          <div class="label">Стоимость по просмотрам</div>
+          <div class="value">${h(price.toLocaleString('ru-RU'))} ₽</div>
+        </div>
+
+        <div class="box wide">
+          <div class="label">Ссылка наблюдателя</div>
+          <div class="link">${h(req.protocol + '://' + req.get('host') + req.originalUrl)}</div>
+        </div>
+      </div>
+
+      <div class="footer">
+        После публикации LinkRay будет обновлять просмотры рекламного поста и пересчитывать стоимость по CPM.
+      </div>
+    </div>
+  </div>
+</body>
+</html>`);
+  } catch (e) {
+    console.error('[LR_AD_TRACKER_LINK_V2_ROUTE]', e?.stack || e);
+    return res.status(500).send('LinkRay: ошибка отчёта');
+  }
+});
+/* LR_AD_TRACKER_LINK_V2_ROUTE_END */
+
+
+
 /* LR_CLEAN_CALENDAR_SPLIT_TIME_V1_START */
 app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
   try {
@@ -1807,6 +1957,114 @@ ${channelLines}
     /* LR_AD_SCHEDULED_CONFIRM_STYLE_V2_HELPERS_END */
 
 
+
+    /* LR_AD_TRACKER_LINK_V2_HELPERS_START */
+    function lrTrackerPublicBaseV2() {
+      const env =
+        process.env.LINKRAY_PUBLIC_URL ||
+        process.env.PUBLIC_URL ||
+        process.env.APP_PUBLIC_URL ||
+        process.env.WEB_PUBLIC_URL ||
+        process.env.BASE_URL ||
+        '';
+
+      if (env) return String(env).replace(/\/+$/, '');
+
+      try {
+        const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+        const proto = req.headers['x-forwarded-proto'] || 'https';
+        if (host) return `${proto}://${host}`.replace(/\/+$/, '');
+      } catch {}
+
+      return '';
+    }
+
+    function lrTrackerRandomTokenV2() {
+      try {
+        if (globalThis.crypto && globalThis.crypto.randomUUID) {
+          return globalThis.crypto.randomUUID().replaceAll('-', '');
+        }
+      } catch {}
+
+      return (
+        Date.now().toString(36) +
+        Math.random().toString(36).slice(2) +
+        Math.random().toString(36).slice(2)
+      ).replace(/[^a-zA-Z0-9]/g, '');
+    }
+
+    function lrTrackerCpmV2(draft) {
+      const raw =
+        draft?.cpm ??
+        draft?.adCpm ??
+        draft?.ad_cpm ??
+        draft?.pricePerMille ??
+        draft?.price_per_mille ??
+        0;
+
+      const n = Number(String(raw).replace(',', '.').replace(/[^\d.]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    async function lrCreateAdTrackerV2(draft, channelIds, publishAt) {
+      await query(`
+        CREATE TABLE IF NOT EXISTS public.ad_post_trackers (
+          id serial PRIMARY KEY,
+          token text NOT NULL UNIQUE,
+          post_id text,
+          schedule_ref text,
+          channel_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+          cpm numeric DEFAULT 0,
+          views bigint NOT NULL DEFAULT 0,
+          status text NOT NULL DEFAULT 'planned',
+          publish_at timestamptz,
+          draft_json jsonb,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+
+      const token = lrTrackerRandomTokenV2();
+      const base = lrTrackerPublicBaseV2();
+      const url = base ? `${base}/analytics/stats/${token}` : `/analytics/stats/${token}`;
+
+      await query(
+        `INSERT INTO public.ad_post_trackers(token, channel_ids, cpm, status, publish_at, draft_json)
+         VALUES($1, $2::jsonb, $3, 'planned', $4, $5::jsonb)
+         ON CONFLICT(token) DO NOTHING`,
+        [
+          token,
+          JSON.stringify(channelIds || []),
+          lrTrackerCpmV2(draft),
+          publishAt,
+          JSON.stringify(draft || {})
+        ]
+      );
+
+      draft.trackingToken = token;
+      draft.trackingUrl = url;
+      draft.analyticsUrl = url;
+      draft.observerUrl = url;
+
+      if (!draft.meta || typeof draft.meta !== 'object') draft.meta = {};
+      draft.meta.trackingToken = token;
+      draft.meta.trackingUrl = url;
+
+      return { token, url };
+    }
+
+    function lrTrackerLineV2(url) {
+      const u = String(url || '').trim();
+      if (!u) return '';
+
+      return `
+
+🔗 <b>Ссылка наблюдателя:</b>
+<a href="${esc(u)}">${esc(u)}</a>`;
+    }
+    /* LR_AD_TRACKER_LINK_V2_HELPERS_END */
+
+
     async function scheduleAt(dayKey, hhmm) {
       const nice = normalizeTime(hhmm);
       const publishAt = dateFromDayTime(dayKey, nice);
@@ -1843,14 +2101,17 @@ ${channelLines}
         }
       } catch {}
 
+      const lrTracker = isAd ? await lrCreateAdTrackerV2(draft, channelIds, publishAt) : null;
       await scheduleDraft(draft, key, publishAt);
       await clearSession(key);
 
       const channels = await getChannelsByIds(channelIds);
 
-      const text = isAd
+      let text = isAd
         ? lrAdScheduledConfirmTextV2(draft, channels, dayKey, nice)
         : lrNormalScheduledConfirmTextV2(channels, dayKey, nice);
+      if (isAd) text += lrTrackerLineV2(draft?.trackingUrl || draft?.analyticsUrl || draft?.observerUrl || '');
+
 
       return lrCalendarAnswer( text, [
         [callbackButton('📂 Посты', 'post:all')],
