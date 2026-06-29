@@ -9122,11 +9122,11 @@ async function handleCallback(update) {
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = lrResolveReplyChatId(update, key);
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
 
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
 
   log('callback', { payload, key });
   if (!callbackId) return;
@@ -9401,17 +9401,7 @@ function __lrGuardRows(result) {
 }
 
 function __lrLooksLikeChannelUpdate(update) {
-  const values = [
-    update?.chat?.type,
-    update?.message?.recipient?.type,
-    update?.message?.chat?.type,
-    update?.recipient?.type,
-    update?.body?.recipient?.type,
-    update?.chat_type,
-    update?.chatType,
-  ].map((x) => String(x || '').toLowerCase());
-
-  return values.includes('channel');
+  return __lrGuardLooksChannel(update);
 }
 
 async function __lrGetChannelColumns() {
@@ -9461,23 +9451,147 @@ async function __lrIsKnownChannelChat(chatId) {
   }
 }
 
-async function __lrShouldIgnoreInboundChannelUpdate(update) {
-  const chatId = getChatId(update);
-  const looksChannel = __lrLooksLikeChannelUpdate(update);
 
-  // Важно: пересланный пост может содержать внутри себя channel/chat,
-  // но сам апдейт пришёл в личку. Поэтому без явного channel-типа не игнорируем.
-  if (!looksChannel) return false;
+// LR_NO_CHANNEL_SERVICE_MESSAGES_V2_START
+function __lrGuardDirectChatObjects(update) {
+  return [
+    update?.chat,
+    update?.recipient,
+    update?.message?.chat,
+    update?.message?.recipient,
+    update?.message?.body?.chat,
+    update?.message?.body?.recipient,
+    update?.body?.chat,
+    update?.body?.recipient,
+    update?.callback?.chat,
+    update?.callback?.recipient,
+    update?.message_callback?.chat,
+    update?.message_callback?.recipient,
+  ].filter((x) => x && typeof x === 'object');
+}
+
+function __lrGuardDirectTypes(update) {
+  const out = [];
+
+  for (const obj of __lrGuardDirectChatObjects(update)) {
+    out.push(
+      obj.type,
+      obj.chat_type,
+      obj.chatType,
+      obj.kind,
+      obj.recipient_type,
+      obj.recipientType
+    );
+  }
+
+  out.push(
+    update?.chat_type,
+    update?.chatType,
+    update?.recipient_type,
+    update?.recipientType,
+    update?.message?.chat_type,
+    update?.message?.chatType,
+    update?.message?.recipient_type,
+    update?.message?.recipientType
+  );
+
+  return out.map((x) => String(x || '').toLowerCase()).filter(Boolean);
+}
+
+function __lrGuardLooksPrivate(update) {
+  const types = __lrGuardDirectTypes(update);
+  return types.some((x) =>
+    x === 'user' ||
+    x === 'private' ||
+    x === 'dialog' ||
+    x === 'direct' ||
+    x.includes('private') ||
+    x.includes('dialog') ||
+    x.includes('user')
+  );
+}
+
+function __lrGuardLooksChannel(update) {
+  const types = __lrGuardDirectTypes(update);
+
+  if (types.some((x) =>
+    x === 'channel' ||
+    x === 'chat' && !__lrGuardLooksPrivate(update) ||
+    x.includes('channel')
+  )) {
+    return true;
+  }
+
+  const rootType = String(update?.type || update?.update_type || update?.event_type || '').toLowerCase();
+
+  if (
+    rootType.includes('channel') ||
+    rootType.includes('chat_member') ||
+    rootType.includes('member_added') ||
+    rootType.includes('member_removed') ||
+    rootType.includes('bot_added') ||
+    rootType.includes('bot_removed')
+  ) {
+    return true;
+  }
+
+  for (const obj of __lrGuardDirectChatObjects(update)) {
+    const hasChannelId =
+      obj.channel_id ||
+      obj.channelId ||
+      obj.max_channel_id ||
+      obj.maxChannelId ||
+      obj.chat_id ||
+      obj.chatId;
+
+    const hasUserId =
+      obj.user_id ||
+      obj.userId ||
+      obj.sender_id ||
+      obj.senderId ||
+      obj.author_id ||
+      obj.authorId;
+
+    if (hasChannelId && !hasUserId && !__lrGuardLooksPrivate(update)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function __lrGuardIsSafePrivateChat(chatId, update = null) {
   if (!chatId) return false;
 
-  const knownChannel = await __lrIsKnownChannelChat(chatId);
+  if (update && __lrGuardLooksPrivate(update)) return true;
+  if (update && __lrGuardLooksChannel(update)) return false;
+
+  try {
+    if (await __lrIsKnownChannelChat(chatId)) return false;
+  } catch {}
+
+  return true;
+}
+// LR_NO_CHANNEL_SERVICE_MESSAGES_V2_END
+
+async function __lrShouldIgnoreInboundChannelUpdate(update) {
+  const chatId = getChatId(update);
+
+  if (!chatId) return false;
+
+  const knownChannel = await __lrIsKnownChannelChat(chatId).catch(() => false);
+  const looksChannel = __lrLooksLikeChannelUpdate(update);
+  const looksPrivate = __lrGuardLooksPrivate(update);
+
+  if (looksPrivate && !knownChannel) return false;
 
   if (knownChannel || looksChannel) {
-    console.log('[channel guard] ignored real channel update', JSON.stringify({
-      type: update?.type || update?.update_type || '',
+    console.log('[SKIP_CHANNEL_REPLY] ignored inbound channel update', JSON.stringify({
+      type: update?.type || update?.update_type || update?.event_type || '',
       chatId: String(chatId),
       knownChannel,
-      looksChannel
+      looksChannel,
+      looksPrivate,
     }));
     return true;
   }
@@ -9536,8 +9650,17 @@ function __lrChannelTitleFromRow(c) {
   }
 }
 
-async function __lrRememberPrivateChatId(chatId) {
+async function __lrRememberPrivateChatId(chatId, update = null) {
   if (!chatId) return;
+
+  const safePrivate = await __lrGuardIsSafePrivateChat(chatId, update).catch(() => false);
+
+  if (!safePrivate) {
+    console.log('[SKIP_CHANNEL_REPLY] not remembering channel as private chat', JSON.stringify({
+      chatId: String(chatId),
+    }));
+    return;
+  }
 
   await __lrEnsureChannelDbSyncTables();
 
@@ -9781,19 +9904,30 @@ async function __lrInitSeenChannelsIfNeeded(channels) {
   return false;
 }
 
-async function __lrNotifyNewChannels(targetChatId = '') {
+async function __lrNotifyNewChannels(targetChatId = '', update = null) {
   try {
     await __lrEnsureChannelDbSyncTables();
 
     const channels = await getChannels();
-
     const initialized = await __lrInitSeenChannelsIfNeeded(channels);
 
     if (!initialized) return;
 
-    const chatId = String(targetChatId || await __lrGetLastPrivateChatId() || '').trim();
+    let chatId = String(targetChatId || await __lrGetLastPrivateChatId() || '').trim();
+
+    if (chatId && !(await __lrGuardIsSafePrivateChat(chatId, update).catch(() => false))) {
+      console.log('[SKIP_CHANNEL_REPLY] new channel notification target is channel, fallback to private chat', JSON.stringify({
+        chatId,
+      }));
+      chatId = String(await __lrGetLastPrivateChatId() || '').trim();
+    }
 
     if (!chatId) return;
+
+    if (!(await __lrGuardIsSafePrivateChat(chatId, null).catch(() => false))) {
+      console.log('[SKIP_CHANNEL_REPLY] no safe private chat for channel notification');
+      return;
+    }
 
     for (const c of channels) {
       const key = __lrChannelKeyFromRow(c);
@@ -9816,7 +9950,10 @@ async function __lrNotifyNewChannels(targetChatId = '') {
       ).catch(() => {});
 
       await sendMessage(chatId, {
-        text: `✅ <b>Канал добавлен в LinkRay</b>\n\n${title}\n\nКанал сохранён в базе и будет доступен для публикаций.`,
+        text:
+          `✅ Канал добавлен в LinkRay\n\n` +
+          `${title}\n\n` +
+          `Канал сохранён в базе и будет доступен для публикаций.`,
         buttons: [
           [callbackButton('🔗 Добавить ещё канал', 'post:add_channel')],
           [callbackButton('⬅️ В меню', 'main:menu')]
@@ -9956,11 +10093,11 @@ async function handleMessage(update) {
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const chatId = lrResolveReplyChatId(update, getSessionKey(update));
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
 
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
  const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) { await clearSession(key); return sendMain(chatId); }
