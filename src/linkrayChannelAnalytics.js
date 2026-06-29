@@ -1656,6 +1656,370 @@ async function lrSafeRenderNetworkV5(channels) {
 }
 /* LR_ANALYTICS_CARD_FOOTER_V5_END */
 
+
+/* LR_SINGLE_CHANNEL_INFO_CARD_V8_START */
+function lrEscV8(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function lrShortV8(value, max = 55) {
+  const text = String(value || 'Канал MAX').replace(/\s+/g, ' ').trim();
+  return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
+}
+
+function lrWrapV8(value, max = 45, limit = 2) {
+  const words = String(value || 'Канал MAX').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const lines = [];
+  let line = '';
+
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > max && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+
+    if (lines.length >= limit) break;
+  }
+
+  if (line && lines.length < limit) lines.push(line);
+  if (!lines.length) lines.push('Канал MAX');
+
+  return lines.slice(0, limit).map((x, i) => {
+    if (i === limit - 1 && words.join(' ').length > lines.join(' ').length) {
+      return lrShortV8(x, max);
+    }
+    return x;
+  });
+}
+
+function lrSignV8(value) {
+  const n = num(value);
+  if (n > 0) return `+${fmt(n)}`;
+  if (n < 0) return `-${fmt(Math.abs(n))}`;
+  return '0';
+}
+
+function lrDeltaColorV8(value) {
+  const n = num(value);
+  if (n > 0) return '#28c76f';
+  if (n < 0) return '#ea5455';
+  return '#7b8796';
+}
+
+function lrTodayLabelV8() {
+  return new Date().toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+  });
+}
+
+async function lrImageDataV8(url, size = 72) {
+  if (!url || !/^https?:\/\//i.test(String(url))) return '';
+
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(4500) });
+    if (!res.ok) return '';
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    const png = await sharp(buf)
+      .resize(size, size, { fit: 'cover', position: 'centre' })
+      .png()
+      .toBuffer();
+
+    return `data:image/png;base64,${png.toString('base64')}`;
+  } catch {
+    return '';
+  }
+}
+
+async function lrLocalLogoDataV8(size = 70) {
+  const candidates = [
+    'public/brand/linkray-logo.webp',
+    '/app/public/brand/linkray-logo.webp',
+    'public/brand/linkray-logo.png',
+    '/app/public/brand/linkray-logo.png',
+    'public/brand/linkray-card-logo.jpg',
+    '/app/public/brand/linkray-card-logo.jpg',
+  ];
+
+  for (const file of candidates) {
+    try {
+      const buf = await fs.readFile(file);
+      const png = await sharp(buf)
+        .resize(size, size, { fit: 'cover', position: 'centre' })
+        .png()
+        .toBuffer();
+
+      return `data:image/png;base64,${png.toString('base64')}`;
+    } catch {}
+  }
+
+  return '';
+}
+
+async function lrAvatarSvgV8(ch, x, y, size = 64) {
+  const data = await lrImageDataV8(ch.avatarUrl || ch.avatar_url || ch.photo_url || ch.image_url || '', size);
+  const clip = `lrAvV8_${hash(String(ch.key || ch.link || ch.title || '') + x + y + size)}`;
+
+  if (data) {
+    return `
+      <clipPath id="${clip}"><circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}"/></clipPath>
+      <image href="${data}" x="${x}" y="${y}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})"/>
+      <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 - 1}" fill="none" stroke="#31f2cc" stroke-width="3"/>
+    `;
+  }
+
+  const letter = lrEscV8(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+
+  return `
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#0b91d8"/>
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 - 1}" fill="none" stroke="#31f2cc" stroke-width="3"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + size * .14}" text-anchor="middle" font-size="${Math.round(size * .45)}" font-weight="1000" fill="#fff">${letter}</text>
+  `;
+}
+
+async function lrLogoSvgV8(x, y, size = 64) {
+  const data = await lrLocalLogoDataV8(size);
+  const clip = `lrLogoV8_${size}`;
+
+  if (data) {
+    return `
+      <clipPath id="${clip}"><circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}"/></clipPath>
+      <image href="${data}" x="${x}" y="${y}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})"/>
+    `;
+  }
+
+  return `
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#16d6c8"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + 8}" text-anchor="middle" font-size="28" font-weight="1000" fill="#fff">LR</text>
+  `;
+}
+
+async function lrHistoryRowsV8(channelKey, currentSubscribers, fallbackDelta) {
+  const result = await query(`
+    WITH daily AS (
+      SELECT
+        to_char(captured_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS day_key,
+        to_char(captured_at AT TIME ZONE 'Europe/Moscow', 'DD.MM') AS label,
+        subscribers,
+        captured_at,
+        row_number() OVER (
+          PARTITION BY to_char(captured_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD')
+          ORDER BY captured_at DESC
+        ) AS rn
+      FROM public.lr_channel_analytics_snapshots
+      WHERE channel_key=$1
+    )
+    SELECT day_key, label, subscribers
+    FROM daily
+    WHERE rn=1
+    ORDER BY day_key ASC
+    LIMIT 31
+  `, [channelKey]).catch(() => []);
+
+  const arr = rows(result).map((r) => ({
+    label: String(r.label || ''),
+    subscribers: num(r.subscribers),
+    delta: 0,
+  })).filter((r) => r.label);
+
+  if (!arr.length) {
+    arr.push({
+      label: lrTodayLabelV8(),
+      subscribers: num(currentSubscribers),
+      delta: num(fallbackDelta),
+    });
+  }
+
+  for (let i = 0; i < arr.length; i++) {
+    if (i === 0) {
+      arr[i].delta = arr.length === 1 ? num(fallbackDelta) : 0;
+    } else {
+      arr[i].delta = num(arr[i].subscribers) - num(arr[i - 1].subscribers);
+    }
+  }
+
+  return arr;
+}
+
+function lrCardShellV8(inner) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+    <defs>
+      <linearGradient id="lrLightBgV8" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#f5f8fb"/>
+        <stop offset="55%" stop-color="#eef5f7"/>
+        <stop offset="100%" stop-color="#e8fbf5"/>
+      </linearGradient>
+      <linearGradient id="lrAccentV8" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#0b8cff"/>
+        <stop offset="100%" stop-color="#31f2cc"/>
+      </linearGradient>
+      <filter id="lrShadowV8" x="-10%" y="-10%" width="120%" height="130%">
+        <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0b2740" flood-opacity=".13"/>
+      </filter>
+      <style>
+        text { font-family: DejaVu Sans, Arial, sans-serif; }
+      </style>
+    </defs>
+    <rect width="1280" height="900" fill="url(#lrLightBgV8)"/>
+    <circle cx="1110" cy="60" r="260" fill="#31f2cc" opacity=".08"/>
+    <circle cx="90" cy="860" r="260" fill="#0b8cff" opacity=".06"/>
+    ${inner}
+  </svg>`;
+}
+
+function lrInfoCardV8(x, y, w, h, title, rowsHtml) {
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="#ffffff" stroke="#dde9ee" stroke-width="2" filter="url(#lrShadowV8)"/>
+    <text x="${x + 26}" y="${y + 52}" font-size="25" font-weight="1000" fill="#637181">${lrEscV8(title)}</text>
+    ${rowsHtml}
+  `;
+}
+
+function lrLineChartSingleV8(points, x, y, w, h) {
+  let arr = points.slice(-10);
+  if (!arr.length) arr = [{ label: lrTodayLabelV8(), subscribers: 0 }];
+
+  let values = arr.map((p) => num(p.subscribers));
+  if (values.length === 1) {
+    arr = [
+      { label: 'старт', subscribers: values[0] },
+      { label: arr[0].label, subscribers: values[0] },
+    ];
+    values = arr.map((p) => num(p.subscribers));
+  }
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    min = Math.max(0, min - 1);
+    max += 1;
+  }
+
+  const padL = 82;
+  const padR = 45;
+  const padT = 58;
+  const padB = 54;
+  const span = Math.max(1, max - min);
+
+  const coords = arr.map((p, i) => {
+    const px = x + padL + (w - padL - padR) * (i / Math.max(1, arr.length - 1));
+    const py = y + padT + (h - padT - padB) * (1 - ((num(p.subscribers) - min) / span));
+    return [px, py, num(p.subscribers), p.label];
+  });
+
+  const d = coords.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const area = `${d} L ${x + w - padR},${y + h - padB} L ${x + padL},${y + h - padB} Z`;
+
+  const grid = [0, 1, 2, 3].map((i) => {
+    const yy = y + padT + (h - padT - padB) * (i / 3);
+    return `<line x1="${x + padL}" y1="${yy}" x2="${x + w - padR}" y2="${yy}" stroke="#e5edf2" stroke-width="1"/>`;
+  }).join('');
+
+  const dots = coords.map((p, i) => {
+    const show = i === 0 || i === coords.length - 1 || coords.length <= 6 || i % 2 === 0;
+    return `
+      <circle cx="${p[0]}" cy="${p[1]}" r="7" fill="#ffffff" stroke="#25c978" stroke-width="4"/>
+      ${show ? `<text x="${p[0]}" y="${Math.max(y + 42, p[1] - 14)}" text-anchor="middle" font-size="18" font-weight="1000" fill="#25c978">${fmt(p[2])}</text>` : ''}
+      <text x="${p[0]}" y="${y + h - 18}" text-anchor="middle" font-size="16" font-weight="800" fill="#7b8796">${lrEscV8(p[3])}</text>
+    `;
+  }).join('');
+
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="#ffffff" stroke="#dde9ee" stroke-width="2" filter="url(#lrShadowV8)"/>
+    <circle cx="${x + w / 2 - 75}" cy="${y + 44}" r="9" fill="#25c978"/>
+    <text x="${x + w / 2 - 50}" y="${y + 52}" font-size="24" font-weight="1000" fill="#283342">Подписчики</text>
+    ${grid}
+    <path d="${area}" fill="#25c978" opacity=".12"/>
+    <path d="${d}" fill="none" stroke="#25c978" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+  `;
+}
+
+function lrDayRowV8(x, y, label, subscribers, delta) {
+  return `
+    <text x="${x}" y="${y}" font-size="22" font-weight="800" fill="#111827">${lrEscV8(label)}</text>
+    <text x="${x + 125}" y="${y}" font-size="22" font-weight="1000" fill="#2f80ed">${fmt(subscribers)}</text>
+    <text x="${x + 270}" y="${y}" font-size="22" font-weight="1000" fill="${lrDeltaColorV8(delta)}">${lrSignV8(delta)}</text>
+  `;
+}
+
+async function lrSafeRenderSingleV8(ch) {
+  const history = await lrHistoryRowsV8(ch.key, ch.subscribers, ch.deltaDay);
+  const last = history[history.length - 1] || { subscribers: ch.subscribers, delta: ch.deltaDay };
+
+  const todayDelta = num(last.delta);
+  const weekBase = history.length > 7 ? history[history.length - 8].subscribers : history[0].subscribers;
+  const monthBase = history.length > 30 ? history[history.length - 31].subscribers : history[0].subscribers;
+
+  const weekDelta = num(last.subscribers) - num(weekBase);
+  const monthDelta = num(last.subscribers) - num(monthBase);
+
+  const viewsPost = Math.max(num(ch.views24), num(ch.views48), num(ch.views72));
+  const avatarSvg = await lrAvatarSvgV8(ch, 36, 28, 62);
+  const logoSvg = await lrLogoSvgV8(1070, 26, 64);
+  const title = lrWrapV8(ch.title, 45, 2);
+  const last10 = history.slice(-10).reverse();
+
+  const dayRows = [];
+  for (let i = 0; i < 10; i++) {
+    const r = last10[i] || { label: '—', subscribers: 0, delta: 0 };
+    dayRows.push(lrDayRowV8(888, 191 + i * 54, r.label, r.subscribers, r.delta));
+  }
+
+  const inner = `
+    ${avatarSvg}
+    <text x="116" y="59" font-size="32" font-weight="1000" fill="#05070a">${lrEscV8(title[0])}</text>
+    ${title[1] ? `<text x="116" y="96" font-size="32" font-weight="1000" fill="#05070a">${lrEscV8(title[1])}</text>` : ''}
+
+    ${logoSvg}
+    <text x="1146" y="66" font-size="32" font-weight="1000" fill="#2f80ed">LinkRay</text>
+
+    ${lrInfoCardV8(32, 126, 405, 222, 'Подписчиков', `
+      <text x="385" y="180" text-anchor="end" font-size="42" font-weight="1000" fill="#2f80ed">${fmt(ch.subscribers)}</text>
+      <text x="58" y="226" font-size="25" font-weight="800" fill="#6b7280">Сегодня</text>
+      <text x="385" y="226" text-anchor="end" font-size="34" font-weight="1000" fill="${lrDeltaColorV8(todayDelta)}">${lrSignV8(todayDelta)}</text>
+      <text x="58" y="276" font-size="25" font-weight="800" fill="#6b7280">За неделю</text>
+      <text x="385" y="276" text-anchor="end" font-size="34" font-weight="1000" fill="${lrDeltaColorV8(weekDelta)}">${lrSignV8(weekDelta)}</text>
+      <text x="58" y="326" font-size="25" font-weight="800" fill="#6b7280">За месяц</text>
+      <text x="385" y="326" text-anchor="end" font-size="34" font-weight="1000" fill="${lrDeltaColorV8(monthDelta)}">${lrSignV8(monthDelta)}</text>
+    `)}
+
+    ${lrInfoCardV8(455, 126, 405, 222, 'Просмотров на пост', `
+      <text x="806" y="180" text-anchor="end" font-size="42" font-weight="1000" fill="#2f80ed">${fmt(viewsPost)}</text>
+      <text x="481" y="226" font-size="25" font-weight="800" fill="#6b7280">Просмотров за 24ч</text>
+      <text x="806" y="226" text-anchor="end" font-size="34" font-weight="1000" fill="#25c978">${fmt(ch.views24)}</text>
+      <text x="481" y="276" font-size="25" font-weight="800" fill="#6b7280">Просмотров за 48ч</text>
+      <text x="806" y="276" text-anchor="end" font-size="34" font-weight="1000" fill="#25c978">${fmt(ch.views48)}</text>
+      <text x="481" y="326" font-size="25" font-weight="800" fill="#6b7280">ER24</text>
+      <text x="806" y="326" text-anchor="end" font-size="34" font-weight="1000" fill="#2f80ed">${pct(ch.er24)}</text>
+    `)}
+
+    <rect x="880" y="126" width="368" height="592" rx="22" fill="#ffffff" stroke="#dde9ee" stroke-width="2" filter="url(#lrShadowV8)"/>
+    <text x="910" y="174" font-size="25" font-weight="1000" fill="#283342">День</text>
+    <text x="1015" y="174" font-size="25" font-weight="1000" fill="#283342">ПДП</text>
+    <text x="1155" y="174" font-size="25" font-weight="1000" fill="#283342">Прирост</text>
+    <line x1="906" y1="188" x2="1220" y2="188" stroke="#e5edf2" stroke-width="2"/>
+    ${dayRows.join('')}
+
+    ${lrLineChartSingleV8(history, 32, 374, 828, 344)}
+
+    <text x="36" y="786" font-size="24" font-weight="1000" fill="#111827">LinkRay Analytics — данные канала после подключения бота</text>
+    <text x="1248" y="850" text-anchor="end" font-size="23" font-weight="900" fill="#6b7280">Дата формирования отчёта: ${lrEscV8(nowMskHuman())} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrCardShellV8(inner), `lr-single-info-v8-${ch.key}`);
+}
+/* LR_SINGLE_CHANNEL_INFO_CARD_V8_END */
+
 async function renderSingleSvg(ch) {
   const avatar = await lrSvgAvatar(ch, 84, 214, 92, 1);
   const history = await historyFor(ch.key, 'subscribers');
@@ -2000,7 +2364,7 @@ function lrExtractPreviewMap(update, links) {
 /* LR_ANALYTICS_CARDS_V2_END */
 
 async function renderSingle(ch) {
-  return lrSafeRenderSingleV5(ch);
+  return lrSafeRenderSingleV8(ch);
 }
 
 async function renderNetwork(channels) {
