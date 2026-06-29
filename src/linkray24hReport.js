@@ -605,7 +605,7 @@ export async function sendDue24hReports() {
   for (const [groupId, posts] of groups.entries()) {
     const data = await buildGroupReport(posts, groupId);
     const text = render24hReport(data);
-    const target = recipientFromPost(posts[0]);
+    const target = recipientFromPost(posts[0]) || await findLatestUserChatId();
 
     if (!target) {
       console.error('[LinkRay 24h report] no recipient for group', groupId);
