@@ -4,7 +4,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache fontconfig ttf-dejavu && fc-cache -f || true tzdata && fc-cache -f || true
 
 COPY package*.json ./
 RUN npm install --omit=dev

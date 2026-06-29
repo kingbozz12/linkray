@@ -810,6 +810,7 @@ async function renderSingleSvg(ch) {
 
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="675" viewBox="0 0 1080 675">
+  <style>text{font-family:DejaVu Sans,Noto Sans,Arial,sans-serif;}</style>
   <defs>
     <linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#292627"/>
@@ -885,6 +886,7 @@ async function renderNetworkSvg(channels) {
 
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="675" viewBox="0 0 1080 675">
+  <style>text{font-family:DejaVu Sans,Noto Sans,Arial,sans-serif;}</style>
   <defs>
     <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#292627"/>
@@ -918,8 +920,8 @@ async function renderNetworkSvg(channels) {
   <text x="1025" y="307" font-size="13" font-weight="1000" text-anchor="end" fill="#8793a3">ПДП</text>
   ${rowsSvg.join('')}
 
-  <text x="28" y="562" font-size="28" fill="#fff">👥 Всего подписчиков в <tspan font-weight="1000">${channels.length} каналах:</tspan> <tspan font-weight="1000">${fmt(totalSubs)}</tspan></text>
-  <text x="28" y="604" font-size="25" fill="#fff">👁 Просмотры: <tspan font-weight="1000">24ч ${fmt(total24)}</tspan> · <tspan font-weight="1000">48ч ${fmt(total48)}</tspan> · <tspan font-weight="1000">72ч ${fmt(total72)}</tspan></text>
+  <text x="28" y="562" font-size="28" fill="#fff">Всего подписчиков в <tspan font-weight="1000">${channels.length} каналах:</tspan> <tspan font-weight="1000">${fmt(totalSubs)}</tspan></text>
+  <text x="28" y="604" font-size="25" fill="#fff">Просмотры: <tspan font-weight="1000">24ч ${fmt(total24)}</tspan> · <tspan font-weight="1000">48ч ${fmt(total48)}</tspan> · <tspan font-weight="1000">72ч ${fmt(total72)}</tspan></text>
 
   <rect x="650" y="548" width="405" height="78" rx="8" fill="rgba(255,255,255,.12)"/>
   <rect x="650" y="548" width="5" height="78" rx="2" fill="rgba(255,255,255,.86)"/>
@@ -1030,8 +1032,8 @@ async function handleLinks(chatId, links) {
     : await renderNetwork(channels);
 
   const caption = channels.length === 1
-    ? `📊 <b>LinkRay Analytics</b>\n${esc(channels[0].title)}`
-    : `📊 <b>LinkRay Analytics</b>\nСводка по ${channels.length} каналам`;
+    ? ` <b>LinkRay Analytics</b>\n${esc(channels[0].title)}`
+    : ` <b>LinkRay Analytics</b>\nСводка по ${channels.length} каналам`;
 
   await sendImage(chatId, image, caption);
 
@@ -1048,7 +1050,7 @@ async function handleLinks(chatId, links) {
         type: 'inline_keyboard',
         payload: {
           buttons: [
-            [{ type: 'callback', text: '✅ Включить отчёт отчёт', payload: 'lrchan:on' }],
+            [{ type: 'callback', text: ' Включить отчёт', payload: 'lrchan:on' }],
             [{ type: 'callback', text: '⛔ Отключить отчёт', payload: 'lrchan:off' }],
           ],
         },
@@ -1088,10 +1090,10 @@ async function sendDailyForRow(row) {
   const text =
     '━━━━━━━━━━━━━━\n' +
     '🌅 <b>Утренняя аналитика LinkRay</b>\n\n' +
-    `👥 Всего подписчиков: <b>${fmt(totalSubs)}</b>\n` +
-    `✅ Подписалось: <b>${fmt(signed)}</b>\n` +
-    `❌ Отписалось: <b>${fmt(lost)}</b>\n` +
-    `📊 Итог за сутки: <b>${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</b>\n\n` +
+    `Всего подписчиков: <b>${fmt(totalSubs)}</b>\n` +
+    ` Подписалось: <b>${fmt(signed)}</b>\n` +
+    ` Отписалось: <b>${fmt(lost)}</b>\n` +
+    ` Итог за сутки: <b>${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</b>\n\n` +
     lines +
     '\n━━━━━━━━━━━━━━';
 
@@ -1326,15 +1328,15 @@ async function showAnalyticsMainMenu(chatId, keys) {
     chatId,
     text:
       '━━━━━━━━━━━━━━\n' +
-      '📊 <b>LinkRay Analytics</b>\n\n' +
+      ' <b>LinkRay Analytics</b>\n\n' +
       'Выберите раздел:\n\n' +
-      '🖼 <b>Картинка по ссылке</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.\n\n' +
-      '📅 <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.\n' +
+      ' <b>Картинка по ссылке</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.\n\n' +
+      ' <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.\n' +
       '━━━━━━━━━━━━━━',
     format: 'html',
     attachments: lrMenuButtons([
-      [lrCb('🖼 Картинка по ссылке', 'lrchan:links')],
-      [lrCb('📅 Ежедневный отчёт ПДП', 'lrchan:daily')],
+      [lrCb(' Картинка по ссылке', 'lrchan:links')],
+      [lrCb(' Ежедневный отчёт ПДП', 'lrchan:daily')],
       [lrCb('⬅️ Главное меню', 'main:menu')],
     ]),
   });
@@ -1347,7 +1349,7 @@ async function showAnalyticsLinkInput(chatId, keys) {
     chatId,
     text:
       '━━━━━━━━━━━━━━\n' +
-      '🖼 <b>Картинка аналитики</b>\n\n' +
+      ' <b>Картинка аналитики</b>\n\n' +
       'Отправьте ссылку MAX-канала.\n\n' +
       'Можно отправить несколько ссылок сразу — каждую с новой строки. Тогда бот сделает сводную карточку сети каналов.\n' +
       '━━━━━━━━━━━━━━',
@@ -1362,25 +1364,25 @@ async function showAnalyticsLinkInput(chatId, keys) {
 async function showDailyPdpMenu(chatId, keys) {
   const settings = await getAnalyticsSettingsForKeys(keys);
   const status = settings.dailyEnabled ? 'включён' : 'выключен';
-  const icon = settings.dailyEnabled ? '✅' : '⛔';
+  const icon = settings.dailyEnabled ? '' : '⛔';
 
   await sendMaxMessage({
     chatId,
     text:
       '━━━━━━━━━━━━━━\n' +
-      '📅 <b>Ежедневный отчёт ПДП</b>\n\n' +
+      ' <b>Ежедневный отчёт ПДП</b>\n\n' +
       `${icon} Сейчас отчёт: <b>${status}</b>\n` +
       `📌 Каналов сохранено: <b>${settings.links.length}</b>\n\n` +
       'Каждый день в 08:00 МСК бот будет присылать:\n' +
-      '✅ сколько подписалось;\n' +
-      '❌ сколько отписалось;\n' +
-      '📊 общий итог за сутки;\n' +
-      '🖼 карточку LinkRay Analytics.\n' +
+      ' сколько подписалось;\n' +
+      ' сколько отписалось;\n' +
+      ' общий итог за сутки;\n' +
+      ' карточку LinkRay Analytics.\n' +
       '━━━━━━━━━━━━━━',
     format: 'html',
     attachments: lrMenuButtons([
-      [lrCb('✅ Включить отчёт', 'lrchan:on'), lrCb('⛔ Отключить отчёт', 'lrchan:off')],
-      [lrCb('🖼 Изменить каналы', 'lrchan:links')],
+      [lrCb(' Включить отчёт', 'lrchan:on'), lrCb('⛔ Отключить отчёт', 'lrchan:off')],
+      [lrCb(' Изменить каналы', 'lrchan:links')],
       [lrCb('⬅️ В аналитику', 'lrchan:menu')],
     ]),
   });
@@ -1399,7 +1401,7 @@ async function showFallbackMainMenu(chatId, keys) {
     format: 'html',
     attachments: lrMenuButtons([
       [lrCb('🚀 LinkRay Studio', 'main:posting')],
-      [lrCb('📊 Аналитика', 'main:analytics')],
+      [lrCb(' Аналитика', 'main:analytics')],
       [lrCb('➕ Добавить канал', 'post:add_channel')],
       [lrCb('📈 Отчёты', 'reports:menu'), lrCb('🛡 Антифрод', 'fraud:menu')],
     ]),
@@ -1548,7 +1550,7 @@ export function mountLinkRayChannelAnalytics(app) {
         await setDaily(chatId, true);
         await sendMaxMessage({
           chatId,
-          text: '✅ Ежедневный отчёт ПДП включена.\nСводка будет приходить каждый день в 08:00 МСК.',
+          text: ' Ежедневный отчёт ПДП включена.\nСводка будет приходить каждый день в 08:00 МСК.',
           format: 'html',
         });
         return res.json({ ok: true });
