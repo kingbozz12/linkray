@@ -2,6 +2,7 @@
 import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
 import dotenv from 'dotenv';
+import { mountLinkRayChannelAnalytics, handleLinkRayChannelAnalyticsIncoming } from './linkrayChannelAnalytics.js';
 dotenv.config();
 
 import express from 'express'; import crypto from 'node:crypto';
@@ -8337,10 +8338,10 @@ function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(
 
 function mainMenuRows() {
   return [
-    [callbackButton(' LinkRay Studio', 'main:posting')],
+    [callbackButton('🚀 LinkRay Studio', 'main:posting')],
     [callbackButton('📊 Аналитика', 'main:analytics')],
-    [callbackButton(' Добавить канал', 'post:add_channel')],
-    [callbackButton(' Отчёты', 'reports:menu'), callbackButton(' Антифрод', 'fraud:menu')],
+    [callbackButton('➕ Добавить канал', 'post:add_channel')],
+    [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')],
   ];
 }
 async function showMainCallback(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
@@ -10221,15 +10222,23 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
 
 app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.json({ ok: true, service: 'linkray-bot', db: true, time: nowIso() }); } catch(e) { res.status(500).json({ ok:false, error: e.message }); } });
 
-// LINKRAY_CHANNEL_ANALYTICS_START
-import('./linkrayChannelAnalytics.js')
-  .then((mod) => {
-    if (typeof mod.mountLinkRayChannelAnalytics === 'function') {
-      mod.mountLinkRayChannelAnalytics(app);
+
+// LR_ANALYTICS_PRE_WEBHOOK_START
+mountLinkRayChannelAnalytics(app);
+
+app.post('/webhook', async (req, res, next) => {
+  try {
+    const handled = await handleLinkRayChannelAnalyticsIncoming(req.body || {});
+    if (handled) {
+      return res.json({ ok: true });
     }
-  })
-  .catch((error) => console.error('[LinkRay channel analytics mount]', error?.stack || error));
-// LINKRAY_CHANNEL_ANALYTICS_END
+  } catch (error) {
+    console.error('[LinkRay analytics pre-webhook]', error?.stack || error);
+  }
+
+  return next();
+});
+// LR_ANALYTICS_PRE_WEBHOOK_END
 
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');

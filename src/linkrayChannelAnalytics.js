@@ -879,7 +879,7 @@ async function handleLinks(chatId, links) {
     chatId,
     text:
       '━━━━━━━━━━━━━━\n' +
-      '⚙️ <b>Ежедневная аналитика</b>\n\n' +
+      '⚙️ <b>Ежедневный отчёт ПДП</b>\n\n' +
       'Бот может присылать сводку каждый день в 08:00 МСК по этим каналам.\n' +
       '━━━━━━━━━━━━━━',
     format: 'html',
@@ -888,8 +888,8 @@ async function handleLinks(chatId, links) {
         type: 'inline_keyboard',
         payload: {
           buttons: [
-            [{ type: 'callback', text: '✅ Включить 08:00', payload: 'lrchan:on' }],
-            [{ type: 'callback', text: '⛔ Отключить', payload: 'lrchan:off' }],
+            [{ type: 'callback', text: '✅ Включить отчёт отчёт', payload: 'lrchan:on' }],
+            [{ type: 'callback', text: '⛔ Отключить отчёт', payload: 'lrchan:off' }],
           ],
         },
       },
@@ -978,7 +978,11 @@ function startDailyWorker() {
 }
 
 
-/* LR_CHANNEL_ANALYTICS_MENU_V1 */
+
+
+
+
+/* LR_CHANNEL_ANALYTICS_MENU_FIX_V3 */
 function lrMenuButtons(rows) {
   return [{
     type: 'inline_keyboard',
@@ -990,7 +994,7 @@ function lrCb(text, payload) {
   return { type: 'callback', text, payload };
 }
 
-function lrTextNorm(value) {
+function lrNormText(value) {
   return String(value || '')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
@@ -998,8 +1002,8 @@ function lrTextNorm(value) {
     .toLowerCase();
 }
 
-function lrIsAnalyticsMenuText(text) {
-  const t = lrTextNorm(text);
+function lrIsAnalyticsText(text) {
+  const t = lrNormText(text);
   return (
     t === 'аналитика' ||
     t === 'linkray analytics' ||
@@ -1011,7 +1015,6 @@ function lrIsAnalyticsMenuText(text) {
 
 async function ensureAnalyticsMenuTables() {
   await ensureTables();
-
   await query(`
     ALTER TABLE public.lr_channel_analytics_settings
     ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT ''
@@ -1030,7 +1033,6 @@ async function getAnalyticsSettings(chatId) {
   ).catch(() => []);
 
   const row = rows(result)[0] || {};
-
   let links = [];
 
   try {
@@ -1068,13 +1070,14 @@ async function showAnalyticsMainMenu(chatId) {
     text:
       '━━━━━━━━━━━━━━\n' +
       '📊 <b>LinkRay Analytics</b>\n\n' +
-      'Здесь можно сделать картинку-аналитику по каналу или включить ежедневные уведомления по подпискам и отпискам.\n\n' +
-      'Выберите раздел.\n' +
+      'Выберите раздел:\n\n' +
+      '🖼 <b>Картинка по ссылке</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.\n\n' +
+      '📅 <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.\n' +
       '━━━━━━━━━━━━━━',
     format: 'html',
     attachments: lrMenuButtons([
       [lrCb('🖼 Картинка по ссылке', 'lrchan:links')],
-      [lrCb('🔔 Уведомления', 'lrchan:notifications')],
+      [lrCb('📅 Ежедневный отчёт ПДП', 'lrchan:daily')],
       [lrCb('⬅️ Главное меню', 'main:menu')],
     ]),
   });
@@ -1102,37 +1105,67 @@ async function showAnalyticsLinkInput(chatId) {
   });
 }
 
-async function showAnalyticsNotifications(chatId) {
+async function showDailyPdpMenu(chatId) {
   const settings = await getAnalyticsSettings(chatId);
-  const status = settings.dailyEnabled ? 'включены' : 'выключены';
+  const status = settings.dailyEnabled ? 'включён' : 'выключен';
   const icon = settings.dailyEnabled ? '✅' : '⛔';
-  const linksCount = settings.links.length;
 
   await sendMaxMessage({
     chatId,
     text:
       '━━━━━━━━━━━━━━\n' +
-      '🔔 <b>Уведомления по подпискам</b>\n\n' +
-      `${icon} Сейчас уведомления: <b>${status}</b>\n` +
-      `📌 Каналов сохранено: <b>${linksCount}</b>\n\n` +
+      '📅 <b>Ежедневный отчёт ПДП</b>\n\n' +
+      `${icon} Сейчас отчёт: <b>${status}</b>\n` +
+      `📌 Каналов сохранено: <b>${settings.links.length}</b>\n\n` +
       'Каждый день в 08:00 МСК бот будет присылать:\n' +
-      '• сколько подписалось;\n' +
-      '• сколько отписалось;\n' +
-      '• общий итог за сутки;\n' +
-      '• красивую карточку LinkRay Analytics.\n' +
+      '✅ сколько подписалось;\n' +
+      '❌ сколько отписалось;\n' +
+      '📊 общий итог за сутки;\n' +
+      '🖼 карточку LinkRay Analytics.\n' +
       '━━━━━━━━━━━━━━',
     format: 'html',
     attachments: lrMenuButtons([
-      [lrCb('✅ Включить', 'lrchan:on'), lrCb('⛔ Отключить', 'lrchan:off')],
+      [lrCb('✅ Включить отчёт', 'lrchan:on'), lrCb('⛔ Отключить отчёт', 'lrchan:off')],
       [lrCb('🖼 Изменить каналы', 'lrchan:links')],
       [lrCb('⬅️ В аналитику', 'lrchan:menu')],
     ]),
   });
 }
 
-async function handleAnalyticsMenuMiddleware(update, chatId, payload, text) {
+async function showFallbackMainMenu(chatId) {
+  await setAnalyticsMode(chatId, '');
+
+  await sendMaxMessage({
+    chatId,
+    text:
+      '━━━━━━━━━━━━━━\n' +
+      '⚡ <b>LinkRay</b>\n\n' +
+      'Главное меню.\n' +
+      '━━━━━━━━━━━━━━',
+    format: 'html',
+    attachments: lrMenuButtons([
+      [lrCb('🚀 LinkRay Studio', 'main:posting')],
+      [lrCb('📊 Аналитика', 'main:analytics')],
+      [lrCb('➕ Добавить канал', 'post:add_channel')],
+      [lrCb('📈 Отчёты', 'reports:menu'), lrCb('🛡 Антифрод', 'fraud:menu')],
+    ]),
+  });
+}
+
+async function handleAnalyticsMenu(update) {
+  const chatId = getChatId(update);
+  if (!chatId) return false;
+
+  const payload = getPayload(update);
+  const text = getText(update);
+
   if (payload === 'main:analytics' || payload === 'analytics:menu' || payload === 'lrchan:menu') {
     await showAnalyticsMainMenu(chatId);
+    return true;
+  }
+
+  if (payload === 'main:menu') {
+    await showFallbackMainMenu(chatId);
     return true;
   }
 
@@ -1141,24 +1174,24 @@ async function handleAnalyticsMenuMiddleware(update, chatId, payload, text) {
     return true;
   }
 
-  if (payload === 'lrchan:notifications') {
-    await showAnalyticsNotifications(chatId);
+  if (payload === 'lrchan:daily' || payload === 'lrchan:notifications') {
+    await showDailyPdpMenu(chatId);
     return true;
   }
 
   if (payload === 'lrchan:on') {
     await setDaily(chatId, true);
-    await showAnalyticsNotifications(chatId);
+    await showDailyPdpMenu(chatId);
     return true;
   }
 
   if (payload === 'lrchan:off') {
     await setDaily(chatId, false);
-    await showAnalyticsNotifications(chatId);
+    await showDailyPdpMenu(chatId);
     return true;
   }
 
-  if (lrIsAnalyticsMenuText(text)) {
+  if (lrIsAnalyticsText(text)) {
     await showAnalyticsMainMenu(chatId);
     return true;
   }
@@ -1188,7 +1221,16 @@ async function handleAnalyticsMenuMiddleware(update, chatId, payload, text) {
 
   return false;
 }
-/* LR_CHANNEL_ANALYTICS_MENU_V1_END */
+
+export async function handleLinkRayChannelAnalyticsIncoming(update) {
+  try {
+    return await handleAnalyticsMenu(update);
+  } catch (error) {
+    console.error('[LinkRay channel analytics incoming]', error?.stack || error);
+    return false;
+  }
+}
+/* LR_CHANNEL_ANALYTICS_MENU_FIX_V3_END */
 
 export function mountLinkRayChannelAnalytics(app) {
   if (mounted) return;
@@ -1202,30 +1244,8 @@ export function mountLinkRayChannelAnalytics(app) {
   }));
 
   
-  app.use(async function lrChannelAnalyticsMenuMiddleware(req, res, next) {
-    try {
-      if (req.method !== 'POST') return next();
+  
 
-      const update = req.body || {};
-      const payload = getPayload(update);
-      const chatId = getChatId(update);
-
-      if (!chatId) return next();
-
-      const text = getText(update);
-
-      const handled = await handleAnalyticsMenuMiddleware(update, chatId, payload, text);
-
-      if (handled) {
-        return res.json({ ok: true });
-      }
-
-      return next();
-    } catch (error) {
-      console.error('[LinkRay channel analytics menu]', error.stack || error);
-      return next();
-    }
-  });
 
 
   app.use(async function lrChannelAnalyticsMiddleware(req, res, next) {
@@ -1233,6 +1253,8 @@ export function mountLinkRayChannelAnalytics(app) {
       if (req.method !== 'POST') return next();
 
       const update = req.body || {};
+      const handledByMenu = await handleLinkRayChannelAnalyticsIncoming(update);
+      if (handledByMenu) return res.json({ ok: true });
       const payload = getPayload(update);
       const chatId = getChatId(update);
 
@@ -1242,7 +1264,7 @@ export function mountLinkRayChannelAnalytics(app) {
         await setDaily(chatId, true);
         await sendMaxMessage({
           chatId,
-          text: '✅ Ежедневная аналитика включена.\nСводка будет приходить каждый день в 08:00 МСК.',
+          text: '✅ Ежедневный отчёт ПДП включена.\nСводка будет приходить каждый день в 08:00 МСК.',
           format: 'html',
         });
         return res.json({ ok: true });
@@ -1252,7 +1274,7 @@ export function mountLinkRayChannelAnalytics(app) {
         await setDaily(chatId, false);
         await sendMaxMessage({
           chatId,
-          text: '⛔ Ежедневная аналитика отключена.',
+          text: '⛔ Ежедневный отчёт ПДП отключена.',
           format: 'html',
         });
         return res.json({ ok: true });
