@@ -816,10 +816,6 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 // LINKRAY_PREEMPT_ANALYTICS_END
 
 
-import('./linkrayAnalyticsRoutes.js')
-  .then(({ mountLinkRayAnalyticsRoutes }) => mountLinkRayAnalyticsRoutes(app))
-  .catch((error) => console.error('[linkray analytics mount]', error?.stack || error));
-
 app.use(express.json({ limit: '50mb' }));
 
 /* LR_FINAL_CAL_CPM_V2_START */
