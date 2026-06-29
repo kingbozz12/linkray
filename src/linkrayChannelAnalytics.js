@@ -648,135 +648,295 @@ linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-siz
 </html>`;
 }
 
-async function renderSingle(ch) {
-  const avatar = await inlineAvatar(ch.avatarUrl, ch.title);
-  const history = await historyFor(ch.key, 'subscribers');
 
-  const subValues = history.length ? history.map((x) => x.value) : [ch.subscribers];
-  const subLabels = history.length ? history.map((x) => x.label) : [todayMsk()];
-
-  const html = htmlWrap(`
-<div class="card">
-  <div class="inner">
-    <div class="sheet">
-      <div class="top">
-        <div class="left">
-          ${avatar}
-          <div class="title">
-            <b>${esc(ch.title)}</b>
-            <span>данные MAX · ${esc(nowMskHuman())}</span>
-          </div>
-        </div>
-        <div class="lr">LinkRay Analytics</div>
-      </div>
-
-      <div class="metrics">
-        <div class="metric"><div class="k">Подписчики</div><div class="v">${fmt(ch.subscribers)}</div></div>
-        <div class="metric ${ch.deltaDay < 0 ? 'red' : 'green'}"><div class="k">Сегодня</div><div class="v">${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}</div></div>
-        <div class="metric green"><div class="k">Охват 24ч</div><div class="v">${fmt(ch.views24)}</div></div>
-        <div class="metric"><div class="k">ER24</div><div class="v">${pct(ch.er24)}</div></div>
-      </div>
-
-      <div class="grid">
-        <div class="panel">
-          <div class="ph"><b>Динамика подписчиков</b><span>по дням</span></div>
-          <div class="chart">${chartSvg(subValues, subLabels)}</div>
-        </div>
-        <div class="panel">
-          <div class="ph"><b>Охваты поста</b><span>MAX</span></div>
-          <div class="chart">${barSvg([ch.views24, ch.views48, ch.views72], ['24ч','48ч','72ч'])}</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="txt">
-      <div class="cap">
-        <span class="red">${esc(ch.title)}</span><br>
-        Подписчики: <b>${fmt(ch.subscribers)}</b> | ER24: <b>${pct(ch.er24)}</b> · Охват: <b>${fmt(ch.views24)} / ${fmt(ch.views48)} / ${fmt(ch.views72)}</b>
-      </div>
-      <div>
-        <div class="foot"><span class="red">LinkRay</span> — аналитика каналов и рекламных размещений в MAX</div>
-        <div class="time">${esc(nowMskHuman().slice(-5))}</div>
-      </div>
-    </div>
-  </div>
-</div>`);
-
-  return renderPng(html, `single-${ch.key}`);
+/* LR_PURE_SVG_RENDER_V1 */
+function svgEsc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
-async function renderNetwork(channels) {
+function svgShort(value, max = 44) {
+  const text = plain(value || 'Канал MAX');
+  return text.length > max ? text.slice(0, max).trim() + '…' : text;
+}
+
+async function avatarDataUrl(url) {
+  if (!url || !/^https?:\/\//i.test(url)) return '';
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+
+    if (!response.ok) return '';
+
+    const type = response.headers.get('content-type') || 'image/jpeg';
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    return `data:${type};base64,${buffer.toString('base64')}`;
+  } catch {
+    return '';
+  }
+}
+
+async function svgAvatar({ title, avatarUrl }, x, y, size, className = '') {
+  const letter = svgEsc(String(title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+  const data = await avatarDataUrl(avatarUrl);
+  const id = `av_${hash(`${avatarUrl || title || ''}_${x}_${y}_${size}`)}`;
+
+  if (data) {
+    return `
+      <clipPath id="${id}"><circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}"/></clipPath>
+      <image href="${data}" x="${x}" y="${y}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${id})"/>
+      <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 - 1}" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="2"/>
+    `;
+  }
+
+  const gradients = {
+    a: ['#ffe08a', '#b8751d', '#291a0d'],
+    b: ['#ffa5cf', '#884bff', '#1c123b'],
+    c: ['#a4ffe0', '#169d74', '#0b3329'],
+    d: ['#9fd2ff', '#4967d7', '#151c4a'],
+  };
+
+  const g = gradients[className] || gradients.a;
+  const gid = `g_${id}`;
+
+  return `
+    <defs>
+      <radialGradient id="${gid}" cx="30%" cy="25%" r="75%">
+        <stop offset="0%" stop-color="${g[0]}"/>
+        <stop offset="48%" stop-color="${g[1]}"/>
+        <stop offset="100%" stop-color="${g[2]}"/>
+      </radialGradient>
+    </defs>
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="url(#${gid})"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + size * .16}" text-anchor="middle" font-size="${Math.round(size * .46)}" font-weight="1000" fill="#fff">${letter}</text>
+  `;
+}
+
+function metricSvg(x, y, w, h, label, value, color = '#168eea') {
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="14" fill="#fff" stroke="#e5edf6"/>
+    <text x="${x + w / 2}" y="${y + 25}" text-anchor="middle" font-size="16" font-weight="1000" fill="#8793a3">${svgEsc(label)}</text>
+    <text x="${x + w / 2}" y="${y + 68}" text-anchor="middle" font-size="38" font-weight="1000" fill="${color}">${svgEsc(value)}</text>
+  `;
+}
+
+function lineChartSvg(values, labels, x, y, w, h) {
+  let nums = values.map(num).filter((v) => Number.isFinite(v));
+
+  if (!nums.length) nums = [0, 0];
+  if (nums.length === 1) nums = [nums[0], nums[0]];
+
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const span = Math.max(1, max - min);
+  const pad = 18;
+
+  const pts = nums.map((v, i) => {
+    const px = x + pad + (w - pad * 2) * (i / Math.max(1, nums.length - 1));
+    const py = y + pad + (h - pad * 2) * (1 - ((v - min) / span));
+    return [px, py, v];
+  });
+
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const area = `${d} L ${x + w - pad},${y + h - pad} L ${x + pad},${y + h - pad} Z`;
+  const dots = pts.map((p) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="6" fill="#fff" stroke="#31d986" stroke-width="4"/>`).join('');
+
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+
+  return `
+    <g>
+      <line x1="${x + pad}" y1="${y + pad}" x2="${x + w - pad}" y2="${y + pad}" stroke="#e6edf6"/>
+      <line x1="${x + pad}" y1="${y + h / 2}" x2="${x + w - pad}" y2="${y + h / 2}" stroke="#e6edf6"/>
+      <line x1="${x + pad}" y1="${y + h - pad}" x2="${x + w - pad}" y2="${y + h - pad}" stroke="#e6edf6"/>
+      <path d="${area}" fill="rgba(36,217,255,.14)"/>
+      <path d="${d}" fill="none" stroke="#24bff2" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      ${dots}
+      <text x="${Math.min(x + w - 120, Math.max(x + 24, first[0] + 6))}" y="${Math.max(y + 20, first[1] - 10)}" font-size="18" font-weight="1000" fill="#111827">${fmt(first[2])}</text>
+      <text x="${Math.max(x + 24, Math.min(x + w - 120, last[0] - 88))}" y="${Math.max(y + 20, last[1] - 10)}" font-size="18" font-weight="1000" fill="#111827">${fmt(last[2])}</text>
+    </g>
+  `;
+}
+
+function barChartSvg(values, labels, x, y, w, h) {
+  const nums = values.map(num);
+  const max = Math.max(...nums, 1);
+  const pad = 22;
+  const gap = (w - pad * 2) / nums.length;
+  const barW = gap * 0.55;
+  const colors = ['#24d9ff', '#4a8dff', '#31d986'];
+
+  return `
+    <g>
+      <line x1="${x + pad}" y1="${y + pad}" x2="${x + w - pad}" y2="${y + pad}" stroke="#e6edf6"/>
+      <line x1="${x + pad}" y1="${y + h / 2}" x2="${x + w - pad}" y2="${y + h / 2}" stroke="#e6edf6"/>
+      <line x1="${x + pad}" y1="${y + h - pad}" x2="${x + w - pad}" y2="${y + h - pad}" stroke="#e6edf6"/>
+      ${nums.map((v, i) => {
+        const bh = (h - pad * 2) * (v / max);
+        const bx = x + pad + gap * i + gap * .225;
+        const by = y + h - pad - bh;
+        return `
+          <rect x="${bx}" y="${by}" width="${barW}" height="${bh}" rx="13" fill="${colors[i % colors.length]}"/>
+          <text x="${bx + barW / 2}" y="${Math.max(y + 20, by - 8)}" text-anchor="middle" font-size="19" font-weight="1000" fill="#111827">${fmt(v)}</text>
+          <text x="${bx + barW / 2}" y="${y + h - 4}" text-anchor="middle" font-size="15" font-weight="900" fill="#758397">${svgEsc(labels[i] || '')}</text>
+        `;
+      }).join('')}
+    </g>
+  `;
+}
+
+async function saveSvgPng(svg, name) {
+  await fs.mkdir(OUT_DIR, { recursive: true });
+
+  const fileName = `${name}-${Date.now()}.png`;
+  const filePath = path.join(OUT_DIR, fileName);
+
+  await sharp(Buffer.from(svg)).png().toFile(filePath);
+
+  return {
+    filePath,
+    publicUrl: `${PUBLIC_BASE_URL.replace(/\/+$/, '')}/generated/channel-analytics/${fileName}`,
+  };
+}
+
+async function renderSingleSvg(ch) {
+  const history = await historyFor(ch.key, 'subscribers');
+  const subValues = history.length ? history.map((x) => x.value) : [ch.subscribers, ch.subscribers];
+  const avatar = await svgAvatar(ch, 58, 49, 54, 'a');
+
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="675" viewBox="0 0 1080 675">
+  <defs>
+    <linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#292627"/>
+      <stop offset="100%" stop-color="#373033"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1080" height="675" fill="url(#bg1)"/>
+  <circle cx="0" cy="0" r="320" fill="rgba(34,217,255,.13)"/>
+  <circle cx="1080" cy="0" r="340" fill="rgba(32,199,123,.11)"/>
+
+  <rect x="18" y="18" width="1044" height="500" rx="20" fill="#fff"/>
+  ${avatar}
+  <text x="126" y="73" font-size="24" font-weight="1000" fill="#111827">${svgEsc(svgShort(ch.title, 45))}</text>
+  <text x="126" y="98" font-size="14" font-weight="850" fill="#758397">данные MAX · ${svgEsc(nowMskHuman())}</text>
+  <text x="833" y="82" font-size="18" font-weight="1000" fill="#5b62ff">LinkRay Analytics</text>
+
+  ${metricSvg(44, 132, 238, 86, 'Подписчики', fmt(ch.subscribers), '#168eea')}
+  ${metricSvg(298, 132, 238, 86, 'Сегодня', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#d9635d' : '#20c77b')}
+  ${metricSvg(552, 132, 238, 86, 'Охват 24ч', fmt(ch.views24), '#20c77b')}
+  ${metricSvg(806, 132, 238, 86, 'ER24', pct(ch.er24), '#168eea')}
+
+  <rect x="44" y="242" width="610" height="238" rx="16" fill="#f7fbff" stroke="#e5edf6"/>
+  <text x="66" y="278" font-size="18" font-weight="1000" fill="#4c5d73">Динамика подписчиков</text>
+  <text x="512" y="278" font-size="13" font-weight="900" fill="#758397">по дням</text>
+  ${lineChartSvg(subValues, [], 66, 292, 566, 158)}
+
+  <rect x="674" y="242" width="370" height="238" rx="16" fill="#f7fbff" stroke="#e5edf6"/>
+  <text x="696" y="278" font-size="18" font-weight="1000" fill="#4c5d73">Охваты поста</text>
+  <text x="958" y="278" font-size="13" font-weight="900" fill="#758397">MAX</text>
+  ${barChartSvg([ch.views24, ch.views48, ch.views72], ['24ч','48ч','72ч'], 692, 296, 332, 150)}
+
+  <text x="28" y="562" font-size="27" font-weight="1000" fill="#d9635d" text-decoration="underline">${svgEsc(svgShort(ch.title, 48))}</text>
+  <text x="28" y="604" font-size="25" fill="#fff">
+    <tspan font-weight="1000">Подписчики:</tspan> ${fmt(ch.subscribers)} | <tspan font-weight="1000">ER24:</tspan> ${pct(ch.er24)} · <tspan font-weight="1000">Охват:</tspan> ${fmt(ch.views24)} / ${fmt(ch.views48)} / ${fmt(ch.views72)}
+  </text>
+
+  <rect x="650" y="548" width="405" height="78" rx="8" fill="rgba(255,255,255,.12)"/>
+  <rect x="650" y="548" width="5" height="78" rx="2" fill="rgba(255,255,255,.86)"/>
+  <text x="672" y="581" font-size="20" fill="#fff"><tspan fill="#d9635d" font-weight="1000" text-decoration="underline">LinkRay</tspan> — аналитика каналов</text>
+  <text x="672" y="609" font-size="20" fill="#fff">и рекламных размещений в MAX</text>
+</svg>`;
+
+  return saveSvgPng(svg, `single-${ch.key}`);
+}
+
+async function renderNetworkSvg(channels) {
   const totalSubs = channels.reduce((sum, ch) => sum + ch.subscribers, 0);
   const total24 = channels.reduce((sum, ch) => sum + ch.views24, 0);
   const total48 = channels.reduce((sum, ch) => sum + ch.views48, 0);
   const total72 = channels.reduce((sum, ch) => sum + ch.views72, 0);
   const totalDelta = channels.reduce((sum, ch) => sum + ch.deltaDay, 0);
   const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
-
   const history = await networkHistory(channels);
-  const histValues = history.length ? history.map((x) => x.value) : [totalSubs];
-  const histLabels = history.length ? history.map((x) => x.label) : [todayMsk()];
+  const histValues = history.length ? history.map((x) => x.value) : [totalSubs, totalSubs];
 
   const sorted = [...channels].sort((a, b) => b.views24 - a.views24).slice(0, 4);
+  const cls = ['b', 'a', 'c', 'd'];
 
-  const rowHtml = [];
-  for (const ch of sorted) {
-    const avatar = await inlineAvatar(ch.avatarUrl, ch.title);
-    rowHtml.push(`
-      <div class="row">
-        ${avatar}
-        <span class="name">${esc(short(ch.title, 34))}</span>
-        <b>${fmt(ch.views24)}</b>
-        <em class="${ch.deltaDay < 0 ? 'minus' : 'plus'}">${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}</em>
-      </div>
+  const rowsSvg = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const ch = sorted[i];
+    const y = 335 + i * 42;
+    const av = await svgAvatar(ch, 702, y - 25, 30, cls[i] || 'a');
+
+    rowsSvg.push(`
+      ${av}
+      <text x="744" y="${y}" font-size="16" font-weight="950" fill="#263447">${svgEsc(svgShort(ch.title, 27))}</text>
+      <text x="952" y="${y}" font-size="17" font-weight="1000" text-anchor="end" fill="#168eea">${fmt(ch.views24)}</text>
+      <text x="1025" y="${y}" font-size="15" font-weight="1000" text-anchor="end" fill="${ch.deltaDay < 0 ? '#d9635d' : '#20c77b'}">${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}</text>
     `);
   }
 
-  const html = htmlWrap(`
-<div class="card">
-  <div class="inner">
-    <div class="sheet">
-      <div class="top" style="justify-content:center;text-align:center">
-        <div class="title">
-          <b style="font-size:24px">Статистика по всей сетке каналов</b>
-          <span>LinkRay Analytics · ${channels.length} каналов · ${esc(nowMskHuman())}</span>
-        </div>
-      </div>
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="675" viewBox="0 0 1080 675">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#292627"/>
+      <stop offset="100%" stop-color="#373033"/>
+    </linearGradient>
+  </defs>
 
-      <div class="metrics">
-        <div class="metric"><div class="k">Подписчики</div><div class="v">${fmt(totalSubs)}</div></div>
-        <div class="metric green"><div class="k">Просмотры 24ч</div><div class="v">${fmt(total24)}</div></div>
-        <div class="metric"><div class="k">Общий ER</div><div class="v">${pct(er24)}</div></div>
-        <div class="metric ${totalDelta < 0 ? 'red' : 'green'}"><div class="k">Сегодня</div><div class="v">${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</div></div>
-      </div>
+  <rect width="1080" height="675" fill="url(#bg2)"/>
+  <circle cx="0" cy="0" r="320" fill="rgba(34,217,255,.13)"/>
+  <circle cx="1080" cy="0" r="340" fill="rgba(32,199,123,.11)"/>
 
-      <div class="grid net">
-        <div class="panel">
-          <div class="ph"><b>Общие подписчики сети</b><span>по дням</span></div>
-          <div class="chart">${chartSvg(histValues, histLabels)}</div>
-        </div>
+  <rect x="18" y="18" width="1044" height="500" rx="20" fill="#fff"/>
+  <text x="540" y="68" font-size="28" font-weight="1000" text-anchor="middle" fill="#111827">Статистика по всей сетке каналов</text>
+  <text x="540" y="96" font-size="16" font-weight="850" text-anchor="middle" fill="#758397">LinkRay Analytics · ${channels.length} каналов · ${svgEsc(nowMskHuman())}</text>
 
-        <div class="panel">
-          <div class="ph"><b>Каналы</b><span>охват 24ч</span></div>
-          <div class="rows">${rowHtml.join('')}</div>
-        </div>
-      </div>
-    </div>
+  ${metricSvg(44, 132, 238, 86, 'Подписчики', fmt(totalSubs), '#168eea')}
+  ${metricSvg(298, 132, 238, 86, 'Просмотры 24ч', fmt(total24), '#20c77b')}
+  ${metricSvg(552, 132, 238, 86, 'Общий ER', pct(er24), '#168eea')}
+  ${metricSvg(806, 132, 238, 86, 'Сегодня', `${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}`, totalDelta < 0 ? '#d9635d' : '#20c77b')}
 
-    <div class="txt">
-      <div class="cap">
-        👥 Всего подписчиков в <b>${channels.length} каналах:</b> <b>${fmt(totalSubs)}</b><br>
-        👁 Просмотры: <b>24ч ${fmt(total24)}</b> · <b>48ч ${fmt(total48)}</b> · <b>72ч ${fmt(total72)}</b>
-      </div>
-      <div>
-        <div class="foot"><span class="red">LinkRay</span> — сводная аналитика каналов MAX</div>
-        <div class="time">${esc(nowMskHuman().slice(-5))}</div>
-      </div>
-    </div>
-  </div>
-</div>`);
+  <rect x="44" y="242" width="610" height="238" rx="16" fill="#f7fbff" stroke="#e5edf6"/>
+  <text x="66" y="278" font-size="18" font-weight="1000" fill="#4c5d73">Общие подписчики сети</text>
+  <text x="512" y="278" font-size="13" font-weight="900" fill="#758397">по дням</text>
+  ${lineChartSvg(histValues, [], 66, 292, 566, 158)}
 
-  return renderPng(html, `network-${hash(channels.map((c) => c.key).join('-'))}`);
+  <rect x="674" y="242" width="370" height="238" rx="16" fill="#f7fbff" stroke="#e5edf6"/>
+  <text x="696" y="278" font-size="18" font-weight="1000" fill="#4c5d73">Каналы</text>
+  <text x="958" y="278" font-size="13" font-weight="900" fill="#758397">охват 24ч</text>
+  <text x="744" y="307" font-size="13" font-weight="1000" fill="#8793a3">Канал</text>
+  <text x="952" y="307" font-size="13" font-weight="1000" text-anchor="end" fill="#8793a3">Охват</text>
+  <text x="1025" y="307" font-size="13" font-weight="1000" text-anchor="end" fill="#8793a3">ПДП</text>
+  ${rowsSvg.join('')}
+
+  <text x="28" y="562" font-size="28" fill="#fff">👥 Всего подписчиков в <tspan font-weight="1000">${channels.length} каналах:</tspan> <tspan font-weight="1000">${fmt(totalSubs)}</tspan></text>
+  <text x="28" y="604" font-size="25" fill="#fff">👁 Просмотры: <tspan font-weight="1000">24ч ${fmt(total24)}</tspan> · <tspan font-weight="1000">48ч ${fmt(total48)}</tspan> · <tspan font-weight="1000">72ч ${fmt(total72)}</tspan></text>
+
+  <rect x="650" y="548" width="405" height="78" rx="8" fill="rgba(255,255,255,.12)"/>
+  <rect x="650" y="548" width="5" height="78" rx="2" fill="rgba(255,255,255,.86)"/>
+  <text x="672" y="581" font-size="20" fill="#fff"><tspan fill="#d9635d" font-weight="1000" text-decoration="underline">LinkRay</tspan> — сводная аналитика</text>
+  <text x="672" y="609" font-size="20" fill="#fff">каналов MAX</text>
+</svg>`;
+
+  return saveSvgPng(svg, `network-${hash(channels.map((c) => c.key).join('-'))}`);
+}
+/* LR_PURE_SVG_RENDER_V1_END */
+
+async function renderSingle(ch) {
+  return renderSingleSvg(ch);
+}
+
+async function renderNetwork(channels) {
+  return renderNetworkSvg(channels);
 }
 
 async function renderPng(html, name) {
@@ -1331,6 +1491,26 @@ export async function handleLinkRayChannelAnalyticsIncoming(update) {
     return handled;
   } catch (error) {
     console.error('[LinkRay channel analytics incoming]', error?.stack || error);
+
+    try {
+      const chatId = getChatId(update);
+      const text = getText(update);
+      const links = typeof lrLinksDeep === 'function' ? lrLinksDeep(update, text) : extractMaxLinks(text);
+      const payload = typeof lrPayloadDeep === 'function' ? lrPayloadDeep(update) : getPayload(update);
+
+      if (chatId && (links.length || String(payload || '').startsWith('lrchan') || payload === 'main:analytics')) {
+        await sendMaxMessage({
+          chatId,
+          text:
+            '⚠️ В аналитике произошла ошибка при создании картинки.\n' +
+            'Ссылка не будет отправлена в публикацию. Попробуйте ещё раз через пару секунд.',
+          format: 'html',
+        });
+
+        return true;
+      }
+    } catch {}
+
     return false;
   }
 }
