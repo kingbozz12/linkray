@@ -1495,6 +1495,111 @@ async function lrSafeRenderNetworkV4(channels) {
 }
 /* LR_COMPACT_ANALYTICS_CARD_V4_END */
 
+
+/* LR_ANALYTICS_CARD_FOOTER_V5_START */
+async function lrSafeRenderSingleV5(ch) {
+  const history = await historyFor(ch.key, 'subscribers');
+  const subValues = history.length ? history.map((x) => x.value) : [ch.subscribers, ch.subscribers];
+  const subLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
+  const avatar = await lrSafeAvatarV3(ch, 72, 132, 74, 0);
+  const titleLines = lrSvgWrapV3(ch.title, 36, 2);
+  const dateText = lrSvgEscV3(nowMskHuman());
+
+  const inner = `
+    <text x="52" y="64" font-size="40" font-weight="1000" fill="#ffffff">LinkRay Analytics</text>
+    <text x="54" y="96" font-size="18" font-weight="900" fill="#d5edf2">карточка канала · реальные данные после подключения бота</text>
+
+    ${lrMiniLogoV4(900, 40)}
+    <text x="962" y="72" font-size="23" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+    <rect x="1080" y="38" width="145" height="56" rx="22" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
+    <text x="1152" y="73" text-anchor="middle" font-size="21" font-weight="1000" fill="#31f2cc">1 КАНАЛ</text>
+
+    <rect x="34" y="118" width="1212" height="486" rx="38" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrShadowV4)"/>
+
+    ${avatar}
+    <text x="166" y="160" font-size="29" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[0])}</text>
+    ${titleLines[1] ? `<text x="166" y="194" font-size="29" font-weight="1000" fill="#fff">${lrSvgEscV3(titleLines[1])}</text>` : ''}
+    <text x="168" y="224" font-size="18" font-weight="900" fill="#d1edf1">MAX-канал · отчёт сформирован LinkRay</text>
+
+    ${lrMetricBoxV4(70, 258, 250, 96, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
+    ${lrMetricBoxV4(342, 258, 250, 96, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrMetricBoxV4(614, 258, 250, 96, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
+    ${lrMetricBoxV4(886, 258, 300, 96, 'ER24', pct(ch.er24), '#27d9ff')}
+
+    <text x="70" y="398" font-size="25" font-weight="1000" fill="#fff">Динамика подписчиков</text>
+    ${lrLineChartCompactV4(subValues, subLabels, 70, 418, 610, 138, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+
+    <text x="724" y="398" font-size="25" font-weight="1000" fill="#fff">Охваты</text>
+    ${lrBarsCompactV4([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 724, 418, 462, 138)}
+
+    <text x="70" y="638" font-size="21" font-weight="1000" fill="#ffffff">Просмотры: 24ч — ${fmt(ch.views24)} · 48ч — ${fmt(ch.views48)} · 72ч — ${fmt(ch.views72)}</text>
+    <text x="70" y="671" font-size="17" font-weight="900" fill="#d8f2f4">Сбор данных начинается после добавления бота в канал</text>
+    <text x="1210" y="704" text-anchor="end" font-size="17" font-weight="900" fill="#d8f2f4">Дата формирования: ${dateText} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrSvgShellV4(inner), `lr-single-v5-${ch.key}`);
+}
+
+async function lrSafeRenderNetworkV5(channels) {
+  const totalSubs = channels.reduce((s, ch) => s + num(ch.subscribers), 0);
+  const total24 = channels.reduce((s, ch) => s + num(ch.views24), 0);
+  const total48 = channels.reduce((s, ch) => s + num(ch.views48), 0);
+  const total72 = channels.reduce((s, ch) => s + num(ch.views72), 0);
+  const totalDelta = channels.reduce((s, ch) => s + num(ch.deltaDay), 0);
+  const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
+  const history = await networkHistory(channels);
+  const histValues = history.length ? history.map((x) => x.value) : [totalSubs, totalSubs];
+  const histLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
+  const sorted = channels.slice().sort((a, b) => num(b.views24) - num(a.views24)).slice(0, 4);
+  const dateText = lrSvgEscV3(nowMskHuman());
+
+  const rows = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const ch = sorted[i];
+    const y = 428 + i * 40;
+    const av = await lrSafeAvatarV3(ch, 718, y - 25, 32, i);
+    rows.push(`
+      ${av}
+      <text x="762" y="${y}" font-size="20" font-weight="1000" fill="#102033">${lrSvgEscV3(lrSvgShortV3(ch.title, 24))}</text>
+      <text x="1040" y="${y}" text-anchor="middle" font-size="21" font-weight="1000" fill="#168eea">${fmt(ch.subscribers)}</text>
+      <text x="1158" y="${y}" text-anchor="middle" font-size="21" font-weight="1000" fill="#168eea">${fmt(ch.views24)}</text>
+    `);
+  }
+
+  const inner = `
+    <text x="52" y="64" font-size="40" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
+    <text x="54" y="96" font-size="18" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по ${channels.length} каналам</text>
+
+    ${lrMiniLogoV4(1020, 40)}
+    <text x="1082" y="72" font-size="24" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+
+    <rect x="34" y="118" width="1212" height="486" rx="38" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrShadowV4)"/>
+
+    ${lrMetricBoxV4(70, 154, 250, 96, 'Подписчики', fmt(totalSubs), '#27d9ff')}
+    ${lrMetricBoxV4(342, 154, 250, 96, 'Просмотры 24ч', fmt(total24), '#31f2cc')}
+    ${lrMetricBoxV4(614, 154, 250, 96, 'Средний ER', pct(er24), '#27d9ff')}
+    ${lrMetricBoxV4(886, 154, 300, 96, 'Каналов', String(channels.length), '#31f2cc')}
+
+    <text x="70" y="302" font-size="25" font-weight="1000" fill="#fff">График подписчиков</text>
+    ${lrLineChartCompactV4(histValues, histLabels, 70, 322, 590, 208, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+
+    <rect x="696" y="322" width="490" height="208" rx="22" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
+    <text x="724" y="360" font-size="24" font-weight="1000" fill="#102033">Топ каналов</text>
+    <text x="762" y="390" font-size="15" font-weight="1000" fill="#7d8e9d">Название</text>
+    <text x="1040" y="390" text-anchor="middle" font-size="15" font-weight="1000" fill="#7d8e9d">ПДП</text>
+    <text x="1158" y="390" text-anchor="middle" font-size="15" font-weight="1000" fill="#7d8e9d">24ч</text>
+    <line x1="718" y1="400" x2="1168" y2="400" stroke="#dcebf2" stroke-width="2"/>
+    ${rows.join('')}
+
+    <text x="70" y="638" font-size="21" font-weight="1000" fill="#ffffff">Подписчики: ${fmt(totalSubs)} · Итог за сутки: ${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</text>
+    <text x="70" y="671" font-size="17" font-weight="900" fill="#d8f2f4">Охваты: 24ч — ${fmt(total24)} · 48ч — ${fmt(total48)} · 72ч — ${fmt(total72)}</text>
+    <text x="1210" y="704" text-anchor="end" font-size="17" font-weight="900" fill="#d8f2f4">Дата формирования: ${dateText} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrSvgShellV4(inner), `lr-network-v5-${hash(channels.map((x) => x.key).join('-'))}`);
+}
+/* LR_ANALYTICS_CARD_FOOTER_V5_END */
+
 async function renderSingleSvg(ch) {
   const avatar = await lrSvgAvatar(ch, 84, 214, 92, 1);
   const history = await historyFor(ch.key, 'subscribers');
@@ -1719,11 +1824,11 @@ function lrExtractPreviewMap(update, links) {
 /* LR_ANALYTICS_CARDS_V2_END */
 
 async function renderSingle(ch) {
-  return lrSafeRenderSingleV4(ch);
+  return lrSafeRenderSingleV5(ch);
 }
 
 async function renderNetwork(channels) {
-  return lrSafeRenderNetworkV4(channels);
+  return lrSafeRenderNetworkV5(channels);
 }
 
 async function renderPng(html, name) {
