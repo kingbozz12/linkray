@@ -1,7 +1,6 @@
 
 import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
-import { mountLinkRayAnalyticsRoutes } from './linkrayAnalyticsRoutes.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -798,7 +797,12 @@ globalThis.__lrSigRichV13 = (() => {
 // LR_SIG_RICH_V13_END
 
 const app = express();
-mountLinkRayAnalyticsRoutes(app);
+
+import('./linkrayAnalyticsRoutes.js')
+  .then(({ mountLinkRayAnalyticsRoutes }) => mountLinkRayAnalyticsRoutes(app))
+  .catch((error) => console.error('[linkray analytics mount]', error?.stack || error));
+
+
 app.use(express.json({ limit: '50mb' }));
 
 /* LR_FINAL_CAL_CPM_V2_START */
