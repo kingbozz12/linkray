@@ -113,39 +113,56 @@ function autoDeleteText(minutes) {
   return String(n) + ' мин.';
 }
 
+/* MAX_AVATAR_PRIORITY_V7 */
 function firstUrlDeep(value) {
   let found = '';
 
-  const scan = (item) => {
+  const preferredKeys = [
+    'avatar_url', 'avatarUrl',
+    'photo_url', 'photoUrl',
+    'picture_url', 'pictureUrl',
+    'image_url', 'imageUrl',
+    'icon_url', 'iconUrl',
+    'avatar', 'photo', 'picture', 'image', 'icon',
+    'thumbnail_url', 'thumbnailUrl',
+    'preview_url', 'previewUrl',
+    'url', 'src'
+  ];
+
+  const pickString = (v) => {
+    const text = String(v || '').trim();
+    if (/^https?:\/\//i.test(text)) return text;
+    return '';
+  };
+
+  const scanPreferred = (item) => {
     if (!item || found) return;
-
     if (typeof item === 'string') {
-      if (/^https?:\/\//i.test(item)) found = item;
+      const u = pickString(item);
+      if (u) found = u;
       return;
     }
-
     if (Array.isArray(item)) {
-      for (const x of item) scan(x);
+      for (const x of item) scanPreferred(x);
       return;
     }
-
     if (typeof item === 'object') {
-      for (const key of [
-        'avatar_url', 'avatarUrl', 'photo_url', 'photoUrl', 'image_url', 'imageUrl',
-        'picture', 'icon_url', 'iconUrl', 'url', 'src', 'previewUrl', 'thumbnailUrl',
-      ]) {
-        const v = String(item[key] || '');
-        if (/^https?:\/\//i.test(v)) {
-          found = v;
+      for (const key of preferredKeys) {
+        const u = pickString(item[key]);
+        if (u) {
+          found = u;
           return;
         }
       }
-
-      for (const v of Object.values(item)) scan(v);
+      for (const key of preferredKeys) {
+        const v = item[key];
+        if (v && typeof v === 'object') scanPreferred(v);
+      }
+      for (const v of Object.values(item)) scanPreferred(v);
     }
   };
 
-  scan(value);
+  scanPreferred(value);
   return found;
 }
 
@@ -271,6 +288,10 @@ async function trySyncChannelAvatar(channelId) {
     const url = firstUrlDeep(data);
 
     if (url) {
+      await query(
+        `ALTER TABLE channels ADD COLUMN IF NOT EXISTS avatar_url text`
+      ).catch(() => {});
+
       await query(
         `UPDATE channels SET avatar_url=$2 WHERE id::text=$1`,
         [String(channelId), url]
@@ -567,7 +588,6 @@ function fallbackData(id) {
     metrics: {
       views: 0,
       cpm: 0,
-      factCpm: 0,
       cost: 0,
       channelsCount: 0,
       lifeHours: 24,
@@ -680,7 +700,6 @@ async function collect(groupId) {
     metrics: {
       views: totalViews,
       cpm,
-      factCpm: cpm,
       cost,
       channelsCount: channelsFinal.length,
       lifeHours,
@@ -757,6 +776,44 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
 .media img{object-fit:cover}
 .brand-logo img{object-fit:cover}
 
+
+/* LOGO_DOCKER_PUBLIC_FIX_V6 */
+.brand-logo img,
+.logo-stage img,
+.media img{
+  display:block;
+  background:transparent;
+}
+.brand-logo img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.logo-stage img,
+.media img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+
+
+/* NO_FACT_CPM_UI_V7 */
+.hero-metric-pay{
+  grid-column:1/-1;
+}
+.top-actions{
+  justify-content:flex-end;
+}
+
+
+/* NO_FACT_CPM_UI_V8 */
+.hero-metric-pay{
+  grid-column:1/-1;
+}
+.top-actions{
+  justify-content:flex-end;
+}
+
 </style>
 </head>
 <body>
@@ -768,7 +825,6 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
     </a>
     <div class="top-actions">
       <button class="icon-btn" data-action="refresh" aria-label="Обновить">↻</button>
-      <button class="icon-btn primary" data-action="share" aria-label="Поделиться">↗</button>
     </div>
   </header>
 
@@ -784,8 +840,7 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
       <div class="hero-metrics">
         <div class="hero-metric"><span>Просмотры</span><b>${number(data.metrics.views)}</b></div>
         <div class="hero-metric"><span>CPM</span><b>${money(data.metrics.cpm)}</b></div>
-        <div class="hero-metric"><span>Факт CPM</span><b>${money(data.metrics.factCpm)}</b></div>
-        <div class="hero-metric"><span>К оплате</span><b>${money(data.metrics.cost)}</b></div>
+        <div class="hero-metric hero-metric-pay"><span>К оплате</span><b>${money(data.metrics.cost)}</b></div>
       </div>
 
       <div class="hero-actions">
@@ -934,7 +989,25 @@ function showPoint(point,showToast=true,clientX=null,clientY=null){
   if(showToast)toast(point.label+' · просмотры: '+num(point.views));
 }
 function handleChart(e){e.preventDefault();const p=clientPoint(e);showPoint(nearest(p.x),true,p.clientX,p.clientY)}
-function avatar(ch){return ch.avatar?'<img src="'+ch.avatar+'" alt="">':(ch.letter||String(ch.title||'К').slice(0,1))}
+function escapeAttr(value){
+  return String(value || '')
+    .replace(/&/g,'&amp;')
+    .replace(/"/g,'&quot;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
+
+function avatar(ch){
+  const url = String(ch && ch.avatar ? ch.avatar : '').trim();
+
+  if(url){
+    return '<img src="' + escapeAttr(url) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
+  }
+
+  return String((ch && ch.title) || 'К').slice(0,1);
+}
+
+
 function renderChannels(filter='all'){
   const original=(report.channels||[]).map((ch,index)=>({...ch,originalIndex:index}));
   let arr=[...original], modeText='порядок публикации';
