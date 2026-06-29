@@ -1137,7 +1137,7 @@ app.use(async function lrFinalCalCpmV2(req, res, next) {
           `━━━━━━━━━━━━━━\n✅ <b>Пост отложен</b>\n\nПубликация: ${esc(humanDay(day))}, ${esc(nice)} МСК\n━━━━━━━━━━━━━━`,
           [
             [callbackButton('Посты', 'post:all')],
-            [callbackButton('LinkRay Studio', 'main:posting')],
+            [callbackButton('🚀 LinkRay Studio', 'main:posting')],
           ]
         );
       }
@@ -7003,7 +7003,139 @@ async function clearSession(key) { await setSession(key, 'idle', {}); }
 
 function buttonRows(rows) { return inlineKeyboard(rows); }
 async function cb(callbackId, text, rows = [], format = 'html') { return answerCallback({ callbackId, text, format, attachments: buttonRows(rows) }); }
+
+// LR_SAFE_SERVICE_GUARD_V2_START
+function __lrSafeRows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  return [];
+}
+
+function __lrServiceKind(text = '') {
+  const t = String(text || '').toLowerCase();
+
+  if (
+    t.includes('канал добавлен в linkray') ||
+    t.includes('канал сохранён в базе') ||
+    t.includes('канал сохранен в базе')
+  ) return 'channel_added';
+
+  if (
+    t.includes('команда не найдена') ||
+    t.includes('нажмите /start') ||
+    t.includes('главное меню') ||
+    t.includes('linkray studio') ||
+    t.includes('отправьте ссылку max-канала') ||
+    t.includes('ежедневный отчёт пдп') ||
+    t.includes('ежедневный отчет пдп')
+  ) return 'service';
+
+  return '';
+}
+
+async function __lrKnownChannelChatSafe(chatId) {
+  try {
+    const id = String(chatId || '').trim();
+    if (!id) return false;
+
+    if (typeof __lrIsKnownChannelChat === 'function') {
+      const known = await __lrIsKnownChannelChat(id).catch(() => false);
+      if (known) return true;
+    }
+
+    const cols = __lrSafeRows(await query(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='channels'`
+    ).catch(() => [])).map((r) => String(r.column_name));
+
+    const allowed = [
+      'id',
+      'chat_id',
+      'channel_id',
+      'max_chat_id',
+      'max_channel_id',
+      'max_id',
+      'external_id'
+    ].filter((c) => cols.includes(c));
+
+    if (!allowed.length) return false;
+
+    const where = allowed.map((c) => `"${c}"::text=$1`).join(' OR ');
+    const found = __lrSafeRows(await query(
+      `SELECT 1 FROM public.channels WHERE ${where} LIMIT 1`,
+      [id]
+    ).catch(() => []));
+
+    return found.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function __lrBlockServiceToChannel(chatId, text = '', buttons = []) {
+  const kind = __lrServiceKind(text);
+  const hasButtons = Array.isArray(buttons) && buttons.length > 0;
+  const knownChannel = await __lrKnownChannelChatSafe(chatId).catch(() => false);
+
+  if (knownChannel && (kind || hasButtons)) {
+    console.log('[SKIP_CHANNEL_REPLY] service message blocked', JSON.stringify({
+      chatId: String(chatId),
+      kind: kind || 'buttons',
+    }));
+    return true;
+  }
+
+  return false;
+}
+
+async function __lrSkipDuplicateChannelAdded(chatId, text = '') {
+  const kind = __lrServiceKind(text);
+  if (kind !== 'channel_added') return false;
+
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS public.lr_service_notice_dedupe (
+        id bigserial PRIMARY KEY,
+        chat_id text NOT NULL,
+        kind text NOT NULL,
+        fingerprint text NOT NULL,
+        sent_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(chat_id, kind, fingerprint)
+      )
+    `);
+
+    await query(`DELETE FROM public.lr_service_notice_dedupe WHERE sent_at < now() - interval '14 days'`).catch(() => {});
+
+    const fingerprint = String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 350);
+
+    const inserted = __lrSafeRows(await query(
+      `INSERT INTO public.lr_service_notice_dedupe(chat_id, kind, fingerprint, sent_at)
+       VALUES($1,$2,$3,now())
+       ON CONFLICT(chat_id, kind, fingerprint) DO NOTHING
+       RETURNING id`,
+      [String(chatId), kind, fingerprint]
+    ).catch(() => []));
+
+    if (!inserted.length) {
+      console.log('[SKIP_DUPLICATE_SERVICE] duplicate channel-added notice skipped', JSON.stringify({
+        chatId: String(chatId),
+      }));
+      return true;
+    }
+  } catch {}
+
+  return false;
+}
+// LR_SAFE_SERVICE_GUARD_V2_END
+
 async function msg(chatId, text, rows = [], format = 'html') {
+  if (await __lrBlockServiceToChannel(chatId, text, rows)) return null;
+  if (await __lrSkipDuplicateChannelAdded(chatId, text)) return null;
+
   const target = lrBuildSendTarget(chatId);
   return sendMaxMessage({
     ...target,
@@ -7014,6 +7146,9 @@ async function msg(chatId, text, rows = [], format = 'html') {
 }
 
 async function sendMessage(chatId, { text = '', buttons = [], format = 'html' } = {}) {
+  if (await __lrBlockServiceToChannel(chatId, text, buttons)) return null;
+  if (await __lrSkipDuplicateChannelAdded(chatId, text)) return null;
+
   return msg(chatId, text, buttons, format);
 }
 
