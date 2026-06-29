@@ -1,7 +1,6 @@
 
 import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
-import dotenv from 'dotenv';
 import { mountLinkRayChannelAnalytics, handleLinkRayChannelAnalyticsIncoming } from './linkrayChannelAnalytics.js';
 dotenv.config();
 
