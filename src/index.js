@@ -1,4 +1,3 @@
-const { mountLinkRayBrandRoutes } = require('./linkrayBrandRoutes.cjs');
 
 import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
@@ -799,7 +798,6 @@ globalThis.__lrSigRichV13 = (() => {
 // LR_SIG_RICH_V13_END
 
 const app = express();
-mountLinkRayBrandRoutes(app);
 mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
