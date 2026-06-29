@@ -403,25 +403,39 @@ async function findLatestUserChatId() {
     `SELECT table_name, column_name
        FROM information_schema.columns
       WHERE table_schema='public'
-        AND column_name = ANY($1)`,
-    [[
-      'chat_id',
-      'user_chat_id',
-      'owner_chat_id',
-      'creator_chat_id',
-      'admin_chat_id',
-      'manager_chat_id'
-    ]]
+        AND (
+          column_name ILIKE '%chat%'
+          OR column_name ILIKE '%user%'
+          OR column_name ILIKE '%owner%'
+          OR column_name ILIKE '%admin%'
+          OR column_name ILIKE '%manager%'
+          OR column_name ILIKE '%recipient%'
+          OR column_name ILIKE '%dialog%'
+          OR column_name ILIKE '%peer%'
+          OR column_name ILIKE '%sender%'
+          OR column_name ILIKE '%from%'
+        )`
   ).catch(() => []));
 
-  const blocked = /(channel|scheduled|post|analytics|click|view|point|link)/i;
-  const preferred = /(session|user|profile|admin|account|state)/i;
+  const blocked = /(channel|scheduled|post|analytics|click|view|point|link|campaign|report)/i;
+  const preferred = /(session|state|user|profile|admin|account|dialog|chat|message)/i;
 
   cols.sort((a, b) => {
-    const ap = preferred.test(a.table_name) ? 0 : 1;
-    const bp = preferred.test(b.table_name) ? 0 : 1;
-    return ap - bp;
+    const at = String(a.table_name);
+    const bt = String(b.table_name);
+    const ac = String(a.column_name);
+    const bc = String(b.column_name);
+
+    const ap = preferred.test(at) ? 0 : 1;
+    const bp = preferred.test(bt) ? 0 : 1;
+    if (ap !== bp) return ap - bp;
+
+    const ach = /chat/i.test(ac) ? 0 : 1;
+    const bch = /chat/i.test(bc) ? 0 : 1;
+    return ach - bch;
   });
+
+  const candidates = [];
 
   for (const item of cols) {
     const table = String(item.table_name);
@@ -430,7 +444,7 @@ async function findLatestUserChatId() {
     if (blocked.test(table)) continue;
 
     const tableCols = await tableColumns(table);
-    const order = ['updated_at', 'last_seen_at', 'created_at', 'id']
+    const order = ['updated_at', 'last_seen_at', 'last_message_at', 'created_at', 'id']
       .filter((x) => tableCols.has(x))
       .map((x) => `${qident(x)} DESC NULLS LAST`)
       .join(', ');
@@ -441,13 +455,23 @@ async function findLatestUserChatId() {
         WHERE ${qident(col)} IS NOT NULL
           AND ${qident(col)}::text <> ''
         ${order ? `ORDER BY ${order}` : ''}
-        LIMIT 5`
+        LIMIT 10`
     ).catch(() => []);
 
     for (const row of rows(result)) {
       const id = String(row.chat_id || '').trim();
-      if (id) return id;
+
+      if (!id) continue;
+      if (id.length < 3) continue;
+      if (candidates.includes(id)) continue;
+
+      candidates.push(id);
     }
+  }
+
+  if (candidates.length) {
+    console.log('[LinkRay 24h report] chat_id candidates:', candidates.slice(0, 10).join(', '));
+    return candidates[0];
   }
 
   return '';
