@@ -270,83 +270,257 @@ async function trySyncMaxViews(post) {
   }
 }
 
-async function trySyncChannelAvatar(channelId) {
-  if (!channelId) return '';
+
+function channelIdentifiers(row) {
+  const keys = [
+    'id',
+    'chat_id',
+    'chatId',
+    'channel_id',
+    'channelId',
+    'max_chat_id',
+    'maxChatId',
+    'max_channel_id',
+    'maxChannelId',
+    'max_id',
+    'maxId',
+    'external_id',
+    'externalId',
+    'peer_id',
+    'peerId',
+    'username',
+    'handle',
+    'link'
+  ];
+
+  const out = [];
+
+  for (const key of keys) {
+    const value = row && row[key];
+
+    if (value === null || value === undefined || value === '') continue;
+
+    const text = String(value).trim();
+
+    if (!text) continue;
+
+    out.push(text);
+
+    if (text.startsWith('@')) out.push(text.slice(1));
+    if (text.includes('/')) {
+      const last = text.split('/').filter(Boolean).pop();
+      if (last) out.push(last);
+    }
+  }
+
+  return [...new Set(out.filter(Boolean))];
+}
+
+function maxChatInfoFunctions(mod) {
+  return [
+    mod.getMaxChatInfo,
+    mod.getChatInfo,
+    mod.getMaxChat,
+    mod.getChat,
+    mod.fetchChat,
+    mod.fetchMaxChat,
+    mod.default?.getMaxChatInfo,
+    mod.default?.getChatInfo,
+    mod.default?.getMaxChat,
+    mod.default?.getChat,
+  ].filter((fn) => typeof fn === 'function');
+}
+
+async function callMaxChatInfo(identifier) {
+  if (!identifier) return null;
+
+  let mod;
 
   try {
-    const mod = await import('./maxClient.js');
-    const fn =
-      mod.getMaxChatInfo ||
-      mod.getChatInfo ||
-      mod.getMaxChat ||
-      mod.getChat ||
-      mod.default?.getMaxChatInfo;
+    mod = await import('./maxClient.js');
+  } catch (error) {
+    console.error('[linkray analytics maxClient import]', error.message || error);
+    return null;
+  }
 
-    if (!fn) return '';
+  const functions = maxChatInfoFunctions(mod);
 
-    const data = await fn(channelId);
+  if (!functions.length) {
+    console.error('[linkray analytics avatars] maxClient has no chat info function');
+    return null;
+  }
+
+  const argsList = [
+    [identifier],
+    [{ chatId: identifier }],
+    [{ chat_id: identifier }],
+    [{ id: identifier }],
+    [{ channelId: identifier }],
+    [{ channel_id: identifier }],
+  ];
+
+  for (const fn of functions) {
+    for (const args of argsList) {
+      try {
+        const data = await fn(...args);
+        if (data) return data;
+      } catch {}
+    }
+  }
+
+  return null;
+}
+
+async function saveChannelAvatar(row, url) {
+  if (!url) return;
+
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS avatar_url text`).catch(() => {});
+
+  const cols = await tableColumns('channels').catch(() => new Set());
+  const ids = channelIdentifiers(row);
+
+  if (!ids.length) return;
+
+  const where = [`id::text = ANY($2)`];
+
+  for (const col of [
+    'chat_id',
+    'channel_id',
+    'max_chat_id',
+    'max_channel_id',
+    'max_id',
+    'external_id',
+    'peer_id',
+    'username',
+    'handle',
+    'link',
+  ]) {
+    if (cols.has(col)) where.push(`"${col}"::text = ANY($2)`);
+  }
+
+  await query(
+    `UPDATE channels SET avatar_url=$1 WHERE ${where.join(' OR ')}`,
+    [url, ids]
+  ).catch((error) => {
+    console.error('[linkray analytics save avatar]', error.message || error);
+  });
+}
+
+async function trySyncChannelAvatar(channel) {
+  const row = typeof channel === 'object' && channel !== null
+    ? channel
+    : {
+        id: channel,
+        chat_id: channel,
+        channel_id: channel,
+        max_chat_id: channel,
+        external_id: channel,
+      };
+
+  const identifiers = channelIdentifiers(row);
+
+  for (const identifier of identifiers) {
+    const data = await callMaxChatInfo(identifier);
     const url = firstUrlDeep(data);
 
     if (url) {
-      await query(
-        `ALTER TABLE channels ADD COLUMN IF NOT EXISTS avatar_url text`
-      ).catch(() => {});
-
-      await query(
-        `UPDATE channels SET avatar_url=$2 WHERE id::text=$1`,
-        [String(channelId), url]
-      ).catch(() => {});
+      await saveChannelAvatar(row, url);
+      return url;
     }
-
-    return url || '';
-  } catch (error) {
-    console.error('[linkray analytics channel avatar]', error.message || error);
-    return '';
   }
+
+  return '';
 }
 
 async function loadChannels(posts) {
-  const ids = [...new Set(posts.map((p) => p.channel_id).filter((x) => x !== null && x !== undefined).map(String))];
+  const ids = [
+    ...new Set(
+      posts
+        .map((p) => p.channel_id || p.chat_id || p.channelId || p.chatId)
+        .filter((x) => x !== null && x !== undefined && x !== '')
+        .map(String)
+    )
+  ];
+
   if (!ids.length) return new Map();
 
   await ensureAnalyticsTables();
 
   const cols = await tableColumns('channels');
+
   if (!cols.size || !cols.has('id')) return new Map();
 
   const q = (col) => `"${col}"::text`;
 
-  const titleExpr =
-    cols.has('title') ? q('title') :
-    cols.has('name') ? q('name') :
-    cols.has('channel_title') ? q('channel_title') :
-    cols.has('chat_title') ? q('chat_title') :
-    `'Канал'::text`;
+  const titleExpr = cols.has('title')
+    ? q('title')
+    : cols.has('name')
+      ? q('name')
+      : cols.has('channel_title')
+        ? q('channel_title')
+        : cols.has('chat_title')
+          ? q('chat_title')
+          : `'Канал'::text`;
 
-  const linkExpr =
-    cols.has('link') ? q('link') :
-    cols.has('public_link') ? q('public_link') :
-    cols.has('invite_link') ? q('invite_link') :
-    cols.has('channel_link') ? q('channel_link') :
-    cols.has('url') ? q('url') :
-    cols.has('username') ? q('username') :
-    cols.has('handle') ? q('handle') :
-    `''::text`;
+  const linkExpr = cols.has('link')
+    ? q('link')
+    : cols.has('public_link')
+      ? q('public_link')
+      : cols.has('invite_link')
+        ? q('invite_link')
+        : cols.has('channel_link')
+          ? q('channel_link')
+          : cols.has('url')
+            ? q('url')
+            : cols.has('username')
+              ? q('username')
+              : cols.has('handle')
+                ? q('handle')
+                : `''::text`;
 
-  const avatarExpr =
-    cols.has('avatar_url') ? q('avatar_url') :
-    cols.has('photo_url') ? q('photo_url') :
-    cols.has('image_url') ? q('image_url') :
-    cols.has('icon_url') ? q('icon_url') :
-    cols.has('picture') ? q('picture') :
-    `''::text`;
+  const avatarExpr = cols.has('avatar_url')
+    ? q('avatar_url')
+    : cols.has('photo_url')
+      ? q('photo_url')
+      : cols.has('image_url')
+        ? q('image_url')
+        : cols.has('icon_url')
+          ? q('icon_url')
+          : cols.has('picture')
+            ? q('picture')
+            : `''::text`;
 
-  const metaExpr =
-    cols.has('meta') ? `"meta"` :
-    cols.has('data') ? `"data"` :
-    cols.has('payload') ? `"payload"` :
-    cols.has('raw') ? `"raw"` :
-    `NULL::jsonb`;
+  const metaExpr = cols.has('meta')
+    ? `"meta"`
+    : cols.has('data')
+      ? `"data"`
+      : cols.has('payload')
+        ? `"payload"`
+        : cols.has('raw')
+          ? `"raw"`
+          : `NULL::jsonb`;
+
+  const candidateColumns = [
+    'chat_id',
+    'channel_id',
+    'max_chat_id',
+    'max_channel_id',
+    'max_id',
+    'external_id',
+    'peer_id',
+    'username',
+    'handle',
+  ].filter((col) => cols.has(col));
+
+  const candidateSelect = candidateColumns
+    .map((col) => `, "${col}"::text AS "${col}"`)
+    .join('');
+
+  const whereParts = [`id::text = ANY($1)`];
+
+  for (const col of candidateColumns) {
+    whereParts.push(`"${col}"::text = ANY($1)`);
+  }
 
   const result = await query(
     `SELECT id::text AS id,
@@ -354,8 +528,9 @@ async function loadChannels(posts) {
             ${linkExpr} AS link,
             ${avatarExpr} AS avatar,
             ${metaExpr} AS meta
+            ${candidateSelect}
        FROM channels
-      WHERE id::text = ANY($1)`,
+      WHERE ${whereParts.join(' OR ')}`,
     [ids]
   ).catch((error) => {
     console.error('[linkray analytics channels]', error.message || error);
@@ -369,18 +544,37 @@ async function loadChannels(posts) {
     let avatar = row.avatar || firstUrlDeep(meta) || '';
 
     if (!avatar) {
-      avatar = await trySyncChannelAvatar(row.id);
+      avatar = await trySyncChannelAvatar(row);
     }
 
-    map.set(String(row.id), {
+    const item = {
       title: row.title || 'Канал',
       link: row.link || '',
+      avatar,
+    };
+
+    for (const key of channelIdentifiers(row)) {
+      map.set(String(key), item);
+    }
+
+    map.set(String(row.id), item);
+  }
+
+  for (const id of ids) {
+    if (map.has(String(id))) continue;
+
+    const avatar = await trySyncChannelAvatar(id);
+
+    map.set(String(id), {
+      title: 'Канал',
+      link: '',
       avatar,
     });
   }
 
   return map;
 }
+
 
 function getMedia(post, draft) {
   const sources = [
