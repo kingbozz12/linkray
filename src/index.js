@@ -818,153 +818,1169 @@ const app = express(); mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
 
 
-/* LR_AD_TRACKER_LINK_V2_ROUTE_START */
-app.get('/analytics/stats/:token', async (req, res) => {
-  try {
-    const token = String(req.params.token || '').trim();
+/* LR_FULL_AD_ANALYTICS_V3_START */
 
-    if (!token || !/^[a-zA-Z0-9_-]{12,120}$/.test(token)) {
-      return res.status(404).send('LinkRay: отчёт не найден');
+function lrAnTokenV3() {
+  const keys = ['MAX_TOKEN', 'MAX_BOT_TOKEN', 'MAX_ACCESS_TOKEN', 'BOT_TOKEN', 'ACCESS_TOKEN', 'API_TOKEN', 'TOKEN'];
+  for (const k of keys) {
+    if (process.env[k]) return String(process.env[k]);
+  }
+
+  try { if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN); } catch {}
+  try { if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN); } catch {}
+  try { if (typeof TOKEN !== 'undefined' && TOKEN) return String(TOKEN); } catch {}
+
+  return '';
+}
+
+function lrAnApiBaseV3() {
+  let base = '';
+  try { if (typeof MAX_API_BASE !== 'undefined' && MAX_API_BASE) base = String(MAX_API_BASE); } catch {}
+
+  if (!base) {
+    base =
+      process.env.MAX_API_BASE ||
+      process.env.MAX_BASE_URL ||
+      process.env.MAX_PLATFORM_API ||
+      'https://platform-api2.max.ru';
+  }
+
+  return String(base).replace(/\/+$/, '');
+}
+
+function lrAnPublicBaseV3(req = null) {
+  const env =
+    process.env.LINKRAY_PUBLIC_URL ||
+    process.env.PUBLIC_URL ||
+    process.env.APP_PUBLIC_URL ||
+    process.env.WEB_PUBLIC_URL ||
+    process.env.BASE_URL ||
+    '';
+
+  if (env) return String(env).replace(/\/+$/, '');
+
+  if (req) {
+    const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    if (host) return `${proto}://${host}`.replace(/\/+$/, '');
+  }
+
+  return '';
+}
+
+function lrAnRowsV3(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  return [];
+}
+
+function lrAnHtmlV3(v) {
+  return String(v ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+function lrAnMoneyV3(v) {
+  const n = Number(v || 0);
+  return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+}
+
+function lrAnNumV3(v) {
+  const n = Number(v || 0);
+  return n.toLocaleString('ru-RU');
+}
+
+function lrAnParseJsonV3(v) {
+  if (!v) return v;
+  if (typeof v === 'object') return v;
+
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (
+      (t.startsWith('{') && t.endsWith('}')) ||
+      (t.startsWith('[') && t.endsWith(']'))
+    ) {
+      try { return JSON.parse(t); } catch {}
+    }
+  }
+
+  return v;
+}
+
+function lrAnDeepFindV3(obj, matcher, depth = 0) {
+  if (!obj || depth > 8) return null;
+
+  obj = lrAnParseJsonV3(obj);
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = lrAnDeepFindV3(item, matcher, depth + 1);
+      if (found !== null && found !== undefined && found !== '') return found;
+    }
+    return null;
+  }
+
+  if (typeof obj === 'object') {
+    for (const [k, v] of Object.entries(obj)) {
+      try {
+        const direct = matcher(k, v, obj);
+        if (direct !== null && direct !== undefined && direct !== '') return direct;
+      } catch {}
+
+      const nested = lrAnDeepFindV3(v, matcher, depth + 1);
+      if (nested !== null && nested !== undefined && nested !== '') return nested;
+    }
+  }
+
+  return null;
+}
+
+function lrAnFindTokenV3(obj) {
+  const byKey = lrAnDeepFindV3(obj, (k, v) => {
+    if (/^(trackingToken|trackerToken|analyticsToken|observerToken|token)$/i.test(k)) {
+      const t = String(v || '').trim();
+      if (/^[a-zA-Z0-9_-]{12,120}$/.test(t)) return t;
     }
 
-    await query(`
-      CREATE TABLE IF NOT EXISTS public.ad_post_trackers (
-        id serial PRIMARY KEY,
-        token text NOT NULL UNIQUE,
-        post_id text,
-        schedule_ref text,
-        channel_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
-        cpm numeric DEFAULT 0,
-        views bigint NOT NULL DEFAULT 0,
-        status text NOT NULL DEFAULT 'planned',
-        publish_at timestamptz,
-        draft_json jsonb,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      )
-    `);
+    if (/^(trackingUrl|analyticsUrl|observerUrl|url)$/i.test(k)) {
+      const m = String(v || '').match(/\/analytics\/stats\/([a-zA-Z0-9_-]{12,120})/);
+      if (m) return m[1];
+    }
+
+    return null;
+  });
+
+  if (byKey) return byKey;
+
+  const raw = typeof obj === 'string' ? obj : JSON.stringify(obj || {});
+  const m = raw.match(/\/analytics\/stats\/([a-zA-Z0-9_-]{12,120})/);
+  return m ? m[1] : '';
+}
+
+function lrAnFindMessageIdV3(obj) {
+  return lrAnDeepFindV3(obj, (k, v) => {
+    if (/^(message_id|messageId|mid|message_mid|post_message_id|published_message_id)$/i.test(k)) {
+      const t = String(v || '').trim();
+      if (/^[a-zA-Z0-9_-]{4,200}$/.test(t)) return t;
+    }
+
+    return null;
+  });
+}
+
+function lrAnFindChannelIdV3(obj) {
+  const v = lrAnDeepFindV3(obj, (k, value) => {
+    if (/^(channel_id|channelId|chat_id|chatId|target_channel_id|targetChannelId)$/i.test(k)) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n !== 0) return n;
+    }
+    return null;
+  });
+
+  return v ? Number(v) : null;
+}
+
+function lrAnFindViewsV3(message) {
+  const stat = message?.stat || message?.stats || message?.statistics || {};
+  const candidates = [
+    stat.views,
+    stat.view_count,
+    stat.views_count,
+    stat.viewers,
+    stat.impressions,
+    stat.impression_count,
+    stat.read_count,
+    stat.reads,
+    message?.views,
+    message?.view_count
+  ];
+
+  for (const v of candidates) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+
+  return null;
+}
+
+function lrAnFindMessageUrlV3(message) {
+  return String(
+    message?.url ||
+    message?.link?.url ||
+    message?.public_url ||
+    message?.message_url ||
+    ''
+  ).trim();
+}
+
+function lrAnPlainTextV3(value, depth = 0) {
+  if (!value || depth > 8) return '';
+
+  value = lrAnParseJsonV3(value);
+
+  if (typeof value === 'string') {
+    let text = value
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return text;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const t = lrAnPlainTextV3(item, depth + 1);
+      if (t) return t;
+    }
+    return '';
+  }
+
+  if (typeof value === 'object') {
+    const direct =
+      value.text ||
+      value.caption ||
+      value.title ||
+      value.body?.text ||
+      value.content?.text ||
+      value.draft?.text ||
+      value.draft?.content?.text ||
+      value.message?.text ||
+      value.message?.body?.text ||
+      value.payload?.text ||
+      value.data?.text ||
+      '';
+
+    const t = lrAnPlainTextV3(direct, depth + 1);
+    if (t) return t;
+
+    for (const k of ['content', 'draft', 'payload', 'message', 'body', 'data']) {
+      const nested = lrAnPlainTextV3(value[k], depth + 1);
+      if (nested) return nested;
+    }
+  }
+
+  return '';
+}
+
+function lrAnFindImageV3(value, depth = 0) {
+  if (!value || depth > 9) return '';
+
+  value = lrAnParseJsonV3(value);
+
+  if (typeof value === 'string') {
+    const m = value.match(/https?:\/\/[^\s"'<>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^\s"'<>]*)?/i);
+    return m ? m[0] : '';
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = lrAnFindImageV3(item, depth + 1);
+      if (found) return found;
+    }
+    return '';
+  }
+
+  if (typeof value === 'object') {
+    const type = String(value.type || value.mime_type || value.mimeType || '').toLowerCase();
+    const candidates = [
+      value.url,
+      value.src,
+      value.image_url,
+      value.imageUrl,
+      value.photo_url,
+      value.photoUrl,
+      value.download_url,
+      value.downloadUrl,
+      value.payload?.url,
+      value.payload?.src,
+      value.payload?.image_url,
+      value.payload?.photo_url,
+      value.photo?.url,
+      value.image?.url,
+      value.preview?.url,
+      value.thumbnail?.url
+    ].filter(Boolean);
+
+    for (const u of candidates) {
+      const s = String(u);
+      if (
+        /^https?:\/\//i.test(s) &&
+        (
+          /\.(jpg|jpeg|png|webp)(\?|$)/i.test(s) ||
+          type.includes('image') ||
+          type.includes('photo')
+        )
+      ) {
+        return s;
+      }
+    }
+
+    for (const v of Object.values(value)) {
+      const found = lrAnFindImageV3(v, depth + 1);
+      if (found) return found;
+    }
+  }
+
+  return '';
+}
+
+function lrAnCpmV3(tracker) {
+  const fromTracker = Number(tracker?.cpm || 0);
+  if (Number.isFinite(fromTracker) && fromTracker > 0) return fromTracker;
+
+  const d = lrAnParseJsonV3(tracker?.draft_json || {});
+  const raw = d?.cpm ?? d?.adCpm ?? d?.ad_cpm ?? d?.pricePerMille ?? d?.price_per_mille ?? 0;
+  const n = Number(String(raw).replace(',', '.').replace(/[^\d.]/g, ''));
+
+  return Number.isFinite(n) ? n : 0;
+}
+
+function lrAnAutoDeleteHoursV3(tracker) {
+  const d = lrAnParseJsonV3(tracker?.draft_json || {});
+  const raw =
+    d?.autoDeleteHours ??
+    d?.auto_delete_hours ??
+    d?.deleteAfterHours ??
+    d?.delete_after_hours ??
+    d?.autoDelete ??
+    d?.auto_delete ??
+    null;
+
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function lrAnDateRuV3(value) {
+  if (!value) return 'не указано';
+
+  try {
+    return new Date(value).toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }) + ' МСК';
+  } catch {
+    return String(value);
+  }
+}
+
+async function lrAnEnsureV3() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS public.ad_post_trackers (
+      id serial PRIMARY KEY,
+      token text NOT NULL UNIQUE,
+      post_id text,
+      schedule_ref text,
+      channel_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+      cpm numeric DEFAULT 0,
+      views bigint NOT NULL DEFAULT 0,
+      status text NOT NULL DEFAULT 'planned',
+      publish_at timestamptz,
+      published_at timestamptz,
+      deleted_at timestamptz,
+      post_text text,
+      post_image_url text,
+      draft_json jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+
+  await query(`ALTER TABLE public.ad_post_trackers ADD COLUMN IF NOT EXISTS published_at timestamptz`);
+  await query(`ALTER TABLE public.ad_post_trackers ADD COLUMN IF NOT EXISTS deleted_at timestamptz`);
+  await query(`ALTER TABLE public.ad_post_trackers ADD COLUMN IF NOT EXISTS post_text text`);
+  await query(`ALTER TABLE public.ad_post_trackers ADD COLUMN IF NOT EXISTS post_image_url text`);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS public.ad_post_tracker_channels (
+      id serial PRIMARY KEY,
+      token text NOT NULL,
+      channel_id bigint,
+      channel_title text,
+      message_id text,
+      message_url text,
+      status text NOT NULL DEFAULT 'planned',
+      views bigint NOT NULL DEFAULT 0,
+      last_stat jsonb,
+      published_at timestamptz,
+      deleted_at timestamptz,
+      post_text text,
+      post_image_url text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_ad_post_tracker_channels_token ON public.ad_post_tracker_channels(token)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_ad_post_tracker_channels_message ON public.ad_post_tracker_channels(message_id)`);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS public.ad_post_tracker_points (
+      id bigserial PRIMARY KEY,
+      token text NOT NULL,
+      channel_id bigint,
+      message_id text,
+      views bigint NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_ad_post_tracker_points_token_time ON public.ad_post_tracker_points(token, created_at)`);
+}
+
+async function lrAnUpsertChannelV3(data) {
+  await lrAnEnsureV3();
+
+  const token = String(data.token || '').trim();
+  if (!token) return;
+
+  const channelId = data.channel_id ? Number(data.channel_id) : null;
+  const messageId = data.message_id ? String(data.message_id) : null;
+
+  let existing = null;
+
+  if (messageId) {
+    const r = await query(
+      `SELECT * FROM public.ad_post_tracker_channels WHERE token=$1 AND message_id=$2 LIMIT 1`,
+      [token, messageId]
+    );
+    existing = lrAnRowsV3(r)[0] || null;
+  }
+
+  if (!existing && channelId) {
+    const r = await query(
+      `SELECT * FROM public.ad_post_tracker_channels WHERE token=$1 AND channel_id=$2 AND (message_id IS NULL OR message_id='') LIMIT 1`,
+      [token, channelId]
+    );
+    existing = lrAnRowsV3(r)[0] || null;
+  }
+
+  if (existing) {
+    await query(
+      `UPDATE public.ad_post_tracker_channels
+       SET channel_id = COALESCE($2, channel_id),
+           channel_title = COALESCE(NULLIF($3,''), channel_title),
+           message_id = COALESCE(NULLIF($4,''), message_id),
+           message_url = COALESCE(NULLIF($5,''), message_url),
+           status = COALESCE(NULLIF($6,''), status),
+           views = GREATEST(COALESCE($7, views), views),
+           last_stat = COALESCE($8::jsonb, last_stat),
+           published_at = COALESCE($9, published_at),
+           deleted_at = COALESCE($10, deleted_at),
+           post_text = COALESCE(NULLIF($11,''), post_text),
+           post_image_url = COALESCE(NULLIF($12,''), post_image_url),
+           updated_at = now()
+       WHERE id=$1`,
+      [
+        existing.id,
+        channelId,
+        data.channel_title || '',
+        messageId || '',
+        data.message_url || '',
+        data.status || '',
+        Number(data.views || 0),
+        data.last_stat ? JSON.stringify(data.last_stat) : null,
+        data.published_at || null,
+        data.deleted_at || null,
+        data.post_text || '',
+        data.post_image_url || ''
+      ]
+    );
+  } else {
+    await query(
+      `INSERT INTO public.ad_post_tracker_channels(
+         token, channel_id, channel_title, message_id, message_url,
+         status, views, last_stat, published_at, deleted_at, post_text, post_image_url
+       )
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12)`,
+      [
+        token,
+        channelId,
+        data.channel_title || '',
+        messageId,
+        data.message_url || '',
+        data.status || 'planned',
+        Number(data.views || 0),
+        data.last_stat ? JSON.stringify(data.last_stat) : null,
+        data.published_at || null,
+        data.deleted_at || null,
+        data.post_text || '',
+        data.post_image_url || ''
+      ]
+    );
+  }
+}
+
+async function lrAnCreateRowsFromTrackerV3(tracker) {
+  const token = String(tracker.token || '');
+  const draft = lrAnParseJsonV3(tracker.draft_json || {});
+  const channelIds = Array.isArray(tracker.channel_ids)
+    ? tracker.channel_ids
+    : lrAnParseJsonV3(tracker.channel_ids || []);
+
+  const ids = Array.isArray(channelIds) ? channelIds.map(Number).filter(Boolean) : [];
+  const postText = tracker.post_text || lrAnPlainTextV3(draft);
+  const imageUrl = tracker.post_image_url || lrAnFindImageV3(draft);
+
+  for (const chId of ids) {
+    await lrAnUpsertChannelV3({
+      token,
+      channel_id: chId,
+      status: tracker.status || 'planned',
+      published_at: tracker.published_at || null,
+      deleted_at: tracker.deleted_at || null,
+      post_text: postText,
+      post_image_url: imageUrl
+    });
+  }
+}
+
+async function lrAnGetMaxMessagesV3(messageIds) {
+  const ids = [...new Set((messageIds || []).map(String).filter(Boolean))];
+  if (!ids.length) return [];
+
+  const token = lrAnTokenV3();
+  if (!token) {
+    console.error('[LR_FULL_AD_ANALYTICS_V3] MAX token not found');
+    return [];
+  }
+
+  const base = lrAnApiBaseV3();
+
+  try {
+    const url = `${base}/messages?message_ids=${encodeURIComponent(ids.join(','))}`;
+    const r = await fetch(url, { headers: { Authorization: token } });
+    const raw = await r.text();
+
+    if (!r.ok) {
+      console.error('[LR_FULL_AD_ANALYTICS_V3 GET /messages]', r.status, raw.slice(0, 600));
+      return [];
+    }
+
+    const data = JSON.parse(raw || '{}');
+
+    if (Array.isArray(data.messages)) return data.messages;
+    if (Array.isArray(data)) return data;
+    if (data.message) return [data.message];
+
+    return [];
+  } catch (e) {
+    console.error('[LR_FULL_AD_ANALYTICS_V3 messages fetch]', e?.message || e);
+    return [];
+  }
+}
+
+async function lrAnScanDbForBindingsV3(token) {
+  await lrAnEnsureV3();
+
+  const tablesResult = await query(`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema='public'
+      AND table_type='BASE TABLE'
+      AND table_name NOT IN ('ad_post_tracker_points')
+    ORDER BY table_name
+  `);
+
+  const tables = lrAnRowsV3(tablesResult).map(r => r.table_name);
+
+  for (const table of tables) {
+    try {
+      const qt = '"' + String(table).replaceAll('"', '""') + '"';
+
+      const r = await query(
+        `SELECT to_jsonb(t) AS j
+         FROM public.${qt} t
+         WHERE to_jsonb(t)::text ILIKE $1
+         ORDER BY 1 DESC
+         LIMIT 50`,
+        [`%${token}%`]
+      );
+
+      for (const row of lrAnRowsV3(r)) {
+        const j = row.j || {};
+        const foundToken = lrAnFindTokenV3(j);
+        if (foundToken !== token) continue;
+
+        const messageId = lrAnFindMessageIdV3(j);
+        const channelId = lrAnFindChannelIdV3(j);
+        const statusText = String(j.status || j.state || j.post_status || '').toLowerCase();
+        const status =
+          statusText.includes('delete') || statusText.includes('удал') ? 'deleted' :
+          statusText.includes('publish') || statusText.includes('опублик') ? 'published' :
+          'planned';
+
+        await lrAnUpsertChannelV3({
+          token,
+          channel_id: channelId,
+          channel_title: j.channel_title || j.channelName || j.channel_name || '',
+          message_id: messageId,
+          message_url: j.message_url || j.url || j.post_url || '',
+          status,
+          published_at: j.published_at || j.publish_at || null,
+          deleted_at: j.deleted_at || null,
+          post_text: lrAnPlainTextV3(j),
+          post_image_url: lrAnFindImageV3(j)
+        });
+      }
+    } catch (e) {
+      console.error('[LR_FULL_AD_ANALYTICS_V3 scan table]', table, e?.message || e);
+    }
+  }
+}
+
+async function lrAnPollOneTrackerV3(tracker) {
+  const token = String(tracker.token || '');
+  if (!token) return;
+
+  await lrAnCreateRowsFromTrackerV3(tracker);
+
+  const chResult = await query(
+    `SELECT *
+     FROM public.ad_post_tracker_channels
+     WHERE token=$1
+     ORDER BY id ASC`,
+    [token]
+  );
+
+  let channels = lrAnRowsV3(chResult);
+
+  if (!channels.some(c => c.message_id)) {
+    await lrAnScanDbForBindingsV3(token);
+
+    const again = await query(
+      `SELECT *
+       FROM public.ad_post_tracker_channels
+       WHERE token=$1
+       ORDER BY id ASC`,
+      [token]
+    );
+    channels = lrAnRowsV3(again);
+  }
+
+  const ids = channels.map(c => c.message_id).filter(Boolean);
+  const messages = await lrAnGetMaxMessagesV3(ids);
+
+  for (const message of messages) {
+    const mid = String(
+      message.message_id ||
+      message.messageId ||
+      message.mid ||
+      message.id ||
+      ''
+    );
+
+    if (!mid) continue;
+
+    const views = lrAnFindViewsV3(message);
+    const channelId = lrAnFindChannelIdV3(message);
+    const postText = lrAnPlainTextV3(message);
+    const imageUrl = lrAnFindImageV3(message);
+    const messageUrl = lrAnFindMessageUrlV3(message);
+
+    const matched = channels.find(c => String(c.message_id) === mid);
+    const prevViews = Number(matched?.views || 0);
+    const finalViews = views === null ? prevViews : Math.max(prevViews, views);
+
+    await lrAnUpsertChannelV3({
+      token,
+      channel_id: channelId || matched?.channel_id || null,
+      channel_title: matched?.channel_title || '',
+      message_id: mid,
+      message_url: messageUrl || matched?.message_url || '',
+      status: 'published',
+      views: finalViews,
+      last_stat: message.stat || {},
+      published_at: matched?.published_at || tracker.published_at || tracker.publish_at || new Date(),
+      post_text: postText || matched?.post_text || '',
+      post_image_url: imageUrl || matched?.post_image_url || ''
+    });
+
+    await query(
+      `INSERT INTO public.ad_post_tracker_points(token, channel_id, message_id, views)
+       VALUES($1,$2,$3,$4)`,
+      [token, channelId || matched?.channel_id || null, mid, finalViews]
+    );
+  }
+
+  const agg = await query(
+    `SELECT
+       COALESCE(SUM(views),0)::bigint AS views,
+       COUNT(*)::int AS channels_count,
+       MAX(published_at) AS published_at,
+       MAX(deleted_at) AS deleted_at,
+       BOOL_OR(status='published') AS has_published,
+       BOOL_OR(status='deleted') AS has_deleted,
+       MAX(NULLIF(post_text,'')) AS post_text,
+       MAX(NULLIF(post_image_url,'')) AS post_image_url
+     FROM public.ad_post_tracker_channels
+     WHERE token=$1`,
+    [token]
+  );
+
+  const a = lrAnRowsV3(agg)[0] || {};
+  const status =
+    a.has_deleted ? 'deleted' :
+    a.has_published ? 'published' :
+    (tracker.publish_at && new Date(tracker.publish_at).getTime() <= Date.now() ? 'published' : 'planned');
+
+  await query(
+    `UPDATE public.ad_post_trackers
+     SET views=$2,
+         status=$3,
+         published_at=COALESCE(published_at,$4),
+         deleted_at=COALESCE(deleted_at,$5),
+         post_text=COALESCE(NULLIF(post_text,''), NULLIF($6,'')),
+         post_image_url=COALESCE(NULLIF(post_image_url,''), NULLIF($7,'')),
+         updated_at=now()
+     WHERE token=$1`,
+    [
+      token,
+      Number(a.views || 0),
+      status,
+      a.published_at || null,
+      a.deleted_at || null,
+      a.post_text || '',
+      a.post_image_url || ''
+    ]
+  );
+}
+
+let lrAnPollBusyV3 = false;
+
+async function lrAnPollAllV3() {
+  if (lrAnPollBusyV3) return;
+  lrAnPollBusyV3 = true;
+
+  try {
+    await lrAnEnsureV3();
 
     const result = await query(
       `SELECT *
        FROM public.ad_post_trackers
-       WHERE token = $1
-       LIMIT 1`,
-      [token]
+       WHERE created_at > now() - interval '45 days'
+         AND (status IS NULL OR status <> 'deleted' OR updated_at > now() - interval '7 days')
+       ORDER BY created_at DESC
+       LIMIT 200`
     );
 
-    const rows = Array.isArray(result) ? result : (result && Array.isArray(result.rows) ? result.rows : []);
-    const item = rows[0];
+    for (const tracker of lrAnRowsV3(result)) {
+      try {
+        await lrAnPollOneTrackerV3(tracker);
+      } catch (e) {
+        console.error('[LR_FULL_AD_ANALYTICS_V3 poll tracker]', tracker?.token, e?.message || e);
+      }
+    }
+  } catch (e) {
+    console.error('[LR_FULL_AD_ANALYTICS_V3 poll all]', e?.stack || e);
+  } finally {
+    lrAnPollBusyV3 = false;
+  }
+}
 
-    if (!item) {
+function lrAnStatusTitleV3(tracker) {
+  const status = String(tracker.status || 'planned');
+
+  if (status === 'deleted') {
+    return `Удалён: ${lrAnDateRuV3(tracker.deleted_at)}`;
+  }
+
+  if (status === 'published') {
+    return `Опубликован: ${lrAnDateRuV3(tracker.published_at || tracker.publish_at)}`;
+  }
+
+  return `Отложен на ${lrAnDateRuV3(tracker.publish_at)}`;
+}
+
+function lrAnBuildSvgChartV3(points) {
+  const arr = (points || []).map(p => ({
+    label: p.label,
+    views: Number(p.views || 0)
+  }));
+
+  if (!arr.length) {
+    arr.push({ label: 'сейчас', views: 0 });
+  }
+
+  const max = Math.max(1, ...arr.map(p => p.views));
+  const width = 720;
+  const height = 220;
+  const pad = 34;
+
+  const step = arr.length <= 1 ? 0 : (width - pad * 2) / (arr.length - 1);
+
+  const coords = arr.map((p, i) => {
+    const x = pad + step * i;
+    const y = height - pad - ((height - pad * 2) * p.views / max);
+    return [x, y];
+  });
+
+  const path = coords.map((c, i) => `${i ? 'L' : 'M'}${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' ');
+  const dots = coords.map((c, i) => `<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="4"><title>${lrAnHtmlV3(arr[i].label)}: ${lrAnNumV3(arr[i].views)}</title></circle>`).join('');
+
+  return `
+<svg viewBox="0 0 ${width} ${height}" class="chart" role="img">
+  <line x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}" />
+  <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}" />
+  <path d="${path}" fill="none" stroke-width="4" />
+  ${dots}
+</svg>`;
+}
+
+async function lrAnLoadReportV3(token) {
+  await lrAnEnsureV3();
+
+  const trackerResult = await query(
+    `SELECT *
+     FROM public.ad_post_trackers
+     WHERE token=$1
+     LIMIT 1`,
+    [token]
+  );
+
+  const tracker = lrAnRowsV3(trackerResult)[0] || null;
+  if (!tracker) return null;
+
+  await lrAnPollOneTrackerV3(tracker);
+
+  const freshResult = await query(
+    `SELECT *
+     FROM public.ad_post_trackers
+     WHERE token=$1
+     LIMIT 1`,
+    [token]
+  );
+
+  const fresh = lrAnRowsV3(freshResult)[0] || tracker;
+
+  const channelResult = await query(
+    `SELECT *
+     FROM public.ad_post_tracker_channels
+     WHERE token=$1
+     ORDER BY views DESC, id ASC`,
+    [token]
+  );
+
+  const channels = lrAnRowsV3(channelResult);
+
+  const pointsResult = await query(
+    `SELECT
+       to_char(date_trunc('hour', created_at AT TIME ZONE 'Europe/Moscow'), 'DD.MM HH24:MI') AS label,
+       MAX(views)::bigint AS views
+     FROM public.ad_post_tracker_points
+     WHERE token=$1
+     GROUP BY 1, date_trunc('hour', created_at AT TIME ZONE 'Europe/Moscow')
+     ORDER BY date_trunc('hour', created_at AT TIME ZONE 'Europe/Moscow') ASC
+     LIMIT 48`,
+    [token]
+  );
+
+  const points = lrAnRowsV3(pointsResult);
+
+  return { tracker: fresh, channels, points };
+}
+
+function lrAnForecastV3(tracker, channels, points) {
+  const views = Number(tracker.views || 0);
+  const autoHours = lrAnAutoDeleteHoursV3(tracker);
+
+  if (!autoHours || !tracker.published_at) {
+    return {
+      forecastViews: views,
+      forecastText: 'без автоудаления'
+    };
+  }
+
+  const start = new Date(tracker.published_at).getTime();
+  const end = start + autoHours * 3600000;
+  const now = Date.now();
+
+  if (now >= end) {
+    return {
+      forecastViews: views,
+      forecastText: `${lrAnNumV3(views)} просмотров`
+    };
+  }
+
+  const elapsedHours = Math.max(0.25, (now - start) / 3600000);
+  const leftHours = Math.max(0, (end - now) / 3600000);
+  const perHour = views / elapsedHours;
+  const forecast = Math.round(views + perHour * leftHours);
+
+  return {
+    forecastViews: forecast,
+    forecastText: `${lrAnNumV3(forecast)} просмотров`
+  };
+}
+
+app.get('/analytics/stats/:token.json', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+
+    if (!/^[a-zA-Z0-9_-]{12,120}$/.test(token)) {
+      return res.status(404).json({ ok: false });
+    }
+
+    const report = await lrAnLoadReportV3(token);
+    if (!report) return res.status(404).json({ ok: false });
+
+    return res.json({ ok: true, ...report });
+  } catch (e) {
+    console.error('[LR_FULL_AD_ANALYTICS_V3 json]', e?.stack || e);
+    return res.status(500).json({ ok: false });
+  }
+});
+
+app.get('/analytics/stats/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+
+    if (!/^[a-zA-Z0-9_-]{12,120}$/.test(token)) {
       return res.status(404).send('LinkRay: отчёт не найден');
     }
 
-    const cpm = Number(item.cpm || 0);
-    const views = Number(item.views || 0);
-    const price = Math.round((views * cpm / 1000) * 100) / 100;
+    const report = await lrAnLoadReportV3(token);
+    if (!report) return res.status(404).send('LinkRay: отчёт не найден');
 
-    let publishText = 'не указано';
-    try {
-      if (item.publish_at) {
-        publishText = new Date(item.publish_at).toLocaleString('ru-RU', {
-          timeZone: 'Europe/Moscow',
-          day: '2-digit',
-          month: 'long',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }) + ' МСК';
-      }
-    } catch {}
+    const tracker = report.tracker;
+    const channels = report.channels || [];
+    const points = report.points || [];
 
-    function h(v) {
-      return String(v ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;');
-    }
+    const cpm = lrAnCpmV3(tracker);
+    const views = Number(tracker.views || 0);
+    const cost = views * cpm / 1000;
+    const best = channels.length ? channels[0] : null;
+    const forecast = lrAnForecastV3(tracker, channels, points);
+    const forecastCost = forecast.forecastViews * cpm / 1000;
 
-    const statusRu =
-      item.status === 'published' || item.status === 'done' ? 'опубликован' :
-      item.status === 'failed' ? 'ошибка' :
-      item.status === 'planned' ? 'отложен' :
-      String(item.status || 'отложен');
+    const postText = tracker.post_text || channels.find(c => c.post_text)?.post_text || lrAnPlainTextV3(tracker.draft_json) || 'Текст поста пока не найден';
+    const imageUrl = tracker.post_image_url || channels.find(c => c.post_image_url)?.post_image_url || lrAnFindImageV3(tracker.draft_json);
+
+    const statusTop = lrAnStatusTitleV3(tracker);
+    const chart = lrAnBuildSvgChartV3(points);
+
+    const placements = channels.length
+      ? channels.map(ch => {
+          const title = ch.channel_title || (ch.channel_id ? `Канал ${ch.channel_id}` : 'Канал');
+          const chCost = Number(ch.views || 0) * cpm / 1000;
+          const url = ch.message_url ? `<a href="${lrAnHtmlV3(ch.message_url)}" target="_blank">открыть пост</a>` : '';
+          return `
+            <tr>
+              <td>${lrAnHtmlV3(title)}</td>
+              <td>${lrAnHtmlV3(ch.status || 'planned')}</td>
+              <td>${lrAnNumV3(ch.views)}</td>
+              <td>${lrAnMoneyV3(chCost)} ₽</td>
+              <td>${url}</td>
+            </tr>`;
+        }).join('')
+      : `<tr><td colspan="5">Размещения пока не привязаны к опубликованным сообщениям MAX</td></tr>`;
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
     return res.end(`<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>LinkRay — наблюдатель рекламы</title>
+  <meta http-equiv="refresh" content="60">
+  <title>LinkRay — аналитика рекламы</title>
   <style>
-    body{margin:0;background:#080b12;color:#eef6ff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    .wrap{max-width:760px;margin:0 auto;padding:28px 16px}
-    .card{background:linear-gradient(180deg,#151b28,#0d121d);border:1px solid rgba(255,255,255,.08);border-radius:26px;padding:24px;box-shadow:0 22px 70px rgba(0,0,0,.45)}
-    .brand{font-size:30px;font-weight:900;margin-bottom:6px}
-    .muted{color:#95a8c2}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:22px}
-    .box{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.05);border-radius:18px;padding:16px}
-    .label{color:#95a8c2;font-size:14px;margin-bottom:7px}
-    .value{font-size:25px;font-weight:900}
+    :root{--bg:#070b12;--card:#111827;--card2:#172033;--line:rgba(255,255,255,.09);--text:#eef6ff;--muted:#9fb1c8;--accent:#67e8f9;--green:#4ade80;--red:#fb7185;--gold:#facc15}
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(circle at top,#152033 0,#070b12 52%,#04060a 100%);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    .wrap{max-width:980px;margin:0 auto;padding:22px 14px 44px}
+    .top{background:linear-gradient(135deg,rgba(103,232,249,.18),rgba(250,204,21,.12));border:1px solid var(--line);border-radius:24px;padding:18px;margin-bottom:14px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+    .brand{font-size:30px;font-weight:900;margin-bottom:8px}
+    .status{display:inline-flex;gap:8px;align-items:center;background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:999px;padding:9px 13px;font-weight:800}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+    .box,.card{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:22px;padding:16px}
+    .label{color:var(--muted);font-size:13px;margin-bottom:6px}
+    .value{font-size:24px;font-weight:900;line-height:1.15}
     .wide{grid-column:1/-1}
-    .link{word-break:break-all;color:#8bd7ff}
-    .footer{margin-top:20px;color:#95a8c2;font-size:14px;line-height:1.45}
-    @media(max-width:560px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}.brand{font-size:26px}}
+    .post{display:grid;grid-template-columns:260px 1fr;gap:14px;align-items:start}
+    .post img{width:100%;border-radius:18px;border:1px solid var(--line);display:block}
+    .post-text{white-space:pre-wrap;line-height:1.45;color:#eaf2ff}
+    .chart{width:100%;height:auto}
+    .chart line{stroke:rgba(255,255,255,.18)}
+    .chart path{stroke:var(--accent)}
+    .chart circle{fill:var(--gold)}
+    table{width:100%;border-collapse:collapse;overflow:hidden;border-radius:18px}
+    th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+    th{color:var(--muted);font-size:13px;font-weight:700}
+    a{color:#7dd3fc;text-decoration:none}
+    .footer{color:var(--muted);font-size:13px;line-height:1.45;margin-top:14px}
+    @media(max-width:760px){.grid{grid-template-columns:1fr 1fr}.post{grid-template-columns:1fr}.brand{font-size:25px}}
+    @media(max-width:460px){.grid{grid-template-columns:1fr}.value{font-size:22px}}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <div class="brand">🧬 LinkRay</div>
-      <div class="muted">Наблюдатель рекламного поста в MAX</div>
+    <section class="top">
+      <div class="brand">🧬 LinkRay Analytics</div>
+      <div class="status">💼 ${lrAnHtmlV3(statusTop)}</div>
+      <div class="footer">Данные обновляются автоматически раз в минуту. Просмотры берутся из статистики поста MAX.</div>
+    </section>
 
-      <div class="grid">
-        <div class="box">
-          <div class="label">Статус</div>
-          <div class="value">${h(statusRu)}</div>
-        </div>
-
-        <div class="box">
-          <div class="label">Публикация</div>
-          <div class="value" style="font-size:18px">${h(publishText)}</div>
-        </div>
-
-        <div class="box">
-          <div class="label">Просмотры</div>
-          <div class="value">${h(views.toLocaleString('ru-RU'))}</div>
-        </div>
-
-        <div class="box">
-          <div class="label">CPM</div>
-          <div class="value">${h(cpm.toLocaleString('ru-RU'))} ₽</div>
-        </div>
-
-        <div class="box wide">
-          <div class="label">Стоимость по просмотрам</div>
-          <div class="value">${h(price.toLocaleString('ru-RU'))} ₽</div>
-        </div>
-
-        <div class="box wide">
-          <div class="label">Ссылка наблюдателя</div>
-          <div class="link">${h(req.protocol + '://' + req.get('host') + req.originalUrl)}</div>
-        </div>
+    <section class="grid">
+      <div class="box">
+        <div class="label">Просмотры MAX</div>
+        <div class="value">${lrAnNumV3(views)}</div>
       </div>
-
-      <div class="footer">
-        После публикации LinkRay будет обновлять просмотры рекламного поста и пересчитывать стоимость по CPM.
+      <div class="box">
+        <div class="label">CPM</div>
+        <div class="value">${lrAnMoneyV3(cpm)} ₽</div>
       </div>
+      <div class="box">
+        <div class="label">Стоимость</div>
+        <div class="value">${lrAnMoneyV3(cost)} ₽</div>
+      </div>
+      <div class="box">
+        <div class="label">Каналы</div>
+        <div class="value">${lrAnNumV3(channels.length)}</div>
+      </div>
+      <div class="box">
+        <div class="label">Лучший канал</div>
+        <div class="value">${lrAnHtmlV3(best ? (best.channel_title || ('Канал ' + best.channel_id)) : 'нет данных')}</div>
+      </div>
+      <div class="box">
+        <div class="label">Прогноз до удаления</div>
+        <div class="value">${lrAnHtmlV3(forecast.forecastText)}</div>
+      </div>
+      <div class="box">
+        <div class="label">Ожидаемая стоимость</div>
+        <div class="value">${lrAnMoneyV3(forecastCost)} ₽</div>
+      </div>
+      <div class="box">
+        <div class="label">Формула</div>
+        <div class="value" style="font-size:16px">просмотры × CPM / 1000</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>📌 Пост</h2>
+      <div class="post">
+        ${imageUrl ? `<img src="${lrAnHtmlV3(imageUrl)}" alt="Картинка поста">` : `<div class="box"><div class="label">Картинка</div><div class="value" style="font-size:18px">медиа не найдено</div></div>`}
+        <div class="post-text">${lrAnHtmlV3(postText)}</div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:14px">
+      <h2>📈 Динамика просмотров</h2>
+      ${chart}
+    </section>
+
+    <section class="card" style="margin-top:14px">
+      <h2>📡 Размещения по каналам</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Канал</th>
+            <th>Статус</th>
+            <th>Просмотры</th>
+            <th>Стоимость</th>
+            <th>Пост</th>
+          </tr>
+        </thead>
+        <tbody>${placements}</tbody>
+      </table>
+    </section>
+
+    <div class="footer">
+      Если у размещения пока нет message_id, LinkRay будет пытаться привязать его из базы и обновит отчёт после следующего опроса.
     </div>
   </div>
 </body>
 </html>`);
   } catch (e) {
-    console.error('[LR_AD_TRACKER_LINK_V2_ROUTE]', e?.stack || e);
-    return res.status(500).send('LinkRay: ошибка отчёта');
+    console.error('[LR_FULL_AD_ANALYTICS_V3 route]', e?.stack || e);
+    return res.status(500).send('LinkRay: ошибка аналитики');
   }
 });
-/* LR_AD_TRACKER_LINK_V2_ROUTE_END */
+
+setTimeout(() => {
+  lrAnPollAllV3().catch(e => console.error('[LR_FULL_AD_ANALYTICS_V3 first poll]', e?.message || e));
+}, 15000);
+
+setInterval(() => {
+  lrAnPollAllV3().catch(e => console.error('[LR_FULL_AD_ANALYTICS_V3 interval]', e?.message || e));
+}, 60000);
+
+setTimeout(() => {
+  const names = [
+    'sendMaxMessage',
+    'sendMessage',
+    'sendToChannel',
+    'sendPostToChannel',
+    'publishToChannel',
+    'publishPost',
+    'sendChannelPost',
+    'maxSendMessage',
+    'postToChannel'
+  ];
+
+  function bindFromArgsAndResult(name, args, result) {
+    try {
+      const token = lrAnFindTokenV3(args) || lrAnFindTokenV3(result);
+      if (!token) return;
+
+      const messageId = lrAnFindMessageIdV3(result) || lrAnFindMessageIdV3(args);
+      const channelId = lrAnFindChannelIdV3(result) || lrAnFindChannelIdV3(args);
+      const text = lrAnPlainTextV3(result) || lrAnPlainTextV3(args);
+      const image = lrAnFindImageV3(result) || lrAnFindImageV3(args);
+      const url = lrAnFindMessageUrlV3(result);
+
+      lrAnUpsertChannelV3({
+        token,
+        channel_id: channelId,
+        message_id: messageId,
+        message_url: url,
+        status: messageId ? 'published' : 'planned',
+        published_at: messageId ? new Date() : null,
+        post_text: text,
+        post_image_url: image
+      }).catch(e => console.error('[LR_FULL_AD_ANALYTICS_V3 bind async]', name, e?.message || e));
+    } catch (e) {
+      console.error('[LR_FULL_AD_ANALYTICS_V3 bind]', name, e?.message || e);
+    }
+  }
+
+  for (const name of names) {
+    try {
+      const fn = eval(name);
+
+      if (typeof fn !== 'function') continue;
+      if (fn.__lrAnalyticsWrappedV3) continue;
+
+      const wrapped = async function(...args) {
+        const result = await fn.apply(this, args);
+        bindFromArgsAndResult(name, args, result);
+        return result;
+      };
+
+      wrapped.__lrAnalyticsWrappedV3 = true;
+
+      try {
+        eval(`${name} = wrapped`);
+        console.log('[LR_FULL_AD_ANALYTICS_V3] wrapped', name);
+      } catch {}
+    } catch {}
+  }
+}, 2000);
+
+/* LR_FULL_AD_ANALYTICS_V3_END */
+
+
+
+
 
 
 
@@ -1958,111 +2974,7 @@ ${channelLines}
 
 
 
-    /* LR_AD_TRACKER_LINK_V2_HELPERS_START */
-    function lrTrackerPublicBaseV2() {
-      const env =
-        process.env.LINKRAY_PUBLIC_URL ||
-        process.env.PUBLIC_URL ||
-        process.env.APP_PUBLIC_URL ||
-        process.env.WEB_PUBLIC_URL ||
-        process.env.BASE_URL ||
-        '';
-
-      if (env) return String(env).replace(/\/+$/, '');
-
-      try {
-        const host = req.headers['x-forwarded-host'] || req.headers.host || '';
-        const proto = req.headers['x-forwarded-proto'] || 'https';
-        if (host) return `${proto}://${host}`.replace(/\/+$/, '');
-      } catch {}
-
-      return '';
-    }
-
-    function lrTrackerRandomTokenV2() {
-      try {
-        if (globalThis.crypto && globalThis.crypto.randomUUID) {
-          return globalThis.crypto.randomUUID().replaceAll('-', '');
-        }
-      } catch {}
-
-      return (
-        Date.now().toString(36) +
-        Math.random().toString(36).slice(2) +
-        Math.random().toString(36).slice(2)
-      ).replace(/[^a-zA-Z0-9]/g, '');
-    }
-
-    function lrTrackerCpmV2(draft) {
-      const raw =
-        draft?.cpm ??
-        draft?.adCpm ??
-        draft?.ad_cpm ??
-        draft?.pricePerMille ??
-        draft?.price_per_mille ??
-        0;
-
-      const n = Number(String(raw).replace(',', '.').replace(/[^\d.]/g, ''));
-      return Number.isFinite(n) ? n : 0;
-    }
-
-    async function lrCreateAdTrackerV2(draft, channelIds, publishAt) {
-      await query(`
-        CREATE TABLE IF NOT EXISTS public.ad_post_trackers (
-          id serial PRIMARY KEY,
-          token text NOT NULL UNIQUE,
-          post_id text,
-          schedule_ref text,
-          channel_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
-          cpm numeric DEFAULT 0,
-          views bigint NOT NULL DEFAULT 0,
-          status text NOT NULL DEFAULT 'planned',
-          publish_at timestamptz,
-          draft_json jsonb,
-          created_at timestamptz NOT NULL DEFAULT now(),
-          updated_at timestamptz NOT NULL DEFAULT now()
-        )
-      `);
-
-      const token = lrTrackerRandomTokenV2();
-      const base = lrTrackerPublicBaseV2();
-      const url = base ? `${base}/analytics/stats/${token}` : `/analytics/stats/${token}`;
-
-      await query(
-        `INSERT INTO public.ad_post_trackers(token, channel_ids, cpm, status, publish_at, draft_json)
-         VALUES($1, $2::jsonb, $3, 'planned', $4, $5::jsonb)
-         ON CONFLICT(token) DO NOTHING`,
-        [
-          token,
-          JSON.stringify(channelIds || []),
-          lrTrackerCpmV2(draft),
-          publishAt,
-          JSON.stringify(draft || {})
-        ]
-      );
-
-      draft.trackingToken = token;
-      draft.trackingUrl = url;
-      draft.analyticsUrl = url;
-      draft.observerUrl = url;
-
-      if (!draft.meta || typeof draft.meta !== 'object') draft.meta = {};
-      draft.meta.trackingToken = token;
-      draft.meta.trackingUrl = url;
-
-      return { token, url };
-    }
-
-    function lrTrackerLineV2(url) {
-      const u = String(url || '').trim();
-      if (!u) return '';
-
-      return `
-
-🔗 <b>Ссылка наблюдателя:</b>
-<a href="${esc(u)}">${esc(u)}</a>`;
-    }
-    /* LR_AD_TRACKER_LINK_V2_HELPERS_END */
+    
 
 
     async function scheduleAt(dayKey, hhmm) {
