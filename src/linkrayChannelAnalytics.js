@@ -1465,8 +1465,8 @@ async function lrSafeRenderNetworkV4(channels) {
     <text x="52" y="64" font-size="40" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
     <text x="54" y="96" font-size="18" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по ${channels.length} каналам</text>
 
-    ${lrMiniLogoV4(1020, 40)}
-    <text x="1082" y="72" font-size="24" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+    ${logoSvg}
+    <text x="1084" y="72" font-size="24" font-weight="1000" fill="#d9fbf6">LinkRay</text>
 
     <rect x="34" y="118" width="1212" height="492" rx="38" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrShadowV4)"/>
 
@@ -1497,6 +1497,60 @@ async function lrSafeRenderNetworkV4(channels) {
 
 
 /* LR_ANALYTICS_CARD_FOOTER_V5_START */
+
+/* LR_REAL_LOGO_CARD_V6_START */
+let __lrBrandLogoDataUrlV6 = '';
+
+async function lrBrandLogoDataUrlV6(size = 76) {
+  if (__lrBrandLogoDataUrlV6) return __lrBrandLogoDataUrlV6;
+
+  const candidates = [
+    'public/brand/linkray-logo.webp',
+    '/app/public/brand/linkray-logo.webp',
+    'public/brand/linkray-logo.png',
+    '/app/public/brand/linkray-logo.png',
+    'public/brand/linkray-logo.jpg',
+    '/app/public/brand/linkray-logo.jpg',
+    'public/brand/linkray-card-logo.jpg',
+    '/app/public/brand/linkray-card-logo.jpg',
+  ];
+
+  for (const file of candidates) {
+    try {
+      const buf = await fs.readFile(file);
+      const png = await sharp(buf)
+        .resize(size, size, { fit: 'cover', position: 'centre' })
+        .png()
+        .toBuffer();
+
+      __lrBrandLogoDataUrlV6 = `data:image/png;base64,${png.toString('base64')}`;
+      return __lrBrandLogoDataUrlV6;
+    } catch (_) {}
+  }
+
+  return '';
+}
+
+async function lrBrandLogoImageV6(x, y, size = 76) {
+  const data = await lrBrandLogoDataUrlV6(size);
+
+  if (!data) {
+    return lrMiniLogoV4(x, y);
+  }
+
+  const clip = `lrRealLogoClip${x}_${y}_${size}`;
+  return `
+    <defs>
+      <clipPath id="${clip}">
+        <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}"/>
+      </clipPath>
+    </defs>
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 + 4}" fill="rgba(49,242,204,.14)" stroke="rgba(126,248,225,.65)" stroke-width="3"/>
+    <image href="${data}" x="${x}" y="${y}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})"/>
+  `;
+}
+/* LR_REAL_LOGO_CARD_V6_END */
+
 async function lrSafeRenderSingleV5(ch) {
   const history = await historyFor(ch.key, 'subscribers');
   const subValues = history.length ? history.map((x) => x.value) : [ch.subscribers, ch.subscribers];
@@ -1504,13 +1558,14 @@ async function lrSafeRenderSingleV5(ch) {
   const avatar = await lrSafeAvatarV3(ch, 72, 132, 74, 0);
   const titleLines = lrSvgWrapV3(ch.title, 36, 2);
   const dateText = lrSvgEscV3(nowMskHuman());
+  const logoSvg = await lrBrandLogoImageV6(900, 36, 68);
 
   const inner = `
     <text x="52" y="64" font-size="40" font-weight="1000" fill="#ffffff">LinkRay Analytics</text>
     <text x="54" y="96" font-size="18" font-weight="900" fill="#d5edf2">карточка канала · реальные данные после подключения бота</text>
 
-    ${lrMiniLogoV4(900, 40)}
-    <text x="962" y="72" font-size="23" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+    ${logoSvg}
+    <text x="982" y="72" font-size="23" font-weight="1000" fill="#d9fbf6">LinkRay</text>
     <rect x="1080" y="38" width="145" height="56" rx="22" fill="rgba(255,255,255,.14)" stroke="rgba(126,248,225,.44)" stroke-width="2"/>
     <text x="1152" y="73" text-anchor="middle" font-size="21" font-weight="1000" fill="#31f2cc">1 КАНАЛ</text>
 
@@ -1552,6 +1607,7 @@ async function lrSafeRenderNetworkV5(channels) {
   const histLabels = history.length ? history.map((x) => x.label) : ['старт', 'сейчас'];
   const sorted = channels.slice().sort((a, b) => num(b.views24) - num(a.views24)).slice(0, 4);
   const dateText = lrSvgEscV3(nowMskHuman());
+  const logoSvg = await lrBrandLogoImageV6(1006, 36, 68);
 
   const rows = [];
   for (let i = 0; i < sorted.length; i++) {
@@ -1570,8 +1626,8 @@ async function lrSafeRenderNetworkV5(channels) {
     <text x="52" y="64" font-size="40" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
     <text x="54" y="96" font-size="18" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по ${channels.length} каналам</text>
 
-    ${lrMiniLogoV4(1020, 40)}
-    <text x="1082" y="72" font-size="24" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+    ${logoSvg}
+    <text x="1084" y="72" font-size="24" font-weight="1000" fill="#d9fbf6">LinkRay</text>
 
     <rect x="34" y="118" width="1212" height="486" rx="38" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrShadowV4)"/>
 
