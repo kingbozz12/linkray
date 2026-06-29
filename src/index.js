@@ -830,6 +830,102 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 
 app.use(express.json({ limit: '50mb' }));
 
+// LR_FORCE_START_MENU_V7_START
+function __lrForceMainMenuTextV7() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`;
+}
+
+function __lrForceMainMenuRowsV7() {
+  return [
+    [callbackButton('🚀 LinkRay Studio', 'main:posting')],
+    [callbackButton('📊 Аналитика', 'main:analytics')],
+    [callbackButton('➕ Добавить канал', 'post:add_channel')],
+    [
+      callbackButton('📈 Отчёты', 'reports:menu'),
+      callbackButton('🛡 Антифрод', 'fraud:menu')
+    ],
+  ];
+}
+
+function __lrForceMenuAttachmentsV7(rows) {
+  if (typeof inlineKeyboard === 'function') return inlineKeyboard(rows);
+  if (typeof buttonRows === 'function') return buttonRows(rows);
+  return rows;
+}
+
+app.use(async function lrForceStartMenuV7(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const text = String(getMessageText(update) || '').trim();
+    const payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const chatId = getChatId(update);
+
+    const isStart = /^\/start(?:\s|$)/i.test(text);
+    const isMainMenu = payload === 'main:menu' || payload === 'menu:main' || payload === 'start:menu';
+
+    if (!isStart && !isMainMenu) return next();
+
+    const menuText = __lrForceMainMenuTextV7();
+    const rows = __lrForceMainMenuRowsV7();
+    const attachments = __lrForceMenuAttachmentsV7(rows);
+
+    if (callbackId) {
+      await answerCallback({
+        callbackId,
+        text: menuText,
+        format: 'html',
+        attachments
+      });
+    } else if (chatId) {
+      await sendMaxMessage({
+        chatId,
+        text: menuText,
+        format: 'html',
+        attachments
+      });
+    } else {
+      return next();
+    }
+
+    console.log('[LR_FORCE_START_MENU_V7] sent priority main menu', JSON.stringify({
+      chatId: String(chatId || ''),
+      payload,
+      isStart,
+      isMainMenu
+    }));
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('[LR_FORCE_START_MENU_V7]', error && error.stack ? error.stack : error);
+    return next();
+  }
+});
+// LR_FORCE_START_MENU_V7_END
+
+
+
 // LR_ANALYTICS_PRIORITY_BEFORE_POSTING_START
 mountLinkRayChannelAnalytics(app);
 
