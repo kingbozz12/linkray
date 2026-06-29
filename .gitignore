@@ -15,3 +15,11 @@ linkray_last_update.json
 
 tmp/
 .cache/
+
+# Local backup files
+*.bak*
+*.backup*
+*.broken*
+src/*.bak*
+src/*.backup*
+src/*.broken*

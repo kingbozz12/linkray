@@ -17,20 +17,56 @@ function lrNoPreviewPayload(payload) {
 
   const patched = { ...payload };
 
-  patched.disable_link_preview = false;
-  patched.disableLinkPreview = false;
+  function apply(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+
+    obj.disable_link_preview = true;
+    obj.disableLinkPreview = true;
+    obj.disable_web_page_preview = true;
+    obj.disableWebPagePreview = true;
+    obj.link_preview = false;
+    obj.linkPreview = false;
+
+    if (Array.isArray(obj.attachments)) {
+      obj.attachments = obj.attachments.filter((att) => {
+        const type = String(att?.type || att?.kind || '').toLowerCase();
+        return !(
+          type === 'link_preview' ||
+          type === 'rich_link' ||
+          type === 'preview' ||
+          type.includes('link_preview') ||
+          type.includes('rich_link')
+        );
+      });
+    }
+
+    return obj;
+  }
+
+  apply(patched);
 
   if (patched.message && typeof patched.message === 'object' && !Array.isArray(patched.message)) {
-    patched.message = {
-      ...patched.message,
-      disable_link_preview: false,
-      disableLinkPreview: false
-    };
+    patched.message = { ...patched.message };
+    apply(patched.message);
+  }
+
+  if (patched.body && typeof patched.body === 'object' && !Array.isArray(patched.body)) {
+    patched.body = { ...patched.body };
+    apply(patched.body);
+  }
+
+  if (patched.payload && typeof patched.payload === 'object' && !Array.isArray(patched.payload)) {
+    patched.payload = { ...patched.payload };
+    apply(patched.payload);
+
+    if (patched.payload.message && typeof patched.payload.message === 'object' && !Array.isArray(patched.payload.message)) {
+      patched.payload.message = { ...patched.payload.message };
+      apply(patched.payload.message);
+    }
   }
 
   return patched;
 }
-
 function cleanAttachments(attachments = []) {
   const out = [];
   const seen = new Set();
@@ -164,6 +200,43 @@ function cleanMarkup(markup = [], text = '') {
   }
 
   return out;
+}
+
+
+function lrStripServicePreviewsV3(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+
+  const text = String(body.text || '');
+
+  const isServiceMessage =
+    text.includes('━━━━━━━━━━━━━━') ||
+    text.includes('LinkRay') ||
+    text.includes('К выпуску') ||
+    text.includes('CPM установлен') ||
+    text.includes('Рекламный пост опубликован') ||
+    text.includes('Страница отчёта') ||
+    text.includes('Ссылка наблюдателя') ||
+    text.includes('Редактор LinkRay') ||
+    text.includes('Автоудаление') ||
+    text.includes('Открыть отчёт');
+
+  if (!isServiceMessage) return body;
+
+  const cleaned = { ...body };
+
+  cleaned.text = String(cleaned.text || '')
+    .replace(/<a\b[^>]*href=["'][^"']+["'][^>]*>(.*?)<\/a>/gis, '$1')
+    .replace(/https?:\/\/linkray\.ru\/analytics\/stats\/[^\s<]+/gi, 'LinkRay Analytics')
+    .replace(/https?:\/\/max\.ru\/[^\s<]+/gi, 'канал');
+
+  if (Array.isArray(cleaned.markup)) {
+    cleaned.markup = cleaned.markup.filter((m) => {
+      const type = String(m?.type || m?.kind || '').toLowerCase();
+      return !m?.url && !m?.href && !type.includes('link');
+    });
+  }
+
+  return cleaned;
 }
 
 function buildMessageBody({ text = '', format = 'html', attachments = [], markup = [] } = {}) {
