@@ -798,6 +798,16 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express();
 
+// LINKRAY_CHANNEL_ANALYTICS_START
+import('./linkrayChannelAnalytics.js')
+  .then((mod) => {
+    if (typeof mod.mountLinkRayChannelAnalytics === 'function') {
+      mod.mountLinkRayChannelAnalytics(app);
+    }
+  })
+  .catch((error) => console.error('[LinkRay channel analytics mount]', error?.stack || error));
+// LINKRAY_CHANNEL_ANALYTICS_END
+
 // LINKRAY_24H_REPORT_START
 import('./linkray24hReport.js')
   .then((mod) => {
