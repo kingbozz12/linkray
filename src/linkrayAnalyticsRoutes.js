@@ -1,6 +1,6 @@
 import { query } from './db.js';
 
-const DEFAULT_LOGO_URL = process.env.LINKRAY_LOGO_URL || 'https://maxapp.postxbot.ru/watchpost/IigDp0qqCJipeT7zupRlXA';
+const DEFAULT_LOGO_URL = process.env.LINKRAY_LOGO_URL || '/brand/linkray-logo.png';
 const BOT_LINK = process.env.BOT_LINK || 'https://max.ru/se13353901_bot';
 let syncTimerStarted = false;
 let channelColumnsCache = null;

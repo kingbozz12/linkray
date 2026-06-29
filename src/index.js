@@ -1,3 +1,4 @@
+import { mountLinkRayBrandRoutes } from './linkrayBrandRoutes.js';
 import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
 import { mountLinkRayAnalyticsRoutes } from './linkrayAnalyticsRoutes.js';
@@ -50,8 +51,8 @@ function lrApplyEditorPostFormat(draft, content = {}) {
 }
 // LR_EDITOR_POST_FORMAT_END
 
-
 import {
+
   sendMaxMessage,
   answerCallback,
   inlineKeyboard,
@@ -62,21 +63,6 @@ import {
   editMaxMessage,
   deleteMaxMessage,
 } from './maxClient.js';
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // LR_AUTOSIG_FINAL_START
 function lrAutoSigFinalDecode(value) {
@@ -383,7 +369,6 @@ function lrAutoSigFinalPreview(sig) {
 }
 // LR_AUTOSIG_FINAL_END
 
-
 // LR_SIG_INPUT_V14_START
 function lrSigV14Decode(value) {
   return String(value ?? '')
@@ -679,7 +664,6 @@ function lrSigV14Preview(sig) {
 }
 // LR_SIG_INPUT_V14_END
 
-
 // LR_SIG_RICH_V13_START
 globalThis.__lrSigRichV13 = (() => {
   const decode = (value) => String(value ?? '')
@@ -813,11 +797,10 @@ globalThis.__lrSigRichV13 = (() => {
 })();
 // LR_SIG_RICH_V13_END
 
-
-const app = express(); mountLinkRayAnalyticsRoutes(app);
+const app = express();
+mountLinkRayBrandRoutes(app); mountLinkRayBrandRoutes(app);
+mountLinkRayAnalyticsRoutes(app);
 app.use(express.json({ limit: '50mb' }));
-
-
 
 /* LR_FINAL_CAL_CPM_V2_START */
 app.use(async function lrFinalCalCpmV2(req, res, next) {
@@ -1290,7 +1273,6 @@ app.use(async function lrFinalCalCpmV2(req, res, next) {
   }
 });
 /* LR_FINAL_CAL_CPM_V2_END */
-
 
 /* LR_EDITOR_CORE_V1_START */
 app.use(async function lrEditorCoreV1(req, res, next) {
@@ -2331,16 +2313,6 @@ async function lrCpmPreviewFinalV4(chatId, key, text, session) {
   }
 });
 /* LR_EDITOR_CORE_V1_END */
-
-
-
-
-
-
-
-
-
-
 
 /* LR_FULL_AD_ANALYTICS_V3_START */
 
@@ -3502,12 +3474,6 @@ setTimeout(() => {
 
 /* LR_FULL_AD_ANALYTICS_V3_END */
 
-
-
-
-
-
-
 /* LR_CLEAN_CALENDAR_SPLIT_TIME_V1_START */
 app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
   try {
@@ -3520,7 +3486,6 @@ app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
     const key = getSessionKey(update);
 
     if (!key) return next();
-
 
     /* LR_CALENDAR_ANSWER_PAYLOAD_FIX_V2_START */
     function lrCalendarTokenV2() {
@@ -3651,7 +3616,6 @@ app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
       throw new Error('Не удалось ответить календарём: нет callbackId/chatId или токена');
     }
     /* LR_CALENDAR_ANSWER_PAYLOAD_FIX_V2_END */
-
 
     function esc(v) {
       try {
@@ -4354,7 +4318,6 @@ ${icon} Введите ${esc(timeTitle)}.
       );
     }
 
-
     /* LR_AD_SCHEDULED_CONFIRM_STYLE_V2_HELPERS_START */
     function lrAdConfirmPreviewTextV2(draft) {
       try {
@@ -4496,10 +4459,7 @@ ${channelLines}
     }
     /* LR_AD_SCHEDULED_CONFIRM_STYLE_V2_HELPERS_END */
 
-
-
     
-
 
     async function scheduleAt(dayKey, hhmm) {
       const nice = normalizeTime(hhmm);
@@ -4547,7 +4507,6 @@ ${channelLines}
         ? lrAdScheduledConfirmTextV2(draft, channels, dayKey, nice)
         : lrNormalScheduledConfirmTextV2(channels, dayKey, nice);
       if (isAd) text += lrTrackerLineV2(draft?.trackingUrl || draft?.analyticsUrl || draft?.observerUrl || '');
-
 
       return lrCalendarAnswer( text, [
         [callbackButton('📂 Посты', 'post:all')],
@@ -4691,30 +4650,6 @@ ${channelLines}
 });
 /* LR_CLEAN_CALENDAR_SPLIT_TIME_V1_END */
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /* LR_POST_EDITOR_ORDER_FINAL_START */
 app.use(async function lrPostEditorOrderFinal(req, res, next) {
   try {
@@ -4804,7 +4739,6 @@ app.use(async function lrPostEditorOrderFinal(req, res, next) {
   }
 });
 /* LR_POST_EDITOR_ORDER_FINAL_END */
-
 
 /* LR_BUTTONS_CLEAN_FINAL_START */
 app.use(async function lrButtonsCleanFinal(req, res, next) {
@@ -5044,20 +4978,6 @@ app.use(async function lrButtonsCleanFinal(req, res, next) {
   }
 });
 /* LR_BUTTONS_CLEAN_FINAL_END */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /* LR_BUTTON_PREVIEW_REFRESH_V7_START */
 app.use(async function lrButtonPreviewRefreshV7(req, res, next) {
@@ -5415,7 +5335,6 @@ app.use(async function lrButtonPreviewRefreshV7(req, res, next) {
   }
 });
 /* LR_BUTTON_PREVIEW_REFRESH_V7_END */
-
 
 /* LR_CALENDAR_SCHEDULE_BUTTON_V6_START */
 app.use(async function lrCalendarScheduleButtonV7(req, res, next) {
@@ -6069,11 +5988,6 @@ ${saved.length ? saved.map(t => '• ' + lrEsc(t)).join('\n') : 'Пока нет
 });
 /* LR_CALENDAR_SCHEDULE_BUTTON_V6_END */
 
-
-
-
-
-
 /* LR_MONTH_CALENDAR_V1_START */
 app.use(async function lrMonthCalendarMiddleware(req, res, next) {
   try {
@@ -6346,9 +6260,7 @@ app.use(async function lrMonthCalendarMiddleware(req, res, next) {
 
             // LR_CALENDAR_SAVED_TIMES_V4: стандартные времена 09/12/15/18/21/23 убраны
 
-
             // LR_CALENDAR_SAVED_TIMES_V4: стандартные времена 09/12/15/18/21/23 убраны
-
 
       rows.push([callbackButton('✍️ Ввести время вручную', 'schedule:manual_day:' + dayKey)]);
       rows.push([callbackButton('⬅️ К месяцу', 'lr_cal:month:' + lrMonthKeyFromDay(dayKey) + ':' + dayKey)]);
@@ -6486,7 +6398,6 @@ app.use(async function lrMonthCalendarMiddleware(req, res, next) {
   }
 });
 /* LR_MONTH_CALENDAR_V1_END */
-
 
 /* LR_CLEAN_SIGNATURE_FIX_START */
 app.use(async function lrCleanSignatureMiddleware(req, res, next) {
@@ -6771,7 +6682,6 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
 });
 /* LR_CLEAN_SIGNATURE_FIX_END */
 
-
 // LR_CHANNEL_DB_SYNC_MIDDLEWARE_START
 app.use(async (req, res, next) => {
   try {
@@ -6785,7 +6695,6 @@ app.use(async (req, res, next) => {
   next();
 });
 // LR_CHANNEL_DB_SYNC_MIDDLEWARE_END
-
 
 const PORT = Number(process.env.PORT || 3000);
 const BOT_LINK = process.env.BOT_LINK || 'https://max.ru/se13353901_bot';
@@ -7145,7 +7054,6 @@ function channelLine(ch) {
   return `• ${title}`;
 } function channelsLines(channels) { return (channels || []).map(channelLine).join('\n') || '• канал не выбран'; }
 
-
 async function maybeRegisterChannel(update) {
   const chatId = getChatId(update);
   const title = getChatTitle(update);
@@ -7175,17 +7083,6 @@ async function refreshChannelMeta(channel) {
     return channel;
   }
 }
-
-
-
-
-
-
-
-
-
-
-
 
 // LR_FORWARD_HYDRATE_EXACT_V2_START
 function lrDeepPickForwardMessage(update) {
@@ -7462,11 +7359,6 @@ async function hydrateContent(update) {
   }
 }
 
-
-
-
-
-
 // LR_QUOTE_HYDRATE_WRAP_V1_START
 const __lrHydrateContentBeforeQuoteV1 = typeof hydrateContent === 'function' ? hydrateContent : null;
 
@@ -7499,10 +7391,7 @@ if (__lrHydrateContentBeforeQuoteV1) {
 }
 // LR_QUOTE_HYDRATE_WRAP_V1_END
 
-
 // LR_FORWARD_HYDRATE_EXACT_V2_END
-
-
 
 // LR_NATIVE_MAX_MARKUP_V4_START
 function lrRichHtmlEscape(value) {
@@ -7837,7 +7726,6 @@ function applyMarkupToHtml(text, markup = []) {
   return out;
 }
 
-
 // LR_QUOTE_BLOCKQUOTE_V1_START
 function lrQuoteTypeOf(mark) {
   return String(
@@ -8079,8 +7967,6 @@ function lrQuoteCollectNativeMarkupDeep(root, sourceText = '') {
 }
 // LR_QUOTE_BLOCKQUOTE_V1_END
 
-
-
 function lrMaxMarkupToHtml(text, markup = []) {
   return applyMarkupToHtml(text, markup);
 }
@@ -8089,11 +7975,7 @@ function lrMaxMarkupToMarkdown(text, markup = []) {
   return applyMarkupToHtml(text, markup);
 }
 
-
-
-
 // LR_NATIVE_MAX_MARKUP_V4_END
-
 
 function emptyDraft() { return { campaignId: `lr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`, channelIds: [], content: { text: '', format: 'html', attachments: [], markup: [], raw: null }, buttons: [], isAd: false, cpm: null, autoDeleteMinutes: null, reportAfterHours: 24, signatureEnabled: true, scheduleDate: null, previewMessageId: null }; }
 function safeDraft(data) {
@@ -8121,10 +8003,6 @@ function hasContent(d) {
     d?.content?.link
   );
 }
-
-
-
-
 
 async function replaceBareAdUrls(draft, channelId, html) {
   const campaignId = draft.campaignId || draft.reportGroupId || `lr-${Date.now()}`;
@@ -8163,7 +8041,6 @@ function reqFingerprint(req, token) {
     fingerprint: sha256Hex(`${token}|${String(ip).split(',')[0].trim()}|${ua}`).slice(0, 40),
   };
 }
-
 
 const LR_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.SITE_URL || process.env.WEBAPP_URL || 'https://linkray.ru').replace(/\/$/, '');
 
@@ -8205,7 +8082,6 @@ async function lrEnsureButtonAnalyticsLink({ campaignId, postId = null, channelI
 
   return `${LR_PUBLIC_BASE_URL}/r/${token}`;
 }
-
 
 async function trackedButtonsForDraft(draft, channelId) {
   const originalRows = Array.isArray(draft?.buttons) ? draft.buttons : [];
@@ -8374,8 +8250,6 @@ async function trackedButtonsForDraft(draft, channelId) {
   return out;
 }
 
-
-
 async function composePostForChannelUnsafe(draft, channelId) {
   let text = String(draft.content?.text || '');
 
@@ -8412,7 +8286,6 @@ async function composePostForChannelUnsafe(draft, channelId) {
   };
 }
 
-
 async function composePostForChannel(draft, channelId) {
   try {
     return await composePostForChannelUnsafe(draft, channelId);
@@ -8429,7 +8302,6 @@ async function composePostForChannel(draft, channelId) {
     };
   }
 }
-
 
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
@@ -8514,7 +8386,6 @@ async function showEditor(callbackId, key, draft) {
   }
 }
 
-
 function lrSafePreviewContent(draft) {
   const content = draft?.content || {};
 
@@ -8582,7 +8453,6 @@ async function sendDraftPreviewUnsafe(chatId, draft) {
   }
 }
 
-
 async function sendDraftPreview(chatId, draft) {
   try {
     return await sendDraftPreviewUnsafe(chatId, draft);
@@ -8593,9 +8463,6 @@ async function sendDraftPreview(chatId, draft) {
     return lrSendSafePreview(chatId, draft);
   }
 }
-
-
-
 
 function parseDuration(input) {
   const raw = String(input || '').trim().toLowerCase();
@@ -8762,7 +8629,6 @@ async function publishDraftNow(draft, key) {
   return results;
 }
 
-
 /* LR_INPLACE_AFTER_PLANNED_HELPER_V1_START */
 async function lrInplaceAfterPlannedHelperV1(callbackId, chatId, draft, publishAt, ids) {
   const channels = await getChannelsByIds(draft.channelIds || []);
@@ -8845,7 +8711,6 @@ ${channelsLines(channels)}
   }
   await sendMain(chatId);
 }
-
 
 async function afterPublished(chatId, draft, results, callbackId = null) {
   const list = Array.isArray(results) ? results : [];
@@ -9016,7 +8881,6 @@ function postAutoRows(postId) { return [[callbackButton('24', `post:auto_set:${p
 
 async function openPost(callbackId, chatId, id) { const p = await getPost(id); if (!p) { await cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); return; } await answerCallback({ callbackId, notification: 'Открываю пост...' }).catch(()=>{}); try { const d = postPreviewDraft(p); await sendMaxMessage({ ...lrBuildSendTarget(chatId), text: p.text || '', format: p.format || 'html', attachments: finalAttachments(d) }); await msg(chatId, postMenuText(p), postMenuRows(p)); } catch (e) { console.error('[open post]', e.message || e); await cb(callbackId, `${postMenuText(p)}\n\n⚠️ Пост не удалось вывести отдельно: ${escapeHtml(e.message || e)}`, postMenuRows(p)); } }
 async function editExisting(callbackId, key, id) { const p = await getPost(id); if (!p) return cb(callbackId, 'Пост не найден.', [[callbackButton('⬅️ К постам','post:all')]]); if (olderThan24(p)) return cb(callbackId, '🔒 Редактирование недоступно: прошло больше 24 часов.', [[callbackButton('⬅️ Назад', `post:open:${id}`)]]); const draft = makeDraftFromPost(p); await showEditor(callbackId, key, draft); }
-
 
 async function saveExisting(callbackId, key, draft) {
   const chatId = Number(key || 0);
@@ -9193,8 +9057,6 @@ ${escapeHtml(e?.message || e)}
     );
   }
 }
-
-
 
 async function handleCallback(update) {
   __lrStartChannelDbSyncTimer();
@@ -9400,7 +9262,6 @@ if (payload === 'sig:menu') return showSignaturesMenu(callbackId);
   }
   // LR_AUTOSIGN_CHANNEL_CLICK_FIX_END
 
-
 // LR_SIG_CHANNEL_HANDLERS_V8_START
 if (payload.startsWith('sig:channel:')) {
   const channelId = Number(payload.split(':')[2]);
@@ -9469,7 +9330,6 @@ async function showChannels(callbackId) {
   ]);
 }
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
-
 
 // LR_CHANNEL_INBOUND_GUARD_START
 const __lrChannelGuardCache = {
@@ -9566,13 +9426,6 @@ async function __lrShouldIgnoreInboundChannelUpdate(update) {
   return false;
 }
 // LR_CHANNEL_INBOUND_GUARD_END
-
-
-
-
-
-
-
 
 // LR_CHANNEL_DB_SYNC_START
 let __lrChannelDbSyncStarted = false;
@@ -9939,9 +9792,6 @@ function __lrStartChannelDbSyncTimer() {
 }
 // LR_CHANNEL_DB_SYNC_END
 
-
-
-
 function lrFindForwardBodyMessage(update) {
   return (
     update?.message?.link?.message ||
@@ -10156,8 +10006,6 @@ async function sendEditorAsNew(chatId, key, draft) {
   return msg(chatId, editorMenuText(), editorMenuRows(draft));
 }
 
-
-
 app.get('/r/:token', async (req, res) => {
   const token = String(req.params.token || '').trim();
 
@@ -10344,7 +10192,6 @@ app.post('/webhook', async (req, res) => {
     if (type.includes('callback') || getCallbackId(update)) await handleCallback(update); else await handleMessage(update);
   } catch(e) { console.error('[webhook] processing error:', e); }
 });
-
 
 // LR_APPEND_HEADING_QUOTE_SAFE_V2_START
 function lrHq2EscapeHtml(value) {
@@ -10796,7 +10643,6 @@ try {
 await ensureDb();
 startAutopostWorker().catch(e => console.error('[autopost start]', e));
 app.listen(PORT, () => console.log(`LinkRay bot started on port ${PORT}`));
-
 
 // LR_HEADING_QUOTE_SPECIAL_V6_START
 (() => {
@@ -11354,7 +11200,6 @@ app.listen(PORT, () => console.log(`LinkRay bot started on port ${PORT}`));
 })();
 // LR_HEADING_QUOTE_SPECIAL_V6_END
 
-
 // LR_SAFE_APPEND_MAX_MARKUP_START
 try {
   if (!globalThis.__lrSafeAppendMaxMarkupInstalled) {
@@ -11825,8 +11670,6 @@ try {
 }
 // LR_SAFE_APPEND_MAX_MARKUP_END
 
-
-
 // LR_HEADING_QUOTE_HEURISTIC_START
 try {
   if (typeof hydrateContent === 'function' && !globalThis.__LR_HEADING_QUOTE_HEURISTIC__) {
@@ -12094,7 +11937,6 @@ try {
 }
 // LR_HEADING_QUOTE_HEURISTIC_END
 
-
 /* LR_CLEAN_SIGNATURE_COMPOSE_START */
 {
   const lrRowsCompose = function(r) {
@@ -12150,7 +11992,6 @@ try {
   }
 }
 /* LR_CLEAN_SIGNATURE_COMPOSE_END */
-
 
 /* LR_PREVIEW_PAYLOAD_FIX_V13_START */
 {
@@ -12364,7 +12205,6 @@ try {
   console.log('[LR_PREVIEW_PAYLOAD_FIX_V13] installed');
 }
 /* LR_PREVIEW_PAYLOAD_FIX_V13_END */
-
 
 /* LR_PUBLISHED_DB_SAVE_V15_START */
 {
@@ -12715,7 +12555,4 @@ function normalizeAttachments(input) {
   return out;
 }
 /* LR_NORMALIZE_ATTACHMENTS_SAFE_V1_END */
-
-
-
 
