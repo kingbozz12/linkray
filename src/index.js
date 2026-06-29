@@ -833,6 +833,30 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 
 app.use(express.json({ limit: '50mb' }));
 
+// LR_ANALYTICS_PRIORITY_BEFORE_POSTING_START
+mountLinkRayChannelAnalytics(app);
+
+app.use(async function lrAnalyticsPriorityBeforePosting(req, res, next) {
+  try {
+    if (req.method !== 'POST') {
+      return next();
+    }
+
+    const handled = await handleLinkRayChannelAnalyticsIncoming(req.body || {});
+
+    if (handled) {
+      console.log('[LR_ANALYTICS_PRIORITY] handled before posting');
+      return res.json({ ok: true, analytics: true });
+    }
+  } catch (error) {
+    console.error('[LR_ANALYTICS_PRIORITY]', error?.stack || error);
+  }
+
+  return next();
+});
+// LR_ANALYTICS_PRIORITY_BEFORE_POSTING_END
+
+
 /* LR_FINAL_CAL_CPM_V2_START */
 app.use(async function lrFinalCalCpmV2(req, res, next) {
   try {
@@ -10222,23 +10246,6 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
 
 app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.json({ ok: true, service: 'linkray-bot', db: true, time: nowIso() }); } catch(e) { res.status(500).json({ ok:false, error: e.message }); } });
 
-
-// LR_ANALYTICS_PRE_WEBHOOK_START
-mountLinkRayChannelAnalytics(app);
-
-app.post('/webhook', async (req, res, next) => {
-  try {
-    const handled = await handleLinkRayChannelAnalyticsIncoming(req.body || {});
-    if (handled) {
-      return res.json({ ok: true });
-    }
-  } catch (error) {
-    console.error('[LinkRay analytics pre-webhook]', error?.stack || error);
-  }
-
-  return next();
-});
-// LR_ANALYTICS_PRE_WEBHOOK_END
 
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
