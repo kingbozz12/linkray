@@ -1664,6 +1664,149 @@ ${icon} Введите ${esc(timeTitle)}.
       );
     }
 
+
+    /* LR_AD_SCHEDULED_CONFIRM_STYLE_V2_HELPERS_START */
+    function lrAdConfirmPreviewTextV2(draft) {
+      try {
+        const raw =
+          draft?.content?.text ||
+          draft?.text ||
+          draft?.caption ||
+          draft?.message?.text ||
+          draft?.body?.text ||
+          draft?.draft?.content?.text ||
+          '';
+
+        let text = String(raw || '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (!text) {
+          const rawJson = JSON.stringify(draft || {});
+          if (/photo|video|image|attachment|media/i.test(rawJson)) {
+            text = 'медиа-пост';
+          }
+        }
+
+        if (!text) text = 'пост без текста';
+        if (text.length > 54) text = text.slice(0, 54).trim() + '…';
+
+        return text;
+      } catch {
+        return 'пост без текста';
+      }
+    }
+
+    function lrAdConfirmAutoDeleteTextV2(draft) {
+      const raw =
+        draft?.autoDeleteHours ??
+        draft?.auto_delete_hours ??
+        draft?.deleteAfterHours ??
+        draft?.delete_after_hours ??
+        draft?.autoDelete ??
+        draft?.auto_delete ??
+        draft?.removeAfter ??
+        draft?.remove_after ??
+        null;
+
+      if (raw === null || raw === undefined || raw === false || raw === 0 || raw === '0' || raw === '') {
+        return 'без удаления';
+      }
+
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return `${n}ч`;
+
+      return String(raw);
+    }
+
+    function lrAdConfirmCpmTextV2(draft) {
+      const raw =
+        draft?.cpm ??
+        draft?.adCpm ??
+        draft?.ad_cpm ??
+        draft?.pricePerMille ??
+        draft?.price_per_mille ??
+        '';
+
+      const text = String(raw ?? '').trim();
+      if (!text) return 'не указан';
+
+      return `${text} ₽ за 1000 просмотров`;
+    }
+
+    function lrAdConfirmChannelLinesV2(channels) {
+      try {
+        if (typeof channelsLines === 'function') {
+          const value = channelsLines(channels);
+          if (String(value || '').trim()) return value;
+        }
+      } catch {}
+
+      if (!Array.isArray(channels) || !channels.length) return '• канал не найден';
+
+      return channels.map(ch => {
+        const title = ch?.title || ch?.name || ch?.channel_name || ch?.id || 'канал';
+        const url = ch?.url || ch?.link || ch?.invite_link || ch?.join_link || '';
+
+        if (url) return `• <a href="${esc(url)}">${esc(title)}</a>`;
+        return `• ${esc(title)}`;
+      }).join('\n');
+    }
+
+    function lrAdConfirmDateLineV2(dayKey, nice) {
+      return `${dayTitle(dayKey)}, ${nice} МСК`;
+    }
+
+    function lrAdScheduledConfirmTextV2(draft, channels, dayKey, nice) {
+      const preview = lrAdConfirmPreviewTextV2(draft);
+      const cpm = lrAdConfirmCpmTextV2(draft);
+      const autoDelete = lrAdConfirmAutoDeleteTextV2(draft);
+      const channelLines = lrAdConfirmChannelLinesV2(channels);
+      const dateLine = lrAdConfirmDateLineV2(dayKey, nice);
+
+      return `━━━━━━━━━━━━━━
+💼 <b>Рекламный пост отложен</b>
+
+📝 Сообщение «${esc(preview)}»
+
+📌 <b>Статус:</b> отложено
+🕒 <b>Публикация:</b> ${esc(dateLine)}
+
+📡 <b>Канал:</b>
+${channelLines}
+
+💰 <b>CPM:</b> ${esc(cpm)}
+🗑 <b>Автоудаление:</b> ${esc(autoDelete)}
+📊 <b>Отчёт:</b> через 24ч после публикации
+
+━━━━━━━━━━━━━━
+🧬 <a href="https://max.ru/se13353901_bot">LinkRay</a> — автопостинг, рекламные выходы и отчёты для MAX`;
+    }
+
+    function lrNormalScheduledConfirmTextV2(channels, dayKey, nice) {
+      const channelLines = lrAdConfirmChannelLinesV2(channels);
+      const dateLine = lrAdConfirmDateLineV2(dayKey, nice);
+
+      return `━━━━━━━━━━━━━━
+✅ <b>Пост отложен</b>
+
+📌 <b>Статус:</b> отложено
+🕒 <b>Публикация:</b> ${esc(dateLine)}
+
+📡 <b>Канал:</b>
+${channelLines}
+
+Пост добавлен в очередь.
+━━━━━━━━━━━━━━`;
+    }
+    /* LR_AD_SCHEDULED_CONFIRM_STYLE_V2_HELPERS_END */
+
+
     async function scheduleAt(dayKey, hhmm) {
       const nice = normalizeTime(hhmm);
       const publishAt = dateFromDayTime(dayKey, nice);
@@ -1706,27 +1849,8 @@ ${icon} Введите ${esc(timeTitle)}.
       const channels = await getChannelsByIds(channelIds);
 
       const text = isAd
-        ? `━━━━━━━━━━━━━━
-✅ <b>Рекламный пост запланирован</b>
-
-🕒 <b>${esc(nice)}</b> · ${esc(dayTitle(dayKey))}
-
-📡 Канал:
-${channelsLines(channels)}
-
-CPM: ${esc(draft.cpm || 'не указан')} ₽
-Пост добавлен в очередь.
-━━━━━━━━━━━━━━`
-        : `━━━━━━━━━━━━━━
-✅ <b>Публикация запланирована</b>
-
-🕒 <b>${esc(nice)}</b> · ${esc(dayTitle(dayKey))}
-
-📡 Канал:
-${channelsLines(channels)}
-
-Пост добавлен в очередь.
-━━━━━━━━━━━━━━`;
+        ? lrAdScheduledConfirmTextV2(draft, channels, dayKey, nice)
+        : lrNormalScheduledConfirmTextV2(channels, dayKey, nice);
 
       return lrCalendarAnswer( text, [
         [callbackButton('📂 Посты', 'post:all')],
