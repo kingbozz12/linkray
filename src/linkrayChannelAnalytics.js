@@ -982,7 +982,9 @@ function startDailyWorker() {
 
 
 
-/* LR_CHANNEL_ANALYTICS_MENU_FIX_V3 */
+
+
+/* LR_ANALYTICS_LINK_ROUTE_V4 */
 function lrMenuButtons(rows) {
   return [{
     type: 'inline_keyboard',
@@ -996,14 +998,74 @@ function lrCb(text, payload) {
 
 function lrNormText(value) {
   return String(value || '')
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s:/._-]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
 }
 
+function lrDeepStrings(value, out = []) {
+  if (value === null || value === undefined) return out;
+
+  if (typeof value === 'string') {
+    out.push(value);
+    return out;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) lrDeepStrings(item, out);
+    return out;
+  }
+
+  if (typeof value === 'object') {
+    for (const item of Object.values(value)) lrDeepStrings(item, out);
+  }
+
+  return out;
+}
+
+function lrPayloadDeep(update) {
+  const direct = getPayload(update);
+
+  if (direct) return direct;
+
+  const strings = lrDeepStrings(update);
+
+  return strings.find((s) =>
+    /^(main:analytics|analytics:menu|lrchan:menu|lrchan:links|lrchan:daily|lrchan:on|lrchan:off|main:menu)$/.test(String(s))
+  ) || '';
+}
+
+function lrLinksDeep(update, text) {
+  const links = new Set(extractMaxLinks(text));
+
+  for (const s of lrDeepStrings(update)) {
+    for (const link of extractMaxLinks(s)) links.add(link);
+  }
+
+  return [...links];
+}
+
+function lrOnlyMaxLinksText(text, links) {
+  let t = String(text || '').trim();
+
+  if (!links.length) return false;
+
+  for (const link of links) {
+    t = t.replaceAll(link, ' ');
+  }
+
+  t = t
+    .replace(/https?:\/\/max\.ru\/?\.{0,3}/gi, ' ')
+    .replace(/[,;|\n\r\t\s]+/g, ' ')
+    .trim();
+
+  return !t;
+}
+
 function lrIsAnalyticsText(text) {
   const t = lrNormText(text);
+
   return (
     t === 'аналитика' ||
     t === 'linkray analytics' ||
@@ -1013,57 +1075,92 @@ function lrIsAnalyticsText(text) {
   );
 }
 
+function lrIdentityKeys(update, chatId) {
+  const values = [
+    chatId,
+    update?.message?.recipient?.chat_id,
+    update?.message?.chat_id,
+    update?.message?.chat?.id,
+    update?.callback?.message?.recipient?.chat_id,
+    update?.callback?.message?.chat_id,
+    update?.callback?.chat_id,
+    update?.message?.sender?.user_id,
+    update?.message?.sender?.id,
+    update?.sender?.user_id,
+    update?.sender?.id,
+    update?.callback?.user_id,
+    update?.callback?.sender?.user_id,
+    update?.user_id,
+  ];
+
+  return [...new Set(values.filter(Boolean).map((x) => String(x)))];
+}
+
 async function ensureAnalyticsMenuTables() {
   await ensureTables();
+
   await query(`
     ALTER TABLE public.lr_channel_analytics_settings
     ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT ''
   `).catch(() => {});
 }
 
-async function getAnalyticsSettings(chatId) {
+async function setAnalyticsModeForKeys(keys, mode) {
   await ensureAnalyticsMenuTables();
 
-  const result = await query(
-    `SELECT *
-       FROM public.lr_channel_analytics_settings
-      WHERE chat_id=$1
-      LIMIT 1`,
-    [String(chatId)]
-  ).catch(() => []);
+  for (const key of keys) {
+    await query(
+      `
+      INSERT INTO public.lr_channel_analytics_settings(chat_id, mode, updated_at)
+      VALUES($1, $2, now())
+      ON CONFLICT(chat_id)
+      DO UPDATE SET mode=$2, updated_at=now()
+      `,
+      [String(key), String(mode || '')]
+    ).catch(() => {});
+  }
+}
 
-  const row = rows(result)[0] || {};
-  let links = [];
+async function getAnalyticsSettingsForKeys(keys) {
+  await ensureAnalyticsMenuTables();
 
-  try {
-    links = Array.isArray(row.links) ? row.links : JSON.parse(row.links || '[]');
-  } catch {
-    links = [];
+  for (const key of keys) {
+    const result = await query(
+      `SELECT *
+         FROM public.lr_channel_analytics_settings
+        WHERE chat_id=$1
+        LIMIT 1`,
+      [String(key)]
+    ).catch(() => []);
+
+    const row = rows(result)[0];
+
+    if (row) {
+      let links = [];
+
+      try {
+        links = Array.isArray(row.links) ? row.links : JSON.parse(row.links || '[]');
+      } catch {
+        links = [];
+      }
+
+      return {
+        dailyEnabled: Boolean(row.daily_enabled),
+        links,
+        mode: String(row.mode || ''),
+      };
+    }
   }
 
   return {
-    dailyEnabled: Boolean(row.daily_enabled),
-    links,
-    mode: String(row.mode || ''),
+    dailyEnabled: false,
+    links: [],
+    mode: '',
   };
 }
 
-async function setAnalyticsMode(chatId, mode) {
-  await ensureAnalyticsMenuTables();
-
-  await query(
-    `
-    INSERT INTO public.lr_channel_analytics_settings(chat_id, mode, updated_at)
-    VALUES($1, $2, now())
-    ON CONFLICT(chat_id)
-    DO UPDATE SET mode=$2, updated_at=now()
-    `,
-    [String(chatId), String(mode || '')]
-  );
-}
-
-async function showAnalyticsMainMenu(chatId) {
-  await setAnalyticsMode(chatId, '');
+async function showAnalyticsMainMenu(chatId, keys) {
+  await setAnalyticsModeForKeys(keys, '');
 
   await sendMaxMessage({
     chatId,
@@ -1083,8 +1180,8 @@ async function showAnalyticsMainMenu(chatId) {
   });
 }
 
-async function showAnalyticsLinkInput(chatId) {
-  await setAnalyticsMode(chatId, 'await_links');
+async function showAnalyticsLinkInput(chatId, keys) {
+  await setAnalyticsModeForKeys(keys, 'await_links');
 
   await sendMaxMessage({
     chatId,
@@ -1092,10 +1189,7 @@ async function showAnalyticsLinkInput(chatId) {
       '━━━━━━━━━━━━━━\n' +
       '🖼 <b>Картинка аналитики</b>\n\n' +
       'Отправьте ссылку MAX-канала.\n\n' +
-      'Можно отправить несколько ссылок сразу — каждую с новой строки. Тогда бот сделает сводную карточку сети каналов.\n\n' +
-      'Пример:\n' +
-      'https://max.ru/...\n' +
-      'https://max.ru/...\n' +
+      'Можно отправить несколько ссылок сразу — каждую с новой строки. Тогда бот сделает сводную карточку сети каналов.\n' +
       '━━━━━━━━━━━━━━',
     format: 'html',
     attachments: lrMenuButtons([
@@ -1105,8 +1199,8 @@ async function showAnalyticsLinkInput(chatId) {
   });
 }
 
-async function showDailyPdpMenu(chatId) {
-  const settings = await getAnalyticsSettings(chatId);
+async function showDailyPdpMenu(chatId, keys) {
+  const settings = await getAnalyticsSettingsForKeys(keys);
   const status = settings.dailyEnabled ? 'включён' : 'выключен';
   const icon = settings.dailyEnabled ? '✅' : '⛔';
 
@@ -1132,8 +1226,8 @@ async function showDailyPdpMenu(chatId) {
   });
 }
 
-async function showFallbackMainMenu(chatId) {
-  await setAnalyticsMode(chatId, '');
+async function showFallbackMainMenu(chatId, keys) {
+  await setAnalyticsModeForKeys(keys, '');
 
   await sendMaxMessage({
     chatId,
@@ -1156,66 +1250,70 @@ async function handleAnalyticsMenu(update) {
   const chatId = getChatId(update);
   if (!chatId) return false;
 
-  const payload = getPayload(update);
+  const keys = lrIdentityKeys(update, chatId);
+  const payload = lrPayloadDeep(update);
   const text = getText(update);
+  const links = lrLinksDeep(update, text);
 
   if (payload === 'main:analytics' || payload === 'analytics:menu' || payload === 'lrchan:menu') {
-    await showAnalyticsMainMenu(chatId);
+    await showAnalyticsMainMenu(chatId, keys);
     return true;
   }
 
   if (payload === 'main:menu') {
-    await showFallbackMainMenu(chatId);
+    await showFallbackMainMenu(chatId, keys);
     return true;
   }
 
   if (payload === 'lrchan:links') {
-    await showAnalyticsLinkInput(chatId);
+    await showAnalyticsLinkInput(chatId, keys);
     return true;
   }
 
   if (payload === 'lrchan:daily' || payload === 'lrchan:notifications') {
-    await showDailyPdpMenu(chatId);
+    await showDailyPdpMenu(chatId, keys);
     return true;
   }
 
   if (payload === 'lrchan:on') {
     await setDaily(chatId, true);
-    await showDailyPdpMenu(chatId);
+    await showDailyPdpMenu(chatId, keys);
     return true;
   }
 
   if (payload === 'lrchan:off') {
     await setDaily(chatId, false);
-    await showDailyPdpMenu(chatId);
+    await showDailyPdpMenu(chatId, keys);
     return true;
   }
 
   if (lrIsAnalyticsText(text)) {
-    await showAnalyticsMainMenu(chatId);
+    await showAnalyticsMainMenu(chatId, keys);
     return true;
   }
 
-  const settings = await getAnalyticsSettings(chatId);
-  const links = extractMaxLinks(text);
+  const settings = await getAnalyticsSettingsForKeys(keys);
+
+  // Главное исправление:
+  // если открыт режим "Картинка по ссылке" или сообщение состоит только из MAX-ссылок,
+  // ссылки забирает аналитика и не отдаёт их в старый сценарий создания поста.
+  if (links.length && (settings.mode === 'await_links' || lrOnlyMaxLinksText(text, links))) {
+    await setAnalyticsModeForKeys(keys, '');
+    await handleLinks(chatId, links);
+    return true;
+  }
 
   if (settings.mode === 'await_links') {
-    if (!links.length) {
-      await sendMaxMessage({
-        chatId,
-        text:
-          '⚠️ Не вижу ссылку MAX-канала.\n\n' +
-          'Отправьте одну или несколько ссылок вида https://max.ru/...',
-        format: 'html',
-        attachments: lrMenuButtons([
-          [lrCb('⬅️ В аналитику', 'lrchan:menu')],
-        ]),
-      });
-      return true;
-    }
-
-    await setAnalyticsMode(chatId, '');
-    await handleLinks(chatId, links);
+    await sendMaxMessage({
+      chatId,
+      text:
+        '⚠️ Не вижу ссылку MAX-канала.\n\n' +
+        'Отправьте одну или несколько ссылок вида https://max.ru/...',
+      format: 'html',
+      attachments: lrMenuButtons([
+        [lrCb('⬅️ В аналитику', 'lrchan:menu')],
+      ]),
+    });
     return true;
   }
 
@@ -1224,13 +1322,19 @@ async function handleAnalyticsMenu(update) {
 
 export async function handleLinkRayChannelAnalyticsIncoming(update) {
   try {
-    return await handleAnalyticsMenu(update);
+    const handled = await handleAnalyticsMenu(update);
+
+    if (handled) {
+      console.log('[LinkRay channel analytics] handled update before main webhook');
+    }
+
+    return handled;
   } catch (error) {
     console.error('[LinkRay channel analytics incoming]', error?.stack || error);
     return false;
   }
 }
-/* LR_CHANNEL_ANALYTICS_MENU_FIX_V3_END */
+/* LR_ANALYTICS_LINK_ROUTE_V4_END */
 
 export function mountLinkRayChannelAnalytics(app) {
   if (mounted) return;
