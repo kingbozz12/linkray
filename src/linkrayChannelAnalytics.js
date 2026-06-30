@@ -3821,6 +3821,7 @@ async function renderNetwork(...args) {
   /* LR_NETWORK_RENDERER_V32_START */
   const WIDTH = 1280;
   const HEIGHT = 900;
+  const lrV39RealLogoData = 'data:image/jpeg;base64,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';
 
   function esc(value) {
     return String(value ?? '')
@@ -5262,9 +5263,9 @@ async function lrV37RenderPrettyNetworkPng(channels = []) {
             ? `<clipPath id="av37_${i}"><circle cx="500" cy="${y}" r="24"/></clipPath><image href="${avatar}" x="476" y="${y - 24}" width="48" height="48" preserveAspectRatio="xMidYMid slice" clip-path="url(#av37_${i})"/>`
             : `<text x="500" y="${y + 8}" text-anchor="middle" font-size="21" font-weight="900" fill="#ecfffb">${letter}</text>`
         }
-        <text x="540" y="${y + 10}" font-size="26" font-weight="900" fill="#ffffff">${esc(short(ch.title, 26))}</text>
-        <text x="905" y="${y + 10}" text-anchor="middle" font-size="29" font-weight="1000" fill="#28d8ff">${fmt(ch.subscribers)}</text>
-        <text x="1055" y="${y + 10}" text-anchor="middle" font-size="29" font-weight="1000" fill="#38f0cb">${fmt(ch.views24)}</text>
+        <text x="540" y="${y + 10}" font-size="26" font-weight="900" fill="#ffffff">${esc(short(ch.title, 17))}</text>
+        <text x="920" y="${y + 10}" text-anchor="middle" font-size="29" font-weight="1000" fill="#28d8ff">${fmt(ch.subscribers)}</text>
+        <text x="1065" y="${y + 10}" text-anchor="middle" font-size="29" font-weight="1000" fill="#38f0cb">${fmt(ch.views24)}</text>
         ${i < visible.length - 1 ? `<line x1="470" y1="${y + 38}" x2="1135" y2="${y + 38}" stroke="rgba(255,255,255,.10)" stroke-width="1"/>` : ''}
       </g>
     `;
@@ -5326,8 +5327,8 @@ async function lrV37RenderPrettyNetworkPng(channels = []) {
     <text x="425" y="388" font-size="38" font-weight="1000" fill="#ffffff">Каналы</text>
 
     <text x="540" y="428" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">Название</text>
-    <text x="905" y="428" text-anchor="middle" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">ПДП</text>
-    <text x="1055" y="428" text-anchor="middle" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">24ч</text>
+    <text x="920" y="428" text-anchor="middle" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">ПДП</text>
+    <text x="1065" y="428" text-anchor="middle" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">24ч</text>
     <line x1="470" y1="442" x2="1135" y2="442" stroke="rgba(255,255,255,.16)" stroke-width="1"/>
 
     ${rows}
@@ -5376,7 +5377,7 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
     return String(Math.round(n));
   }
 
-  function short(v, max = 20) {
+  function short(v, max = 17) {
     const text = String(v || 'Канал').replace(/\s+/g, ' ').trim();
     return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
   }
@@ -5478,12 +5479,12 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
         }
 
         <clipPath id="titleClip38_${i}">
-          <rect x="535" y="${y - 26}" width="295" height="44" rx="0"/>
+          <rect x="535" y="${y - 26}" width="250" height="44" rx="0"/>
         </clipPath>
 
-        <text x="535" y="${y + 8}" clip-path="url(#titleClip38_${i})" font-size="24" font-weight="900" fill="#ffffff">${esc(short(ch.title, 22))}</text>
-        <text x="900" y="${y + 8}" text-anchor="middle" font-size="28" font-weight="1000" fill="#29d9ff">${fmt(ch.subscribers)}</text>
-        <text x="1056" y="${y + 8}" text-anchor="middle" font-size="28" font-weight="1000" fill="#37f1ca">${fmt(ch.views24)}</text>
+        <text x="535" y="${y + 8}" clip-path="url(#titleClip38_${i})" font-size="23" font-weight="900" fill="#ffffff">${esc(short(ch.title, 17))}</text>
+        <text x="920" y="${y + 8}" text-anchor="middle" font-size="28" font-weight="1000" fill="#29d9ff">${fmt(ch.subscribers)}</text>
+        <text x="1065" y="${y + 8}" text-anchor="middle" font-size="28" font-weight="1000" fill="#37f1ca">${fmt(ch.views24)}</text>
 
         ${i < visible.length - 1 ? `<line x1="470" y1="${y + 36}" x2="1130" y2="${y + 36}" stroke="rgba(255,255,255,.10)" stroke-width="1"/>` : ''}
       </g>
@@ -5520,14 +5521,11 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
     <text x="56" y="72" font-size="47" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
     <text x="58" y="112" font-size="22" font-weight="800" fill="rgba(255,255,255,.82)">LinkRay Analytics · сводка по всей сетке каналов</text>
 
-    <g transform="translate(996 24)">
-      <circle cx="42" cy="42" r="39" fill="rgba(38,242,204,.14)" stroke="#35f2cf" stroke-width="3"/>
-      <circle cx="42" cy="42" r="28" fill="rgba(37,217,255,.14)" stroke="rgba(255,255,255,.25)" stroke-width="2"/>
-      <path d="M28 54 L28 32 L43 24 L58 32 L58 54 L43 62 Z" fill="rgba(255,255,255,.88)" stroke="#29d9ff" stroke-width="3"/>
-      <path d="M22 57 C35 48 48 39 62 23" fill="none" stroke="#58ffb4" stroke-width="8" stroke-linecap="round"/>
-      <path d="M51 24 L65 21 L62 36" fill="none" stroke="#58ffb4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="42" cy="42" r="5" fill="#ffffff"/>
-    </g>
+    <clipPath id="lrLogoRealClip39">
+      <circle cx="1039" cy="66" r="41"/>
+    </clipPath>
+    <circle cx="1039" cy="66" r="42" fill="rgba(38,242,204,.14)" stroke="#35f2cf" stroke-width="3"/>
+    <image href="${lrV39RealLogoData}" x="997" y="24" width="84" height="84" preserveAspectRatio="xMidYMid slice" clip-path="url(#lrLogoRealClip39)"/>
 
     <text x="1104" y="82" font-size="37" font-weight="1000" fill="#ffffff">LinkRay</text>
 
@@ -5560,8 +5558,8 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
     <text x="425" y="388" font-size="36" font-weight="1000" fill="#ffffff">Каналы</text>
 
     <text x="535" y="428" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">Название</text>
-    <text x="900" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">ПДП</text>
-    <text x="1056" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">24ч</text>
+    <text x="920" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">ПДП</text>
+    <text x="1065" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">24ч</text>
     <line x1="470" y1="442" x2="1130" y2="442" stroke="rgba(255,255,255,.16)" stroke-width="1"/>
 
     ${rows}
