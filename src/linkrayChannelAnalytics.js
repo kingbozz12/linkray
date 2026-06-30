@@ -4216,7 +4216,7 @@ async function sendImage(chatId, image, caption) {
           userId: lrV33KnownTarget.userId || lrV33FromUpdate.userId,
         };
 
-        const lrV33Caption = '📊 LinkRay Analytics';
+        const lrV33Caption = `📊 <b>LinkRay Analytics</b>\nСводка по сети каналов MAX.\n\n👥 Подписчики, просмотры и ER считаются после подключения бота к каналам.\n📈 В карточке показаны до 4 каналов, а итоги считаются по всей сетке.\n\n✨ <b>LinkRay</b> — автопостинг, закупы, антифрод и аналитика рекламных размещений в MAX`;
 
         if (lrV33Candidate && (lrV33Target.chatId || lrV33Target.userId)) {
           await lrV33SendImageByRawMax(lrV33Target, lrV33Candidate, lrV33Caption);
@@ -5118,48 +5118,237 @@ async function lrV34LoadChannelsByLinks(links) {
   return channels;
 }
 
+
+/* LR_SAFE_NETWORK_CARD_V37_START */
+async function lrV37RenderPrettyNetworkPng(channels = []) {
+  const sharpMod = await import('sharp');
+  const sharp = sharpMod.default || sharpMod;
+
+  const WIDTH = 1280;
+  const HEIGHT = 900;
+
+  function esc(v) {
+    return String(v ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function num(v) {
+    const n = Number(String(v ?? 0).replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function fmt(v) {
+    const n = num(v);
+    if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1).replace('.', ',') + 'M';
+    if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1).replace('.', ',') + 'k';
+    return String(Math.round(n));
+  }
+
+  function short(v, max = 26) {
+    const text = String(v || 'Канал').trim();
+    return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
+  }
+
+  function goodUrl(v) {
+    const u = String(v || '').trim();
+    return /^https?:\/\//i.test(u) && !u.includes('/s/img/og-logo.png');
+  }
+
+  async function dataPng(url, size = 52) {
+    if (!goodUrl(url)) return '';
+
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(9000),
+        headers: {
+          'user-agent': 'Mozilla/5.0 LinkRayBot/1.0',
+          'accept': 'image/png,image/jpeg,image/webp,image/*,*/*;q=0.8'
+        }
+      });
+
+      if (!res.ok) return '';
+
+      const input = Buffer.from(await res.arrayBuffer());
+      const out = await sharp(input).resize(size, size, { fit: 'cover' }).png().toBuffer();
+
+      return `data:image/png;base64,${out.toString('base64')}`;
+    } catch {
+      return '';
+    }
+  }
+
+  async function logoData() {
+    try {
+      const fs = await import('node:fs/promises');
+
+      for (const file of [
+        '/app/public/brand/linkray-logo.png',
+        '/app/public/brand/linkray-logo.jpg',
+        '/app/public/brand/linkray-logo.svg',
+        '/app/public/brand/logo.png',
+      ]) {
+        try {
+          const buf = await fs.readFile(file);
+          const ext = file.toLowerCase().endsWith('.svg') ? 'svg+xml' : file.toLowerCase().endsWith('.jpg') ? 'jpeg' : 'png';
+          return `data:image/${ext};base64,${buf.toString('base64')}`;
+        } catch {}
+      }
+    } catch {}
+
+    return '';
+  }
+
+  const clean = [];
+  const seen = new Set();
+
+  for (let i = 0; i < channels.length; i++) {
+    const raw = channels[i] || {};
+    const title = String(raw.title || raw.name || raw.channel_title || raw.channel_name || `Канал ${i + 1}`)
+      .replace(/^https?:\/\/max\.ru\//i, '')
+      .trim();
+
+    const link = String(raw.link || raw.url || raw.key || raw.channel_link || raw.public_link || '').trim();
+    const key = link || title || String(i);
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    clean.push({
+      title,
+      link,
+      avatar: raw.avatar_url || raw.avatarUrl || raw.photo_url || raw.image_url || raw.avatar || raw.photo || raw.image || '',
+      subscribers: num(raw.subscribers || raw.members || raw.subs || raw.pdp || 0),
+      views24: num(raw.views24 || raw.views_24 || raw.views_day || 0),
+      views48: num(raw.views48 || raw.views_48 || 0),
+      views72: num(raw.views72 || raw.views_72 || 0),
+    });
+  }
+
+  const visible = clean.slice(0, 4);
+
+  const totalSubs = clean.reduce((a, c) => a + c.subscribers, 0);
+  const total24 = clean.reduce((a, c) => a + c.views24, 0);
+  const total48 = clean.reduce((a, c) => a + c.views48, 0);
+  const total72 = clean.reduce((a, c) => a + c.views72, 0);
+  const er = totalSubs > 0 ? total24 / totalSubs * 100 : 0;
+
+  const now = new Date().toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).replace(',', '');
+
+  const logo = await logoData();
+
+  let rows = '';
+
+  for (let i = 0; i < visible.length; i++) {
+    const ch = visible[i];
+    const y = 452 + i * 74;
+    const avatar = await dataPng(ch.avatar, 52);
+    const letter = esc((ch.title || 'К')[0] || 'К').toUpperCase();
+
+    rows += `
+      <g>
+        <circle cx="500" cy="${y}" r="28" fill="rgba(42,255,209,.14)" stroke="#33f1cf" stroke-width="3"/>
+        ${
+          avatar
+            ? `<clipPath id="av37_${i}"><circle cx="500" cy="${y}" r="24"/></clipPath><image href="${avatar}" x="476" y="${y - 24}" width="48" height="48" preserveAspectRatio="xMidYMid slice" clip-path="url(#av37_${i})"/>`
+            : `<text x="500" y="${y + 8}" text-anchor="middle" font-size="21" font-weight="900" fill="#ecfffb">${letter}</text>`
+        }
+        <text x="540" y="${y + 10}" font-size="26" font-weight="900" fill="#ffffff">${esc(short(ch.title, 26))}</text>
+        <text x="905" y="${y + 10}" text-anchor="middle" font-size="29" font-weight="1000" fill="#28d8ff">${fmt(ch.subscribers)}</text>
+        <text x="1055" y="${y + 10}" text-anchor="middle" font-size="29" font-weight="1000" fill="#38f0cb">${fmt(ch.views24)}</text>
+        ${i < visible.length - 1 ? `<line x1="470" y1="${y + 38}" x2="1135" y2="${y + 38}" stroke="rgba(255,255,255,.10)" stroke-width="1"/>` : ''}
+      </g>
+    `;
+  }
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+  <svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#061525"/>
+        <stop offset="45%" stop-color="#0b4f53"/>
+        <stop offset="100%" stop-color="#13bf8e"/>
+      </linearGradient>
+      <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="rgba(255,255,255,.15)"/>
+        <stop offset="100%" stop-color="rgba(255,255,255,.06)"/>
+      </linearGradient>
+      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#001827" flood-opacity=".33"/>
+      </filter>
+    </defs>
+
+    <rect width="1280" height="900" fill="url(#bg)"/>
+    <path d="M-40 125 C230 62 455 185 680 108 C910 30 1070 105 1320 58" fill="none" stroke="rgba(255,255,255,.10)" stroke-width="3"/>
+    <path d="M-20 750 C280 665 500 780 730 650 C930 538 1085 585 1320 500" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="3"/>
+
+    <text x="56" y="74" font-size="50" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
+    <text x="58" y="113" font-size="22" font-weight="800" fill="rgba(255,255,255,.82)">LinkRay Analytics · сводка по всей сетке каналов</text>
+
+    ${logo ? `<image href="${logo}" x="1013" y="24" width="82" height="82"/>` : `<circle cx="1054" cy="65" r="38" fill="rgba(49,242,204,.18)" stroke="#32f3cf" stroke-width="3"/>`}
+    <text x="1115" y="84" font-size="38" font-weight="1000" fill="#ffffff">LinkRay</text>
+
+    <rect x="55" y="155" rx="24" width="275" height="128" fill="url(#glass)" stroke="rgba(125,255,231,.34)" filter="url(#shadow)"/>
+    <text x="192" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Подписчики</text>
+    <text x="192" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#25d9ff">${fmt(totalSubs)}</text>
+
+    <rect x="352" y="155" rx="24" width="275" height="128" fill="url(#glass)" stroke="rgba(125,255,231,.34)" filter="url(#shadow)"/>
+    <text x="489" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Просмотры 24ч</text>
+    <text x="489" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#35f0ca">${fmt(total24)}</text>
+
+    <rect x="650" y="155" rx="24" width="275" height="128" fill="url(#glass)" stroke="rgba(125,255,231,.34)" filter="url(#shadow)"/>
+    <text x="787" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Общий ER</text>
+    <text x="787" y="252" text-anchor="middle" font-size="52" font-weight="1000" fill="#27d9ff">${er.toFixed(2).replace('.', ',')}%</text>
+
+    <rect x="948" y="155" rx="24" width="275" height="128" fill="url(#glass)" stroke="rgba(125,255,231,.34)" filter="url(#shadow)"/>
+    <text x="1085" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Каналов</text>
+    <text x="1085" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#35f0ca">${fmt(clean.length)}</text>
+
+    <rect x="55" y="330" rx="26" width="305" height="300" fill="url(#glass)" stroke="rgba(125,255,231,.34)" filter="url(#shadow)"/>
+    <text x="90" y="390" font-size="35" font-weight="1000" fill="#ffffff">Просмотры</text>
+    <text x="92" y="455" font-size="44" font-weight="1000" fill="#ffffff">24ч:</text>
+    <text x="210" y="455" font-size="44" font-weight="1000" fill="#25d9ff">${fmt(total24)}</text>
+    <text x="92" y="525" font-size="44" font-weight="1000" fill="#ffffff">48ч:</text>
+    <text x="210" y="525" font-size="44" font-weight="1000" fill="#25d9ff">${fmt(total48)}</text>
+    <text x="92" y="595" font-size="44" font-weight="1000" fill="#ffffff">72ч:</text>
+    <text x="210" y="595" font-size="44" font-weight="1000" fill="#25d9ff">${fmt(total72)}</text>
+
+    <rect x="390" y="330" rx="26" width="835" height="430" fill="url(#glass)" stroke="rgba(125,255,231,.34)" filter="url(#shadow)"/>
+    <text x="425" y="388" font-size="38" font-weight="1000" fill="#ffffff">Каналы</text>
+
+    <text x="540" y="428" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">Название</text>
+    <text x="905" y="428" text-anchor="middle" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">ПДП</text>
+    <text x="1055" y="428" text-anchor="middle" font-size="20" font-weight="900" fill="rgba(255,255,255,.65)">24ч</text>
+    <line x1="470" y1="442" x2="1135" y2="442" stroke="rgba(255,255,255,.16)" stroke-width="1"/>
+
+    ${rows}
+
+    <text x="470" y="735" font-size="23" font-weight="1000" fill="#45ffd9">Суммы рассчитаны по всем каналам.</text>
+
+    <text x="55" y="837" font-size="26" font-weight="1000" fill="#ffffff">Актуально на ${esc(now)} МСК</text>
+    <text x="770" y="837" font-size="25" font-weight="900" fill="rgba(255,255,255,.82)">LinkRay — автопостинг, закупы и аналитика MAX</text>
+  </svg>`;
+
+  console.log('[LR_SAFE_NETWORK_CARD_V37]', JSON.stringify({
+    count: clean.length,
+    visible: visible.map(x => ({ title: x.title, avatar: Boolean(x.avatar) }))
+  }));
+
+  return await sharp(Buffer.from(svg)).png().toBuffer();
+}
+/* LR_SAFE_NETWORK_CARD_V37_END */
+
 async function lrV34RenderNetworkPng(channels) {
-  let imageLike = null;
-
-  if (typeof lrSaferRenderNetworkV13 === 'function') {
-    imageLike = await lrSaferRenderNetworkV13(channels);
-  } else if (typeof lrSafeRenderNetworkV13 === 'function') {
-    imageLike = await lrSafeRenderNetworkV13(channels);
-  } else if (typeof lrRenderNetworkCard === 'function') {
-    imageLike = await lrRenderNetworkCard(channels);
-  } else if (typeof renderNetworkCard === 'function') {
-    imageLike = await renderNetworkCard(channels);
-  } else {
-    throw new Error('network renderer not found');
-  }
-
-  if (Buffer.isBuffer(imageLike)) return imageLike;
-
-  if (imageLike instanceof Uint8Array) return Buffer.from(imageLike);
-
-  if (typeof imageLike === 'object' && imageLike) {
-    if (Buffer.isBuffer(imageLike.buffer)) return imageLike.buffer;
-    if (Buffer.isBuffer(imageLike.data)) return imageLike.data;
-    if (Buffer.isBuffer(imageLike.png)) return imageLike.png;
-    if (Buffer.isBuffer(imageLike.image)) return imageLike.image;
-  }
-
-  if (typeof imageLike === 'string') {
-    const text = imageLike.trim();
-
-    if (text.startsWith('data:image/')) {
-      const b64 = text.split(',')[1] || '';
-      if (b64) return Buffer.from(b64, 'base64');
-    }
-
-    if (text.includes('<svg')) {
-      const sharpMod = await import('sharp');
-      const sharp = sharpMod.default || sharpMod;
-      return await sharp(Buffer.from(text)).png().toBuffer();
-    }
-  }
-
-  throw new Error('renderer returned unsupported image type');
+  return await lrV37RenderPrettyNetworkPng(channels);
 }
 
 async function lrV34SavePublicPng(buffer) {
@@ -5193,7 +5382,7 @@ async function lrV34SendMaxImageUrl(update, imageUrl) {
   const api = lrV34ApiBase();
 
   const body = {
-    text: '📊 LinkRay Analytics',
+    text: `📊 <b>LinkRay Analytics</b>\nСводка по сети каналов MAX.\n\n👥 Подписчики, просмотры и ER считаются после подключения бота к каналам.\n📈 В карточке показаны до 4 каналов, а итоги считаются по всей сетке.\n\n✨ <b>LinkRay</b> — автопостинг, закупы, антифрод и аналитика рекламных размещений в MAX`,
     format: 'html',
     attachments: [
       {
