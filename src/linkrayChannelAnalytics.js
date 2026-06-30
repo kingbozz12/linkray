@@ -4844,13 +4844,44 @@ async function lrV33UploadImageAndGetToken(pngBuffer) {
     throw new Error(`upload image failed ${upload.status}: ${uploadText}`);
   }
 
+  function pickToken(obj) {
+    if (!obj || typeof obj !== 'object') return '';
+
+    if (typeof obj.token === 'string' && obj.token.trim()) return obj.token.trim();
+    if (typeof obj.file_token === 'string' && obj.file_token.trim()) return obj.file_token.trim();
+    if (typeof obj.upload_token === 'string' && obj.upload_token.trim()) return obj.upload_token.trim();
+
+    for (const key of ['payload', 'retval', 'photo', 'image', 'file']) {
+      const nested = pickToken(obj[key]);
+      if (nested) return nested;
+    }
+
+    for (const key of ['photos', 'images', 'files', 'attachments']) {
+      const bucket = obj[key];
+
+      if (bucket && typeof bucket === 'object') {
+        if (Array.isArray(bucket)) {
+          for (const item of bucket) {
+            const nested = pickToken(item);
+            if (nested) return nested;
+          }
+        } else {
+          for (const item of Object.values(bucket)) {
+            const nested = pickToken(item);
+            if (nested) return nested;
+          }
+        }
+      }
+    }
+
+    return '';
+  }
+
   const token =
-    uploadJson.token ||
-    uploadJson?.payload?.token ||
-    uploadJson?.retval?.token ||
-    createJson.token ||
-    createJson?.payload?.token ||
+    pickToken(uploadJson) ||
+    pickToken(createJson) ||
     lrV33UrlToken(uploadUrl);
+
 
   if (!token) {
     throw new Error(`image token not returned: ${uploadText || createText}`);
