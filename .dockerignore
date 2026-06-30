@@ -7,3 +7,9 @@ src/*.old*
 src/*.orig*
 backups/
 emergency_backups/
+# LinkRay cleanup: do not copy temporary/debug files into Docker
+src/*emergency*
+scripts/
+*.bak
+*.old
+*.orig
