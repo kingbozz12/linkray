@@ -2020,6 +2020,379 @@ async function lrSafeRenderSingleV8(ch) {
 }
 /* LR_SINGLE_CHANNEL_INFO_CARD_V8_END */
 
+
+/* LR_SINGLE_CHANNEL_DARK_CARD_V9_START */
+function lrEscV9(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function lrShortV9(value, max = 52) {
+  const text = String(value || 'Канал MAX').replace(/\s+/g, ' ').trim();
+  return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
+}
+
+function lrWrapV9(value, max = 39, limit = 2) {
+  const text = String(value || 'Канал MAX').replace(/\s+/g, ' ').trim();
+  const words = text.split(' ').filter(Boolean);
+  const lines = [];
+  let line = '';
+
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > max && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+    if (lines.length >= limit) break;
+  }
+
+  if (line && lines.length < limit) lines.push(line);
+  if (!lines.length) lines.push('Канал MAX');
+
+  return lines.slice(0, limit).map((x) => lrShortV9(x, max));
+}
+
+function lrSignV9(value) {
+  const n = num(value);
+  if (n > 0) return `+${fmt(n)}`;
+  if (n < 0) return `-${fmt(Math.abs(n))}`;
+  return '0';
+}
+
+function lrDeltaColorV9(value) {
+  const n = num(value);
+  if (n > 0) return '#38f29b';
+  if (n < 0) return '#ff6377';
+  return '#a8b6c6';
+}
+
+function lrTodayLabelV9() {
+  return new Date().toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+  });
+}
+
+async function lrDataImageV9(url, size = 80) {
+  if (!url || !/^https?:\/\//i.test(String(url))) return '';
+
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(4500) });
+    if (!res.ok) return '';
+    const buf = Buffer.from(await res.arrayBuffer());
+    const png = await sharp(buf)
+      .resize(size, size, { fit: 'cover', position: 'centre' })
+      .png()
+      .toBuffer();
+
+    return `data:image/png;base64,${png.toString('base64')}`;
+  } catch {
+    return '';
+  }
+}
+
+async function lrLocalLogoDataV9(size = 74) {
+  const candidates = [
+    'public/brand/linkray-logo.webp',
+    '/app/public/brand/linkray-logo.webp',
+    'public/brand/linkray-logo.png',
+    '/app/public/brand/linkray-logo.png',
+    'public/brand/linkray-card-logo.jpg',
+    '/app/public/brand/linkray-card-logo.jpg',
+  ];
+
+  for (const file of candidates) {
+    try {
+      const buf = await fs.readFile(file);
+      const png = await sharp(buf)
+        .resize(size, size, { fit: 'cover', position: 'centre' })
+        .png()
+        .toBuffer();
+
+      return `data:image/png;base64,${png.toString('base64')}`;
+    } catch {}
+  }
+
+  return '';
+}
+
+async function lrAvatarV9(ch, x, y, size = 72) {
+  const url = ch.avatarUrl || ch.avatar_url || ch.photo_url || ch.image_url || '';
+  const data = await lrDataImageV9(url, size);
+  const clip = `lrAvV9_${hash(String(ch.key || ch.link || ch.title || '') + x + y + size)}`;
+  const letter = lrEscV9(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+
+  if (data) {
+    return `
+      <defs><clipPath id="${clip}"><circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}"/></clipPath></defs>
+      <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 + 4}" fill="rgba(49,242,204,.18)" stroke="rgba(49,242,204,.72)" stroke-width="3"/>
+      <image href="${data}" x="${x}" y="${y}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})"/>
+    `;
+  }
+
+  return `
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 + 4}" fill="rgba(49,242,204,.18)" stroke="rgba(49,242,204,.72)" stroke-width="3"/>
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#0b8cff"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + 12}" text-anchor="middle" font-size="34" font-weight="1000" fill="#fff">${letter}</text>
+  `;
+}
+
+async function lrLogoV9(x, y, size = 74) {
+  const data = await lrLocalLogoDataV9(size);
+  const clip = `lrLogoV9_${size}`;
+
+  if (data) {
+    return `
+      <defs><clipPath id="${clip}"><circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}"/></clipPath></defs>
+      <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 + 5}" fill="rgba(49,242,204,.14)" stroke="rgba(49,242,204,.60)" stroke-width="3"/>
+      <image href="${data}" x="${x}" y="${y}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})"/>
+    `;
+  }
+
+  return `
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#31f2cc"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + 10}" text-anchor="middle" font-size="28" font-weight="1000" fill="#061625">LR</text>
+  `;
+}
+
+async function lrHistoryRowsV9(channelKey, currentSubscribers, fallbackDelta) {
+  const result = await query(`
+    WITH daily AS (
+      SELECT
+        to_char(captured_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD') AS day_key,
+        to_char(captured_at AT TIME ZONE 'Europe/Moscow', 'DD.MM') AS label,
+        subscribers,
+        captured_at,
+        row_number() OVER (
+          PARTITION BY to_char(captured_at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD')
+          ORDER BY captured_at DESC
+        ) AS rn
+      FROM public.lr_channel_analytics_snapshots
+      WHERE channel_key=$1
+    )
+    SELECT day_key, label, subscribers
+    FROM daily
+    WHERE rn=1
+    ORDER BY day_key ASC
+    LIMIT 31
+  `, [channelKey]).catch(() => []);
+
+  const arr = rows(result).map((r) => ({
+    label: String(r.label || ''),
+    subscribers: num(r.subscribers),
+    delta: 0,
+  })).filter((r) => r.label);
+
+  if (!arr.length) {
+    arr.push({
+      label: lrTodayLabelV9(),
+      subscribers: num(currentSubscribers),
+      delta: num(fallbackDelta),
+    });
+  }
+
+  for (let i = 0; i < arr.length; i++) {
+    if (i === 0) {
+      arr[i].delta = arr.length === 1 ? num(fallbackDelta) : 0;
+    } else {
+      arr[i].delta = num(arr[i].subscribers) - num(arr[i - 1].subscribers);
+    }
+  }
+
+  return arr;
+}
+
+function lrCardShellV9(inner) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+    <defs>
+      <linearGradient id="lrBgV9" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#061625"/>
+        <stop offset="45%" stop-color="#082b3c"/>
+        <stop offset="100%" stop-color="#0db77b"/>
+      </linearGradient>
+      <radialGradient id="lrGlowV9" cx="86%" cy="4%" r="78%">
+        <stop offset="0%" stop-color="#72ffc8" stop-opacity=".34"/>
+        <stop offset="62%" stop-color="#31f2cc" stop-opacity=".10"/>
+        <stop offset="100%" stop-color="#31f2cc" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="lrCardV9" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="rgba(255,255,255,.16)"/>
+        <stop offset="100%" stop-color="rgba(255,255,255,.08)"/>
+      </linearGradient>
+      <linearGradient id="lrLineV9" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#27d9ff"/>
+        <stop offset="100%" stop-color="#31f2cc"/>
+      </linearGradient>
+      <filter id="lrShadowV9" x="-10%" y="-10%" width="120%" height="130%">
+        <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#00111b" flood-opacity=".30"/>
+      </filter>
+      <style>
+        text { font-family: DejaVu Sans, Arial, sans-serif; }
+      </style>
+    </defs>
+
+    <rect width="1280" height="900" fill="url(#lrBgV9)"/>
+    <rect width="1280" height="900" fill="url(#lrGlowV9)"/>
+    <path d="M-80 170 C220 75 420 210 650 105 C890 -5 1060 135 1350 48" fill="none" stroke="rgba(255,255,255,.075)" stroke-width="3"/>
+    <path d="M-60 795 C260 650 505 770 740 650 C980 530 1100 650 1340 560" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
+    ${inner}
+  </svg>`;
+}
+
+function lrGlassCardV9(x, y, w, h) {
+  return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="28" fill="url(#lrCardV9)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrShadowV9)"/>`;
+}
+
+function lrStatRowV9(x, y, label, value, color = '#e9fbff', size = 30) {
+  return `
+    <text x="${x}" y="${y}" font-size="24" font-weight="900" fill="#b9cbd7">${lrEscV9(label)}</text>
+    <text x="${x + 312}" y="${y}" text-anchor="end" font-size="${size}" font-weight="1000" fill="${color}">${lrEscV9(value)}</text>
+  `;
+}
+
+function lrDaysTableV9(rowsData) {
+  const rowsSvg = [];
+
+  for (let i = 0; i < 10; i++) {
+    const r = rowsData[i] || { label: '—', subscribers: 0, delta: 0 };
+    const y = 218 + i * 47;
+    rowsSvg.push(`
+      <text x="910" y="${y}" font-size="21" font-weight="900" fill="#e9fbff">${lrEscV9(r.label)}</text>
+      <text x="1032" y="${y}" text-anchor="middle" font-size="21" font-weight="1000" fill="#27d9ff">${fmt(r.subscribers)}</text>
+      <text x="1162" y="${y}" text-anchor="middle" font-size="21" font-weight="1000" fill="${lrDeltaColorV9(r.delta)}">${lrSignV9(r.delta)}</text>
+      ${i < 9 ? `<line x1="902" y1="${y + 14}" x2="1195" y2="${y + 14}" stroke="rgba(255,255,255,.08)" stroke-width="1"/>` : ''}
+    `);
+  }
+
+  return `
+    ${lrGlassCardV9(878, 132, 348, 596)}
+    <text x="910" y="184" font-size="24" font-weight="1000" fill="#ffffff">День</text>
+    <text x="1032" y="184" text-anchor="middle" font-size="24" font-weight="1000" fill="#ffffff">ПДП</text>
+    <text x="1162" y="184" text-anchor="middle" font-size="24" font-weight="1000" fill="#ffffff">Прирост</text>
+    <line x1="902" y1="195" x2="1195" y2="195" stroke="rgba(126,248,225,.24)" stroke-width="2"/>
+    ${rowsSvg.join('')}
+  `;
+}
+
+function lrLineChartV9(points, x, y, w, h) {
+  let arr = points.slice(-10);
+  if (!arr.length) arr = [{ label: lrTodayLabelV9(), subscribers: 0 }];
+
+  let values = arr.map((p) => num(p.subscribers));
+
+  if (values.length === 1) {
+    arr = [
+      { label: 'старт', subscribers: values[0] },
+      { label: arr[0].label, subscribers: values[0] },
+    ];
+    values = arr.map((p) => num(p.subscribers));
+  }
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+
+  if (min === max) {
+    min = Math.max(0, min - 1);
+    max += 1;
+  }
+
+  const padL = 62;
+  const padR = 34;
+  const padT = 64;
+  const padB = 50;
+  const span = Math.max(1, max - min);
+
+  const coords = arr.map((p, i) => {
+    const px = x + padL + (w - padL - padR) * (i / Math.max(1, arr.length - 1));
+    const py = y + padT + (h - padT - padB) * (1 - ((num(p.subscribers) - min) / span));
+    return [px, py, num(p.subscribers), p.label];
+  });
+
+  const d = coords.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const area = `${d} L ${x + w - padR},${y + h - padB} L ${x + padL},${y + h - padB} Z`;
+
+  const grid = [0, 1, 2, 3].map((i) => {
+    const yy = y + padT + (h - padT - padB) * (i / 3);
+    return `<line x1="${x + padL}" y1="${yy}" x2="${x + w - padR}" y2="${yy}" stroke="rgba(255,255,255,.10)" stroke-width="1"/>`;
+  }).join('');
+
+  const dots = coords.map((p, i) => {
+    const showLabel = i === 0 || i === coords.length - 1 || coords.length <= 6 || i % 2 === 0;
+    return `
+      <circle cx="${p[0]}" cy="${p[1]}" r="7" fill="#061625" stroke="#31f2cc" stroke-width="4"/>
+      ${showLabel ? `<text x="${p[0]}" y="${Math.max(y + 42, p[1] - 13)}" text-anchor="middle" font-size="17" font-weight="1000" fill="#31f2cc">${fmt(p[2])}</text>` : ''}
+      <text x="${p[0]}" y="${y + h - 18}" text-anchor="middle" font-size="15" font-weight="900" fill="#a7bdc9">${lrEscV9(p[3])}</text>
+    `;
+  }).join('');
+
+  return `
+    ${lrGlassCardV9(x, y, w, h)}
+    <circle cx="${x + w / 2 - 86}" cy="${y + 42}" r="8" fill="#31f2cc"/>
+    <text x="${x + w / 2 - 62}" y="${y + 51}" font-size="24" font-weight="1000" fill="#ffffff">Подписчики</text>
+    ${grid}
+    <path d="${area}" fill="#31f2cc" opacity=".13"/>
+    <path d="${d}" fill="none" stroke="rgba(49,242,204,.20)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${d}" fill="none" stroke="url(#lrLineV9)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+  `;
+}
+
+async function lrSafeRenderSingleV9(ch) {
+  const history = await lrHistoryRowsV9(ch.key, ch.subscribers, ch.deltaDay);
+  const last = history[history.length - 1] || { subscribers: ch.subscribers, delta: ch.deltaDay };
+
+  const todayDelta = num(last.delta);
+  const weekBase = history.length > 7 ? history[history.length - 8].subscribers : history[0].subscribers;
+  const monthBase = history.length > 30 ? history[history.length - 31].subscribers : history[0].subscribers;
+  const weekDelta = num(last.subscribers) - num(weekBase);
+  const monthDelta = num(last.subscribers) - num(monthBase);
+
+  const viewsPost = Math.max(num(ch.views24), num(ch.views48), num(ch.views72));
+  const titleLines = lrWrapV9(ch.title, 42, 2);
+  const avatarSvg = await lrAvatarV9(ch, 42, 34, 72);
+  const logoSvg = await lrLogoV9(1010, 34, 70);
+  const last10 = history.slice(-10).reverse();
+
+  const inner = `
+    ${avatarSvg}
+    <text x="136" y="63" font-size="34" font-weight="1000" fill="#ffffff">${lrEscV9(titleLines[0])}</text>
+    ${titleLines[1] ? `<text x="136" y="101" font-size="34" font-weight="1000" fill="#ffffff">${lrEscV9(titleLines[1])}</text>` : ''}
+    ${logoSvg}
+    <text x="1098" y="78" font-size="33" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+
+    ${lrGlassCardV9(36, 132, 396, 240)}
+    <text x="68" y="178" font-size="26" font-weight="1000" fill="#ffffff">Подписчиков</text>
+    ${lrStatRowV9(68, 228, 'Всего', fmt(ch.subscribers), '#27d9ff', 36)}
+    ${lrStatRowV9(68, 277, 'Сегодня', lrSignV9(todayDelta), lrDeltaColorV9(todayDelta), 32)}
+    ${lrStatRowV9(68, 326, 'За неделю', lrSignV9(weekDelta), lrDeltaColorV9(weekDelta), 32)}
+    ${lrStatRowV9(68, 358, 'За месяц', lrSignV9(monthDelta), lrDeltaColorV9(monthDelta), 32)}
+
+    ${lrGlassCardV9(456, 132, 396, 240)}
+    <text x="488" y="178" font-size="26" font-weight="1000" fill="#ffffff">Просмотров на пост</text>
+    ${lrStatRowV9(488, 228, 'Всего', fmt(viewsPost), '#27d9ff', 36)}
+    ${lrStatRowV9(488, 277, 'За 24ч', fmt(ch.views24), '#31f2cc', 32)}
+    ${lrStatRowV9(488, 326, 'За 48ч', fmt(ch.views48), '#31f2cc', 32)}
+    ${lrStatRowV9(488, 358, 'ER24', pct(ch.er24), '#27d9ff', 32)}
+
+    ${lrDaysTableV9(last10)}
+
+    ${lrLineChartV9(history, 36, 406, 816, 322)}
+
+    <text x="42" y="800" font-size="23" font-weight="1000" fill="#ffffff">LinkRay Analytics — данные собираются после подключения бота к каналу</text>
+    <text x="1218" y="850" text-anchor="end" font-size="22" font-weight="900" fill="#cde9ef">Дата формирования отчёта: ${lrEscV9(nowMskHuman())} МСК</text>
+  `;
+
+  return lrSafeSaveSvgPngV3(lrCardShellV9(inner), `lr-single-dark-v9-${ch.key}`);
+}
+/* LR_SINGLE_CHANNEL_DARK_CARD_V9_END */
+
 async function renderSingleSvg(ch) {
   const avatar = await lrSvgAvatar(ch, 84, 214, 92, 1);
   const history = await historyFor(ch.key, 'subscribers');
@@ -2364,7 +2737,7 @@ function lrExtractPreviewMap(update, links) {
 /* LR_ANALYTICS_CARDS_V2_END */
 
 async function renderSingle(ch) {
-  return lrSafeRenderSingleV8(ch);
+  return lrSafeRenderSingleV9(ch);
 }
 
 async function renderNetwork(channels) {
