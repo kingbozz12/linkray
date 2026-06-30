@@ -3250,62 +3250,84 @@ async function lrV14Logo(x, y, size = 74) {
 }
 
 
-/* LR_MULTI_AVATAR_CACHE_V26_START */
-const lrV26AvatarMemo = new Map();
 
-function lrV26NormLink(value) {
+
+/* LR_MULTI_AVATAR_CACHE_V27_START */
+const lrV27AvatarMemo = new Map();
+
+function lrV27NormLink(value) {
   return String(value || '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
 }
 
-function lrV26GoodAvatarUrl(value) {
+function lrV27NormTitle(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[«»"']/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lrV27GoodAvatarUrl(value) {
   const s = String(value || '').trim();
   return /^https?:\/\//i.test(s) && !s.includes('/s/img/og-logo.png');
 }
 
-async function lrV26GetCachedAvatar(link) {
-  const key = lrV26NormLink(link);
-  if (!key) return '';
+async function lrV27GetCachedAvatar(ch) {
+  const link =
+    ch?.link ||
+    ch?.url ||
+    ch?.key ||
+    ch?.channel_link ||
+    ch?.public_link ||
+    ch?.source_link ||
+    '';
 
-  if (lrV26AvatarMemo.has(key)) return lrV26AvatarMemo.get(key);
+  const title =
+    ch?.title ||
+    ch?._lrTitle ||
+    ch?.name ||
+    ch?.channel_title ||
+    ch?.channel_name ||
+    '';
+
+  const linkKey = lrV27NormLink(link);
+  const titleKey = lrV27NormTitle(title);
+  const memoKey = `${linkKey}|${titleKey}`;
+
+  if (!linkKey && !titleKey) return '';
+  if (lrV27AvatarMemo.has(memoKey)) return lrV27AvatarMemo.get(memoKey);
 
   try {
     const db = await import('./db.js');
     const result = await db.query(
       `SELECT avatar_url
          FROM public.lr_channel_avatar_cache
-        WHERE link_norm=$1 OR link=$2
+        WHERE ($1 <> '' AND link_norm=$1)
+           OR ($2 <> '' AND title_norm=$2)
+           OR ($3 <> '' AND link=$3)
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [key, String(link || '').trim()]
+      [linkKey, titleKey, String(link || '').trim()]
     );
 
     const rows = Array.isArray(result) ? result : (result?.rows || []);
     const avatar = String(rows?.[0]?.avatar_url || '').trim();
 
-    if (lrV26GoodAvatarUrl(avatar)) {
-      lrV26AvatarMemo.set(key, avatar);
+    if (lrV27GoodAvatarUrl(avatar)) {
+      lrV27AvatarMemo.set(memoKey, avatar);
       return avatar;
     }
   } catch {}
 
-  lrV26AvatarMemo.set(key, '');
+  lrV27AvatarMemo.set(memoKey, '');
   return '';
 }
-/* LR_MULTI_AVATAR_CACHE_V26_END */
+/* LR_MULTI_AVATAR_CACHE_V27_END */
 
 async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
-  /* LR_MULTI_AVATAR_LOOKUP_V26_START */
+  /* LR_MULTI_AVATAR_LOOKUP_V27_START */
   try {
-    const linkForAvatar =
-      ch?.link ||
-      ch?.url ||
-      ch?.key ||
-      ch?.channel_link ||
-      ch?.public_link ||
-      ch?.source_link ||
-      '';
-
-    const cachedAvatar = await lrV26GetCachedAvatar(linkForAvatar);
+    const cachedAvatar = await lrV27GetCachedAvatar(ch);
 
     if (cachedAvatar) {
       ch.avatar_url = cachedAvatar;
@@ -3315,7 +3337,8 @@ async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
       ch.avatar = cachedAvatar;
     }
   } catch {}
-  /* LR_MULTI_AVATAR_LOOKUP_V26_END */
+  /* LR_MULTI_AVATAR_LOOKUP_V27_END */
+
 
   const url = lrV19AvatarUrl(ch);
 
