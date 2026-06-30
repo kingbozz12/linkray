@@ -684,6 +684,64 @@ function lrV16CleanTitle(title, link, idx = 0) {
 }
 /* LR_REAL_CHANNEL_DATA_V16_END */
 
+
+/* LR_RESOLVE_PRIORITY_V17_START */
+function lrV17IsBadTitle(title) {
+  const t = String(title || '').trim();
+  return (
+    !t ||
+    /^https?:\/\//i.test(t) ||
+    /^max\.ru/i.test(t) ||
+    /^join\//i.test(t) ||
+    /^MAX\s+[-–]\s+/i.test(t) ||
+    /^MAX\s+is\s+a\s+fast/i.test(t) ||
+    /быстрое и легкое приложение/i.test(t)
+  );
+}
+
+function lrV17PickRealTitle(...items) {
+  for (const item of items) {
+    const title = String(item?.title || item?.name || item?.channel_title || item?.channel_name || '').replace(/\s+/g, ' ').trim();
+    if (!lrV17IsBadTitle(title)) return title;
+  }
+  return '';
+}
+
+function lrV17PickRealAvatar(...items) {
+  for (const item of items) {
+    const avatar = String(
+      item?.avatar_url ||
+      item?.avatarUrl ||
+      item?.photo_url ||
+      item?.image_url ||
+      item?.icon_url ||
+      item?.picture_url ||
+      item?.avatar ||
+      item?.photo ||
+      ''
+    ).trim();
+
+    if (!avatar) continue;
+
+    // Не берём служебные картинки MAX-приложения вместо аватарки канала.
+    const low = avatar.toLowerCase();
+    if (low.includes('max-app') || low.includes('app-icon') || low.includes('favicon')) continue;
+
+    return avatar;
+  }
+
+  return '';
+}
+
+function lrV17PickPositiveNumber(...values) {
+  for (const value of values) {
+    const n = num(value);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+/* LR_RESOLVE_PRIORITY_V17_END */
+
 async function resolveChannel(link, extraRaw = {}) {
   await ensureTables();
 
@@ -704,15 +762,61 @@ async function resolveChannel(link, extraRaw = {}) {
   const preview = await lrV16FetchMaxPreview(cleanLink);
   const fromMax = await callMaxForStats(cleanLink);
 
+  // ВАЖНО:
+  // known — это база LinkRay / сохранённые каналы, она главнее.
+  // preview MAX часто отдаёт общий заголовок приложения или первое превью.
   const rawMerged = {
+    ...fromMax,
     ...preview,
     ...known,
     ...extraRaw,
-    ...fromMax,
   };
 
   const normalized = normalizeStats(cleanLink, rawMerged);
-  normalized.title = lrV16CleanTitle(normalized.title, cleanLink, idx);
+
+  const realTitle = lrV17PickRealTitle(known, extraRaw, fromMax, preview, normalized);
+  const realAvatar = lrV17PickRealAvatar(known, extraRaw, fromMax, preview, normalized);
+
+  normalized.title = realTitle || lrV16CleanTitle(normalized.title, cleanLink, idx);
+  normalized.avatarUrl = realAvatar || normalized.avatarUrl || normalized.avatar_url || '';
+
+  normalized.subscribers = lrV17PickPositiveNumber(
+    known.subscribers,
+    known.subscriber_count,
+    known.members_count,
+    fromMax.subscribers,
+    fromMax.subscriber_count,
+    preview.subscribers,
+    normalized.subscribers
+  );
+
+  normalized.views24 = lrV17PickPositiveNumber(
+    known.views24,
+    known.views_24,
+    known.views24h,
+    fromMax.views24,
+    fromMax.views_24,
+    normalized.views24
+  );
+
+  normalized.views48 = lrV17PickPositiveNumber(
+    known.views48,
+    known.views_48,
+    fromMax.views48,
+    fromMax.views_48,
+    normalized.views48,
+    normalized.views24
+  );
+
+  normalized.views72 = lrV17PickPositiveNumber(
+    known.views72,
+    known.views_72,
+    fromMax.views72,
+    fromMax.views_72,
+    normalized.views72,
+    normalized.views48,
+    normalized.views24
+  );
 
   const prev = rows(await query(
     ` SELECT subscribers
@@ -734,18 +838,18 @@ async function resolveChannel(link, extraRaw = {}) {
       channelKey,
       cleanLink,
       normalized.title,
-      normalized.avatarUrl || normalized.avatar_url || rawMerged.avatar_url || rawMerged.photo_url || rawMerged.image_url || '',
+      normalized.avatarUrl || '',
       normalized.subscribers,
       normalized.views24,
-      normalized.views48 || normalized.views24,
-      normalized.views72 || normalized.views48 || normalized.views24,
-      normalized.er24,
+      normalized.views48,
+      normalized.views72,
+      normalized.er24 || 0,
       deltaDay,
-      JSON.stringify(rawMerged || {}),
+      JSON.stringify({ known, preview, fromMax, extraRaw } || {}),
     ]
   ))[0];
 
-  console.log('[LR_CHANNEL_RESOLVED_V16]', JSON.stringify({
+  console.log('[LR_CHANNEL_RESOLVED_V17]', JSON.stringify({
     link: cleanLink,
     title: saved.title,
     avatar: !!saved.avatar_url,
@@ -758,6 +862,7 @@ async function resolveChannel(link, extraRaw = {}) {
     link: cleanLink,
     title: saved.title,
     avatarUrl: saved.avatar_url || '',
+    avatar_url: saved.avatar_url || '',
     subscribers: num(saved.subscribers),
     views24: num(saved.views24),
     views48: num(saved.views48),
