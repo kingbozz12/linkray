@@ -5615,7 +5615,7 @@ function lrV44AnalyticsCaption(channels = []) {
     return 0;
   }
 
-  const src = Array.isArray(channels) ? channels : [];
+  const src = (Array.isArray(channels) && channels.length) ? channels : (Array.isArray(globalThis.__lrLastNetworkChannels) ? globalThis.__lrLastNetworkChannels : []);
   const list = [];
   const seen = new Set();
 
@@ -5678,10 +5678,6 @@ function lrV44AnalyticsCaption(channels = []) {
   return `📊 <b>LinkRay Analytics</b>
 Сводка по сети: <b>${list.length}</b> каналов
 
-👥 <b>Всего подписчиков:</b> ${fmt(totalSubs)}
-✅ <b>Подписалось:</b> ${fmt(signed)}
-➖ <b>Отписалось:</b> ${fmt(left)}
-📈 <b>Итог за сутки:</b> ${net > 0 ? '+' : ''}${fmt(net)}
 
 👁 <b>Просмотры:</b>
 ├ 24 часа: <b>${fmt(views24)}</b>
@@ -5699,6 +5695,8 @@ ${rows}
 /* LR_ANALYTICS_CAPTION_V44_END */
 
 async function lrV40RenderFinalNetworkPng(channels = []) {
+  try { globalThis.__lrLastNetworkChannels = Array.isArray(channels) ? channels : []; } catch {}
+
   const sharpMod = await import('sharp');
   const sharp = sharpMod.default || sharpMod;
   const fs = await import('node:fs/promises');
