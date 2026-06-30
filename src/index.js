@@ -9865,6 +9865,15 @@ app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.jso
 
 
 app.post('/webhook', async (req, res) => {
+  /* LR_EXACT_WEBHOOK_LOGGER_V1 */
+  try {
+    const __body = req?.body ?? {};
+    const __txt = JSON.stringify(__body);
+    console.log('[LR_WEBHOOK_EXACT_V1]', req?.method, req?.originalUrl || req?.url || req?.path, __txt.slice(0, 12000));
+  } catch (e) {
+    console.log('[LR_WEBHOOK_EXACT_V1_ERROR]', e?.message || e);
+  }
+
   /* LR_RAW_POST_LOGGER_V1 */
   try {
     const __lrBody = req?.body ?? {};
