@@ -850,6 +850,52 @@ function lrV19AvatarFallback(ch, x, y, size, idx) {
 }
 /* LR_AVATAR_DEDUPE_V19_END */
 
+
+/* LR_SAFE_AVATAR_PRIORITY_V22_START */
+function lrV22NormText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[«»"']/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lrV22SafeExtraRawForChannel(extraRaw, known, cleanLink) {
+  if (!extraRaw || typeof extraRaw !== 'object') return {};
+
+  const extraTitle = lrV22NormText(
+    extraRaw.title ||
+    extraRaw.name ||
+    extraRaw.channel_title ||
+    extraRaw.channel_name ||
+    ''
+  );
+
+  const knownTitle = lrV22NormText(
+    known?.title ||
+    known?.name ||
+    known?.channel_title ||
+    known?.channel_name ||
+    ''
+  );
+
+  if (extraTitle && knownTitle && extraTitle === knownTitle) {
+    return extraRaw;
+  }
+
+  const raw = JSON.stringify(extraRaw || {}).toLowerCase();
+  const link = String(cleanLink || '').toLowerCase();
+  const tail = link.split('/join/').pop() || '';
+
+  if (link && raw.includes(link)) return extraRaw;
+  if (tail && tail.length > 12 && raw.includes(tail)) return extraRaw;
+
+  // Если превью не совпало с текущей ссылкой — это превью первого канала.
+  // Его нельзя применять к другим каналам.
+  return {};
+}
+/* LR_SAFE_AVATAR_PRIORITY_V22_END */
+
 async function resolveChannel(link, extraRaw = {}) {
   await ensureTables();
 
@@ -867,6 +913,7 @@ async function resolveChannel(link, extraRaw = {}) {
   const idx = Number(extraRaw?._lrIndex || 0);
 
   const known = await lrV16KnownChannelData(cleanLink);
+  const lrV22ExtraRaw = lrV22SafeExtraRawForChannel(extraRaw, known, cleanLink);
   const preview = lrV19CleanPreviewAvatar(await lrV16FetchMaxPreview(cleanLink));
   const fromMax = await callMaxForStats(cleanLink);
 
@@ -877,13 +924,13 @@ async function resolveChannel(link, extraRaw = {}) {
     ...fromMax,
     ...preview,
     ...known,
-    ...extraRaw,
+    ...lrV22ExtraRaw,
   };
 
   const normalized = normalizeStats(cleanLink, rawMerged);
 
-  const realTitle = lrV17PickRealTitle(known, extraRaw, fromMax, preview, normalized);
-  const realAvatar = lrV17PickRealAvatar(known, extraRaw, fromMax, preview, normalized);
+  const realTitle = lrV17PickRealTitle(known, lrV22ExtraRaw, fromMax, preview, normalized);
+  const realAvatar = lrV17PickRealAvatar(known, lrV22ExtraRaw, fromMax, preview, normalized);
 
   normalized.title = realTitle || lrV16CleanTitle(normalized.title, cleanLink, idx);
   normalized.avatarUrl = realAvatar || normalized.avatarUrl || normalized.avatar_url || '';
@@ -953,7 +1000,7 @@ async function resolveChannel(link, extraRaw = {}) {
       normalized.views72,
       normalized.er24 || 0,
       deltaDay,
-      JSON.stringify({ known, preview, fromMax, extraRaw } || {}),
+      JSON.stringify({ known, preview, fromMax, extraRaw: lrV22ExtraRaw } || {}),
     ]
   ))[0];
 
