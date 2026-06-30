@@ -9678,7 +9678,7 @@ async function showChannels(callbackId) {
 4. Канал автоматически сохранится в базе LinkRay.
 
 После добавления бот пришлёт сообщение:
-✅ Канал добавлен в LinkRay
+✅ <b>Канал подключён к LinkRay</b>
 ━━━━━━━━━━━━`, [
     [callbackButton('🔗 Добавить канал', 'post:add_channel')],
     [callbackButton('⬅️ В меню', 'main:menu')]
@@ -10247,9 +10247,9 @@ async function __lrNotifyNewChannels(targetChatId = '', update = null) {
 
       await sendMessage(chatId, {
         text:
-          `✅ Канал добавлен в LinkRay\n\n` +
+          `✅ <b>Канал подключён к LinkRay</b>\n\n` +
           `${title}\n\n` +
-          `Канал сохранён в базе и будет доступен для публикаций.`,
+          `Канал сохранён в базе и будет использоваться для публикаций, аналитики, отчётов, антифрода и рекламных закупов.`,
         buttons: [
           [callbackButton('🔗 Добавить ещё канал', 'post:add_channel')],
           [callbackButton('⬅️ В меню', 'main:menu')]
