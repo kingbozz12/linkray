@@ -13,3 +13,19 @@ scripts/
 *.bak
 *.old
 *.orig
+# LinkRay cleanup: never copy temp/backups/debug into Docker
+src/*.broken*
+src/*.tmp
+old_scripts/
+debug/
+tmp/
+.tmp/
+.cache/
+cache/
+coverage/
+.nyc_output/
+*.broken*
+*.tmp
+*backup*
+*before*
+*emergency*
