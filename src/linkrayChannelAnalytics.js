@@ -4180,6 +4180,52 @@ async function sendImage(chatId, image, caption) {
       ],
     });
   } catch (error) {
+
+      /* LR_RAW_MAX_IMAGE_UPLOAD_V33_CALL_START */
+      try {
+        const lrV33Candidate =
+          (typeof imageBuffer !== 'undefined' && imageBuffer) ||
+          (typeof pngBuffer !== 'undefined' && pngBuffer) ||
+          (typeof cardBuffer !== 'undefined' && cardBuffer) ||
+          (typeof buffer !== 'undefined' && buffer) ||
+          (typeof png !== 'undefined' && png) ||
+          (typeof image !== 'undefined' && image) ||
+          (typeof img !== 'undefined' && img) ||
+          (typeof card !== 'undefined' && card) ||
+          (typeof result !== 'undefined' && result) ||
+          null;
+
+        const lrV33KnownTarget = {
+          chatId:
+            (typeof chatId !== 'undefined' && chatId) ||
+            (typeof chat_id !== 'undefined' && chat_id) ||
+            null,
+          userId:
+            (typeof userId !== 'undefined' && userId) ||
+            (typeof user_id !== 'undefined' && user_id) ||
+            null,
+        };
+
+        const lrV33FromUpdate =
+          (typeof update !== 'undefined' && update) ? lrV33TargetFromUpdate(update) :
+          (typeof ctx !== 'undefined' && ctx) ? lrV33TargetFromUpdate(ctx) :
+          {};
+
+        const lrV33Target = {
+          chatId: lrV33KnownTarget.chatId || lrV33FromUpdate.chatId,
+          userId: lrV33KnownTarget.userId || lrV33FromUpdate.userId,
+        };
+
+        const lrV33Caption = '📊 LinkRay Analytics';
+
+        if (lrV33Candidate && (lrV33Target.chatId || lrV33Target.userId)) {
+          await lrV33SendImageByRawMax(lrV33Target, lrV33Candidate, lrV33Caption);
+          return true;
+        }
+      } catch (lrV33Err) {
+        console.error('[LR_RAW_MAX_IMAGE_UPLOAD_V33_ERROR]', lrV33Err?.message || lrV33Err);
+      }
+      /* LR_RAW_MAX_IMAGE_UPLOAD_V33_CALL_END */
     console.error('[LinkRay channel analytics send image]', error.message || error);
 
     await sendMaxMessage({
@@ -4654,6 +4700,223 @@ async function handleAnalyticsMenu(update) {
 
   return false;
 }
+
+
+/* LR_RAW_MAX_IMAGE_UPLOAD_V33_START */
+function lrV33MaxToken() {
+  return (
+    process.env.MAX_BOT_TOKEN ||
+    process.env.BOT_TOKEN ||
+    process.env.MAX_TOKEN ||
+    process.env.MAX_API_TOKEN ||
+    process.env.BOT_API_TOKEN ||
+    process.env.ACCESS_TOKEN ||
+    process.env.TOKEN ||
+    ''
+  ).trim();
+}
+
+function lrV33ApiBase() {
+  return (process.env.MAX_API_BASE || process.env.MAX_API_URL || 'https://platform-api.max.ru')
+    .replace(/\/+$/, '');
+}
+
+function lrV33TargetFromUpdate(update) {
+  const chatId =
+    update?.message?.recipient?.chat_id ||
+    update?.message?.body?.recipient?.chat_id ||
+    update?.message?.chat_id ||
+    update?.chat_id ||
+    update?.recipient?.chat_id ||
+    update?.callback?.message?.recipient?.chat_id ||
+    update?.callback?.chat_id ||
+    null;
+
+  const userId =
+    update?.message?.sender?.user_id ||
+    update?.message?.user_id ||
+    update?.user_id ||
+    update?.callback?.user?.user_id ||
+    update?.callback?.user_id ||
+    update?.callback?.message?.sender?.user_id ||
+    null;
+
+  return { chatId, userId };
+}
+
+function lrV33UrlToken(url) {
+  try {
+    const u = new URL(String(url || ''));
+    return (
+      u.searchParams.get('token') ||
+      u.searchParams.get('file_token') ||
+      u.searchParams.get('upload_token') ||
+      ''
+    );
+  } catch {
+    return '';
+  }
+}
+
+async function lrV33ToPngBuffer(imageLike) {
+  if (!imageLike) return null;
+
+  if (Buffer.isBuffer(imageLike)) return imageLike;
+
+  if (imageLike instanceof Uint8Array) {
+    return Buffer.from(imageLike);
+  }
+
+  if (typeof imageLike === 'object') {
+    if (Buffer.isBuffer(imageLike.buffer)) return imageLike.buffer;
+    if (Buffer.isBuffer(imageLike.data)) return imageLike.data;
+    if (Buffer.isBuffer(imageLike.png)) return imageLike.png;
+    if (Buffer.isBuffer(imageLike.image)) return imageLike.image;
+  }
+
+  if (typeof imageLike === 'string') {
+    const text = imageLike.trim();
+
+    if (text.startsWith('data:image/')) {
+      const base64 = text.split(',')[1] || '';
+      if (base64) return Buffer.from(base64, 'base64');
+    }
+
+    if (text.startsWith('<svg') || text.includes('<svg')) {
+      const sharpMod = await import('sharp');
+      const sharp = sharpMod.default || sharpMod;
+      return await sharp(Buffer.from(text)).png().toBuffer();
+    }
+  }
+
+  return null;
+}
+
+async function lrV33UploadImageAndGetToken(pngBuffer) {
+  const accessToken = lrV33MaxToken();
+
+  if (!accessToken) {
+    throw new Error('MAX token not found in env');
+  }
+
+  const api = lrV33ApiBase();
+
+  const createUpload = await fetch(`${api}/uploads?type=image`, {
+    method: 'POST',
+    headers: {
+      Authorization: accessToken,
+    },
+  });
+
+  const createText = await createUpload.text();
+  let createJson = {};
+
+  try {
+    createJson = JSON.parse(createText);
+  } catch {}
+
+  if (!createUpload.ok) {
+    throw new Error(`create upload failed ${createUpload.status}: ${createText}`);
+  }
+
+  const uploadUrl = String(createJson.url || createJson.upload_url || createJson.href || '').trim();
+
+  if (!uploadUrl) {
+    throw new Error(`upload url not returned: ${createText}`);
+  }
+
+  const form = new FormData();
+  form.append('data', new Blob([pngBuffer], { type: 'image/png' }), `linkray-analytics-${Date.now()}.png`);
+
+  const upload = await fetch(uploadUrl, {
+    method: 'POST',
+    body: form,
+  });
+
+  const uploadText = await upload.text();
+  let uploadJson = {};
+
+  try {
+    uploadJson = JSON.parse(uploadText);
+  } catch {}
+
+  if (!upload.ok) {
+    throw new Error(`upload image failed ${upload.status}: ${uploadText}`);
+  }
+
+  const token =
+    uploadJson.token ||
+    uploadJson?.payload?.token ||
+    uploadJson?.retval?.token ||
+    createJson.token ||
+    createJson?.payload?.token ||
+    lrV33UrlToken(uploadUrl);
+
+  if (!token) {
+    throw new Error(`image token not returned: ${uploadText || createText}`);
+  }
+
+  return token;
+}
+
+async function lrV33SendImageByRawMax(target, imageLike, text = '') {
+  const pngBuffer = await lrV33ToPngBuffer(imageLike);
+
+  if (!pngBuffer || !pngBuffer.length) {
+    throw new Error('PNG buffer is empty');
+  }
+
+  const accessToken = lrV33MaxToken();
+
+  if (!accessToken) {
+    throw new Error('MAX token not found in env');
+  }
+
+  const chatId = target?.chatId || target?.chat_id || null;
+  const userId = target?.userId || target?.user_id || null;
+
+  const query =
+    chatId ? `chat_id=${encodeURIComponent(chatId)}` :
+    userId ? `user_id=${encodeURIComponent(userId)}` :
+    '';
+
+  if (!query) {
+    throw new Error('chat_id/user_id not found for image send');
+  }
+
+  const token = await lrV33UploadImageAndGetToken(pngBuffer);
+  const api = lrV33ApiBase();
+
+  const body = {
+    text: text || '',
+    format: 'html',
+    attachments: [
+      {
+        type: 'image',
+        payload: { token },
+      },
+    ],
+  };
+
+  const send = await fetch(`${api}/messages?${query}`, {
+    method: 'POST',
+    headers: {
+      Authorization: accessToken,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  const sendText = await send.text();
+
+  if (!send.ok) {
+    throw new Error(`send image message failed ${send.status}: ${sendText}`);
+  }
+
+  console.log('[LR_RAW_MAX_IMAGE_UPLOAD_V33] sent image by token');
+  return true;
+}
+/* LR_RAW_MAX_IMAGE_UPLOAD_V33_END */
 
 export async function handleLinkRayChannelAnalyticsIncoming(update) {
   try {
