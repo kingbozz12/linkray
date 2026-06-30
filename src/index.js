@@ -797,6 +797,312 @@ globalThis.__lrSigRichV13 = (() => {
 
 
 
+
+/* LR_CHANNEL_LIFECYCLE_FIX_V1_START */
+async function lrDbV1(sql, params = []) {
+  try {
+    const mod = await import('./db.js');
+    const r = await mod.query(sql, params);
+    return Array.isArray(r) ? r : (r?.rows || []);
+  } catch (e) {
+    console.log('[LR_LIFECYCLE_DB_ERROR]', e?.message || e);
+    return [];
+  }
+}
+
+function lrTextV1(v) {
+  try { return JSON.stringify(v || {}); } catch { return ''; }
+}
+
+function lrWalkV1(obj, cb, depth = 0) {
+  if (!obj || depth > 8) return;
+  if (Array.isArray(obj)) {
+    for (const x of obj) lrWalkV1(x, cb, depth + 1);
+    return;
+  }
+  if (typeof obj === 'object') {
+    cb(obj);
+    for (const k of Object.keys(obj)) lrWalkV1(obj[k], cb, depth + 1);
+  }
+}
+
+function lrPickChannelV1(update) {
+  const found = [];
+  lrWalkV1(update, (o) => {
+    const id =
+      o.channel_id ?? o.channelId ?? o.chat_id ?? o.chatId ??
+      o.dialog_id ?? o.dialogId ?? o.id;
+
+    const title =
+      o.title ?? o.name ?? o.chat_title ?? o.chatTitle ??
+      o.channel_title ?? o.channelTitle;
+
+    const link =
+      o.link ?? o.url ?? o.public_link ?? o.publicLink ??
+      o.invite_link ?? o.inviteLink;
+
+    const type = String(o.type ?? o.chat_type ?? o.chatType ?? '').toLowerCase();
+
+    const looksChannel =
+      type.includes('channel') ||
+      String(link || '').includes('max.ru') ||
+      String(id || '').startsWith('-');
+
+    if ((id || link || title) && looksChannel) {
+      found.push({
+        id: id ? String(id) : null,
+        title: title ? String(title) : null,
+        link: link ? String(link) : null,
+      });
+    }
+  });
+
+  const raw = lrTextV1(update);
+  const m = raw.match(/https:\/\/max\.ru\/join\/[A-Za-z0-9_\-]+/);
+  if (m) found.push({ id: null, title: null, link: m[0] });
+
+  return found[0] || null;
+}
+
+function lrPickUserChatV1(update) {
+  let result = null;
+
+  lrWalkV1(update, (o) => {
+    if (result) return;
+
+    const id =
+      o.user_id ?? o.userId ?? o.sender_id ?? o.senderId ??
+      o.from_id ?? o.fromId ?? o.admin_id ?? oadminId ??
+      o.owner_id ?? o.ownerId;
+
+    if (id && !String(id).startsWith('-')) {
+      result = String(id);
+    }
+  });
+
+  return result;
+}
+
+function lrLifecycleTypeV1(update) {
+  const raw = lrTextV1(update).toLowerCase();
+
+  const removed =
+    raw.includes('bot_removed') ||
+    raw.includes('bot_kicked') ||
+    raw.includes('left_chat_member') ||
+    raw.includes('removed_from_chat') ||
+    raw.includes('delete_chat_member') ||
+    raw.includes('member_removed') ||
+    raw.includes('administrator_removed') ||
+    raw.includes('not administrator') ||
+    raw.includes('no longer administrator') ||
+    (raw.includes('удал') && raw.includes('канал')) ||
+    (raw.includes('больше не администратор'));
+
+  const added =
+    raw.includes('bot_added') ||
+    raw.includes('bot_joined') ||
+    raw.includes('new_chat_members') ||
+    raw.includes('added_to_chat') ||
+    raw.includes('member_added') ||
+    raw.includes('administrator_added') ||
+    raw.includes('chat_member') ||
+    raw.includes('channel_added') ||
+    (raw.includes('добав') && raw.includes('канал')) ||
+    (raw.includes('стал администратором'));
+
+  if (removed) return 'removed';
+  if (added) return 'added';
+  return null;
+}
+
+async function lrGetTableColumnsV1(table) {
+  const rows = await lrDbV1(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema='public' AND table_name=$1
+  `, [table]);
+  return new Set(rows.map(r => r.column_name));
+}
+
+async function lrUpsertChannelV1(ch) {
+  const cols = await lrGetTableColumnsV1('channels');
+  if (!cols.size) return false;
+
+  const data = {};
+  const channelId = ch.id || ch.link || ch.title || `unknown_${Date.now()}`;
+  const title = ch.title || ch.link || 'MAX канал';
+  const link = ch.link || null;
+
+  for (const c of ['chat_id', 'channel_id', 'max_chat_id', 'max_channel_id']) {
+    if (cols.has(c)) data[c] = channelId;
+  }
+
+  for (const c of ['title', 'channel_title', 'name']) {
+    if (cols.has(c)) data[c] = title;
+  }
+
+  for (const c of ['public_link', 'link', 'url', 'invite_link']) {
+    if (cols.has(c)) data[c] = link;
+  }
+
+  if (cols.has('is_active')) data.is_active = true;
+  if (cols.has('active')) data.active = true;
+  if (cols.has('status')) data.status = 'active';
+  if (cols.has('updated_at')) data.updated_at = new Date().toISOString();
+  if (cols.has('created_at')) data.created_at = new Date().toISOString();
+
+  const keys = Object.keys(data);
+  if (!keys.length) return false;
+
+  const values = keys.map(k => data[k]);
+  const colSql = keys.map(k => `"${k.replace(/"/g, '""')}"`).join(', ');
+  const valSql = keys.map((_, i) => `$${i + 1}`).join(', ');
+
+  const conflictCol =
+    cols.has('chat_id') ? 'chat_id' :
+    cols.has('channel_id') ? 'channel_id' :
+    cols.has('max_chat_id') ? 'max_chat_id' :
+    cols.has('max_channel_id') ? 'max_channel_id' :
+    null;
+
+  if (conflictCol) {
+    const updates = keys
+      .filter(k => k !== conflictCol && k !== 'created_at')
+      .map(k => `"${k}"=EXCLUDED."${k}"`)
+      .join(', ');
+
+    await lrDbV1(
+      `INSERT INTO public.channels (${colSql}) VALUES (${valSql})
+       ON CONFLICT ("${conflictCol}") DO UPDATE SET ${updates || `"${conflictCol}"=EXCLUDED."${conflictCol}"`}`,
+      values
+    );
+  } else {
+    await lrDbV1(`INSERT INTO public.channels (${colSql}) VALUES (${valSql})`, values);
+  }
+
+  console.log('[LR_CHANNEL_LIFECYCLE_FIX_V1] channel upserted', JSON.stringify(ch));
+  return true;
+}
+
+async function lrDeleteChannelEverywhereV1(ch) {
+  const values = [ch.id, ch.link, ch.title].filter(Boolean).map(String);
+  if (!values.length) return false;
+
+  const tables = await lrDbV1(`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema='public' AND table_type='BASE TABLE'
+  `);
+
+  let total = 0;
+
+  for (const t of tables) {
+    const table = t.table_name;
+    const colsRows = await lrDbV1(`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema='public' AND table_name=$1
+    `, [table]);
+
+    const cols = colsRows
+      .map(r => r.column_name)
+      .filter(c => [
+        'chat_id', 'channel_id', 'max_chat_id', 'max_channel_id',
+        'public_link', 'link', 'url', 'invite_link',
+        'title', 'channel_title', 'name'
+      ].includes(c));
+
+    if (!cols.length) continue;
+
+    const conditions = [];
+    const params = [];
+
+    for (const c of cols) {
+      for (const v of values) {
+        params.push(v);
+        conditions.push(`"${c.replace(/"/g, '""')}"::text = $${params.length}`);
+      }
+    }
+
+    try {
+      const r = await (await import('./db.js')).query(
+        `DELETE FROM public."${table.replace(/"/g, '""')}" WHERE ${conditions.join(' OR ')}`,
+        params
+      );
+
+      const count = Number(r?.rowCount || 0);
+      if (count) {
+        total += count;
+        console.log('[LR_CHANNEL_LIFECYCLE_FIX_V1] deleted', table, count);
+      }
+    } catch (e) {
+      console.log('[LR_CHANNEL_LIFECYCLE_FIX_V1] delete skip', table, e.message);
+    }
+  }
+
+  return total > 0;
+}
+
+async function lrNotifyUserV1(userChatId, type, ch) {
+  if (!userChatId) return false;
+  if (typeof msg !== 'function') return false;
+
+  const title = ch.title || ch.link || ch.id || 'MAX канал';
+
+  if (type === 'added') {
+    await msg(
+      userChatId,
+      `✅ <b>Канал подключён к LinkRay</b>\n\n${title}\n\n` +
+      `Канал сохранён в базе и будет использоваться для публикаций, аналитики, отчётов, антифрода и рекламных закупов.`
+    );
+    return true;
+  }
+
+  if (type === 'removed') {
+    await msg(
+      userChatId,
+      `🗑 <b>Канал удалён из LinkRay</b>\n\n${title}\n\n` +
+      `Бот больше не администратор этого канала, поэтому канал удалён из базы, меню публикаций, аналитики, отчётов и антифрода.`
+    );
+    return true;
+  }
+
+  return false;
+}
+
+async function lrHandleChannelLifecycleV1(update) {
+  try {
+    const type = lrLifecycleTypeV1(update);
+    if (!type) return false;
+
+    const ch = lrPickChannelV1(update);
+    if (!ch) return false;
+
+    const userChatId = lrPickUserChatV1(update);
+
+    console.log('[LR_CHANNEL_LIFECYCLE_FIX_V1] incoming', JSON.stringify({ type, ch, userChatId }));
+
+    if (type === 'added') {
+      await lrUpsertChannelV1(ch);
+      await lrNotifyUserV1(userChatId, 'added', ch);
+      return true;
+    }
+
+    if (type === 'removed') {
+      await lrDeleteChannelEverywhereV1(ch);
+      await lrNotifyUserV1(userChatId, 'removed', ch);
+      return true;
+    }
+  } catch (e) {
+    console.log('[LR_CHANNEL_LIFECYCLE_FIX_V1_ERROR]', e?.stack || e?.message || e);
+  }
+
+  return false;
+}
+/* LR_CHANNEL_LIFECYCLE_FIX_V1_END */
+
+
 const app = express();
 
 /* LR_GENERATED_STATIC_V34_START */
@@ -9522,6 +9828,8 @@ app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.jso
 
 
 app.post('/webhook', async (req, res) => {
+  try { await lrHandleChannelLifecycleV1(req.body); } catch (e) { console.log('[LR_CHANNEL_LIFECYCLE_FIX_V1_ROUTE]', e?.message || e); }
+
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
   if (process.env.WEBHOOK_SECRET && incomingSecret !== process.env.WEBHOOK_SECRET) return res.status(401).json({ ok: false });
   res.json({ ok: true });
