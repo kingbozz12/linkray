@@ -1258,6 +1258,59 @@ setInterval(refreshPage,60000);
 </html>`;
 }
 
+
+/* LR_FIX_MISSING_PREVIEW_AVATAR_V51_START */
+function lrV19CleanPreviewAvatar(preview) {
+  try {
+    if (!preview || typeof preview !== 'object') return preview;
+
+    const out = { ...preview };
+
+    const badValues = new Set([
+      '',
+      '/s/img/og-logo.png',
+      'https://max.ru/s/img/og-logo.png',
+      'https://max.ru/s/img/og-logo.svg'
+    ]);
+
+    const isBad = (v) => {
+      const x = String(v || '').trim();
+      if (!x) return true;
+      if (badValues.has(x)) return true;
+      if (x.includes('/s/img/og-logo')) return true;
+      return false;
+    };
+
+    const avatar =
+      out.avatar_url ||
+      out.avatarUrl ||
+      out.photo_url ||
+      out.photoUrl ||
+      out.image_url ||
+      out.imageUrl ||
+      out.avatar ||
+      null;
+
+    if (isBad(avatar)) {
+      delete out.avatar_url;
+      delete out.avatarUrl;
+      delete out.photo_url;
+      delete out.photoUrl;
+      delete out.avatar;
+    } else {
+      out.avatar_url = String(avatar);
+      out.avatarUrl = String(avatar);
+      out.photo_url = String(avatar);
+    }
+
+    return out;
+  } catch {
+    return preview;
+  }
+}
+/* LR_FIX_MISSING_PREVIEW_AVATAR_V51_END */
+
+
 export async function renderLinkRayAnalyticsRequest(req, res) {
   try {
     const data = await collect(req.params.groupId);
