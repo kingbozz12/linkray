@@ -802,8 +802,8 @@ function lrForceChannelConnectedTextV3(value) {
   let text = value;
 
   const hasOldTitle =
-    text.includes('Канал добавлен в LinkRay') ||
-    text.includes('<b>Канал добавлен в LinkRay</b>');
+    text.includes('Канал подключён к LinkRay') ||
+    text.includes('<b>Канал подключён к LinkRay</b>');
 
   const hasOldDesc =
     text.includes('Канал сохранён в базе и будет доступен при создании постов') ||
@@ -814,9 +814,9 @@ function lrForceChannelConnectedTextV3(value) {
   if (!hasOldTitle && !hasOldDesc) return value;
 
   text = text
-    .replace(/✅\s*<b>Канал добавлен в LinkRay<\/b>/g, '✅ <b>Канал подключён к LinkRay</b>')
-    .replace(/✅\s*Канал добавлен в LinkRay/g, '✅ Канал подключён к LinkRay')
-    .replace(/Канал добавлен в LinkRay/g, 'Канал подключён к LinkRay');
+    .replace(/✅\s*<b>Канал подключён к LinkRay<\/b>/g, '✅ <b>Канал подключён к LinkRay</b>')
+    .replace(/✅\s*Канал подключён к LinkRay/g, '✅ Канал подключён к LinkRay')
+    .replace(/Канал подключён к LinkRay/g, 'Канал подключён к LinkRay');
 
   const newDescription =
     'Канал сохранён в базе и будет использоваться для:\\n\\n' +
@@ -865,7 +865,7 @@ if (!globalThis.__LR_FORCE_CHANNEL_CONNECTED_TEXT_V3 && typeof globalThis.fetch 
         if (typeof init.body === 'string') {
           const raw = init.body;
 
-          if (raw.includes('Канал добавлен в LinkRay') || raw.includes('доступен при создании постов') || raw.includes('доступен для публикаций')) {
+          if (raw.includes('Канал подключён к LinkRay') || raw.includes('доступен при создании постов') || raw.includes('доступен для публикаций')) {
             try {
               const json = JSON.parse(raw);
               init = { ...init, body: JSON.stringify(lrRewriteOutgoingPayloadV3(json)) };
