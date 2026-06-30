@@ -3110,20 +3110,68 @@ function lrV14Slug(link, idx) {
   return `Канал ${idx + 1}`;
 }
 
+
+/* LR_NETWORK_ROW_LAYOUT_V18_START */
+function lrV18CleanNetworkTitle(value, idx = 0) {
+  let text = String(value || '').replace(/\s+/g, ' ').trim();
+
+  if (!text || /^https?:\/\//i.test(text) || /^max\.ru/i.test(text) || /^join\//i.test(text)) {
+    return `Канал ${idx + 1}`;
+  }
+
+  if (text.includes('|')) {
+    const first = text.split('|')[0].trim();
+    if (first.length >= 8) text = first;
+  }
+
+  if (text.length > 22) text = text.slice(0, 22).trim() + '…';
+  return text;
+}
+/* LR_NETWORK_ROW_LAYOUT_V18_END */
+
 async function lrV14Row(ch, x, y, idx) {
   const avatar = await lrV14Avatar(ch, x, y - 31, 42, idx);
   const titleRaw = ch._lrTitle || ch.title || lrV14Slug(ch.link || ch.key, idx);
-  const isJoinSlug = /^join\//i.test(String(titleRaw || '').trim());
-  const cleanTitle = isJoinSlug ? `Канал ${idx + 1}` : titleRaw;
-  const title = lrV14Esc(lrV14Short(cleanTitle, 20));
+  const cleanTitle = lrV18CleanNetworkTitle(titleRaw, idx);
+  const title = lrV14Esc(cleanTitle);
+  const clipId = `lrNetTitleClip${idx}`;
 
   return `
     <g>
+      <clipPath id="${clipId}">
+        <rect x="${x + 58}" y="${y - 34}" width="360" height="48" rx="3"/>
+      </clipPath>
+
       ${avatar}
-      <text x="${x + 58}" y="${y}" font-size="24" font-weight="1000" fill="#ffffff">${title}</text>
-      <text x="${x + 410}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#27d9ff">${lrV14Esc(fmt(ch.subscribers))}</text>
-      <text x="${x + 535}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#31f2cc">${lrV14Esc(fmt(ch.views24))}</text>
-      ${idx < 3 ? `<line x1="${x}" y1="${y + 24}" x2="${x + 545}" y2="${y + 24}" stroke="rgba(255,255,255,.09)" stroke-width="1"/>` : ''}
+
+      <text
+        x="${x + 58}"
+        y="${y}"
+        clip-path="url(#${clipId})"
+        font-size="24"
+        font-weight="1000"
+        fill="#ffffff"
+      >${title}</text>
+
+      <text
+        x="${x + 520}"
+        y="${y}"
+        text-anchor="end"
+        font-size="25"
+        font-weight="1000"
+        fill="#27d9ff"
+      >${lrV14Esc(fmt(ch.subscribers))}</text>
+
+      <text
+        x="${x + 650}"
+        y="${y}"
+        text-anchor="end"
+        font-size="25"
+        font-weight="1000"
+        fill="#31f2cc"
+      >${lrV14Esc(fmt(ch.views24))}</text>
+
+      ${idx < 3 ? `<line x1="${x}" y1="${y + 24}" x2="${x + 662}" y2="${y + 24}" stroke="rgba(255,255,255,.09)" stroke-width="1"/>` : ''}
     </g>
   `;
 }
@@ -3218,9 +3266,9 @@ async function lrSafeRenderNetworkV14(channels) {
     <text x="424" y="388" font-size="35" font-weight="1000" fill="#ffffff">Каналы</text>
 
     <text x="528" y="428" font-size="18" font-weight="1000" fill="#a9c2ce">Канал</text>
-    <text x="880" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">ПДП</text>
-    <text x="1005" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
-    <line x1="470" y1="442" x2="1015" y2="442" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
+    <text x="990" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">ПДП</text>
+    <text x="1120" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
+    <line x1="470" y1="442" x2="1132" y2="442" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
 
     ${rows.join('')}
 
