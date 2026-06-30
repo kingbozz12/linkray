@@ -1152,6 +1152,43 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 
 app.use(express.json({ limit: '50mb' }));
 
+
+/* LR_GLOBAL_REQUEST_LOGGER_V2_START */
+app.use((req, res, next) => {
+  try {
+    const method = String(req?.method || '');
+    const url = String(req?.originalUrl || req?.url || '');
+    const shouldLog =
+      method !== 'GET' ||
+      url.includes('webhook') ||
+      url.includes('callback') ||
+      url.includes('bot') ||
+      url.includes('max');
+
+    if (shouldLog) {
+      let bodyText = '';
+      try {
+        bodyText = JSON.stringify(req?.body || {});
+      } catch {
+        bodyText = '[body stringify failed]';
+      }
+
+      console.log(
+        '[LR_HTTP_V2]',
+        method,
+        url,
+        'ctype=' + String(req?.headers?.['content-type'] || ''),
+        'ua=' + String(req?.headers?.['user-agent'] || '').slice(0, 120),
+        bodyText.slice(0, 8000)
+      );
+    }
+  } catch (e) {
+    console.log('[LR_HTTP_V2_ERROR]', e?.message || e);
+  }
+  next();
+});
+/* LR_GLOBAL_REQUEST_LOGGER_V2_END */
+
 // LR_FORCE_START_MENU_V7_START
 function __lrForceMainMenuTextV7() {
   return `━━━━━━━━━━━━━━
