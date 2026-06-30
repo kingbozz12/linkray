@@ -397,6 +397,19 @@ async function loadFromKnownChannels(link) {
 }
 
 async function resolveChannel(link, extraRaw = {}) {
+  /* LR_RESOLVE_SANITIZE_V14 */
+  link = lrV14NormalizeLink(link);
+  if (
+    extraRaw &&
+    typeof extraRaw === 'object' &&
+    (extraRaw.message || extraRaw.callback || extraRaw.update_id || extraRaw.recipient || extraRaw.body)
+  ) {
+    extraRaw = {};
+  }
+  /* /LR_RESOLVE_SANITIZE_V14 */
+
+
+
   await ensureTables();
 
   const channelKey = hash(link);
@@ -2472,23 +2485,6 @@ function lrMetricBoxNetV7(x, y, w, h, label, value, color = '#31f2cc') {
   `;
 }
 
-async function lrNetworkRowV7(ch, x, y, idx) {
-  const av = await lrSafeAvatarV3(ch, x, y - 23, 34, idx);
-  const title = lrSvgEscV3(lrSvgShortV3(ch.title || ch.link || 'MAX-канал', 28));
-  const subs = lrSvgEscV3(fmt(ch.subscribers));
-  const views = lrSvgEscV3(fmt(ch.views24));
-
-  return `
-    <g>
-      ${av}
-      <text x="${x + 46}" y="${y}" font-size="17" font-weight="1000" fill="#102033">${title}</text>
-      <text x="${x + 355}" y="${y}" text-anchor="middle" font-size="17" font-weight="1000" fill="#168eea">${subs}</text>
-      <text x="${x + 458}" y="${y}" text-anchor="middle" font-size="17" font-weight="1000" fill="#168eea">${views}</text>
-      <line x1="${x}" y1="${y + 13}" x2="${x + 486}" y2="${y + 13}" stroke="#e4eef4" stroke-width="1"/>
-    </g>
-  `;
-}
-
 async function lrSafeRenderNetworkV7(channels) {
   const totalSubs = channels.reduce((s, ch) => s + num(ch.subscribers), 0);
   const total24 = channels.reduce((s, ch) => s + num(ch.views24), 0);
@@ -2555,8 +2551,18 @@ async function lrSafeRenderNetworkV7(channels) {
 /* LR_NETWORK_15_CHANNELS_V7_END */
 
 
-/* LR_NETWORK_LINKRAY_CARD_V10_START */
-function lrNetEscV10(value) {
+
+
+
+
+
+
+
+
+
+
+/* LR_NETWORK_FIXED_V14_START */
+function lrV14Esc(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -2564,429 +2570,7 @@ function lrNetEscV10(value) {
     .replace(/"/g, '&quot;');
 }
 
-function lrNetShortV10(value, max = 32) {
-  const text = String(value || 'MAX-канал').replace(/\s+/g, ' ').trim();
-  return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
-}
-
-function lrNetMetricBoxV10(x, y, w, h, label, value, color = '#27d9ff') {
-  return `
-    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="28" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrNetShadowV10)"/>
-    <text x="${x + w / 2}" y="${y + 42}" text-anchor="middle" font-size="19" font-weight="1000" fill="#c9dce6">${lrNetEscV10(label)}</text>
-    <text x="${x + w / 2}" y="${y + 104}" text-anchor="middle" font-size="52" font-weight="1000" fill="${color}">${lrNetEscV10(value)}</text>
-  `;
-}
-
-function lrNetViewsBoxV10(x, y, total24, total48, total72) {
-  return `
-    <rect x="${x}" y="${y}" width="310" height="315" rx="28" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrNetShadowV10)"/>
-    <text x="${x + 32}" y="${y + 58}" font-size="30" font-weight="1000" fill="#ffffff">Просмотры</text>
-
-    <text x="${x + 38}" y="${y + 118}" font-size="34" font-weight="1000" fill="#ffffff">24ч:</text>
-    <text x="${x + 150}" y="${y + 118}" font-size="38" font-weight="1000" fill="#27d9ff">${fmt(total24)}</text>
-
-    <text x="${x + 38}" y="${y + 190}" font-size="34" font-weight="1000" fill="#ffffff">48ч:</text>
-    <text x="${x + 150}" y="${y + 190}" font-size="38" font-weight="1000" fill="#27d9ff">${fmt(total48)}</text>
-
-    <text x="${x + 38}" y="${y + 262}" font-size="34" font-weight="1000" fill="#ffffff">72ч:</text>
-    <text x="${x + 150}" y="${y + 262}" font-size="38" font-weight="1000" fill="#27d9ff">${fmt(total72)}</text>
-  `;
-}
-
-async function lrNetLogoV10(x, y, size = 72) {
-  if (typeof lrLogoV9 === 'function') {
-    return await lrLogoV9(x, y, size);
-  }
-  if (typeof lrBrandLogoImageV6 === 'function') {
-    return await lrBrandLogoImageV6(x, y, size);
-  }
-  return `
-    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#31f2cc"/>
-    <text x="${x + size / 2}" y="${y + size / 2 + 10}" text-anchor="middle" font-size="28" font-weight="1000" fill="#061625">LR</text>
-  `;
-}
-
-async function lrNetAvatarV10(ch, x, y, size = 34, idx = 0) {
-  if (typeof lrAvatarV9 === 'function') {
-    return await lrAvatarV9(ch, x, y, size);
-  }
-  if (typeof lrSafeAvatarV3 === 'function') {
-    return await lrSafeAvatarV3(ch, x, y, size, idx);
-  }
-
-  const letter = lrNetEscV10(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
-  return `
-    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#0b8cff"/>
-    <text x="${x + size / 2}" y="${y + size / 2 + 7}" text-anchor="middle" font-size="18" font-weight="1000" fill="#fff">${letter}</text>
-  `;
-}
-
-async function lrNetRowV10(ch, x, y, idx) {
-  const avatar = await lrNetAvatarV10(ch, x, y - 23, 34, idx);
-  const title = lrNetEscV10(lrNetShortV10(ch.title || ch.link || 'MAX-канал', 34));
-
-  return `
-    <g>
-      ${avatar}
-      <text x="${x + 48}" y="${y}" font-size="21" font-weight="1000" fill="#ffffff">${title}</text>
-      <text x="${x + 438}" y="${y}" text-anchor="end" font-size="22" font-weight="1000" fill="#27d9ff">${fmt(ch.subscribers)}</text>
-      <text x="${x + 565}" y="${y}" text-anchor="end" font-size="22" font-weight="1000" fill="#31f2cc">${fmt(ch.views24)}</text>
-      <line x1="${x}" y1="${y + 15}" x2="${x + 575}" y2="${y + 15}" stroke="rgba(255,255,255,.08)" stroke-width="1"/>
-    </g>
-  `;
-}
-
-function lrNetShellV10(inner) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
-    <defs>
-      <linearGradient id="lrNetBgV10" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#061625"/>
-        <stop offset="45%" stop-color="#082b3c"/>
-        <stop offset="100%" stop-color="#0db77b"/>
-      </linearGradient>
-      <radialGradient id="lrNetGlowV10" cx="88%" cy="4%" r="82%">
-        <stop offset="0%" stop-color="#72ffc8" stop-opacity=".34"/>
-        <stop offset="62%" stop-color="#31f2cc" stop-opacity=".10"/>
-        <stop offset="100%" stop-color="#31f2cc" stop-opacity="0"/>
-      </radialGradient>
-      <linearGradient id="lrNetCardV10" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="rgba(255,255,255,.16)"/>
-        <stop offset="100%" stop-color="rgba(255,255,255,.08)"/>
-      </linearGradient>
-      <filter id="lrNetShadowV10" x="-10%" y="-10%" width="120%" height="130%">
-        <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#00111b" flood-opacity=".30"/>
-      </filter>
-      <style>
-        text { font-family: DejaVu Sans, Arial, sans-serif; }
-      </style>
-    </defs>
-
-    <rect width="1280" height="900" fill="url(#lrNetBgV10)"/>
-    <rect width="1280" height="900" fill="url(#lrNetGlowV10)"/>
-    <path d="M-80 170 C220 75 420 210 650 105 C890 -5 1060 135 1350 48" fill="none" stroke="rgba(255,255,255,.075)" stroke-width="3"/>
-    <path d="M-60 795 C260 650 505 770 740 650 C980 530 1100 650 1340 560" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
-    ${inner}
-  </svg>`;
-}
-
-async function lrSafeRenderNetworkV10(channels) {
-  const totalSubs = channels.reduce((s, ch) => s + num(ch.subscribers), 0);
-  const total24 = channels.reduce((s, ch) => s + num(ch.views24), 0);
-  const total48 = channels.reduce((s, ch) => s + num(ch.views48), 0);
-  const total72 = channels.reduce((s, ch) => s + num(ch.views72), 0);
-  const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
-
-  const sorted = channels
-    .slice()
-    .sort((a, b) => num(b.views24) - num(a.views24))
-    .slice(0, 15);
-
-  const logo = await lrNetLogoV10(1024, 36, 74);
-
-  const rowsHtml = [];
-  for (let i = 0; i < sorted.length; i++) {
-    rowsHtml.push(await lrNetRowV10(sorted[i], 590, 408 + i * 34, i));
-  }
-
-  const moreCount = Math.max(0, channels.length - 15);
-  const moreText = moreCount > 0
-    ? `<text x="1168" y="858" text-anchor="end" font-size="20" font-weight="1000" fill="#31f2cc">+ ещё ${moreCount} каналов</text>`
-    : '';
-
-  const inner = `
-    <text x="52" y="72" font-size="48" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
-    <text x="54" y="110" font-size="20" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по всей сетке каналов</text>
-
-    ${logo}
-    <text x="1116" y="82" font-size="34" font-weight="1000" fill="#d9fbf6">LinkRay</text>
-
-    ${lrNetMetricBoxV10(54, 154, 274, 138, 'ОБЩЕЕ КОЛ-ВО ПОДПИСЧИКОВ', compact(totalSubs), '#27d9ff')}
-    ${lrNetMetricBoxV10(352, 154, 274, 138, 'ПРОСМОТРОВ В СУТКИ', compact(total24), '#31f2cc')}
-    ${lrNetMetricBoxV10(650, 154, 274, 138, 'ОБЩИЙ ER', pct(er24), '#27d9ff')}
-    ${lrNetMetricBoxV10(948, 154, 274, 138, 'КАНАЛОВ В СЕТКЕ', String(channels.length), '#31f2cc')}
-
-    ${lrNetViewsBoxV10(54, 328, total24, total48, total72)}
-
-    <rect x="390" y="328" width="832" height="478" rx="28" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrNetShadowV10)"/>
-    <text x="424" y="382" font-size="31" font-weight="1000" fill="#ffffff">Каналы</text>
-    <text x="638" y="382" font-size="18" font-weight="1000" fill="#a9c2ce">Название</text>
-    <text x="1028" y="382" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">Подписчики</text>
-    <text x="1155" y="382" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
-    <line x1="590" y1="395" x2="1165" y2="395" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
-    ${rowsHtml.join('')}
-
-    <text x="54" y="846" font-size="25" font-weight="1000" fill="#ffffff">Актуально на ${lrNetEscV10(nowMskHuman())} МСК</text>
-    <text x="390" y="846" font-size="22" font-weight="900" fill="#cde9ef">↑ % — динамика роста после подключения бота к каналам</text>
-    ${moreText}
-  `;
-
-  return lrSafeSaveSvgPngV3(lrNetShellV10(inner), `lr-network-linkray-v10-${hash(channels.map((x) => x.key).join('-'))}`);
-}
-/* LR_NETWORK_LINKRAY_CARD_V10_END */
-
-
-
-
-/* LR_NETWORK_4_AND_MULTILINKS_V11_START */
-function lrV11Esc(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function lrV11Compact(value) {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n)) return '0';
-  const v = Math.round(n);
-  if (v >= 1000000) return (v / 1000000).toFixed(v >= 10000000 ? 0 : 1).replace('.', ',') + 'M';
-  if (v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 0 : 1).replace('.', ',') + 'k';
-  return String(v);
-}
-
-function lrV11Short(value, max = 31) {
-  const text = String(value || 'MAX-канал').replace(/\s+/g, ' ').trim();
-  return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
-}
-
-function lrV11UniqueLinks(links) {
-  const out = [];
-  const seen = new Set();
-
-  for (let link of Array.isArray(links) ? links : []) {
-    link = String(link || '')
-      .trim()
-      .replace(/[.,;!?]+$/g, '')
-      .replace(/^http:\/\//i, 'https://');
-
-    if (!/^https:\/\/(?:www\.)?max\.ru\//i.test(link)) continue;
-
-    const key = link
-      .replace(/^https:\/\/www\./i, 'https://')
-      .replace(/\/+$/g, '');
-
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(key);
-  }
-
-  return out;
-}
-
-function lrV11DeepLinks(update, text = '') {
-  const found = [];
-
-  function collectString(value) {
-    const str = String(value || '');
-    const matches = str.match(/https?:\/\/(?:www\.)?max\.ru\/[^\s<>"')\]}]+/gi) || [];
-    for (const m of matches) found.push(m);
-  }
-
-  function walk(node, depth = 0) {
-    if (depth > 9 || node === null || node === undefined) return;
-
-    if (typeof node === 'string' || typeof node === 'number') {
-      collectString(node);
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) walk(item, depth + 1);
-      return;
-    }
-
-    if (typeof node === 'object') {
-      for (const value of Object.values(node)) walk(value, depth + 1);
-    }
-  }
-
-  collectString(text);
-  walk(update);
-
-  return lrV11UniqueLinks(found);
-}
-
-function lrV11MetricBox(x, y, w, label, value, color = '#27d9ff') {
-  return `
-    <rect x="${x}" y="${y}" width="${w}" height="126" rx="26" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.28)" stroke-width="2" filter="url(#lrV11Shadow)"/>
-    <text x="${x + w / 2}" y="${y + 39}" text-anchor="middle" font-size="18" font-weight="1000" fill="#cfe3ea">${lrV11Esc(label)}</text>
-    <text x="${x + w / 2}" y="${y + 94}" text-anchor="middle" font-size="48" font-weight="1000" fill="${color}">${lrV11Esc(value)}</text>
-  `;
-}
-
-function lrV11ViewsBox(x, y, total24, total48, total72) {
-  return `
-    <rect x="${x}" y="${y}" width="310" height="300" rx="28" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.28)" stroke-width="2" filter="url(#lrV11Shadow)"/>
-    <text x="${x + 34}" y="${y + 58}" font-size="33" font-weight="1000" fill="#ffffff">Просмотры</text>
-
-    <text x="${x + 38}" y="${y + 122}" font-size="37" font-weight="1000" fill="#ffffff">24ч:</text>
-    <text x="${x + 158}" y="${y + 122}" font-size="39" font-weight="1000" fill="#27d9ff">${lrV11Esc(fmt(total24))}</text>
-
-    <text x="${x + 38}" y="${y + 194}" font-size="37" font-weight="1000" fill="#ffffff">48ч:</text>
-    <text x="${x + 158}" y="${y + 194}" font-size="39" font-weight="1000" fill="#27d9ff">${lrV11Esc(fmt(total48))}</text>
-
-    <text x="${x + 38}" y="${y + 266}" font-size="37" font-weight="1000" fill="#ffffff">72ч:</text>
-    <text x="${x + 158}" y="${y + 266}" font-size="39" font-weight="1000" fill="#27d9ff">${lrV11Esc(fmt(total72))}</text>
-  `;
-}
-
-async function lrV11Logo(x, y, size = 72) {
-  if (typeof lrLogoV9 === 'function') return await lrLogoV9(x, y, size);
-  if (typeof lrBrandLogoImageV6 === 'function') return await lrBrandLogoImageV6(x, y, size);
-
-  return `
-    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#31f2cc"/>
-    <text x="${x + size / 2}" y="${y + size / 2 + 10}" text-anchor="middle" font-size="28" font-weight="1000" fill="#061625">LR</text>
-  `;
-}
-
-async function lrV11Avatar(ch, x, y, size = 40, idx = 0) {
-  if (typeof lrAvatarV9 === 'function') return await lrAvatarV9(ch, x, y, size);
-  if (typeof lrSafeAvatarV3 === 'function') return await lrSafeAvatarV3(ch, x, y, size, idx);
-
-  const letter = lrV11Esc(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
-
-  return `
-    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#0b8cff"/>
-    <text x="${x + size / 2}" y="${y + size / 2 + 8}" text-anchor="middle" font-size="20" font-weight="1000" fill="#fff">${letter}</text>
-  `;
-}
-
-async function lrV11ChannelRow(ch, x, y, idx) {
-  const avatar = await lrV11Avatar(ch, x, y - 29, 42, idx);
-  const title = lrV11Esc(lrV11Short(ch.title || ch.link || 'MAX-канал', 33));
-
-  return `
-    <g>
-      ${avatar}
-      <text x="${x + 58}" y="${y}" font-size="24" font-weight="1000" fill="#ffffff">${title}</text>
-      <text x="${x + 500}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#27d9ff">${lrV11Esc(fmt(ch.subscribers))}</text>
-      <text x="${x + 628}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#31f2cc">${lrV11Esc(fmt(ch.views24))}</text>
-      ${idx < 3 ? `<line x1="${x}" y1="${y + 20}" x2="${x + 638}" y2="${y + 20}" stroke="rgba(255,255,255,.09)" stroke-width="1"/>` : ''}
-    </g>
-  `;
-}
-
-function lrV11Shell(inner) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
-    <defs>
-      <linearGradient id="lrV11Bg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#061625"/>
-        <stop offset="48%" stop-color="#082b3c"/>
-        <stop offset="100%" stop-color="#0db77b"/>
-      </linearGradient>
-      <radialGradient id="lrV11Glow" cx="88%" cy="5%" r="82%">
-        <stop offset="0%" stop-color="#72ffc8" stop-opacity=".34"/>
-        <stop offset="62%" stop-color="#31f2cc" stop-opacity=".10"/>
-        <stop offset="100%" stop-color="#31f2cc" stop-opacity="0"/>
-      </radialGradient>
-      <filter id="lrV11Shadow" x="-10%" y="-10%" width="120%" height="130%">
-        <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#00111b" flood-opacity=".30"/>
-      </filter>
-      <style>
-        text { font-family: DejaVu Sans, Arial, sans-serif; }
-      </style>
-    </defs>
-
-    <rect width="1280" height="900" fill="url(#lrV11Bg)"/>
-    <rect width="1280" height="900" fill="url(#lrV11Glow)"/>
-    <path d="M-80 168 C220 76 420 210 650 106 C890 -4 1060 136 1350 50" fill="none" stroke="rgba(255,255,255,.075)" stroke-width="3"/>
-    <path d="M-60 792 C260 650 505 770 740 650 C980 530 1100 650 1340 560" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
-    ${inner}
-  </svg>`;
-}
-
-async function lrSafeRenderNetworkV11(channels) {
-  const uniqueMap = new Map();
-
-  for (const ch of Array.isArray(channels) ? channels : []) {
-    const key = String(ch?.key || ch?.link || ch?.title || '').trim();
-    if (!key) continue;
-    if (!uniqueMap.has(key)) uniqueMap.set(key, ch);
-  }
-
-  const all = [...uniqueMap.values()];
-
-  const totalSubs = all.reduce((s, ch) => s + num(ch.subscribers), 0);
-  const total24 = all.reduce((s, ch) => s + num(ch.views24), 0);
-  const total48 = all.reduce((s, ch) => s + num(ch.views48), 0);
-  const total72 = all.reduce((s, ch) => s + num(ch.views72), 0);
-  const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
-
-  const visible = all
-    .slice()
-    .sort((a, b) => num(b.views24) - num(a.views24))
-    .slice(0, 4);
-
-  const logo = await lrV11Logo(1018, 34, 74);
-
-  const rowsHtml = [];
-  for (let i = 0; i < visible.length; i++) {
-    rowsHtml.push(await lrV11ChannelRow(visible[i], 514, 430 + i * 72, i));
-  }
-
-  const hiddenCount = Math.max(0, all.length - visible.length);
-  const hiddenText = hiddenCount > 0
-    ? `<text x="514" y="754" font-size="21" font-weight="1000" fill="#31f2cc">Показано 4 из ${all.length}; суммы рассчитаны по всем каналам</text>`
-    : `<text x="514" y="754" font-size="21" font-weight="1000" fill="#31f2cc">Суммы рассчитаны по всем каналам</text>`;
-
-  const inner = `
-    <text x="54" y="74" font-size="49" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
-    <text x="56" y="112" font-size="21" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по всей сетке каналов</text>
-
-    ${logo}
-    <text x="1114" y="83" font-size="34" font-weight="1000" fill="#d9fbf6">LinkRay</text>
-
-    ${lrV11MetricBox(54, 156, 274, 'Подписчики', lrV11Compact(totalSubs), '#27d9ff')}
-    ${lrV11MetricBox(352, 156, 274, 'Просмотры 24ч', lrV11Compact(total24), '#31f2cc')}
-    ${lrV11MetricBox(650, 156, 274, 'Общий ER', pct(er24), '#27d9ff')}
-    ${lrV11MetricBox(948, 156, 274, 'Каналов', String(all.length), '#31f2cc')}
-
-    ${lrV11ViewsBox(54, 330, total24, total48, total72)}
-
-    <rect x="390" y="330" width="832" height="430" rx="28" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.28)" stroke-width="2" filter="url(#lrV11Shadow)"/>
-    <text x="424" y="388" font-size="35" font-weight="1000" fill="#ffffff">Топ каналов</text>
-    <text x="572" y="388" font-size="18" font-weight="1000" fill="#a9c2ce">Название</text>
-    <text x="1014" y="388" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">Подписчики</text>
-    <text x="1142" y="388" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
-    <line x1="514" y1="402" x2="1148" y2="402" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
-    ${rowsHtml.join('')}
-    ${hiddenText}
-
-    <text x="54" y="838" font-size="25" font-weight="1000" fill="#ffffff">Актуально на ${lrV11Esc(nowMskHuman())} МСК</text>
-    <text x="1218" y="838" text-anchor="end" font-size="22" font-weight="900" fill="#cde9ef">LinkRay — аналитика каналов MAX</text>
-  `;
-
-  return lrSafeSaveSvgPngV3(lrV11Shell(inner), `lr-network-v11-${hash(all.map((x) => x.key || x.link).join('-'))}`);
-}
-/* LR_NETWORK_4_AND_MULTILINKS_V11_END */
-
-
-/* LR_NETWORK_CLEAN_V12_START */
-function lrV12Esc(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function lrV12Short(value, max = 24) {
-  const text = String(value || 'MAX-канал').replace(/\s+/g, ' ').trim();
-  return text.length > max ? text.slice(0, max).trim() + '…' : text;
-}
-
-function lrV12Compact(value) {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n)) return '0';
-  const v = Math.round(n);
-  if (v >= 1000000) return (v / 1000000).toFixed(v >= 10000000 ? 0 : 1).replace('.', ',') + 'M';
-  if (v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 0 : 1).replace('.', ',') + 'k';
-  return String(v);
-}
-
-function lrV12NormalizeLink(link) {
+function lrV14NormalizeLink(link) {
   return String(link || '')
     .trim()
     .replace(/[.,;!?]+$/g, '')
@@ -2995,12 +2579,12 @@ function lrV12NormalizeLink(link) {
     .replace(/\/+$/g, '');
 }
 
-function lrV12UniqueLinks(list) {
+function lrV14UniqueLinks(list) {
   const out = [];
   const seen = new Set();
 
   for (const raw of Array.isArray(list) ? list : []) {
-    const link = lrV12NormalizeLink(raw);
+    const link = lrV14NormalizeLink(raw);
     if (!/^https:\/\/max\.ru\//i.test(link)) continue;
     if (seen.has(link)) continue;
     seen.add(link);
@@ -3010,20 +2594,31 @@ function lrV12UniqueLinks(list) {
   return out;
 }
 
-function lrV12ExtractLinksFromAny(update, text = '') {
-  const found = [];
+function lrV14LinksFromText(text) {
+  const matches = String(text || '').match(/https?:\/\/(?:www\.)?max\.ru\/[^\s<>"')\]}]+/gi) || [];
+  return lrV14UniqueLinks(matches);
+}
 
-  function collect(value) {
-    const str = String(value || '');
-    const matches = str.match(/https?:\/\/(?:www\.)?max\.ru\/[^\s<>"')\]}]+/gi) || [];
-    for (const m of matches) found.push(m);
-  }
+function lrV14DirectText(update, text = '') {
+  return [
+    text,
+    update?.message?.body?.text,
+    update?.message?.text,
+    update?.body?.text,
+    update?.text,
+    update?.message?.caption,
+    update?.caption,
+  ].filter(Boolean).map(String).join('\n');
+}
+
+function lrV14LinksDeep(update) {
+  const found = [];
 
   function walk(node, depth = 0) {
     if (depth > 8 || node === null || node === undefined) return;
 
     if (typeof node === 'string' || typeof node === 'number') {
-      collect(node);
+      found.push(...lrV14LinksFromText(String(node)));
       return;
     }
 
@@ -3037,44 +2632,59 @@ function lrV12ExtractLinksFromAny(update, text = '') {
     }
   }
 
-  collect(text);
   walk(update);
-
-  return lrV12UniqueLinks(found);
+  return lrV14UniqueLinks(found);
 }
 
-function lrV12ForceLinks(update, links) {
-  const fromText = lrV12ExtractLinksFromAny(update, typeof getText === 'function' ? getText(update) : '');
-  const fromArg = lrV12UniqueLinks(links);
-  const merged = lrV12UniqueLinks([...fromText, ...fromArg]);
-  return merged.length ? merged : fromArg;
+function lrV14ForceLinks(update, links) {
+  const direct = lrV14LinksFromText(lrV14DirectText(update, typeof getText === 'function' ? getText(update) : ''));
+  const deep = lrV14LinksDeep(update);
+  const arg = lrV14UniqueLinks(links);
+
+  if (direct.length >= 2) return direct;
+  return lrV14UniqueLinks([...direct, ...arg, ...deep]);
 }
 
-function lrV12Metric(x, y, w, label, value, color = '#27d9ff') {
+function lrV14Short(value, max = 22) {
+  const text = String(value || 'MAX-канал').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return text.slice(0, max).trim() + '…';
+}
+
+function lrV14Compact(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return '0';
+  const v = Math.round(n);
+  if (v >= 1000000) return (v / 1000000).toFixed(v >= 10000000 ? 0 : 1).replace('.', ',') + 'M';
+  if (v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 0 : 1).replace('.', ',') + 'k';
+  return String(v);
+}
+
+function lrV14Metric(x, y, w, label, value, color = '#27d9ff') {
   return `
-    <rect x="${x}" y="${y}" width="${w}" height="118" rx="24" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrV12Shadow)"/>
-    <text x="${x + w / 2}" y="${y + 36}" text-anchor="middle" font-size="20" font-weight="1000" fill="#d6edf2">${lrV12Esc(label)}</text>
-    <text x="${x + w / 2}" y="${y + 88}" text-anchor="middle" font-size="48" font-weight="1000" fill="${color}">${lrV12Esc(value)}</text>
+    <rect x="${x}" y="${y}" width="${w}" height="118" rx="24" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrV14Shadow)"/>
+    <text x="${x + w / 2}" y="${y + 36}" text-anchor="middle" font-size="20" font-weight="1000" fill="#d6edf2">${lrV14Esc(label)}</text>
+    <text x="${x + w / 2}" y="${y + 88}" text-anchor="middle" font-size="48" font-weight="1000" fill="${color}">${lrV14Esc(value)}</text>
   `;
 }
 
-function lrV12ViewsBox(x, y, total24, total48, total72) {
+function lrV14Views(x, y, total24, total48, total72) {
   return `
-    <rect x="${x}" y="${y}" width="300" height="300" rx="28" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrV12Shadow)"/>
+    <rect x="${x}" y="${y}" width="300" height="300" rx="28" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrV14Shadow)"/>
     <text x="${x + 34}" y="${y + 58}" font-size="33" font-weight="1000" fill="#ffffff">Просмотры</text>
 
     <text x="${x + 38}" y="${y + 126}" font-size="38" font-weight="1000" fill="#ffffff">24ч:</text>
-    <text x="${x + 158}" y="${y + 126}" font-size="40" font-weight="1000" fill="#27d9ff">${lrV12Esc(fmt(total24))}</text>
+    <text x="${x + 158}" y="${y + 126}" font-size="40" font-weight="1000" fill="#27d9ff">${lrV14Esc(fmt(total24))}</text>
 
     <text x="${x + 38}" y="${y + 198}" font-size="38" font-weight="1000" fill="#ffffff">48ч:</text>
-    <text x="${x + 158}" y="${y + 198}" font-size="40" font-weight="1000" fill="#27d9ff">${lrV12Esc(fmt(total48))}</text>
+    <text x="${x + 158}" y="${y + 198}" font-size="40" font-weight="1000" fill="#27d9ff">${lrV14Esc(fmt(total48))}</text>
 
     <text x="${x + 38}" y="${y + 270}" font-size="38" font-weight="1000" fill="#ffffff">72ч:</text>
-    <text x="${x + 158}" y="${y + 270}" font-size="40" font-weight="1000" fill="#27d9ff">${lrV12Esc(fmt(total72))}</text>
+    <text x="${x + 158}" y="${y + 270}" font-size="40" font-weight="1000" fill="#27d9ff">${lrV14Esc(fmt(total72))}</text>
   `;
 }
 
-async function lrV12Logo(x, y, size = 72) {
+async function lrV14Logo(x, y, size = 74) {
   if (typeof lrLogoV9 === 'function') return await lrLogoV9(x, y, size);
   if (typeof lrBrandLogoImageV6 === 'function') return await lrBrandLogoImageV6(x, y, size);
 
@@ -3084,46 +2694,54 @@ async function lrV12Logo(x, y, size = 72) {
   `;
 }
 
-async function lrV12Avatar(ch, x, y, size = 44, idx = 0) {
+async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
   if (typeof lrAvatarV9 === 'function') return await lrAvatarV9(ch, x, y, size);
   if (typeof lrSafeAvatarV3 === 'function') return await lrSafeAvatarV3(ch, x, y, size, idx);
 
-  const letter = lrV12Esc(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+  const letter = lrV14Esc(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+
   return `
     <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#0b8cff"/>
     <text x="${x + size / 2}" y="${y + size / 2 + 8}" text-anchor="middle" font-size="20" font-weight="1000" fill="#fff">${letter}</text>
   `;
 }
 
-async function lrV12Row(ch, x, y, idx) {
-  const avatar = await lrV12Avatar(ch, x, y - 30, 44, idx);
-  const title = lrV12Esc(lrV12Short(ch.title || ch.link || `Канал ${idx + 1}`, 27));
+function lrV14Slug(link, idx) {
+  const s = lrV14NormalizeLink(link).replace(/^https:\/\/max\.ru\//i, '');
+  if (!s) return `Канал ${idx + 1}`;
+  return lrV14Short(s, 22);
+}
+
+async function lrV14Row(ch, x, y, idx) {
+  const avatar = await lrV14Avatar(ch, x, y - 31, 42, idx);
+  const titleRaw = ch._lrTitle || ch.title || lrV14Slug(ch.link || ch.key, idx);
+  const title = lrV14Esc(lrV14Short(titleRaw, 22));
 
   return `
     <g>
       ${avatar}
-      <text x="${x + 60}" y="${y}" font-size="25" font-weight="1000" fill="#ffffff">${title}</text>
-      <text x="${x + 500}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#27d9ff">${lrV12Esc(fmt(ch.subscribers))}</text>
-      <text x="${x + 630}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#31f2cc">${lrV12Esc(fmt(ch.views24))}</text>
-      ${idx < 3 ? `<line x1="${x}" y1="${y + 22}" x2="${x + 640}" y2="${y + 22}" stroke="rgba(255,255,255,.09)" stroke-width="1"/>` : ''}
+      <text x="${x + 58}" y="${y}" font-size="24" font-weight="1000" fill="#ffffff">${title}</text>
+      <text x="${x + 456}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#27d9ff">${lrV14Esc(fmt(ch.subscribers))}</text>
+      <text x="${x + 584}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#31f2cc">${lrV14Esc(fmt(ch.views24))}</text>
+      ${idx < 3 ? `<line x1="${x}" y1="${y + 24}" x2="${x + 592}" y2="${y + 24}" stroke="rgba(255,255,255,.09)" stroke-width="1"/>` : ''}
     </g>
   `;
 }
 
-function lrV12Shell(inner) {
+function lrV14Shell(inner) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
     <defs>
-      <linearGradient id="lrV12Bg" x1="0" y1="0" x2="1" y2="1">
+      <linearGradient id="lrV14Bg" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0%" stop-color="#061625"/>
         <stop offset="48%" stop-color="#082b3c"/>
         <stop offset="100%" stop-color="#0db77b"/>
       </linearGradient>
-      <radialGradient id="lrV12Glow" cx="88%" cy="5%" r="82%">
+      <radialGradient id="lrV14Glow" cx="88%" cy="5%" r="82%">
         <stop offset="0%" stop-color="#72ffc8" stop-opacity=".34"/>
         <stop offset="62%" stop-color="#31f2cc" stop-opacity=".10"/>
         <stop offset="100%" stop-color="#31f2cc" stop-opacity="0"/>
       </radialGradient>
-      <filter id="lrV12Shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <filter id="lrV14Shadow" x="-10%" y="-10%" width="120%" height="130%">
         <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#00111b" flood-opacity=".30"/>
       </filter>
       <style>
@@ -3131,26 +2749,38 @@ function lrV12Shell(inner) {
       </style>
     </defs>
 
-    <rect width="1280" height="900" fill="url(#lrV12Bg)"/>
-    <rect width="1280" height="900" fill="url(#lrV12Glow)"/>
+    <rect width="1280" height="900" fill="url(#lrV14Bg)"/>
+    <rect width="1280" height="900" fill="url(#lrV14Glow)"/>
     <path d="M-80 168 C220 76 420 210 650 106 C890 -4 1060 136 1350 50" fill="none" stroke="rgba(255,255,255,.075)" stroke-width="3"/>
     <path d="M-60 792 C260 650 505 770 740 650 C980 530 1100 650 1340 560" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
     ${inner}
   </svg>`;
 }
 
-async function lrSafeRenderNetworkV12(channels) {
-  const unique = [];
+async function lrSafeRenderNetworkV14(channels) {
+  const all = [];
   const seen = new Set();
 
   for (const ch of Array.isArray(channels) ? channels : []) {
-    const key = lrV12NormalizeLink(ch?.link || ch?.key || ch?.title || '');
+    const key = lrV14NormalizeLink(ch?.link || ch?.key || ch?.title || '');
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    unique.push(ch);
+    all.push(ch);
   }
 
-  const all = unique.length ? unique : (Array.isArray(channels) ? channels : []);
+  const titleCounts = new Map();
+  for (const ch of all) {
+    const t = String(ch.title || '').trim();
+    if (!t) continue;
+    titleCounts.set(t, (titleCounts.get(t) || 0) + 1);
+  }
+
+  for (let i = 0; i < all.length; i++) {
+    const t = String(all[i].title || '').trim();
+    if (!t || titleCounts.get(t) > 1) {
+      all[i]._lrTitle = lrV14Slug(all[i].link || all[i].key, i);
+    }
+  }
 
   const totalSubs = all.reduce((sum, ch) => sum + num(ch.subscribers), 0);
   const total24 = all.reduce((sum, ch) => sum + num(ch.views24), 0);
@@ -3158,19 +2788,15 @@ async function lrSafeRenderNetworkV12(channels) {
   const total72 = all.reduce((sum, ch) => sum + num(ch.views72), 0);
   const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
 
-  const visible = all
-    .slice()
-    .sort((a, b) => num(b.views24) - num(a.views24))
-    .slice(0, 4);
-
-  const logo = await lrV12Logo(1018, 34, 74);
+  const visible = all.slice().sort((a, b) => num(b.views24) - num(a.views24)).slice(0, 4);
+  const logo = await lrV14Logo(1018, 34, 74);
 
   const rows = [];
   for (let i = 0; i < visible.length; i++) {
-    rows.push(await lrV12Row(visible[i], 480, 432 + i * 74, i));
+    rows.push(await lrV14Row(visible[i], 470, 470 + i * 74, i));
   }
 
-  const hiddenText = all.length > 4
+  const note = all.length > 4
     ? `Показано 4 из ${all.length}. Суммы рассчитаны по всем каналам.`
     : `Суммы рассчитаны по всем каналам.`;
 
@@ -3181,32 +2807,32 @@ async function lrSafeRenderNetworkV12(channels) {
     ${logo}
     <text x="1114" y="83" font-size="34" font-weight="1000" fill="#d9fbf6">LinkRay</text>
 
-    ${lrV12Metric(54, 156, 274, 'Подписчики', lrV12Compact(totalSubs), '#27d9ff')}
-    ${lrV12Metric(352, 156, 274, 'Просмотры 24ч', lrV12Compact(total24), '#31f2cc')}
-    ${lrV12Metric(650, 156, 274, 'Общий ER', pct(er24), '#27d9ff')}
-    ${lrV12Metric(948, 156, 274, 'Каналов', String(all.length), '#31f2cc')}
+    ${lrV14Metric(54, 156, 274, 'Подписчики', lrV14Compact(totalSubs), '#27d9ff')}
+    ${lrV14Metric(352, 156, 274, 'Просмотры 24ч', lrV14Compact(total24), '#31f2cc')}
+    ${lrV14Metric(650, 156, 274, 'Общий ER', pct(er24), '#27d9ff')}
+    ${lrV14Metric(948, 156, 274, 'Каналов', String(all.length), '#31f2cc')}
 
-    ${lrV12ViewsBox(54, 330, total24, total48, total72)}
+    ${lrV14Views(54, 330, total24, total48, total72)}
 
-    <rect x="390" y="330" width="832" height="430" rx="28" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.28)" stroke-width="2" filter="url(#lrV12Shadow)"/>
+    <rect x="390" y="330" width="832" height="430" rx="28" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.28)" stroke-width="2" filter="url(#lrV14Shadow)"/>
     <text x="424" y="388" font-size="35" font-weight="1000" fill="#ffffff">Каналы</text>
 
-    <text x="540" y="388" font-size="18" font-weight="1000" fill="#a9c2ce">Название</text>
-    <text x="980" y="388" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">Подписчики</text>
-    <text x="1110" y="388" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
-    <line x1="480" y1="402" x2="1118" y2="402" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
+    <text x="528" y="428" font-size="18" font-weight="1000" fill="#a9c2ce">Название</text>
+    <text x="926" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">ПДП</text>
+    <text x="1054" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
+    <line x1="470" y1="442" x2="1062" y2="442" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
 
     ${rows.join('')}
 
-    <text x="480" y="735" font-size="21" font-weight="1000" fill="#31f2cc">${lrV12Esc(hiddenText)}</text>
+    <text x="470" y="735" font-size="21" font-weight="1000" fill="#31f2cc">${lrV14Esc(note)}</text>
 
-    <text x="54" y="838" font-size="25" font-weight="1000" fill="#ffffff">Актуально на ${lrV12Esc(nowMskHuman())} МСК</text>
+    <text x="54" y="838" font-size="25" font-weight="1000" fill="#ffffff">Актуально на ${lrV14Esc(nowMskHuman())} МСК</text>
     <text x="1218" y="838" text-anchor="end" font-size="22" font-weight="900" fill="#cde9ef">LinkRay — аналитика каналов MAX</text>
   `;
 
-  return lrSafeSaveSvgPngV3(lrV12Shell(inner), `lr-network-v12-${Date.now()}-${hash(all.map((x) => x.link || x.key || x.title).join('-'))}`);
+  return lrSafeSaveSvgPngV3(lrV14Shell(inner), `lr-network-v14-${Date.now()}-${hash(all.map((x) => x.link || x.key || x.title).join('-'))}`);
 }
-/* LR_NETWORK_CLEAN_V12_END */
+/* LR_NETWORK_FIXED_V14_END */
 
 async function renderNetworkSvg(channels) {
   const totalSubs = channels.reduce((sum, ch) => sum + ch.subscribers, 0);
@@ -3395,7 +3021,7 @@ async function renderSingle(ch) {
 }
 
 async function renderNetwork(channels) {
-  return lrSafeRenderNetworkV12(channels);
+  return lrSafeRenderNetworkV14(channels);
 }
 
 async function renderPng(html, name) {
@@ -3889,8 +3515,8 @@ async function handleAnalyticsMenu(update) {
   // ссылки забирает аналитика и не отдаёт их в старый сценарий создания поста.
   if (links.length && (settings.mode === 'await_links' || lrOnlyMaxLinksText(text, links))) {
     await setAnalyticsModeForKeys(keys, '');
-    console.log('[LR_LINKS_V11]', lrV11UniqueLinks(links).join(' | '));
-      await handleLinks(chatId, lrV11UniqueLinks(links), update);
+    console.log('[LR_LINKS_V14]', lrV13UniqueLinks(links).join(' | '));
+      await handleLinks(chatId, lrV13UniqueLinks(links), update);
     return true;
   }
 
@@ -3926,7 +3552,7 @@ export async function handleLinkRayChannelAnalyticsIncoming(update) {
     try {
       const chatId = getChatId(update);
       const text = getText(update);
-      const links = lrV12ExtractLinksFromAny(update, text);
+      const links = lrV14ForceLinks(update, lrV14LinksFromText(text));
       const payload = typeof lrPayloadDeep === 'function' ? lrPayloadDeep(update) : getPayload(update);
 
       if (chatId && (links.length || String(payload || '').startsWith('lrchan') || payload === 'main:analytics')) {
@@ -3996,13 +3622,13 @@ export function mountLinkRayChannelAnalytics(app) {
       }
 
       const text = getText(update);
-      const links = lrV12ExtractLinksFromAny(update, text);
+      const links = lrV14ForceLinks(update, lrV14LinksFromText(text));
 
       if (!links.length) return next();
       if (!isOnlyAnalyticsLinks(text, links)) return next();
 
-      console.log('[LR_LINKS_V11]', lrV11UniqueLinks(links).join(' | '));
-      await handleLinks(chatId, lrV11UniqueLinks(links), update);
+      console.log('[LR_LINKS_V14]', lrV13UniqueLinks(links).join(' | '));
+      await handleLinks(chatId, lrV13UniqueLinks(links), update);
 
       return res.json({ ok: true });
     } catch (error) {
