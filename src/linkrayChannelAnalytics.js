@@ -3249,7 +3249,74 @@ async function lrV14Logo(x, y, size = 74) {
   `;
 }
 
+
+/* LR_MULTI_AVATAR_CACHE_V26_START */
+const lrV26AvatarMemo = new Map();
+
+function lrV26NormLink(value) {
+  return String(value || '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+
+function lrV26GoodAvatarUrl(value) {
+  const s = String(value || '').trim();
+  return /^https?:\/\//i.test(s) && !s.includes('/s/img/og-logo.png');
+}
+
+async function lrV26GetCachedAvatar(link) {
+  const key = lrV26NormLink(link);
+  if (!key) return '';
+
+  if (lrV26AvatarMemo.has(key)) return lrV26AvatarMemo.get(key);
+
+  try {
+    const db = await import('./db.js');
+    const result = await db.query(
+      `SELECT avatar_url
+         FROM public.lr_channel_avatar_cache
+        WHERE link_norm=$1 OR link=$2
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [key, String(link || '').trim()]
+    );
+
+    const rows = Array.isArray(result) ? result : (result?.rows || []);
+    const avatar = String(rows?.[0]?.avatar_url || '').trim();
+
+    if (lrV26GoodAvatarUrl(avatar)) {
+      lrV26AvatarMemo.set(key, avatar);
+      return avatar;
+    }
+  } catch {}
+
+  lrV26AvatarMemo.set(key, '');
+  return '';
+}
+/* LR_MULTI_AVATAR_CACHE_V26_END */
+
 async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
+  /* LR_MULTI_AVATAR_LOOKUP_V26_START */
+  try {
+    const linkForAvatar =
+      ch?.link ||
+      ch?.url ||
+      ch?.key ||
+      ch?.channel_link ||
+      ch?.public_link ||
+      ch?.source_link ||
+      '';
+
+    const cachedAvatar = await lrV26GetCachedAvatar(linkForAvatar);
+
+    if (cachedAvatar) {
+      ch.avatar_url = cachedAvatar;
+      ch.avatarUrl = cachedAvatar;
+      ch.photo_url = cachedAvatar;
+      ch.image_url = cachedAvatar;
+      ch.avatar = cachedAvatar;
+    }
+  } catch {}
+  /* LR_MULTI_AVATAR_LOOKUP_V26_END */
+
   const url = lrV19AvatarUrl(ch);
 
   if (url && /^https?:\/\//i.test(url)) {
