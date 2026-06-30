@@ -3324,20 +3324,100 @@ async function lrV27GetCachedAvatar(ch) {
 }
 /* LR_MULTI_AVATAR_CACHE_V27_END */
 
-async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
-  /* LR_MULTI_AVATAR_LOOKUP_V27_START */
-  try {
-    const cachedAvatar = await lrV27GetCachedAvatar(ch);
 
-    if (cachedAvatar) {
-      ch.avatar_url = cachedAvatar;
-      ch.avatarUrl = cachedAvatar;
-      ch.photo_url = cachedAvatar;
-      ch.image_url = cachedAvatar;
-      ch.avatar = cachedAvatar;
+/* LR_AVATAR_CACHE_PARAM_V29_START */
+const lrV29AvatarMemo = new Map();
+
+function lrV29NormLink(value) {
+  return String(value || '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+
+function lrV29NormTitle(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[«»"']/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lrV29GoodAvatar(value) {
+  const s = String(value || '').trim();
+  return /^https?:\/\//i.test(s) && !s.includes('/s/img/og-logo.png');
+}
+
+async function lrV29FindAvatarForChannel(channel) {
+  if (!channel || typeof channel !== 'object') return '';
+
+  for (const key of ['avatar_url', 'avatarUrl', 'photo_url', 'image_url', 'picture_url', 'avatar', 'photo', 'image']) {
+    const direct = String(channel[key] || '').trim();
+    if (lrV29GoodAvatar(direct)) return direct;
+  }
+
+  const link = lrV29NormLink(
+    channel.link ||
+    channel.url ||
+    channel.key ||
+    channel.channel_link ||
+    channel.public_link ||
+    channel.source_link ||
+    ''
+  );
+
+  const title = lrV29NormTitle(
+    channel.title ||
+    channel._lrTitle ||
+    channel.name ||
+    channel.channel_title ||
+    channel.channel_name ||
+    ''
+  );
+
+  const memoKey = `${link}|${title}`;
+  if (!link && !title) return '';
+  if (lrV29AvatarMemo.has(memoKey)) return lrV29AvatarMemo.get(memoKey);
+
+  try {
+    const db = await import('./db.js');
+
+    const result = await db.query(
+      `SELECT avatar_url
+         FROM public.lr_channel_avatar_cache
+        WHERE ($1 <> '' AND link_norm=$1)
+           OR ($2 <> '' AND title_norm=$2)
+           OR ($3 <> '' AND link=$3)
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [link, title, link]
+    );
+
+    const rows = Array.isArray(result) ? result : (result?.rows || []);
+    const avatar = String(rows?.[0]?.avatar_url || '').trim();
+
+    if (lrV29GoodAvatar(avatar)) {
+      lrV29AvatarMemo.set(memoKey, avatar);
+      return avatar;
     }
   } catch {}
-  /* LR_MULTI_AVATAR_LOOKUP_V27_END */
+
+  lrV29AvatarMemo.set(memoKey, '');
+  return '';
+}
+/* LR_AVATAR_CACHE_PARAM_V29_END */
+
+async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
+  /* LR_AVATAR_LOOKUP_PARAM_V29_START */
+  try {
+    const lrV29Avatar = await lrV29FindAvatarForChannel(ch);
+    if (lrV29Avatar && ch && typeof ch === 'object') {
+      ch.avatar_url = lrV29Avatar;
+      ch.avatarUrl = lrV29Avatar;
+      ch.photo_url = lrV29Avatar;
+      ch.image_url = lrV29Avatar;
+      ch.avatar = lrV29Avatar;
+    }
+  } catch {}
+  /* LR_AVATAR_LOOKUP_PARAM_V29_END */
+
 
 
   const url = lrV19AvatarUrl(ch);
