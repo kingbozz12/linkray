@@ -2645,7 +2645,7 @@ function lrV14ForceLinks(update, links) {
   return lrV14UniqueLinks([...direct, ...arg, ...deep]);
 }
 
-function lrV14Short(value, max = 22) {
+function lrV14Short(value, max = 20) {
   const text = String(value || 'MAX-канал').replace(/\s+/g, ' ').trim();
   if (text.length <= max) return text;
   return text.slice(0, max).trim() + '…';
@@ -2707,23 +2707,23 @@ async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
 }
 
 function lrV14Slug(link, idx) {
-  const s = lrV14NormalizeLink(link).replace(/^https:\/\/max\.ru\//i, '');
-  if (!s) return `Канал ${idx + 1}`;
-  return lrV14Short(s, 22);
+  return `Канал ${idx + 1}`;
 }
 
 async function lrV14Row(ch, x, y, idx) {
   const avatar = await lrV14Avatar(ch, x, y - 31, 42, idx);
   const titleRaw = ch._lrTitle || ch.title || lrV14Slug(ch.link || ch.key, idx);
-  const title = lrV14Esc(lrV14Short(titleRaw, 22));
+  const isJoinSlug = /^join\//i.test(String(titleRaw || '').trim());
+  const cleanTitle = isJoinSlug ? `Канал ${idx + 1}` : titleRaw;
+  const title = lrV14Esc(lrV14Short(cleanTitle, 20));
 
   return `
     <g>
       ${avatar}
       <text x="${x + 58}" y="${y}" font-size="24" font-weight="1000" fill="#ffffff">${title}</text>
-      <text x="${x + 456}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#27d9ff">${lrV14Esc(fmt(ch.subscribers))}</text>
-      <text x="${x + 584}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#31f2cc">${lrV14Esc(fmt(ch.views24))}</text>
-      ${idx < 3 ? `<line x1="${x}" y1="${y + 24}" x2="${x + 592}" y2="${y + 24}" stroke="rgba(255,255,255,.09)" stroke-width="1"/>` : ''}
+      <text x="${x + 410}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#27d9ff">${lrV14Esc(fmt(ch.subscribers))}</text>
+      <text x="${x + 535}" y="${y}" text-anchor="end" font-size="25" font-weight="1000" fill="#31f2cc">${lrV14Esc(fmt(ch.views24))}</text>
+      ${idx < 3 ? `<line x1="${x}" y1="${y + 24}" x2="${x + 545}" y2="${y + 24}" stroke="rgba(255,255,255,.09)" stroke-width="1"/>` : ''}
     </g>
   `;
 }
@@ -2778,7 +2778,7 @@ async function lrSafeRenderNetworkV14(channels) {
   for (let i = 0; i < all.length; i++) {
     const t = String(all[i].title || '').trim();
     if (!t || titleCounts.get(t) > 1) {
-      all[i]._lrTitle = lrV14Slug(all[i].link || all[i].key, i);
+      all[i]._lrTitle = `Канал ${i + 1}`;
     }
   }
 
@@ -2817,10 +2817,10 @@ async function lrSafeRenderNetworkV14(channels) {
     <rect x="390" y="330" width="832" height="430" rx="28" fill="rgba(255,255,255,.115)" stroke="rgba(126,248,225,.28)" stroke-width="2" filter="url(#lrV14Shadow)"/>
     <text x="424" y="388" font-size="35" font-weight="1000" fill="#ffffff">Каналы</text>
 
-    <text x="528" y="428" font-size="18" font-weight="1000" fill="#a9c2ce">Название</text>
-    <text x="926" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">ПДП</text>
-    <text x="1054" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
-    <line x1="470" y1="442" x2="1062" y2="442" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
+    <text x="528" y="428" font-size="18" font-weight="1000" fill="#a9c2ce">Канал</text>
+    <text x="880" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">ПДП</text>
+    <text x="1005" y="428" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
+    <line x1="470" y1="442" x2="1015" y2="442" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
 
     ${rows.join('')}
 
