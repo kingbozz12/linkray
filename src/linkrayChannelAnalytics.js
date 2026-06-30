@@ -4217,7 +4217,7 @@ async function sendImage(chatId, image, caption) {
           userId: lrV33KnownTarget.userId || lrV33FromUpdate.userId,
         };
 
-        const lrV33Caption = `📊 <b>LinkRay Analytics</b>\nСводка по сети каналов MAX.\n\n👥 Подписчики, просмотры и ER считаются после подключения бота к каналам.\n📈 В карточке показаны до 4 каналов, а итоги считаются по всей сетке.\n\n✨ <b>LinkRay</b> — автопостинг, закупы, антифрод и аналитика рекламных размещений в MAX`;
+        const lrV33Caption = lrV44AnalyticsCaption((typeof channels !== 'undefined' && channels) || (typeof clean !== 'undefined' && clean) || (typeof all !== 'undefined' && all) || (typeof visible !== 'undefined' && visible) || (typeof list !== 'undefined' && list) || []);
 
         if (lrV33Candidate && (lrV33Target.chatId || lrV33Target.userId)) {
           await lrV33SendImageByRawMax(lrV33Target, lrV33Candidate, lrV33Caption);
@@ -5581,6 +5581,123 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
 
 
 /* LR_NETWORK_CARD_FINAL_V40_START */
+
+/* LR_ANALYTICS_CAPTION_V44_START */
+function lrV44AnalyticsCaption(channels = []) {
+  function num(v) {
+    const n = Number(String(v ?? 0).replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function fmt(v) {
+    const n = num(v);
+    if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1).replace('.', ',') + 'M';
+    if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1).replace('.', ',') + 'k';
+    return String(Math.round(n));
+  }
+
+  function html(v) {
+    return String(v ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function short(v, max = 34) {
+    const t = String(v || 'Канал').replace(/\s+/g, ' ').trim();
+    return t.length > max ? t.slice(0, max - 1).trim() + '…' : t;
+  }
+
+  function getNum(ch, keys) {
+    for (const k of keys) {
+      if (ch && ch[k] !== undefined && ch[k] !== null && ch[k] !== '') return num(ch[k]);
+    }
+    return 0;
+  }
+
+  const src = Array.isArray(channels) ? channels : [];
+  const list = [];
+  const seen = new Set();
+
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i] || {};
+    const title = String(
+      ch.title ||
+      ch.name ||
+      ch.channel_title ||
+      ch.channel_name ||
+      `Канал ${i + 1}`
+    ).replace(/^https?:\/\/max\.ru\//i, '').replace(/\s+/g, ' ').trim();
+
+    const link = String(ch.link || ch.url || ch.key || ch.channel_link || ch.public_link || '').trim();
+    const key = link || title || String(i);
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    list.push({
+      title,
+      subscribers: getNum(ch, ['subscribers', 'members', 'subs', 'pdp', 'followers', 'count']),
+      signed: getNum(ch, ['signed', 'joined', 'joined_today', 'subscribed_today', 'subs_today', 'plus_today', 'new_subscribers']),
+      left: getNum(ch, ['left', 'unsubscribed', 'unsubscribed_today', 'unsubs_today', 'minus_today', 'lost_subscribers']),
+      views24: getNum(ch, ['views24', 'views_24', 'views_day', 'viewsToday', 'views_today']),
+      views48: getNum(ch, ['views48', 'views_48']),
+      views72: getNum(ch, ['views72', 'views_72']),
+    });
+  }
+
+  const totalSubs = list.reduce((a, c) => a + c.subscribers, 0);
+  const signed = list.reduce((a, c) => a + c.signed, 0);
+  const left = list.reduce((a, c) => a + c.left, 0);
+  const net = signed - left;
+
+  const views24 = list.reduce((a, c) => a + c.views24, 0);
+  const views48 = list.reduce((a, c) => a + c.views48, 0);
+  const views72 = list.reduce((a, c) => a + c.views72, 0);
+
+  const er24 = totalSubs > 0 ? (views24 / totalSubs) * 100 : 0;
+
+  const now = new Date().toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).replace(',', '');
+
+  const top = list
+    .slice()
+    .sort((a, b) => b.views24 - a.views24)
+    .slice(0, 4);
+
+  const rows = top.length
+    ? top.map((ch, i) => `${i + 1}) ${html(short(ch.title))}: <b>${fmt(ch.views24)}</b> просмотров`).join('\n')
+    : 'Пока нет каналов для отчёта.';
+
+  return `📊 <b>LinkRay Analytics</b>
+Сводка по сети: <b>${list.length}</b> каналов
+
+👥 <b>Всего подписчиков:</b> ${fmt(totalSubs)}
+✅ <b>Подписалось:</b> ${fmt(signed)}
+➖ <b>Отписалось:</b> ${fmt(left)}
+📈 <b>Итог за сутки:</b> ${net > 0 ? '+' : ''}${fmt(net)}
+
+👁 <b>Просмотры:</b>
+├ 24 часа: <b>${fmt(views24)}</b>
+├ 48 часов: <b>${fmt(views48)}</b>
+└ 72 часа: <b>${fmt(views72)}</b>
+
+📊 <b>Средний ER24:</b> ${er24.toFixed(2).replace('.', ',')}%
+
+${rows}
+
+🕘 <b>Сформировано:</b> ${html(now)} МСК
+━━━━━━━━━━━━━━
+✨ <a href="https://max.ru/se13353901_bot">LinkRay</a> — автопостинг и аналитика рекламных размещений в MAX`;
+}
+/* LR_ANALYTICS_CAPTION_V44_END */
+
 async function lrV40RenderFinalNetworkPng(channels = []) {
   const sharpMod = await import('sharp');
   const sharp = sharpMod.default || sharpMod;
@@ -5901,7 +6018,7 @@ async function lrV34SendMaxImageUrl(update, imageUrl) {
   const api = lrV34ApiBase();
 
   const body = {
-    text: `📊 <b>LinkRay Analytics</b>\nСводка по сети каналов MAX.\n\n👥 Подписчики, просмотры и ER считаются после подключения бота к каналам.\n📈 В карточке показаны до 4 каналов, а итоги считаются по всей сетке.\n\n✨ <b>LinkRay</b> — автопостинг, закупы, антифрод и аналитика рекламных размещений в MAX`,
+    text: lrV44AnalyticsCaption((typeof channels !== 'undefined' && channels) || (typeof clean !== 'undefined' && clean) || (typeof all !== 'undefined' && all) || (typeof visible !== 'undefined' && visible) || (typeof list !== 'undefined' && list) || []),
     format: 'html',
     attachments: [
       {
