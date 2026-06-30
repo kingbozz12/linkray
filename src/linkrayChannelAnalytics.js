@@ -4918,7 +4918,327 @@ async function lrV33SendImageByRawMax(target, imageLike, text = '') {
 }
 /* LR_RAW_MAX_IMAGE_UPLOAD_V33_END */
 
+
+/* LR_DIRECT_PUBLIC_IMAGE_V34_START */
+function lrV34MaxToken() {
+  return (
+    process.env.MAX_BOT_TOKEN ||
+    process.env.BOT_TOKEN ||
+    process.env.MAX_TOKEN ||
+    process.env.MAX_API_TOKEN ||
+    process.env.BOT_API_TOKEN ||
+    process.env.ACCESS_TOKEN ||
+    process.env.TOKEN ||
+    ''
+  ).trim();
+}
+
+function lrV34ApiBase() {
+  return (process.env.MAX_API_BASE || process.env.MAX_API_URL || 'https://platform-api.max.ru').replace(/\/+$/, '');
+}
+
+function lrV34PublicBase() {
+  return (
+    process.env.LINKRAY_PUBLIC_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    process.env.APP_PUBLIC_URL ||
+    process.env.WEBAPP_URL ||
+    process.env.BASE_URL ||
+    'https://linkray.ru'
+  ).replace(/\/+$/, '');
+}
+
+function lrV34TextFromUpdate(update) {
+  return String(
+    update?.message?.body?.text ||
+    update?.message?.text ||
+    update?.text ||
+    update?.callback?.message?.body?.text ||
+    update?.callback?.message?.text ||
+    ''
+  );
+}
+
+function lrV34TargetFromUpdate(update) {
+  const chatId =
+    update?.message?.recipient?.chat_id ||
+    update?.message?.body?.recipient?.chat_id ||
+    update?.message?.chat_id ||
+    update?.chat_id ||
+    update?.recipient?.chat_id ||
+    update?.callback?.message?.recipient?.chat_id ||
+    update?.callback?.message?.chat_id ||
+    update?.callback?.chat_id ||
+    null;
+
+  const userId =
+    update?.message?.sender?.user_id ||
+    update?.message?.user_id ||
+    update?.user_id ||
+    update?.callback?.user?.user_id ||
+    update?.callback?.user_id ||
+    update?.callback?.message?.sender?.user_id ||
+    null;
+
+  return { chatId, userId };
+}
+
+function lrV34ExtractLinks(text) {
+  const raw = String(text || '').match(/https?:\/\/max\.ru\/join\/[^\s<>"']+/gi) || [];
+  const out = [];
+  const seen = new Set();
+
+  for (const item of raw) {
+    const link = item.trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
+    if (!seen.has(link)) {
+      seen.add(link);
+      out.push(link);
+    }
+  }
+
+  return out;
+}
+
+function lrV34NormLink(value) {
+  return String(value || '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+
+function lrV34NormTitle(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[«»"']/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lrV34GoodAvatar(value) {
+  const s = String(value || '').trim();
+  return /^https?:\/\//i.test(s) && !s.includes('/s/img/og-logo.png');
+}
+
+async function lrV34LoadChannelsByLinks(links) {
+  const channels = [];
+
+  for (let i = 0; i < links.length; i++) {
+    const link = lrV34NormLink(links[i]);
+
+    let ch = {
+      link,
+      title: `Канал ${i + 1}`,
+      subscribers: 0,
+      views24: 0,
+      views48: 0,
+      views72: 0,
+      er24: 0,
+    };
+
+    try {
+      const db = await import('./db.js');
+
+      const cached = await db.query(
+        `SELECT title, avatar_url
+           FROM public.lr_channel_avatar_cache
+          WHERE link_norm=$1 OR link=$1
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+        [link]
+      );
+
+      const cachedRows = Array.isArray(cached) ? cached : (cached?.rows || []);
+
+      if (cachedRows[0]) {
+        if (cachedRows[0].title && !String(cachedRows[0].title).startsWith('max.ru/join')) {
+          ch.title = cachedRows[0].title;
+        }
+
+        if (lrV34GoodAvatar(cachedRows[0].avatar_url)) {
+          ch.avatar_url = cachedRows[0].avatar_url;
+        }
+      }
+
+      const snap = await db.query(
+        `SELECT title, avatar_url, subscribers, views24, views48, views72, er24
+           FROM public.lr_channel_analytics_snapshots
+          WHERE link=$1
+          ORDER BY captured_at DESC
+          LIMIT 1`,
+        [link]
+      );
+
+      const snapRows = Array.isArray(snap) ? snap : (snap?.rows || []);
+
+      if (snapRows[0]) {
+        const row = snapRows[0];
+
+        if (row.title && !String(row.title).startsWith('max.ru/join')) ch.title = row.title;
+        if (lrV34GoodAvatar(row.avatar_url)) ch.avatar_url = row.avatar_url;
+
+        ch.subscribers = Number(row.subscribers || 0);
+        ch.views24 = Number(row.views24 || 0);
+        ch.views48 = Number(row.views48 || 0);
+        ch.views72 = Number(row.views72 || 0);
+        ch.er24 = Number(row.er24 || 0);
+      }
+    } catch {}
+
+    channels.push(ch);
+  }
+
+  return channels;
+}
+
+async function lrV34RenderNetworkPng(channels) {
+  let imageLike = null;
+
+  if (typeof lrSaferRenderNetworkV13 === 'function') {
+    imageLike = await lrSaferRenderNetworkV13(channels);
+  } else if (typeof lrSafeRenderNetworkV13 === 'function') {
+    imageLike = await lrSafeRenderNetworkV13(channels);
+  } else if (typeof lrRenderNetworkCard === 'function') {
+    imageLike = await lrRenderNetworkCard(channels);
+  } else if (typeof renderNetworkCard === 'function') {
+    imageLike = await renderNetworkCard(channels);
+  } else {
+    throw new Error('network renderer not found');
+  }
+
+  if (Buffer.isBuffer(imageLike)) return imageLike;
+
+  if (imageLike instanceof Uint8Array) return Buffer.from(imageLike);
+
+  if (typeof imageLike === 'object' && imageLike) {
+    if (Buffer.isBuffer(imageLike.buffer)) return imageLike.buffer;
+    if (Buffer.isBuffer(imageLike.data)) return imageLike.data;
+    if (Buffer.isBuffer(imageLike.png)) return imageLike.png;
+    if (Buffer.isBuffer(imageLike.image)) return imageLike.image;
+  }
+
+  if (typeof imageLike === 'string') {
+    const text = imageLike.trim();
+
+    if (text.startsWith('data:image/')) {
+      const b64 = text.split(',')[1] || '';
+      if (b64) return Buffer.from(b64, 'base64');
+    }
+
+    if (text.includes('<svg')) {
+      const sharpMod = await import('sharp');
+      const sharp = sharpMod.default || sharpMod;
+      return await sharp(Buffer.from(text)).png().toBuffer();
+    }
+  }
+
+  throw new Error('renderer returned unsupported image type');
+}
+
+async function lrV34SavePublicPng(buffer) {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+
+  const dir = path.join(process.cwd(), 'public', 'generated');
+  await fs.mkdir(dir, { recursive: true });
+
+  const name = `linkray-network-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+  const file = path.join(dir, name);
+
+  await fs.writeFile(file, buffer);
+
+  return `${lrV34PublicBase()}/generated/${name}`;
+}
+
+async function lrV34SendMaxImageUrl(update, imageUrl) {
+  const token = lrV34MaxToken();
+
+  if (!token) throw new Error('MAX token not found');
+
+  const target = lrV34TargetFromUpdate(update);
+  const query =
+    target.chatId ? `chat_id=${encodeURIComponent(target.chatId)}` :
+    target.userId ? `user_id=${encodeURIComponent(target.userId)}` :
+    '';
+
+  if (!query) throw new Error('chat_id/user_id not found');
+
+  const api = lrV34ApiBase();
+
+  const body = {
+    text: '📊 LinkRay Analytics',
+    format: 'html',
+    attachments: [
+      {
+        type: 'image',
+        payload: {
+          url: imageUrl,
+        },
+      },
+    ],
+  };
+
+  const attempts = [
+    {
+      url: `${api}/messages?${query}`,
+      headers: { Authorization: token, 'Content-Type': 'application/json' },
+    },
+    {
+      url: `${api}/messages?${query}`,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    },
+    {
+      url: `${api}/messages?${query}&access_token=${encodeURIComponent(token)}`,
+      headers: { 'Content-Type': 'application/json' },
+    },
+  ];
+
+  let last = '';
+
+  for (const a of attempts) {
+    const res = await fetch(a.url, {
+      method: 'POST',
+      headers: a.headers,
+      body: JSON.stringify(body),
+    });
+
+    const txt = await res.text();
+    last = `${res.status}: ${txt}`;
+
+    if (res.ok) {
+      console.log('[LR_DIRECT_PUBLIC_IMAGE_V34] sent image url', imageUrl);
+      return true;
+    }
+  }
+
+  throw new Error(`MAX image url send failed ${last}`);
+}
+
+async function lrV34TryDirectPublicNetworkCard(update) {
+  const text = lrV34TextFromUpdate(update);
+  const links = lrV34ExtractLinks(text);
+
+  if (links.length < 2) return false;
+
+  console.log('[LR_DIRECT_PUBLIC_IMAGE_V34] intercept multi links', links.join(' | '));
+
+  const channels = await lrV34LoadChannelsByLinks(links);
+  const png = await lrV34RenderNetworkPng(channels);
+  const url = await lrV34SavePublicPng(png);
+
+  await lrV34SendMaxImageUrl(update, url);
+
+  return true;
+}
+/* LR_DIRECT_PUBLIC_IMAGE_V34_END */
+
 export async function handleLinkRayChannelAnalyticsIncoming(update) {
+  /* LR_DIRECT_PUBLIC_IMAGE_V34_CALL_START */
+  try {
+    if (await lrV34TryDirectPublicNetworkCard(update)) {
+      return true;
+    }
+  } catch (e) {
+    console.error('[LR_DIRECT_PUBLIC_IMAGE_V34_ERROR]', e?.message || e);
+  }
+  /* LR_DIRECT_PUBLIC_IMAGE_V34_CALL_END */
+
   try {
     const handled = await handleAnalyticsMenu(update);
 

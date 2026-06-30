@@ -796,6 +796,19 @@ globalThis.__lrSigRichV13 = (() => {
 
 const app = express();
 
+/* LR_GENERATED_STATIC_V34_START */
+try {
+  app.use('/generated', express.static('public/generated', {
+    maxAge: '10m',
+    etag: false,
+    setHeaders(res) {
+      res.setHeader('Cache-Control', 'public, max-age=600');
+    },
+  }));
+} catch {}
+/* LR_GENERATED_STATIC_V34_END */
+
+
 
 // LINKRAY_24H_REPORT_START
 import('./linkray24hReport.js')
