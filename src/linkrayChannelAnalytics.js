@@ -3515,8 +3515,8 @@ async function handleAnalyticsMenu(update) {
   // ссылки забирает аналитика и не отдаёт их в старый сценарий создания поста.
   if (links.length && (settings.mode === 'await_links' || lrOnlyMaxLinksText(text, links))) {
     await setAnalyticsModeForKeys(keys, '');
-    console.log('[LR_LINKS_V14]', lrV13UniqueLinks(links).join(' | '));
-      await handleLinks(chatId, lrV13UniqueLinks(links), update);
+    console.log('[LR_LINKS_V14]', lrV14UniqueLinks(links).join(' | '));
+      await handleLinks(chatId, lrV14UniqueLinks(links), update);
     return true;
   }
 
@@ -3627,8 +3627,8 @@ export function mountLinkRayChannelAnalytics(app) {
       if (!links.length) return next();
       if (!isOnlyAnalyticsLinks(text, links)) return next();
 
-      console.log('[LR_LINKS_V14]', lrV13UniqueLinks(links).join(' | '));
-      await handleLinks(chatId, lrV13UniqueLinks(links), update);
+      console.log('[LR_LINKS_V14]', lrV14UniqueLinks(links).join(' | '));
+      await handleLinks(chatId, lrV14UniqueLinks(links), update);
 
       return res.json({ ok: true });
     } catch (error) {
