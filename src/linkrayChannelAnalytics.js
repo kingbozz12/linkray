@@ -3818,7 +3818,7 @@ async function renderSingle(ch) {
 }
 
 async function renderNetwork(...args) {
-  /* LR_NETWORK_RENDERER_V31_START */
+  /* LR_NETWORK_RENDERER_V32_START */
   const WIDTH = 1280;
   const HEIGHT = 900;
 
@@ -4127,8 +4127,19 @@ async function renderNetwork(...args) {
     visible: visible.map(v => ({ title: v.title, link: v.link }))
   }));
 
-  return svg;
-  /* LR_NETWORK_RENDERER_V31_END */
+  try {
+    const sharpMod = await import('sharp');
+    const sharp = sharpMod.default || sharpMod;
+
+    return await sharp(Buffer.from(svg))
+      .png()
+      .toBuffer();
+  } catch (e) {
+    console.error('[LR_NETWORK_RENDERER_V32_IMAGE_ERROR]', e?.message || e);
+    return Buffer.from(svg);
+  }
+
+  /* LR_NETWORK_RENDERER_V32_END */
 }
 
 async function renderPng(html, name) {
