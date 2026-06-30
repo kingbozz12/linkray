@@ -2554,6 +2554,176 @@ async function lrSafeRenderNetworkV7(channels) {
 }
 /* LR_NETWORK_15_CHANNELS_V7_END */
 
+
+/* LR_NETWORK_LINKRAY_CARD_V10_START */
+function lrNetEscV10(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function lrNetShortV10(value, max = 32) {
+  const text = String(value || 'MAX-канал').replace(/\s+/g, ' ').trim();
+  return text.length > max ? text.slice(0, max - 1).trim() + '…' : text;
+}
+
+function lrNetMetricBoxV10(x, y, w, h, label, value, color = '#27d9ff') {
+  return `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="28" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrNetShadowV10)"/>
+    <text x="${x + w / 2}" y="${y + 42}" text-anchor="middle" font-size="19" font-weight="1000" fill="#c9dce6">${lrNetEscV10(label)}</text>
+    <text x="${x + w / 2}" y="${y + 104}" text-anchor="middle" font-size="52" font-weight="1000" fill="${color}">${lrNetEscV10(value)}</text>
+  `;
+}
+
+function lrNetViewsBoxV10(x, y, total24, total48, total72) {
+  return `
+    <rect x="${x}" y="${y}" width="310" height="315" rx="28" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrNetShadowV10)"/>
+    <text x="${x + 32}" y="${y + 58}" font-size="30" font-weight="1000" fill="#ffffff">Просмотры</text>
+
+    <text x="${x + 38}" y="${y + 118}" font-size="34" font-weight="1000" fill="#ffffff">24ч:</text>
+    <text x="${x + 150}" y="${y + 118}" font-size="38" font-weight="1000" fill="#27d9ff">${fmt(total24)}</text>
+
+    <text x="${x + 38}" y="${y + 190}" font-size="34" font-weight="1000" fill="#ffffff">48ч:</text>
+    <text x="${x + 150}" y="${y + 190}" font-size="38" font-weight="1000" fill="#27d9ff">${fmt(total48)}</text>
+
+    <text x="${x + 38}" y="${y + 262}" font-size="34" font-weight="1000" fill="#ffffff">72ч:</text>
+    <text x="${x + 150}" y="${y + 262}" font-size="38" font-weight="1000" fill="#27d9ff">${fmt(total72)}</text>
+  `;
+}
+
+async function lrNetLogoV10(x, y, size = 72) {
+  if (typeof lrLogoV9 === 'function') {
+    return await lrLogoV9(x, y, size);
+  }
+  if (typeof lrBrandLogoImageV6 === 'function') {
+    return await lrBrandLogoImageV6(x, y, size);
+  }
+  return `
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#31f2cc"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + 10}" text-anchor="middle" font-size="28" font-weight="1000" fill="#061625">LR</text>
+  `;
+}
+
+async function lrNetAvatarV10(ch, x, y, size = 34, idx = 0) {
+  if (typeof lrAvatarV9 === 'function') {
+    return await lrAvatarV9(ch, x, y, size);
+  }
+  if (typeof lrSafeAvatarV3 === 'function') {
+    return await lrSafeAvatarV3(ch, x, y, size, idx);
+  }
+
+  const letter = lrNetEscV10(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+  return `
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#0b8cff"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + 7}" text-anchor="middle" font-size="18" font-weight="1000" fill="#fff">${letter}</text>
+  `;
+}
+
+async function lrNetRowV10(ch, x, y, idx) {
+  const avatar = await lrNetAvatarV10(ch, x, y - 23, 34, idx);
+  const title = lrNetEscV10(lrNetShortV10(ch.title || ch.link || 'MAX-канал', 34));
+
+  return `
+    <g>
+      ${avatar}
+      <text x="${x + 48}" y="${y}" font-size="21" font-weight="1000" fill="#ffffff">${title}</text>
+      <text x="${x + 438}" y="${y}" text-anchor="end" font-size="22" font-weight="1000" fill="#27d9ff">${fmt(ch.subscribers)}</text>
+      <text x="${x + 565}" y="${y}" text-anchor="end" font-size="22" font-weight="1000" fill="#31f2cc">${fmt(ch.views24)}</text>
+      <line x1="${x}" y1="${y + 15}" x2="${x + 575}" y2="${y + 15}" stroke="rgba(255,255,255,.08)" stroke-width="1"/>
+    </g>
+  `;
+}
+
+function lrNetShellV10(inner) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+    <defs>
+      <linearGradient id="lrNetBgV10" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#061625"/>
+        <stop offset="45%" stop-color="#082b3c"/>
+        <stop offset="100%" stop-color="#0db77b"/>
+      </linearGradient>
+      <radialGradient id="lrNetGlowV10" cx="88%" cy="4%" r="82%">
+        <stop offset="0%" stop-color="#72ffc8" stop-opacity=".34"/>
+        <stop offset="62%" stop-color="#31f2cc" stop-opacity=".10"/>
+        <stop offset="100%" stop-color="#31f2cc" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="lrNetCardV10" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="rgba(255,255,255,.16)"/>
+        <stop offset="100%" stop-color="rgba(255,255,255,.08)"/>
+      </linearGradient>
+      <filter id="lrNetShadowV10" x="-10%" y="-10%" width="120%" height="130%">
+        <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#00111b" flood-opacity=".30"/>
+      </filter>
+      <style>
+        text { font-family: DejaVu Sans, Arial, sans-serif; }
+      </style>
+    </defs>
+
+    <rect width="1280" height="900" fill="url(#lrNetBgV10)"/>
+    <rect width="1280" height="900" fill="url(#lrNetGlowV10)"/>
+    <path d="M-80 170 C220 75 420 210 650 105 C890 -5 1060 135 1350 48" fill="none" stroke="rgba(255,255,255,.075)" stroke-width="3"/>
+    <path d="M-60 795 C260 650 505 770 740 650 C980 530 1100 650 1340 560" fill="none" stroke="rgba(255,255,255,.055)" stroke-width="3"/>
+    ${inner}
+  </svg>`;
+}
+
+async function lrSafeRenderNetworkV10(channels) {
+  const totalSubs = channels.reduce((s, ch) => s + num(ch.subscribers), 0);
+  const total24 = channels.reduce((s, ch) => s + num(ch.views24), 0);
+  const total48 = channels.reduce((s, ch) => s + num(ch.views48), 0);
+  const total72 = channels.reduce((s, ch) => s + num(ch.views72), 0);
+  const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
+
+  const sorted = channels
+    .slice()
+    .sort((a, b) => num(b.views24) - num(a.views24))
+    .slice(0, 15);
+
+  const logo = await lrNetLogoV10(1024, 36, 74);
+
+  const rowsHtml = [];
+  for (let i = 0; i < sorted.length; i++) {
+    rowsHtml.push(await lrNetRowV10(sorted[i], 590, 408 + i * 34, i));
+  }
+
+  const moreCount = Math.max(0, channels.length - 15);
+  const moreText = moreCount > 0
+    ? `<text x="1168" y="858" text-anchor="end" font-size="20" font-weight="1000" fill="#31f2cc">+ ещё ${moreCount} каналов</text>`
+    : '';
+
+  const inner = `
+    <text x="52" y="72" font-size="48" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
+    <text x="54" y="110" font-size="20" font-weight="900" fill="#d5edf2">LinkRay Analytics · сводка по всей сетке каналов</text>
+
+    ${logo}
+    <text x="1116" y="82" font-size="34" font-weight="1000" fill="#d9fbf6">LinkRay</text>
+
+    ${lrNetMetricBoxV10(54, 154, 274, 138, 'ОБЩЕЕ КОЛ-ВО ПОДПИСЧИКОВ', compact(totalSubs), '#27d9ff')}
+    ${lrNetMetricBoxV10(352, 154, 274, 138, 'ПРОСМОТРОВ В СУТКИ', compact(total24), '#31f2cc')}
+    ${lrNetMetricBoxV10(650, 154, 274, 138, 'ОБЩИЙ ER', pct(er24), '#27d9ff')}
+    ${lrNetMetricBoxV10(948, 154, 274, 138, 'КАНАЛОВ В СЕТКЕ', String(channels.length), '#31f2cc')}
+
+    ${lrNetViewsBoxV10(54, 328, total24, total48, total72)}
+
+    <rect x="390" y="328" width="832" height="478" rx="28" fill="rgba(255,255,255,.12)" stroke="rgba(126,248,225,.30)" stroke-width="2" filter="url(#lrNetShadowV10)"/>
+    <text x="424" y="382" font-size="31" font-weight="1000" fill="#ffffff">Каналы</text>
+    <text x="638" y="382" font-size="18" font-weight="1000" fill="#a9c2ce">Название</text>
+    <text x="1028" y="382" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">Подписчики</text>
+    <text x="1155" y="382" text-anchor="end" font-size="18" font-weight="1000" fill="#a9c2ce">24ч</text>
+    <line x1="590" y1="395" x2="1165" y2="395" stroke="rgba(126,248,225,.20)" stroke-width="2"/>
+    ${rowsHtml.join('')}
+
+    <text x="54" y="846" font-size="25" font-weight="1000" fill="#ffffff">Актуально на ${lrNetEscV10(nowMskHuman())} МСК</text>
+    <text x="390" y="846" font-size="22" font-weight="900" fill="#cde9ef">↑ % — динамика роста после подключения бота к каналам</text>
+    ${moreText}
+  `;
+
+  return lrSafeSaveSvgPngV3(lrNetShellV10(inner), `lr-network-linkray-v10-${hash(channels.map((x) => x.key).join('-'))}`);
+}
+/* LR_NETWORK_LINKRAY_CARD_V10_END */
+
 async function renderNetworkSvg(channels) {
   const totalSubs = channels.reduce((sum, ch) => sum + ch.subscribers, 0);
   const total24 = channels.reduce((sum, ch) => sum + ch.views24, 0);
@@ -2741,7 +2911,7 @@ async function renderSingle(ch) {
 }
 
 async function renderNetwork(channels) {
-  return lrSafeRenderNetworkV7(channels);
+  return lrSafeRenderNetworkV10(channels);
 }
 
 async function renderPng(html, name) {
