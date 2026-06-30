@@ -9828,6 +9828,13 @@ app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.jso
 
 
 app.post('/webhook', async (req, res) => {
+  /* LR_RAW_POST_LOGGER_V1 */
+  try {
+    const __lrBody = req?.body ?? {};
+    const __lrText = JSON.stringify(__lrBody);
+    console.log('[LR_RAW_POST_V1]', req?.method, req?.path || req?.url, __lrText.slice(0, 7000));
+  } catch {}
+
   try { await lrHandleChannelLifecycleV1(req.body); } catch (e) { console.log('[LR_CHANNEL_LIFECYCLE_FIX_V1_ROUTE]', e?.message || e); }
 
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
