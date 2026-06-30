@@ -794,6 +794,97 @@ globalThis.__lrSigRichV13 = (() => {
 })();
 // LR_SIG_RICH_V13_END
 
+
+/* LR_FORCE_CHANNEL_CONNECTED_TEXT_V3_START */
+function lrForceChannelConnectedTextV3(value) {
+  if (typeof value !== 'string') return value;
+
+  let text = value;
+
+  const hasOldTitle =
+    text.includes('Канал добавлен в LinkRay') ||
+    text.includes('<b>Канал добавлен в LinkRay</b>');
+
+  const hasOldDesc =
+    text.includes('Канал сохранён в базе и будет доступен при создании постов') ||
+    text.includes('Канал сохранен в базе и будет доступен при создании постов') ||
+    text.includes('Канал сохранён в базе и будет доступен для публикаций') ||
+    text.includes('Канал сохранен в базе и будет доступен для публикаций');
+
+  if (!hasOldTitle && !hasOldDesc) return value;
+
+  text = text
+    .replace(/✅\s*<b>Канал добавлен в LinkRay<\/b>/g, '✅ <b>Канал подключён к LinkRay</b>')
+    .replace(/✅\s*Канал добавлен в LinkRay/g, '✅ Канал подключён к LinkRay')
+    .replace(/Канал добавлен в LinkRay/g, 'Канал подключён к LinkRay');
+
+  const newDescription =
+    'Канал сохранён в базе и будет использоваться для:\\n\\n' +
+    '🚀 <b>Публикаций</b> — посты, отложенный постинг и рекламные выходы.\\n' +
+    '📊 <b>Аналитики</b> — просмотры, ER и PNG-карточки.\\n' +
+    '📈 <b>Отчётов</b> — ежедневная статистика, ПДП, отписки и охваты.\\n' +
+    '🛡 <b>Антифрода</b> — проверка подозрительных скачков и качества рекламы.\\n' +
+    '💼 <b>Закупов</b> — работа с рекламными размещениями и донорами.';
+
+  text = text
+    .replace(/Канал сохран[её]н в базе и будет доступен при создании постов\./gi, newDescription)
+    .replace(/Канал сохран[её]н в базе и будет доступен для публикаций\./gi, newDescription)
+    .replace(/Канал сохран[её]н в базе и будет доступен при создании публикаций\./gi, newDescription);
+
+  return text;
+}
+
+function lrRewriteOutgoingPayloadV3(payload, depth = 0) {
+  if (depth > 8) return payload;
+
+  if (typeof payload === 'string') {
+    return lrForceChannelConnectedTextV3(payload);
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.map((item) => lrRewriteOutgoingPayloadV3(item, depth + 1));
+  }
+
+  if (payload && typeof payload === 'object') {
+    for (const key of Object.keys(payload)) {
+      payload[key] = lrRewriteOutgoingPayloadV3(payload[key], depth + 1);
+    }
+    return payload;
+  }
+
+  return payload;
+}
+
+if (!globalThis.__LR_FORCE_CHANNEL_CONNECTED_TEXT_V3 && typeof globalThis.fetch === 'function') {
+  globalThis.__LR_FORCE_CHANNEL_CONNECTED_TEXT_V3 = true;
+  const __lrOriginalFetchV3 = globalThis.fetch.bind(globalThis);
+
+  globalThis.fetch = async function lrForcedFetchV3(input, init = {}) {
+    try {
+      if (init && init.body) {
+        if (typeof init.body === 'string') {
+          const raw = init.body;
+
+          if (raw.includes('Канал добавлен в LinkRay') || raw.includes('доступен при создании постов') || raw.includes('доступен для публикаций')) {
+            try {
+              const json = JSON.parse(raw);
+              init = { ...init, body: JSON.stringify(lrRewriteOutgoingPayloadV3(json)) };
+            } catch {
+              init = { ...init, body: lrForceChannelConnectedTextV3(raw) };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[LR_FORCE_CHANNEL_CONNECTED_TEXT_V3]', e?.message || e);
+    }
+
+    return __lrOriginalFetchV3(input, init);
+  };
+}
+/* LR_FORCE_CHANNEL_CONNECTED_TEXT_V3_END */
+
+
 const app = express();
 
 /* LR_GENERATED_STATIC_V34_START */
