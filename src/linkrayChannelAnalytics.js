@@ -5579,8 +5579,295 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
 }
 /* LR_NETWORK_CARD_LAYOUT_V38_END */
 
+
+/* LR_NETWORK_CARD_FINAL_V40_START */
+async function lrV40RenderFinalNetworkPng(channels = []) {
+  const sharpMod = await import('sharp');
+  const sharp = sharpMod.default || sharpMod;
+  const fs = await import('node:fs/promises');
+
+  const WIDTH = 1280;
+  const HEIGHT = 900;
+
+  function esc(v) {
+    return String(v ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function num(v) {
+    const n = Number(String(v ?? 0).replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function fmt(v) {
+    const n = num(v);
+    if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1).replace('.', ',') + 'M';
+    if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1).replace('.', ',') + 'k';
+    return String(Math.round(n));
+  }
+
+  function short(v, max = 17) {
+    const text = String(v || 'Канал').replace(/\s+/g, ' ').trim();
+    return text.length > max ? text.slice(0, max).trim() + '…' : text;
+  }
+
+  function goodUrl(v) {
+    const u = String(v || '').trim();
+    return /^https?:\/\//i.test(u) && !u.includes('/s/img/og-logo.png');
+  }
+
+  async function findCachedAvatar(ch) {
+    const direct =
+      ch.avatar_url ||
+      ch.avatarUrl ||
+      ch.photo_url ||
+      ch.image_url ||
+      ch.picture_url ||
+      ch.avatar ||
+      ch.photo ||
+      ch.image ||
+      '';
+
+    if (goodUrl(direct)) return direct;
+
+    try {
+      const db = await import('./db.js');
+      const link = String(ch.link || '').trim();
+      const title = String(ch.title || '').trim();
+
+      let rows = [];
+
+      if (link) {
+        const r = await db.query(
+          `SELECT avatar_url
+             FROM public.lr_channel_avatar_cache
+            WHERE link_norm=$1 OR link=$1
+            ORDER BY updated_at DESC
+            LIMIT 1`,
+          [link]
+        );
+        rows = Array.isArray(r) ? r : (r?.rows || []);
+      }
+
+      if (!rows.length && title) {
+        const r = await db.query(
+          `SELECT avatar_url
+             FROM public.lr_channel_avatar_cache
+            WHERE title=$1
+            ORDER BY updated_at DESC
+            LIMIT 1`,
+          [title]
+        );
+        rows = Array.isArray(r) ? r : (r?.rows || []);
+      }
+
+      const url = String(rows?.[0]?.avatar_url || '').trim();
+      if (goodUrl(url)) return url;
+    } catch {}
+
+    return '';
+  }
+
+  async function dataPng(url, size = 52) {
+    if (!goodUrl(url)) return '';
+
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(10000),
+        headers: {
+          'user-agent': 'Mozilla/5.0 LinkRayBot/1.0',
+          'accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'referer': 'https://max.ru/',
+        },
+      });
+
+      if (!res.ok) return '';
+
+      const input = Buffer.from(await res.arrayBuffer());
+      const out = await sharp(input)
+        .resize(size, size, { fit: 'cover' })
+        .png()
+        .toBuffer();
+
+      return `data:image/png;base64,${out.toString('base64')}`;
+    } catch {
+      return '';
+    }
+  }
+
+  async function logoData() {
+    try {
+      const buf = await fs.readFile('/app/public/brand/linkray-logo-main.jpg');
+      return `data:image/jpeg;base64,${buf.toString('base64')}`;
+    } catch {
+      return '';
+    }
+  }
+
+  const clean = [];
+  const seen = new Set();
+
+  for (let i = 0; i < channels.length; i++) {
+    const raw = channels[i] || {};
+    const title = String(
+      raw.title ||
+      raw.name ||
+      raw.channel_title ||
+      raw.channel_name ||
+      `Канал ${i + 1}`
+    ).replace(/^https?:\/\/max\.ru\//i, '').replace(/\s+/g, ' ').trim();
+
+    const link = String(raw.link || raw.url || raw.key || raw.channel_link || raw.public_link || '').trim();
+    const key = link || title || String(i);
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    clean.push({
+      ...raw,
+      title,
+      link,
+      subscribers: num(raw.subscribers || raw.members || raw.subs || raw.pdp || 0),
+      views24: num(raw.views24 || raw.views_24 || raw.views_day || 0),
+      views48: num(raw.views48 || raw.views_48 || 0),
+      views72: num(raw.views72 || raw.views_72 || 0),
+    });
+  }
+
+  const visible = clean.slice(0, 4);
+
+  const totalSubs = clean.reduce((a, c) => a + c.subscribers, 0);
+  const total24 = clean.reduce((a, c) => a + c.views24, 0);
+  const total48 = clean.reduce((a, c) => a + c.views48, 0);
+  const total72 = clean.reduce((a, c) => a + c.views72, 0);
+  const er = totalSubs > 0 ? total24 / totalSubs * 100 : 0;
+
+  const now = new Date().toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).replace(',', '');
+
+  const logo = await logoData();
+
+  let rows = '';
+
+  for (let i = 0; i < visible.length; i++) {
+    const ch = visible[i];
+    const y = 455 + i * 72;
+    const avatarUrl = await findCachedAvatar(ch);
+    const av = await dataPng(avatarUrl, 52);
+    const letter = esc((ch.title || 'К')[0] || 'К').toUpperCase();
+    const title = esc(short(ch.title, 16));
+
+    rows += `
+      <g font-family="DejaVu Sans, Arial, Helvetica, sans-serif">
+        <circle cx="495" cy="${y}" r="28" fill="rgba(46,255,212,.16)" stroke="#35f2cf" stroke-width="3"/>
+        ${
+          av
+            ? `<clipPath id="av40_${i}"><circle cx="495" cy="${y}" r="24"/></clipPath><image href="${av}" x="471" y="${y - 24}" width="48" height="48" preserveAspectRatio="xMidYMid slice" clip-path="url(#av40_${i})"/>`
+            : `<text x="495" y="${y + 8}" text-anchor="middle" font-size="20" font-weight="900" fill="#ecfffb">${letter}</text>`
+        }
+
+        <text x="535" y="${y + 8}" font-family="DejaVu Sans, Arial, Helvetica, sans-serif" font-size="24" font-weight="900" fill="#ffffff">${title}</text>
+
+        <text x="900" y="${y + 8}" text-anchor="middle" font-family="DejaVu Sans, Arial, Helvetica, sans-serif" font-size="29" font-weight="1000" fill="#29d9ff">${fmt(ch.subscribers)}</text>
+        <text x="1055" y="${y + 8}" text-anchor="middle" font-family="DejaVu Sans, Arial, Helvetica, sans-serif" font-size="29" font-weight="1000" fill="#37f1ca">${fmt(ch.views24)}</text>
+
+        ${i < visible.length - 1 ? `<line x1="470" y1="${y + 36}" x2="1130" y2="${y + 36}" stroke="rgba(255,255,255,.10)" stroke-width="1"/>` : ''}
+      </g>
+    `;
+  }
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+  <svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" font-family="DejaVu Sans, Arial, Helvetica, sans-serif">
+    <defs>
+      <linearGradient id="bg40" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#061525"/>
+        <stop offset="46%" stop-color="#0b4c55"/>
+        <stop offset="100%" stop-color="#12c18f"/>
+      </linearGradient>
+      <linearGradient id="glass40" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="rgba(255,255,255,.15)"/>
+        <stop offset="100%" stop-color="rgba(255,255,255,.06)"/>
+      </linearGradient>
+      <filter id="shadow40" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#001827" flood-opacity=".34"/>
+      </filter>
+      <clipPath id="logoClip40">
+        <circle cx="1040" cy="66" r="41"/>
+      </clipPath>
+    </defs>
+
+    <rect width="1280" height="900" fill="url(#bg40)"/>
+    <path d="M-40 126 C230 62 455 186 680 108 C910 30 1070 105 1320 58" fill="none" stroke="rgba(255,255,255,.10)" stroke-width="3"/>
+    <path d="M-20 750 C280 665 500 780 730 650 C930 538 1085 585 1320 500" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="3"/>
+
+    <text x="56" y="72" font-size="47" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
+    <text x="58" y="112" font-size="22" font-weight="800" fill="rgba(255,255,255,.82)">LinkRay Analytics · сводка по всей сетке каналов</text>
+
+    <circle cx="1040" cy="66" r="42" fill="rgba(38,242,204,.14)" stroke="#35f2cf" stroke-width="3"/>
+    ${logo ? `<image href="${logo}" x="998" y="24" width="84" height="84" preserveAspectRatio="xMidYMid slice" clip-path="url(#logoClip40)"/>` : ''}
+    <text x="1104" y="82" font-size="37" font-weight="1000" fill="#ffffff">LinkRay</text>
+
+    <rect x="55" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
+    <text x="192" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Подписчики</text>
+    <text x="192" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#25d9ff">${fmt(totalSubs)}</text>
+
+    <rect x="352" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
+    <text x="489" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Просмотры 24ч</text>
+    <text x="489" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#35f0ca">${fmt(total24)}</text>
+
+    <rect x="650" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
+    <text x="787" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Общий ER</text>
+    <text x="787" y="252" text-anchor="middle" font-size="52" font-weight="1000" fill="#27d9ff">${er.toFixed(2).replace('.', ',')}%</text>
+
+    <rect x="948" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
+    <text x="1085" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Каналов</text>
+    <text x="1085" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#35f0ca">${fmt(clean.length)}</text>
+
+    <rect x="55" y="330" rx="26" width="305" height="300" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
+    <text x="90" y="388" font-size="34" font-weight="1000" fill="#ffffff">Просмотры</text>
+    <text x="92" y="454" font-size="40" font-weight="1000" fill="#ffffff">24ч:</text>
+    <text x="210" y="454" font-size="40" font-weight="1000" fill="#25d9ff">${fmt(total24)}</text>
+    <text x="92" y="524" font-size="40" font-weight="1000" fill="#ffffff">48ч:</text>
+    <text x="210" y="524" font-size="40" font-weight="1000" fill="#25d9ff">${fmt(total48)}</text>
+    <text x="92" y="594" font-size="40" font-weight="1000" fill="#ffffff">72ч:</text>
+    <text x="210" y="594" font-size="40" font-weight="1000" fill="#25d9ff">${fmt(total72)}</text>
+
+    <rect x="390" y="330" rx="26" width="835" height="430" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
+    <text x="425" y="388" font-size="36" font-weight="1000" fill="#ffffff">Каналы</text>
+
+    <text x="535" y="428" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">Канал</text>
+    <text x="900" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">ПДП</text>
+    <text x="1055" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">24ч</text>
+    <line x1="470" y1="442" x2="1130" y2="442" stroke="rgba(255,255,255,.16)" stroke-width="1"/>
+
+    ${rows}
+
+    <text x="470" y="735" font-size="23" font-weight="1000" fill="#45ffd9">Суммы рассчитаны по всем каналам.</text>
+
+    <text x="55" y="837" font-size="25" font-weight="1000" fill="#ffffff">Актуально на ${esc(now)} МСК</text>
+    <text x="1224" y="837" text-anchor="end" font-size="23" font-weight="900" fill="rgba(255,255,255,.82)">LinkRay — аналитика каналов MAX</text>
+  </svg>`;
+
+  console.log('[LR_NETWORK_CARD_FINAL_V40]', JSON.stringify({
+    count: clean.length,
+    visible: visible.map(x => ({ title: x.title, link: x.link }))
+  }));
+
+  return await sharp(Buffer.from(svg)).png().toBuffer();
+}
+/* LR_NETWORK_CARD_FINAL_V40_END */
+
 async function lrV34RenderNetworkPng(channels) {
-  return await lrV38RenderCleanNetworkPng(channels);
+  return await lrV40RenderFinalNetworkPng(channels);
 }
 
 async function lrV34SavePublicPng(buffer) {
