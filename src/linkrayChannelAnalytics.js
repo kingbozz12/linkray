@@ -742,6 +742,114 @@ function lrV17PickPositiveNumber(...values) {
 }
 /* LR_RESOLVE_PRIORITY_V17_END */
 
+
+/* LR_AVATAR_DEDUPE_V19_START */
+function lrV19AvatarUrl(ch) {
+  return String(
+    ch?.avatar_url ||
+    ch?.avatarUrl ||
+    ch?.photo_url ||
+    ch?.image_url ||
+    ch?.icon_url ||
+    ch?.picture_url ||
+    ch?.avatar ||
+    ch?.photo ||
+    ''
+  ).trim();
+}
+
+function lrV19IsBadPreviewTitle(title) {
+  const t = String(title || '').trim();
+  return (
+    !t ||
+    /^MAX\s+[-–]\s+/i.test(t) ||
+    /^MAX\s+is\s+a\s+fast/i.test(t) ||
+    /быстрое и легкое приложение/i.test(t) ||
+    /communication and everyday tasks/i.test(t)
+  );
+}
+
+function lrV19CleanPreviewAvatar(preview) {
+  if (!preview || typeof preview !== 'object') return preview;
+
+  if (lrV19IsBadPreviewTitle(preview.title)) {
+    delete preview.avatar_url;
+    delete preview.avatarUrl;
+    delete preview.photo_url;
+    delete preview.image_url;
+    delete preview.icon_url;
+    delete preview.picture_url;
+    delete preview.avatar;
+    delete preview.photo;
+  }
+
+  return preview;
+}
+
+function lrV19DropAvatar(ch) {
+  if (!ch || typeof ch !== 'object') return ch;
+  ch.avatar_url = '';
+  ch.avatarUrl = '';
+  ch.photo_url = '';
+  ch.image_url = '';
+  ch.icon_url = '';
+  ch.picture_url = '';
+  ch.avatar = '';
+  ch.photo = '';
+  return ch;
+}
+
+function lrV19DedupeNetworkAvatars(channels) {
+  const map = new Map();
+
+  for (const ch of channels || []) {
+    const url = lrV19AvatarUrl(ch);
+    if (!url) continue;
+    const key = url.toLowerCase();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(ch);
+  }
+
+  for (const group of map.values()) {
+    if (group.length <= 1) continue;
+
+    const titles = new Set(group.map((x) => String(x.title || x._lrTitle || '').trim()).filter(Boolean));
+    const links = new Set(group.map((x) => String(x.link || x.key || '').trim()).filter(Boolean));
+
+    // Одна и та же картинка на разных каналах — это почти всегда аватар первого MAX-превью.
+    if (titles.size > 1 || links.size > 1) {
+      for (let i = 1; i < group.length; i++) lrV19DropAvatar(group[i]);
+    }
+  }
+
+  return channels;
+}
+
+function lrV19AvatarFallback(ch, x, y, size, idx) {
+  const title = String(ch?.title || ch?._lrTitle || `Канал ${idx + 1}`).trim();
+  const letter = lrV14Esc((title[0] || String(idx + 1)).toUpperCase());
+  const colors = [
+    ['#26e8ff', '#0b6fff'],
+    ['#31f2cc', '#098f76'],
+    ['#8e7cff', '#2830a8'],
+    ['#ffd166', '#f97316'],
+    ['#ff6b9a', '#9b1b5a'],
+  ];
+  const pair = colors[idx % colors.length];
+
+  return `
+    <defs>
+      <linearGradient id="lrAvFallback${idx}" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="${pair[0]}"/>
+        <stop offset="100%" stop-color="${pair[1]}"/>
+      </linearGradient>
+    </defs>
+    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="url(#lrAvFallback${idx})" stroke="#31f2cc" stroke-width="3"/>
+    <text x="${x + size / 2}" y="${y + size / 2 + 8}" text-anchor="middle" font-size="20" font-weight="1000" fill="#ffffff">${letter}</text>
+  `;
+}
+/* LR_AVATAR_DEDUPE_V19_END */
+
 async function resolveChannel(link, extraRaw = {}) {
   await ensureTables();
 
@@ -759,7 +867,7 @@ async function resolveChannel(link, extraRaw = {}) {
   const idx = Number(extraRaw?._lrIndex || 0);
 
   const known = await lrV16KnownChannelData(cleanLink);
-  const preview = await lrV16FetchMaxPreview(cleanLink);
+  const preview = lrV19CleanPreviewAvatar(await lrV16FetchMaxPreview(cleanLink));
   const fromMax = await callMaxForStats(cleanLink);
 
   // ВАЖНО:
@@ -3095,15 +3203,38 @@ async function lrV14Logo(x, y, size = 74) {
 }
 
 async function lrV14Avatar(ch, x, y, size = 42, idx = 0) {
-  if (typeof lrAvatarV9 === 'function') return await lrAvatarV9(ch, x, y, size);
-  if (typeof lrSafeAvatarV3 === 'function') return await lrSafeAvatarV3(ch, x, y, size, idx);
+  const url = lrV19AvatarUrl(ch);
 
-  const letter = lrV14Esc(String(ch.title || 'К').trim().slice(0, 1).toUpperCase() || 'К');
+  if (url && /^https?:\/\//i.test(url)) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(5000),
+        headers: {
+          'user-agent': 'Mozilla/5.0 LinkRayBot/1.0',
+          'accept': 'image/*,*/*;q=0.8',
+        },
+      });
 
-  return `
-    <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="#0b8cff"/>
-    <text x="${x + size / 2}" y="${y + size / 2 + 8}" text-anchor="middle" font-size="20" font-weight="1000" fill="#fff">${letter}</text>
-  `;
+      if (response.ok) {
+        const type = response.headers.get('content-type') || 'image/jpeg';
+        const buf = Buffer.from(await response.arrayBuffer());
+        const data = `data:${type};base64,${buf.toString('base64')}`;
+        const clipId = `lrAvClip${idx}_${hash(url).replace(/[^a-z0-9]/gi, '')}`;
+
+        return `
+          <defs>
+            <clipPath id="${clipId}">
+              <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2 - 2}"/>
+            </clipPath>
+          </defs>
+          <circle cx="${x + size / 2}" cy="${y + size / 2}" r="${size / 2}" fill="rgba(49,242,204,.22)" stroke="#31f2cc" stroke-width="3"/>
+          <image href="${data}" x="${x + 3}" y="${y + 3}" width="${size - 6}" height="${size - 6}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clipId})"/>
+        `;
+      }
+    } catch {}
+  }
+
+  return lrV19AvatarFallback(ch, x, y, size, idx);
 }
 
 function lrV14Slug(link, idx) {
@@ -3237,6 +3368,7 @@ async function lrSafeRenderNetworkV14(channels) {
   const er24 = totalSubs ? (total24 / totalSubs) * 100 : 0;
 
   const visible = all.slice().sort((a, b) => num(b.views24) - num(a.views24)).slice(0, 4);
+  lrV19DedupeNetworkAvatars(visible);
   const logo = await lrV14Logo(1018, 34, 74);
 
   const rows = [];
