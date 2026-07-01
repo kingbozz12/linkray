@@ -6652,32 +6652,46 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
       return !t.includes('quote') && !t.includes('blockquote') && !t.includes('citation') && !t.includes('cite');
     });
 
-    const upd = await query(
-      `UPDATE channel_signatures
-          SET title=$3,
-              text=$4,
-              format=$5,
-              markup=$6::jsonb,
-              is_active=true,
-              updated_at=now()
-        WHERE channel_id=$1 AND owner_key=$2
-        RETURNING id`,
+    const savedRows = await query(
+      `INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at)
+       VALUES($1, $2, $3, $4, $5, $6::jsonb, true, now(), now())
+       ON CONFLICT(channel_id, owner_key)
+       DO UPDATE SET
+         title=EXCLUDED.title,
+         text=EXCLUDED.text,
+         format=EXCLUDED.format,
+         markup=EXCLUDED.markup,
+         is_active=true,
+         updated_at=now()
+       RETURNING id, channel_id, owner_key, is_active, text, updated_at`,
       [Number(channelId), 'global', 'Автоподпись', cleanText, 'html', JSON.stringify(markup)]
     );
 
-    const rows = Array.isArray(upd) ? upd : (upd && upd.rows ? upd.rows : []);
-    if (!rows.length) {
-      await query(
-        `INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at)
-         VALUES($1, $2, $3, $4, $5, $6::jsonb, true, now(), now())`,
-        [Number(channelId), 'global', 'Автоподпись', cleanText, 'html', JSON.stringify(markup)]
-      );
+    const rows = Array.isArray(savedRows) ? savedRows : [];
+    if (!rows.length || !rows[0].id) {
+      throw new Error('signature insert returned no row');
     }
 
-    console.log('[autosign db save] saved', JSON.stringify({ channelId: Number(channelId), len: cleanText.length }));
+    const checkRows = await query(
+      `SELECT id, channel_id, owner_key, is_active, text, updated_at
+       FROM channel_signatures
+       WHERE id=$1
+       LIMIT 1`,
+      [rows[0].id]
+    );
+
+    if (!Array.isArray(checkRows) || !checkRows.length) {
+      throw new Error('signature saved row not found after insert');
+    }
+
+    console.log('[autosign db save] saved+verified', JSON.stringify({
+      id: checkRows[0].id,
+      channelId: Number(channelId),
+      len: cleanText.length
+    }));
   }
 
-  function lrKb(rows) {
+function lrKb(rows) {
       return inlineKeyboard(rows);
     }
 
