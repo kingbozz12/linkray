@@ -871,6 +871,26 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
+
+/* LR_ADD_CHANNEL_INSTRUCTION_V65_MOUNT_START */
+try {
+  const { mountLinkRayAddChannelInstructionV65 } = await import('./linkrayAddChannelInstructionV65.js');
+  mountLinkRayAddChannelInstructionV65(app);
+} catch (e) {
+  console.log('[LR_ADD_CHANNEL_INSTRUCTION_V65] mount error', e?.stack || e?.message || e);
+}
+/* LR_ADD_CHANNEL_INSTRUCTION_V65_MOUNT_END */
+
+/* LR_QUICK_POST_TEXT_V65_MOUNT_START */
+try {
+  const { mountLinkRayQuickPostTextV65 } = await import('./linkrayQuickPostTextV65.js');
+  mountLinkRayQuickPostTextV65(app);
+} catch (e) {
+  console.log('[LR_QUICK_POST_TEXT_V65] mount error', e?.stack || e?.message || e);
+}
+/* LR_QUICK_POST_TEXT_V65_MOUNT_END */
+
+
 /* LR_CHANNEL_FORWARD_CONNECT_V64_MOUNT_START */
 try {
   const { mountLinkRayChannelForwardConnectV64 } = await import('./linkrayChannelForwardConnectV64.js');
