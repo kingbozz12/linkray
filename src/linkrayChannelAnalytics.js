@@ -1,9 +1,23 @@
-// LinkRay analytics middleware disabled temporarily.
-// It must not intercept /start or main autoposting callbacks.
+// LinkRay channel analytics is disabled as middleware.
+// It must not intercept /start, main menu or autoposting callbacks.
 
-export async function handleLinkRayChannelAnalyticsIncoming(...args) { return false; }
-export function mountLinkRayChannelAnalytics(...args) { console.log('[LinkRay channel analytics] middleware disabled'); return false; }
-export function startDailyWorker(...args) { console.log('[LinkRay channel analytics] worker disabled'); return false; }
-export function startLinkRayChannelAnalyticsDailyWorker(...args) { console.log('[LinkRay channel analytics] worker disabled'); return false; }
+export function mountLinkRayChannelAnalytics() {
+  console.log('[LinkRay channel analytics] middleware disabled');
+  return false;
+}
+
+export async function handleLinkRayChannelAnalyticsIncoming() {
+  return false;
+}
+
+export function startLinkRayChannelAnalyticsDailyWorker() {
+  console.log('[LinkRay channel analytics] daily worker disabled');
+  return false;
+}
+
+export function startDailyWorker() {
+  console.log('[LinkRay channel analytics] daily worker disabled');
+  return false;
+}
 
 export default {};
