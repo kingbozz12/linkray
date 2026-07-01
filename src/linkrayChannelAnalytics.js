@@ -11,20 +11,7 @@ import { sendMaxMessage } from './maxClient.js';
 function __lrAnalyticsShouldHandleUpdate(update = {}) {
   const msg = update.message || update.body || update.callback || {};
   const text = String(update.text || msg.text || update.body?.text || '').trim();
-  const payload = String(update.payload || update.callback?.payload || msg.payload || update.body?.payload || '').trim();
-
-/* LR_ANALYTICS_CALLBACK_GATE_START */
-const __lrAnalyticsPayloadGate = String(payload || '');
-if (__lrAnalyticsPayloadGate && !(
-  __lrAnalyticsPayloadGate === 'main:analytics' ||
-  __lrAnalyticsPayloadGate === 'analytics:menu' ||
-  __lrAnalyticsPayloadGate.startsWith('analytics:') ||
-  __lrAnalyticsPayloadGate.startsWith('lrchan:')
-)) {
-  return next();
-}
-/* LR_ANALYTICS_CALLBACK_GATE_END */
-  const both = `${text} ${payload}`;
+  const payload = String(update.payload || update.callback?.payload || msg.payload || update.body?.payload || '').trim(); const both = `${text} ${payload}`;
   if (/^(main:analytics|analytics:|lrchan:)/i.test(payload)) return true;
   if (/^(main:analytics|analytics:|lrchan:)/i.test(text)) return true;
   if (/https?:\/\/(max\.ru|max\.com)\//i.test(both)) return true;
