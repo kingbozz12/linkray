@@ -9667,7 +9667,7 @@ async function handleCallback(update) {
   if (payload === 'editor:next') { const s = await getSession(key); return showPublishMenu(callbackId, key, safeDraft(s.data)); }
   if (payload === 'editor:save') { const s = await getSession(key); return saveExisting(callbackId, key, safeDraft(s.data)); }
   if (payload === 'publish:auto_delete') { const s = await getSession(key); return showPublishMenu(callbackId, key, safeDraft(s.data)); }
-  if (payload.startsWith('publish:auto_set:')) { const session = await getSession(key); const draft = safeDraft(session.data); const v = Number(payload.split(':')[2] || 0) || null; draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return showPublishMenu(callbackId, key, draft); }
+  if (payload.startsWith('publish:auto_set:')) { const session = await getSession(key); const draft = safeDraft(session.data); if (await __lrHandlePendingSignatureTextV5({ chatId, key, update, session, draft, text, send: msg })) return; const v = Number(payload.split(':')[2] || 0) || null; draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return showPublishMenu(callbackId, key, draft); }
   if (payload === 'schedule:manual') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '🕒 Введите время: 18:30, 0235, завтра 18:30, через 1 минуту или 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
   if (payload === 'schedule:calendar') return showScheduleCalendar(callbackId, key, dateKey(new Date()));
   if (payload.startsWith('schedule:week:')) return showScheduleCalendar(callbackId, key, payload.split(':')[2]);
@@ -10568,6 +10568,190 @@ async function lrSafeHydrateContent(update) {
 }
 
 const __lrStartDedupeMap = new Map();
+
+
+/* LR_AUTOSIGN_PENDING_SAVE_V5_START */
+function __lrSigRowsV5(result) {
+  return Array.isArray(result) ? result : (Array.isArray(result?.rows) ? result.rows : []);
+}
+
+function __lrPendingSigKeysV5(chatId, key) {
+  const out = [];
+  const a = String(chatId || '').trim();
+  const b = String(key || '').trim();
+  if (a) out.push(`pending_signature:${a}`);
+  if (b) out.push(`pending_signature:${b}`);
+  return [...new Set(out)];
+}
+
+async function __lrEnsureSigTablesV5() {
+  await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+    key text PRIMARY KEY,
+    value text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS channel_signatures (
+    id bigserial PRIMARY KEY,
+    channel_id bigint NOT NULL,
+    owner_key text,
+    text text NOT NULL DEFAULT '',
+    is_active boolean NOT NULL DEFAULT true,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+}
+
+async function __lrSetPendingSigInputV5(chatId, key, channelId) {
+  const cid = Number(channelId || 0);
+  if (!cid) return;
+  await __lrEnsureSigTablesV5();
+  const value = JSON.stringify({ channelId: cid, chatId: String(chatId || ''), key: String(key || ''), ts: Date.now() });
+  for (const k of __lrPendingSigKeysV5(chatId, key)) {
+    await query(
+      `INSERT INTO lr_bot_state(key,value,updated_at)
+       VALUES($1,$2,now())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [k, value]
+    ).catch((e) => console.error('[autosign pending set]', e.message || e));
+  }
+}
+
+async function __lrGetPendingSigInputV5(chatId, key) {
+  await __lrEnsureSigTablesV5();
+  for (const k of __lrPendingSigKeysV5(chatId, key)) {
+    const rows = __lrSigRowsV5(await query(`SELECT value FROM lr_bot_state WHERE key=$1 LIMIT 1`, [k]).catch(() => []));
+    const raw = rows[0]?.value;
+    if (!raw) continue;
+    try {
+      const data = JSON.parse(raw);
+      if (data?.ts && Date.now() - Number(data.ts) > 30 * 60 * 1000) {
+        await query(`DELETE FROM lr_bot_state WHERE key=$1`, [k]).catch(() => {});
+        continue;
+      }
+      if (Number(data?.channelId || 0)) return data;
+    } catch {}
+  }
+  return null;
+}
+
+async function __lrClearPendingSigInputV5(chatId, key) {
+  for (const k of __lrPendingSigKeysV5(chatId, key)) {
+    await query(`DELETE FROM lr_bot_state WHERE key=$1`, [k]).catch(() => {});
+  }
+}
+
+async function __lrSaveSigDirectV5(channelId, content, ownerKey = '') {
+  await __lrEnsureSigTablesV5();
+
+  const cid = Number(channelId || 0);
+  const text = String(content?.text ?? content ?? '').trim();
+  if (!cid || !text) return null;
+
+  const owner = String(ownerKey || 'linkray').slice(0, 200);
+
+  const existing = __lrSigRowsV5(
+    await query(`SELECT id FROM channel_signatures WHERE channel_id=$1 ORDER BY updated_at DESC LIMIT 1`, [cid]).catch(() => [])
+  );
+
+  if (existing.length) {
+    await query(
+      `UPDATE channel_signatures
+       SET text=$2, is_active=true, owner_key=$3, updated_at=now()
+       WHERE channel_id=$1`,
+      [cid, text, owner]
+    );
+  } else {
+    await query(
+      `INSERT INTO channel_signatures(channel_id, owner_key, text, is_active, updated_at)
+       VALUES($1,$2,$3,true,now())`,
+      [cid, owner, text]
+    );
+  }
+
+  const saved = __lrSigRowsV5(
+    await query(
+      `SELECT id, channel_id, owner_key, is_active, text, updated_at
+       FROM channel_signatures
+       WHERE channel_id=$1
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [cid]
+    ).catch(() => [])
+  )[0] || null;
+
+  console.log('[autosign db save] saved+verified', JSON.stringify({
+    channelId: cid,
+    len: text.length,
+    saved: !!saved,
+    id: saved?.id || null
+  }));
+
+  return saved;
+}
+
+async function __lrHandlePendingSignatureTextV5({ chatId, key, update, session, draft, text, send }) {
+  const pending = await __lrGetPendingSigInputV5(chatId, key);
+  const state = String(session?.state || '');
+  if (state !== 'wait_signature' && !pending) return false;
+
+  const channelId = Number(
+    draft?.channelIds?.[0] ||
+    session?.data?.draft?.channelIds?.[0] ||
+    session?.data?.channelId ||
+    pending?.channelId ||
+    0
+  );
+
+  if (!channelId) {
+    await __lrClearPendingSigInputV5(chatId, key);
+    await clearSession(key).catch(() => {});
+    await send(chatId, '⚠️ Канал для автоподписи не найден. Откройте Studio → Автоподписи и выберите канал заново.', [
+      [callbackButton('🏷 Автоподписи', 'sig:menu')],
+      [callbackButton('⬅️ В Studio', 'main:posting')]
+    ]);
+    return true;
+  }
+
+  let content = null;
+  try {
+    if (typeof lrSigV14Content === 'function') content = lrSigV14Content(update);
+    else if (typeof lrAutoSigFinalContent === 'function') content = lrAutoSigFinalContent(update);
+  } catch (e) {
+    console.error('[autosign content parse]', e.message || e);
+  }
+
+  if (!content || !String(content.text || '').trim()) {
+    content = { text: String(text || '').trim(), format: 'html', markup: [], attachments: [] };
+  }
+
+  if (!String(content.text || '').trim()) {
+    await send(chatId, '⚠️ Подпись пустая. Отправьте текст подписи.', [
+      [callbackButton('⬅️ Автоподписи', 'sig:menu')]
+    ]);
+    return true;
+  }
+
+  const saved = await __lrSaveSigDirectV5(channelId, content, key || chatId);
+
+  await clearSession(key).catch(() => {});
+  await __lrClearPendingSigInputV5(chatId, key);
+
+  const preview = String(saved?.text || content.text || '').trim() || 'Подпись сохранена.';
+  await send(
+    chatId,
+    `✅ Подпись сохранена в базе.\n\n━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nКанал:\n${channelId}\n\nСтатус: 🟢 включена\n\n${preview}\n━━━━━━━━━━━━━━`,
+    [
+      [callbackButton('✏️ Заменить автоподпись', `sig:add_channel:${channelId}`)],
+      [callbackButton('🔴 Выключить', `sig:toggle_channel:${channelId}`)],
+      [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+      [callbackButton('⬅️ В Studio', 'main:posting')]
+    ],
+    'html'
+  );
+
+  return true;
+}
+/* LR_AUTOSIGN_PENDING_SAVE_V5_END */
 
 async function handleMessage(update) {
   __lrStartChannelDbSyncTimer();
