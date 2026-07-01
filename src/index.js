@@ -10641,7 +10641,42 @@ async function handleMessage(update) {
     }
 
     try {
-      await saveSignature(channelId, content);
+      await query(`CREATE TABLE IF NOT EXISTS channel_signatures (
+  id serial PRIMARY KEY,
+  channel_id integer NOT NULL,
+  owner_key text NOT NULL DEFAULT 'global',
+  title text,
+  text text,
+  format text DEFAULT 'html',
+  markup jsonb DEFAULT '[]'::jsonb,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+)`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS owner_key text NOT NULL DEFAULT 'global'`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS title text`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS text text`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS format text DEFAULT 'html'`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS markup jsonb DEFAULT '[]'::jsonb`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`);
+await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+
+const sigText = String(content && content.text ? content.text : '').trim();
+const sigMarkup = Array.isArray(content && content.markup) ? content.markup : [];
+
+await query(
+  `DELETE FROM channel_signatures WHERE channel_id=$1 AND owner_key=$2`,
+  [Number(channelId), 'global']
+);
+
+await query(
+  `INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at)
+   VALUES($1,$2,$3,$4,$5,$6::jsonb,true,now(),now())`,
+  [Number(channelId), 'global', 'Автоподпись', sigText, 'html', JSON.stringify(sigMarkup)]
+);
+
+console.log('[autosign db save] wait_signature saved', JSON.stringify({ channelId: Number(channelId), len: sigText.length }));
     } catch (error) {
       console.error('[signature save final]', error.message || error);
       await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft });
