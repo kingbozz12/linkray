@@ -1,6 +1,6 @@
 import { query } from './db.js';
 
-const TAG = 'LR_CHANNEL_ACCESS_SYNC_V50';
+const TAG = 'LR_CHANNEL_ACCESS_SYNC_V52_PRO';
 
 let running = false;
 let lastRunAt = 0;
@@ -35,6 +35,14 @@ function apiBase() {
     process.env.PLATFORM_API_URL ||
     'https://platform-api2.max.ru'
   ).replace(/\/+$/, '');
+}
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '{}';
+  }
 }
 
 function pick(obj, path) {
@@ -73,6 +81,7 @@ async function ensureMetaTables() {
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `);
+
   await query(`
     CREATE TABLE IF NOT EXISTS lr_channel_sync_log (
       id serial PRIMARY KEY,
@@ -82,9 +91,12 @@ async function ensureMetaTables() {
       status text,
       action text,
       reason text,
+      details jsonb NOT NULL DEFAULT '{}'::jsonb,
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `);
+
+  await query(`ALTER TABLE lr_channel_sync_log ADD COLUMN IF NOT EXISTS details jsonb NOT NULL DEFAULT '{}'::jsonb`);
 }
 
 async function rememberDialog(update) {
@@ -102,13 +114,18 @@ async function rememberDialog(update) {
     DO UPDATE SET chat_id=EXCLUDED.chat_id, updated_at=now()
   `, [String(userId), String(chatId)]);
 
-  console.log(`[${TAG}] remembered dialog`, JSON.stringify({ userId: String(userId), chatId: String(chatId) }));
+  console.log(`[${TAG}] remembered dialog`, safeJson({ userId: String(userId), chatId: String(chatId) }));
 }
 
 async function ownerDialogChatId(channel) {
   await ensureMetaTables();
 
-  const owner = channel.owner_max_user_id || channel.owner_user_id || channel.created_by_max_user_id || null;
+  const owner =
+    channel.owner_max_user_id ||
+    channel.owner_user_id ||
+    channel.created_by_max_user_id ||
+    null;
+
   if (!owner) return null;
 
   const r = rows(await query(
@@ -142,7 +159,7 @@ async function sendNotice(chatId, html) {
     const text = await res.text().catch(() => '');
 
     if (!res.ok) {
-      console.log(`[${TAG}] notice send failed`, res.status, text.slice(0, 500));
+      console.log(`[${TAG}] notice send failed`, res.status, text.slice(0, 700));
       return false;
     }
 
@@ -154,11 +171,21 @@ async function sendNotice(chatId, html) {
   }
 }
 
-async function maxGetChat(maxChatId) {
+async function maxRequest(path) {
   const t = token();
-  if (!t) return { ok: false, skip: true, status: 0, data: null, error: 'NO_TOKEN' };
 
-  const url = `${apiBase()}/chats/${encodeURIComponent(String(maxChatId))}`;
+  if (!t) {
+    return {
+      ok: false,
+      skipDelete: true,
+      http: 0,
+      data: null,
+      text: '',
+      reason: 'no_token'
+    };
+  }
+
+  const url = `${apiBase()}${path}`;
 
   try {
     const controller = new AbortController();
@@ -173,8 +200,8 @@ async function maxGetChat(maxChatId) {
       signal: controller.signal
     }).finally(() => clearTimeout(timeout));
 
-    let data = null;
     const text = await res.text().catch(() => '');
+    let data = null;
 
     try {
       data = text ? JSON.parse(text) : null;
@@ -182,35 +209,43 @@ async function maxGetChat(maxChatId) {
       data = { raw: text };
     }
 
-    return { ok: res.ok, status: res.status, data, error: null };
+    return {
+      ok: res.ok,
+      skipDelete: false,
+      http: res.status,
+      data,
+      text,
+      reason: null
+    };
   } catch (e) {
-    return { ok: false, status: 0, data: null, error: e?.message || String(e) };
+    return {
+      ok: false,
+      skipDelete: true,
+      http: 0,
+      data: null,
+      text: '',
+      reason: e?.message || String(e)
+    };
   }
 }
 
-function statusFromChatResponse(check) {
-  const d = check?.data || {};
+function chatStatus(chatCheck) {
+  const d = chatCheck?.data || {};
   return String(d.status || d.chat?.status || d.result?.status || '').toLowerCase();
 }
 
-function titleFromChatResponse(check) {
-  const d = check?.data || {};
+function titleFromChat(chatCheck) {
+  const d = chatCheck?.data || {};
   return d.title || d.chat?.title || d.result?.title || null;
 }
 
-function linkFromChatResponse(check) {
-  const d = check?.data || {};
+function linkFromChat(chatCheck) {
+  const d = chatCheck?.data || {};
   return d.link || d.chat?.link || d.result?.link || null;
 }
 
-function isPublicFromChatResponse(check) {
-  const d = check?.data || {};
-  const value = d.is_public ?? d.chat?.is_public ?? d.result?.is_public;
-  return typeof value === 'boolean' ? value : null;
-}
-
-function avatarFromChatResponse(check) {
-  const d = check?.data || {};
+function avatarFromChat(chatCheck) {
+  const d = chatCheck?.data || {};
   const icon = d.icon || d.chat?.icon || d.result?.icon || null;
 
   if (!icon || typeof icon !== 'object') return null;
@@ -227,13 +262,165 @@ function avatarFromChatResponse(check) {
   );
 }
 
-function accessGone(check) {
-  const st = statusFromChatResponse(check);
+function memberInfo(memberCheck) {
+  const d = memberCheck?.data || {};
+  const source = d.result || d.member || d;
 
-  if (['removed', 'left', 'closed'].includes(st)) return true;
-  if ([403, 404, 410].includes(Number(check.status))) return true;
+  const isAdmin =
+    source.is_admin === true ||
+    source.is_owner === true ||
+    source.role === 'admin' ||
+    source.role === 'administrator' ||
+    source.role === 'creator';
 
-  return false;
+  const isOwner = source.is_owner === true || source.role === 'creator';
+
+  const permissions = Array.isArray(source.permissions) ? source.permissions.map(String) : [];
+
+  return {
+    userId: source.user_id ?? null,
+    isBot: source.is_bot ?? null,
+    isAdmin,
+    isOwner,
+    permissions,
+    raw: source
+  };
+}
+
+function requiredPermissionResult(info) {
+  const perms = new Set((info.permissions || []).map(String));
+
+  const hasRead = perms.has('read_all_messages');
+  const hasWrite =
+    perms.has('write') ||
+    perms.has('post_edit_delete_message') ||
+    perms.has('edit') ||
+    perms.has('edit_message');
+
+  const hasDelete =
+    perms.has('delete') ||
+    perms.has('delete_message') ||
+    perms.has('write') ||
+    perms.has('post_edit_delete_message');
+
+  if (!info.isAdmin && !info.isOwner) {
+    return {
+      ok: false,
+      reason: 'bot_not_admin'
+    };
+  }
+
+  if (!hasRead) {
+    return {
+      ok: false,
+      reason: 'missing_read_all_messages'
+    };
+  }
+
+  if (!hasWrite) {
+    return {
+      ok: false,
+      reason: 'missing_write_permission'
+    };
+  }
+
+  if (!hasDelete) {
+    return {
+      ok: false,
+      reason: 'missing_delete_permission'
+    };
+  }
+
+  return {
+    ok: true,
+    reason: 'ok'
+  };
+}
+
+async function botAccessCheck(maxChatId) {
+  const chat = await maxRequest(`/chats/${encodeURIComponent(String(maxChatId))}`);
+
+  const status = chatStatus(chat);
+
+  if ([403, 404, 410].includes(Number(chat.http))) {
+    return {
+      ok: false,
+      delete: true,
+      reason: `chat_http_${chat.http}`,
+      chat,
+      member: null,
+      memberInfo: null
+    };
+  }
+
+  if (['removed', 'left', 'closed', 'deleted'].includes(status)) {
+    return {
+      ok: false,
+      delete: true,
+      reason: `chat_status_${status}`,
+      chat,
+      member: null,
+      memberInfo: null
+    };
+  }
+
+  if (!chat.ok) {
+    return {
+      ok: false,
+      delete: false,
+      reason: chat.reason || `chat_http_${chat.http}`,
+      chat,
+      member: null,
+      memberInfo: null
+    };
+  }
+
+  const member = await maxRequest(`/chats/${encodeURIComponent(String(maxChatId))}/members/me`);
+
+  if ([403, 404, 410].includes(Number(member.http))) {
+    return {
+      ok: false,
+      delete: true,
+      reason: `bot_membership_http_${member.http}`,
+      chat,
+      member,
+      memberInfo: null
+    };
+  }
+
+  if (!member.ok) {
+    return {
+      ok: false,
+      delete: false,
+      reason: member.reason || `bot_membership_http_${member.http}`,
+      chat,
+      member,
+      memberInfo: null
+    };
+  }
+
+  const info = memberInfo(member);
+  const perm = requiredPermissionResult(info);
+
+  if (!perm.ok) {
+    return {
+      ok: false,
+      delete: true,
+      reason: perm.reason,
+      chat,
+      member,
+      memberInfo: info
+    };
+  }
+
+  return {
+    ok: true,
+    delete: false,
+    reason: 'active_admin',
+    chat,
+    member,
+    memberInfo: info
+  };
 }
 
 async function getTableColumns(table) {
@@ -246,15 +433,14 @@ async function getTableColumns(table) {
   return new Set(r.map(x => x.column_name));
 }
 
-async function updateChannelFreshInfo(channel, check) {
+async function updateChannelFreshInfo(channel, access) {
   const cols = await getTableColumns('channels');
   const sets = [];
   const params = [];
 
-  const title = titleFromChatResponse(check);
-  const link = linkFromChatResponse(check);
-  const isPublic = isPublicFromChatResponse(check);
-  const avatar = avatarFromChatResponse(check);
+  const title = titleFromChat(access.chat);
+  const link = linkFromChat(access.chat);
+  const avatar = avatarFromChat(access.chat);
 
   if (title && cols.has('title')) {
     params.push(title);
@@ -264,11 +450,6 @@ async function updateChannelFreshInfo(channel, check) {
   if (link && cols.has('link')) {
     params.push(link);
     sets.push(`link=$${params.length}`);
-  }
-
-  if (typeof isPublic === 'boolean' && cols.has('is_public')) {
-    params.push(isPublic);
-    sets.push(`is_public=$${params.length}`);
   }
 
   if (avatar && cols.has('avatar_url')) {
@@ -290,7 +471,15 @@ async function updateChannelFreshInfo(channel, check) {
   );
 }
 
-async function deleteChannelEverywhere(channel, reason) {
+async function deleteFromTable(table, cond, params) {
+  const quoted = `"${String(table).replaceAll('"', '""')}"`;
+  const sql = `DELETE FROM public.${quoted} WHERE ${cond.join(' OR ')} RETURNING 1`;
+
+  const r = rows(await query(sql, params));
+  return r.length;
+}
+
+async function deleteChannelEverywhere(channel, reason, details = {}) {
   const id = Number(channel.id);
   const maxChatId = channel.max_chat_id ? String(channel.max_chat_id) : '';
   const title = channel.title || channel.link || channel.max_chat_id || `Канал ${channel.id}`;
@@ -307,7 +496,14 @@ async function deleteChannelEverywhere(channel, reason) {
 
   for (const t of tables) {
     const table = t.table_name;
-    if (table === 'channels') continue;
+
+    if (
+      table === 'channels' ||
+      table === 'lr_user_dialogs' ||
+      table === 'lr_channel_sync_log'
+    ) {
+      continue;
+    }
 
     const cols = await getTableColumns(table);
     const cond = [];
@@ -331,12 +527,8 @@ async function deleteChannelEverywhere(channel, reason) {
     if (!cond.length) continue;
 
     try {
-      const r = await query(
-        `DELETE FROM public."${table.replaceAll('"', '""')}" WHERE ${cond.join(' OR ')}`,
-        params
-      );
+      const n = await deleteFromTable(table, cond, params);
 
-      const n = Number(r?.rowCount || 0);
       if (n) {
         total += n;
         console.log(`[${TAG}] deleted linked`, table, n);
@@ -347,8 +539,8 @@ async function deleteChannelEverywhere(channel, reason) {
   }
 
   try {
-    const r = await query(`DELETE FROM channels WHERE id=$1`, [id]);
-    total += Number(r?.rowCount || 0);
+    const r = rows(await query(`DELETE FROM channels WHERE id=$1 RETURNING 1`, [id]));
+    total += r.length;
   } catch (e) {
     console.log(`[${TAG}] delete channel error`, e?.message || e);
   }
@@ -356,19 +548,28 @@ async function deleteChannelEverywhere(channel, reason) {
   await ensureMetaTables();
 
   await query(`
-    INSERT INTO lr_channel_sync_log(channel_id, max_chat_id, title, status, action, reason)
-    VALUES($1, $2, $3, $4, $5, $6)
-  `, [id, maxChatId || null, title, 'removed', 'deleted', reason]);
+    INSERT INTO lr_channel_sync_log(channel_id, max_chat_id, title, status, action, reason, details)
+    VALUES($1, $2, $3, $4, $5, $6, $7::jsonb)
+  `, [
+    id,
+    maxChatId || null,
+    title,
+    'removed',
+    'deleted',
+    reason,
+    safeJson(details || {})
+  ]);
 
-  console.log(`[${TAG}] CHANNEL_REMOVED`, JSON.stringify({
+  console.log(`[${TAG}] CHANNEL_REMOVED`, safeJson({
     id,
     maxChatId,
     title,
     reason,
-    deletedRows: total
+    deletedRows: total,
+    details
   }));
 
-  return { title, deletedRows: total };
+  return { id, maxChatId, title, reason, deletedRows: total };
 }
 
 async function channels() {
@@ -377,6 +578,20 @@ async function channels() {
     FROM channels
     ORDER BY id ASC
   `));
+}
+
+async function notifyRemoved(channel, deleted, notifyChatId) {
+  const ownerChat = notifyChatId || await ownerDialogChatId(channel);
+
+  if (!ownerChat) return false;
+
+  return sendNotice(
+    ownerChat,
+    `🗑 <b>Канал удалён из LinkRay</b>\n\n` +
+    `${escHtml(deleted.title)}\n\n` +
+    `Причина: <b>${escHtml(deleted.reason)}</b>\n\n` +
+    `Бот больше не является полноценным администратором канала, поэтому канал удалён из базы, меню публикаций, аналитики, отчётов, антифрода и рекламных закупов.`
+  );
 }
 
 async function syncChannelsAccess({ reason = 'manual', notifyChatId = null, force = false } = {}) {
@@ -390,6 +605,7 @@ async function syncChannelsAccess({ reason = 'manual', notifyChatId = null, forc
 
   const result = {
     checked: 0,
+    active: 0,
     removed: 0,
     skipped: 0,
     errors: 0
@@ -406,54 +622,51 @@ async function syncChannelsAccess({ reason = 'manual', notifyChatId = null, forc
         continue;
       }
 
-      const check = await maxGetChat(maxChatId);
+      const access = await botAccessCheck(maxChatId);
       result.checked++;
 
-      console.log(`[${TAG}] check`, JSON.stringify({
+      console.log(`[${TAG}] check`, safeJson({
         id: ch.id,
         maxChatId: String(maxChatId),
         title: ch.title || null,
-        http: check.status,
-        ok: check.ok,
-        status: statusFromChatResponse(check),
-        error: check.error || null
+        ok: access.ok,
+        delete: access.delete,
+        reason: access.reason,
+        chatHttp: access.chat?.http ?? null,
+        chatStatus: chatStatus(access.chat),
+        memberHttp: access.member?.http ?? null,
+        isAdmin: access.memberInfo?.isAdmin ?? null,
+        isOwner: access.memberInfo?.isOwner ?? null,
+        permissions: access.memberInfo?.permissions ?? []
       }));
 
-      if (check.skip) {
-        result.skipped++;
+      if (access.ok) {
+        result.active++;
+        await updateChannelFreshInfo(ch, access);
         continue;
       }
 
-      if (check.status === 401) {
-        console.log(`[${TAG}] skip delete: token unauthorized`);
-        result.errors++;
-        continue;
-      }
+      if (access.delete) {
+        const deleted = await deleteChannelEverywhere(ch, access.reason, {
+          syncReason: reason,
+          chatHttp: access.chat?.http ?? null,
+          chatStatus: chatStatus(access.chat),
+          memberHttp: access.member?.http ?? null,
+          isAdmin: access.memberInfo?.isAdmin ?? null,
+          isOwner: access.memberInfo?.isOwner ?? null,
+          permissions: access.memberInfo?.permissions ?? []
+        });
 
-      if (accessGone(check)) {
-        const deleted = await deleteChannelEverywhere(ch, reason);
         result.removed++;
 
-        const ownerChat = notifyChatId || await ownerDialogChatId(ch);
-
-        if (ownerChat) {
-          await sendNotice(
-            ownerChat,
-            `🗑 <b>Канал удалён из LinkRay</b>\n\n` +
-            `${escHtml(deleted.title)}\n\n` +
-            `Бот больше не имеет доступа к каналу, поэтому канал удалён из базы, меню публикаций, аналитики, отчётов, антифрода и рекламных закупов.`
-          );
-        }
-
+        await notifyRemoved(ch, deleted, notifyChatId);
         continue;
       }
 
-      if (check.ok) {
-        await updateChannelFreshInfo(ch, check);
-      }
+      result.errors++;
     }
 
-    console.log(`[${TAG}] sync done`, JSON.stringify(result));
+    console.log(`[${TAG}] sync done`, safeJson(result));
     return result;
   } catch (e) {
     console.log(`[${TAG}] sync fatal`, e?.stack || e?.message || e);

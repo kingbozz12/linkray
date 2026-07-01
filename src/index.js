@@ -852,14 +852,17 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
-/* LR_CHANNEL_ACCESS_SYNC_V50_START */
+
+
+
+/* LR_CHANNEL_ACCESS_SYNC_V52_PRO_START */
 try {
   const { mountLinkRayChannelAccessSync } = await import('./linkrayChannelAccessSync.js');
   mountLinkRayChannelAccessSync(app);
 } catch (e) {
-  console.log('[LR_CHANNEL_ACCESS_SYNC_V50] mount error', e?.stack || e?.message || e);
+  console.log('[LR_CHANNEL_ACCESS_SYNC_V52_PRO] mount error', e?.stack || e?.message || e);
 }
-/* LR_CHANNEL_ACCESS_SYNC_V50_END */
+/* LR_CHANNEL_ACCESS_SYNC_V52_PRO_END */
 
 
 // LR_FORCE_START_MENU_V7_START
