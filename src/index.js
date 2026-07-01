@@ -8506,7 +8506,26 @@ function mainMenuRows() {
   ];
 }
 async function showMainCallback(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
-async function sendMain(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
+async function sendMain(chatId) { await msg(chatId, `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`, mainMenuRows()); }
 function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('➕ Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
 async function showStudio(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nСобирайте посты, планируйте публикации и управляйте рекламными размещениями.\n━━━━━━━━━━━━━━`, studioRows()); }
 async function sendStudio(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━`, studioRows()); }
@@ -9534,17 +9553,21 @@ if (payload.startsWith('sig:add_channel:')) {
 }
 
 async function showChannels(callbackId) {
-  return cb(callbackId, `━━━━━━━━━━━━
+  return cb(callbackId, `━━━━━━━━━━━━━━
 🔗 <b>Добавить канал</b>
 
-1. Откройте канал в MAX.
-2. Добавьте LinkRay в администраторы.
-3. Выдайте право публикации.
-4. Канал автоматически сохранится в базе LinkRay.
+1. Добавьте LinkRay администратором MAX-канала.
+2. Дайте права:
+• публикация сообщений
+• редактирование сообщений
+• удаление сообщений
+• чтение сообщений
+• изменение информации канала
 
-После добавления бот пришлёт сообщение:
-✅ Канал добавлен в LinkRay
-━━━━━━━━━━━━`, [
+3. Перешлите любой пост из этого канала сюда, в личку бота.
+
+После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
+━━━━━━━━━━━━━━`, [
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
     [callbackButton('⬅️ В меню', 'main:menu')]
   ]);
