@@ -126,14 +126,20 @@ async function ownerDialogChatId(channel) {
     channel.created_by_max_user_id ||
     null;
 
-  if (!owner) return null;
+  if (owner) {
+    const r = rows(await query(
+      `SELECT chat_id FROM lr_user_dialogs WHERE user_id=$1 LIMIT 1`,
+      [String(owner)]
+    ));
 
-  const r = rows(await query(
-    `SELECT chat_id FROM lr_user_dialogs WHERE user_id=$1 LIMIT 1`,
-    [String(owner)]
+    if (r[0]?.chat_id) return r[0].chat_id;
+  }
+
+  const latest = rows(await query(
+    `SELECT chat_id FROM lr_user_dialogs ORDER BY updated_at DESC LIMIT 1`
   ));
 
-  return r[0]?.chat_id || null;
+  return latest[0]?.chat_id || null;
 }
 
 async function sendNotice(chatId, html) {
@@ -587,10 +593,10 @@ async function notifyRemoved(channel, deleted, notifyChatId) {
 
   return sendNotice(
     ownerChat,
-    `🗑 <b>Канал удалён из LinkRay</b>\n\n` +
+    `🗑 <b>Канал отключён от LinkRay</b>\n\n` +
     `${escHtml(deleted.title)}\n\n` +
     `Причина: <b>${escHtml(deleted.reason)}</b>\n\n` +
-    `Бот больше не является полноценным администратором канала, поэтому канал удалён из базы, меню публикаций, аналитики, отчётов, антифрода и рекламных закупов.`
+    `Канал удалён из базы LinkRay, меню публикаций, аналитики, ежедневных отчётов, антифрода и рекламных закупов.`
   );
 }
 

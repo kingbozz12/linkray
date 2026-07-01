@@ -9015,7 +9015,7 @@ async function __lrDeleteChannelByUpdate(update) {
 
   if (chatId) {
     await sendMessage(chatId, {
-      text: `🗑️ <b>Канал удалён из LinkRay</b>\n\n${names}\n\nБот больше не администратор этого канала, поэтому канал удалён из базы.`,
+      text: `🗑️ <b>Канал отключён от LinkRay</b>\n\n${names}\n\nБот больше не администратор этого канала, поэтому канал удалён из базы.`,
       buttons: [
         [callbackButton('🔗 Добавить канал', 'post:add_channel')],
         [callbackButton('⬅️ В меню', 'main:menu')]
@@ -9112,7 +9112,7 @@ async function __lrNotifyNewChannels(targetChatId = '', update = null) {
         text:
           `✅ <b>Канал подключён к LinkRay</b>\n\n` +
           `${title}\n\n` +
-          `Канал сохранён в базе и будет использоваться для публикаций, аналитики, отчётов, антифрода и рекламных закупов.`,
+          `Канал сохранён в базе LinkRay и будет использоваться для публикаций, отложенных постов, аналитики, ежедневных отчётов, антифрода и рекламных закупов.`,
         buttons: [
           [callbackButton('🔗 Добавить ещё канал', 'post:add_channel')],
           [callbackButton('⬅️ В меню', 'main:menu')]
