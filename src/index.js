@@ -5278,7 +5278,7 @@ app.use(async function lrButtonPreviewRefreshV7(req, res, next) {
     }
 
     async function lrAck(text) {
-      if (!callbackId) return;
+      if (!callbackId && !payload) return;
 
       try {
         await answerCallback({
@@ -7092,14 +7092,101 @@ function lrBuildSendTarget(target) {
   return { chatId: id };
 }
 
-function getCallbackId(u) { return u.callback?.callback_id || u.callback?.callbackId || u.callback_id || u.callbackId || null; }
+function getCallbackId(u) {
+  return lrFirstNonEmpty(
+    u?.callback?.callback_id,
+    u?.callback?.callbackId,
+    u?.callback?.id,
+
+    u?.message_callback?.callback_id,
+    u?.message_callback?.callbackId,
+    u?.message_callback?.id,
+
+    u?.messageCallback?.callback_id,
+    u?.messageCallback?.callbackId,
+    u?.messageCallback?.id,
+
+    u?.callback_query?.id,
+    u?.callbackQuery?.id,
+
+    u?.body?.callback_id,
+    u?.body?.callbackId,
+    u?.body?.callback?.id,
+
+    u?.message?.callback_id,
+    u?.message?.callbackId,
+    u?.message?.callback?.id,
+
+    u?.callback_id,
+    u?.callbackId,
+
+    lrDeepFirst(u, ['callback_id', 'callbackId', 'callback_query_id', 'callbackQueryId'])
+  ) || null;
+}
 function getCallbackPayload(u) {
-  const candidates = [u.callback?.payload, u.callback?.button?.payload, u.callback?.data, u.callback?.value, u.button?.payload, u.message?.body?.payload, u.message?.payload, u.payload, u.data];
+  const candidates = [
+    u?.callback?.payload,
+    u?.callback?.button?.payload,
+    u?.callback?.button?.data,
+    u?.callback?.data,
+    u?.callback?.value,
+
+    u?.message_callback?.payload,
+    u?.message_callback?.button?.payload,
+    u?.message_callback?.button?.data,
+    u?.message_callback?.button?.value,
+    u?.message_callback?.data,
+    u?.message_callback?.value,
+
+    u?.messageCallback?.payload,
+    u?.messageCallback?.button?.payload,
+    u?.messageCallback?.button?.data,
+    u?.messageCallback?.button?.value,
+    u?.messageCallback?.data,
+    u?.messageCallback?.value,
+
+    u?.callback_query?.data,
+    u?.callback_query?.payload,
+    u?.callbackQuery?.data,
+    u?.callbackQuery?.payload,
+
+    u?.button?.payload,
+    u?.button?.data,
+    u?.button?.value,
+
+    u?.body?.payload,
+    u?.body?.data,
+    u?.body?.button?.payload,
+    u?.body?.button?.data,
+
+    u?.message?.body?.payload,
+    u?.message?.body?.data,
+    u?.message?.payload,
+    u?.message?.data,
+
+    u?.payload,
+    u?.data
+  ];
+
   for (const c of candidates) {
     if (c === undefined || c === null || c === '') continue;
     if (typeof c === 'string') return c;
-    if (typeof c === 'object') return c.payload || c.value || c.data || JSON.stringify(c);
+    if (typeof c === 'number') return String(c);
+    if (typeof c === 'object') {
+      const v = c.payload || c.data || c.value || c.callback_data || c.callbackData;
+      if (v !== undefined && v !== null && String(v).trim() !== '') return String(v);
+    }
   }
+
+  const deep = lrDeepFirst(u, ['payload', 'callback_data', 'callbackData', 'data', 'value']);
+  if (deep !== undefined && deep !== null && String(deep).trim() !== '') {
+    if (typeof deep === 'object') {
+      const v = deep.payload || deep.data || deep.value || deep.callback_data || deep.callbackData;
+      if (v !== undefined && v !== null && String(v).trim() !== '') return String(v);
+    }
+    return String(deep);
+  }
+
   return '';
 }
 function getMessageText(u) { return String(u.message?.body?.text || u.message?.text || u.body?.text || u.text || '').trim(); }
@@ -7111,8 +7198,18 @@ async function setSession(key, state, data = {}) { await query(`INSERT INTO bot_
 async function clearSession(key) { await setSession(key, 'idle', {}); }
 
 function buttonRows(rows) { return inlineKeyboard(rows); }
-async function cb(callbackId, text, rows = [], format = 'html') { return answerCallback({ callbackId, text, format, attachments: buttonRows(rows) }); }
+async function cb(callbackId, text, rows = [], format = 'html') {
+  if (callbackId) {
+    return answerCallback({ callbackId, text, format, attachments: buttonRows(rows) });
+  }
 
+  const fallbackChatId = globalThis.__lrLastCallbackChatId;
+  if (fallbackChatId && typeof msg === 'function') {
+    return msg(fallbackChatId, text, rows, format);
+  }
+
+  return null;
+}
 // LR_SAFE_SERVICE_GUARD_V2_START
 function __lrSafeRows(result) {
   if (Array.isArray(result)) return result;
@@ -9418,6 +9515,7 @@ async function handleCallback(update) {
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = lrResolveReplyChatId(update, key);
+  globalThis.__lrLastCallbackChatId = chatId;
   await __lrRememberPrivateChatId(chatId, update);
   await __lrNotifyNewChannels(chatId, update);
 
