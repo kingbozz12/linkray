@@ -856,6 +856,17 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
+
+/* LR_CHANNEL_WATCHDOG_V57_MOUNT_START */
+try {
+  const { mountLinkRayChannelWatchdogV57 } = await import('./linkrayChannelWatchdogV57.js');
+  mountLinkRayChannelWatchdogV57(app);
+} catch (e) {
+  console.log('[LR_CHANNEL_WATCHDOG_V57] mount error', e?.stack || e?.message || e);
+}
+/* LR_CHANNEL_WATCHDOG_V57_MOUNT_END */
+
+
 /* LR_CHANNEL_LIFECYCLE_EXACT_V56_MOUNT_START */
 try {
   const { mountLinkRayLifecycleExactV56 } = await import('./linkrayChannelLifecycleExact.js');
