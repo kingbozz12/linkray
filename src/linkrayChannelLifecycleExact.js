@@ -126,6 +126,12 @@ async function rememberDialog(update) {
 
   if (!chatId || !userId) return;
 
+  /* LR_PRIVATE_DIALOG_ONLY_V61 */
+  if (String(chatId).startsWith('-')) {
+    console.log(`[${TAG}] skip channel as dialog`, safeJson({ userId: String(userId), chatId: String(chatId) }));
+    return;
+  }
+
   if (String(chatId).startsWith('-')) {
     console.log(`[${TAG}] skip channel as dialog`, safeJson({ userId: String(userId), chatId: String(chatId) }));
     return;
@@ -190,6 +196,12 @@ async function sendNotice(html) {
 
   if (!d) {
     console.log(`[${TAG}] notice skipped: no private dialog`);
+    return false;
+  }
+
+  /* LR_BLOCK_CHANNEL_NOTICE_V61 */
+  if (String(d.chat_id || '').startsWith('-')) {
+    console.log(`[${TAG}] notice blocked: channel target`, safeJson(d));
     return false;
   }
 
