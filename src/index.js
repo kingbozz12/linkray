@@ -9570,6 +9570,7 @@ ${escapeHtml(e?.message || e)}
 }
 
 async function handleCallback(update) {
+  await __lrHardSigCallbackV6(update).catch(e => console.error('[autosign hard v6 callback]', e.message || e));
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
@@ -10753,7 +10754,272 @@ async function __lrHandlePendingSignatureTextV5({ chatId, key, update, session, 
 }
 /* LR_AUTOSIGN_PENDING_SAVE_V5_END */
 
+
+/* LR_AUTOSIGN_HARD_HANDLER_V6_START */
+function __lrRowsHardSigV6(r) {
+  if (Array.isArray(r)) return r;
+  if (Array.isArray(r?.rows)) return r.rows;
+  return [];
+}
+
+function __lrObjHardSigV6(v) {
+  if (!v) return {};
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(String(v)); } catch { return {}; }
+}
+
+function __lrTextHardSigV6(update) {
+  try {
+    if (typeof getMessageText === 'function') return String(getMessageText(update) || '').trim();
+  } catch {}
+  try {
+    if (typeof getText === 'function') return String(getText(update) || '').trim();
+  } catch {}
+  return String(
+    update?.message?.body?.text ||
+    update?.message?.text ||
+    update?.body?.text ||
+    update?.text ||
+    ''
+  ).trim();
+}
+
+function __lrPayloadHardSigV6(update) {
+  try {
+    if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || '');
+  } catch {}
+  return String(
+    update?.callback?.payload ||
+    update?.callback_query?.data ||
+    update?.payload ||
+    update?.data ||
+    ''
+  );
+}
+
+function __lrChatHardSigV6(update) {
+  try {
+    if (typeof getChatId === 'function') return getChatId(update);
+  } catch {}
+  return update?.message?.recipient?.chat_id || update?.message?.chat_id || update?.chat_id || update?.chat?.id || '';
+}
+
+function __lrKeyHardSigV6(update) {
+  try {
+    if (typeof getSessionKey === 'function') return String(getSessionKey(update) || '');
+  } catch {}
+  try {
+    if (typeof sessionKey === 'function') return String(sessionKey(update) || '');
+  } catch {}
+  const chatId = __lrChatHardSigV6(update);
+  return chatId ? String(chatId) : '';
+}
+
+function __lrPendingKeysHardSigV6(update) {
+  const chatId = String(__lrChatHardSigV6(update) || '');
+  const key = String(__lrKeyHardSigV6(update) || '');
+  return [...new Set([chatId, key].filter(Boolean).map(x => `autosign_pending_v6:${x}`))];
+}
+
+async function __lrEnsureHardSigV6() {
+  await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+    key text PRIMARY KEY,
+    value text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS channel_signatures (
+    id bigserial PRIMARY KEY,
+    channel_id bigint NOT NULL,
+    owner_key text,
+    text text NOT NULL DEFAULT '',
+    is_active boolean NOT NULL DEFAULT true,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+}
+
+async function __lrSetPendingHardSigV6(update, channelId) {
+  const cid = Number(channelId || 0);
+  if (!cid) return false;
+
+  await __lrEnsureHardSigV6();
+
+  const value = JSON.stringify({
+    channelId: cid,
+    ts: Date.now()
+  });
+
+  for (const k of __lrPendingKeysHardSigV6(update)) {
+    await query(
+      `INSERT INTO lr_bot_state(key,value,updated_at)
+       VALUES($1,$2,now())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [k, value]
+    ).catch(e => console.error('[autosign pending v6 set]', e.message || e));
+  }
+
+  console.log('[autosign pending v6] set', JSON.stringify({ channelId: cid }));
+  return true;
+}
+
+async function __lrGetPendingHardSigV6(update) {
+  await __lrEnsureHardSigV6();
+
+  for (const k of __lrPendingKeysHardSigV6(update)) {
+    const rows = __lrRowsHardSigV6(await query(`SELECT value FROM lr_bot_state WHERE key=$1 LIMIT 1`, [k]).catch(() => []));
+    const raw = rows[0]?.value;
+    if (!raw) continue;
+
+    const data = __lrObjHardSigV6(raw);
+    if (!Number(data.channelId || 0)) continue;
+
+    if (data.ts && Date.now() - Number(data.ts) > 60 * 60 * 1000) {
+      await query(`DELETE FROM lr_bot_state WHERE key=$1`, [k]).catch(() => {});
+      continue;
+    }
+
+    return data;
+  }
+
+  return null;
+}
+
+async function __lrClearPendingHardSigV6(update) {
+  for (const k of __lrPendingKeysHardSigV6(update)) {
+    await query(`DELETE FROM lr_bot_state WHERE key=$1`, [k]).catch(() => {});
+  }
+}
+
+async function __lrSaveHardSigV6(channelId, text, ownerKey) {
+  await __lrEnsureHardSigV6();
+
+  const cid = Number(channelId || 0);
+  const clean = String(text || '').trim();
+  if (!cid || !clean) return null;
+
+  const owner = String(ownerKey || 'linkray').slice(0, 200);
+
+  const existing = __lrRowsHardSigV6(
+    await query(`SELECT id FROM channel_signatures WHERE channel_id=$1 ORDER BY updated_at DESC LIMIT 1`, [cid]).catch(() => [])
+  );
+
+  if (existing.length) {
+    await query(
+      `UPDATE channel_signatures
+       SET text=$2, owner_key=$3, is_active=true, updated_at=now()
+       WHERE channel_id=$1`,
+      [cid, clean, owner]
+    );
+  } else {
+    await query(
+      `INSERT INTO channel_signatures(channel_id, owner_key, text, is_active, updated_at)
+       VALUES($1,$2,$3,true,now())`,
+      [cid, owner, clean]
+    );
+  }
+
+  const saved = __lrRowsHardSigV6(
+    await query(
+      `SELECT id, channel_id, owner_key, is_active, text, updated_at
+       FROM channel_signatures
+       WHERE channel_id=$1
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [cid]
+    ).catch(() => [])
+  )[0] || null;
+
+  console.log('[autosign db save hard v6] saved+verified', JSON.stringify({
+    channelId: cid,
+    len: clean.length,
+    saved: !!saved,
+    id: saved?.id || null
+  }));
+
+  return saved;
+}
+
+async function __lrSendHardSigV6(chatId, text, rows = []) {
+  if (!chatId) return;
+
+  if (typeof msg === 'function') {
+    return msg(chatId, text, rows, 'html');
+  }
+
+  if (typeof sendMaxMessage === 'function') {
+    return sendMaxMessage({
+      chatId,
+      text,
+      format: 'html',
+      attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows
+    });
+  }
+}
+
+async function __lrHardSigCallbackV6(update) {
+  const payload = __lrPayloadHardSigV6(update);
+  if (!payload) return false;
+
+  let channelId = 0;
+
+  if (payload.startsWith('sig:add_channel:')) {
+    channelId = Number(payload.split(':')[2] || 0);
+  }
+
+  if (payload === 'sig:add') {
+    const key = __lrKeyHardSigV6(update);
+    const session = key && typeof getSession === 'function' ? await getSession(key).catch(() => null) : null;
+    const data = __lrObjHardSigV6(session?.data);
+    channelId = Number(
+      data?.channelId ||
+      data?.draft?.channelIds?.[0] ||
+      data?.channelIds?.[0] ||
+      0
+    );
+  }
+
+  if (!channelId) return false;
+
+  await __lrSetPendingHardSigV6(update, channelId);
+  return false;
+}
+
+async function __lrHardSigMessageV6(update) {
+  const text = __lrTextHardSigV6(update);
+  if (!text || text.startsWith('/')) return false;
+
+  const chatId = __lrChatHardSigV6(update);
+  const key = __lrKeyHardSigV6(update);
+
+  const pending = await __lrGetPendingHardSigV6(update);
+  if (!pending?.channelId) return false;
+
+  const saved = await __lrSaveHardSigV6(pending.channelId, text, key || chatId);
+
+  await __lrClearPendingHardSigV6(update);
+  if (key && typeof clearSession === 'function') {
+    await clearSession(key).catch(() => {});
+  }
+
+  const preview = String(saved?.text || text || '').trim();
+
+  await __lrSendHardSigV6(
+    chatId,
+    `✅ Подпись сохранена в базе.\n\n━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nКанал:\n${pending.channelId}\n\nСтатус: 🟢 включена\n\n${preview}\n━━━━━━━━━━━━━━`,
+    [
+      [callbackButton('✏️ Заменить автоподпись', `sig:add_channel:${pending.channelId}`)],
+      [callbackButton('🔴 Выключить', `sig:toggle_channel:${pending.channelId}`)],
+      [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+      [callbackButton('⬅️ В Studio', 'main:posting')]
+    ]
+  );
+
+  return true;
+}
+/* LR_AUTOSIGN_HARD_HANDLER_V6_END */
+
 async function handleMessage(update) {
+  if (await __lrHardSigMessageV6(update)) return;
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
