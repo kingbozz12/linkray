@@ -6,6 +6,20 @@ import sharp from 'sharp';
 import { query } from './db.js';
 import { sendMaxMessage } from './maxClient.js';
 
+
+/* LR_ANALYTICS_PASS_THROUGH_START */
+function __lrAnalyticsShouldHandleUpdate(update = {}) {
+  const msg = update.message || update.body || update.callback || {};
+  const text = String(update.text || msg.text || update.body?.text || '').trim();
+  const payload = String(update.payload || update.callback?.payload || msg.payload || update.body?.payload || '').trim();
+  const both = `${text} ${payload}`;
+  if (/^(main:analytics|analytics:|lrchan:)/i.test(payload)) return true;
+  if (/^(main:analytics|analytics:|lrchan:)/i.test(text)) return true;
+  if (/https?:\/\/(max\.ru|max\.com)\//i.test(both)) return true;
+  return false;
+}
+/* LR_ANALYTICS_PASS_THROUGH_END */
+
 const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL ||
   process.env.BASE_URL ||
@@ -1556,6 +1570,12 @@ export function mountLinkRayChannelAnalytics(app) {
       if (req.method !== 'POST') return next();
 
       const update = req.body || {};
+  /* LR_ANALYTICS_EARLY_NEXT_START */
+  if (!__lrAnalyticsShouldHandleUpdate(update)) {
+    if (typeof next === 'function') return next();
+    return res.status(204).end();
+  }
+  /* LR_ANALYTICS_EARLY_NEXT_END */
       const handledByMenu = await handleLinkRayChannelAnalyticsIncoming(update);
       if (handledByMenu) return res.json({ ok: true });
       const payload = getPayload(update);
