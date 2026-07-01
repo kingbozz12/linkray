@@ -876,23 +876,18 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
-/* LR_ADD_CHANNEL_INSTRUCTION_V66_MOUNT_START */
-try {
-  const { mountLinkRayAddChannelInstructionV66 } = await import('./linkrayAddChannelInstructionV66.js');
-  mountLinkRayAddChannelInstructionV66(app);
-} catch (e) {
-  console.log('[LR_ADD_CHANNEL_INSTRUCTION_V66] mount error', e?.stack || e?.message || e);
-}
-/* LR_ADD_CHANNEL_INSTRUCTION_V66_MOUNT_END */
 
-/* LR_QUICK_POST_TEXT_V66_MOUNT_START */
+
+
+
+/* LR_CLEAN_MAIN_MENU_V67_MOUNT_START */
 try {
-  const { mountLinkRayQuickPostTextV66 } = await import('./linkrayQuickPostTextV66.js');
-  mountLinkRayQuickPostTextV66(app);
+  const { mountLinkRayCleanMainMenuV67 } = await import('./linkrayCleanMainMenuV67.js');
+  mountLinkRayCleanMainMenuV67(app);
 } catch (e) {
-  console.log('[LR_QUICK_POST_TEXT_V66] mount error', e?.stack || e?.message || e);
+  console.log('[LR_CLEAN_MAIN_MENU_V67] mount error', e?.stack || e?.message || e);
 }
-/* LR_QUICK_POST_TEXT_V66_MOUNT_END */
+/* LR_CLEAN_MAIN_MENU_V67_MOUNT_END */
 
 
 /* LR_CHANNEL_FORWARD_CONNECT_V64_MOUNT_START */
