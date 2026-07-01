@@ -10781,7 +10781,88 @@ app.post('/webhook', async (req, res) => {
   res.json({ ok: true });
   try {
     const update = req.body || {}; const type = getUpdateType(update); log('webhook', { type, chatId: getChatId(update), key: getSessionKey(update) }); await maybeRegisterChannel(update);
-    if (type.includes('callback') || getCallbackId(update)) await handleCallback(update); else await handleMessage(update);
+    
+      const payload = String(getCallbackPayload(update) || '');
+      const callbackId = getCallbackId(update);
+      const chatId = getChatId(update);
+
+      if (type.includes('callback') || callbackId || payload) {
+        console.log('[webhook callback direct]', JSON.stringify({ type, chatId, payload, hasCallbackId: Boolean(callbackId) }));
+
+        if (payload === 'main:menu') {
+          if (callbackId && typeof showMainCallback === 'function') await showMainCallback(callbackId);
+          else if (chatId && typeof sendMain === 'function') await sendMain(chatId);
+          return;
+        }
+
+        if (payload === 'main:posting') {
+          if (callbackId && typeof showStudio === 'function') await showStudio(callbackId);
+          else if (chatId && typeof sendStudio === 'function') await sendStudio(chatId);
+          return;
+        }
+
+        if (payload === 'post:add_channel') {
+          if (callbackId && typeof showChannels === 'function') await showChannels(callbackId, chatId);
+          else if (chatId && typeof msg === 'function') {
+            await msg(chatId, `━━━━━━━━━━━━━━
+🔗 <b>Добавить канал</b>
+
+1. Добавьте LinkRay администратором MAX-канала.
+2. Дайте права:
+• публикация сообщений
+• редактирование сообщений
+• удаление сообщений
+• чтение сообщений
+• изменение информации канала
+3. Перешлите любой пост из этого канала сюда, в личку бота.
+
+После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
+━━━━━━━━━━━━━━`, [
+              [callbackButton('⬅️ В меню', 'main:menu')]
+            ]);
+          }
+          return;
+        }
+
+        if (payload === 'reports:menu') {
+          const rows = [[callbackButton('⬅️ В меню', 'main:menu')]];
+          const text = `📈 <b>Отчёты</b>
+
+Раздел отчётов скоро будет доступен.`;
+          if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
+          else if (chatId && typeof msg === 'function') await msg(chatId, text, rows);
+          return;
+        }
+
+        if (payload === 'fraud:menu') {
+          const rows = [[callbackButton('⬅️ В меню', 'main:menu')]];
+          const text = `🛡 <b>Антифрод</b>
+
+Раздел проверки качества трафика и подозрительных скачков скоро будет доступен.`;
+          if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
+          else if (chatId && typeof msg === 'function') await msg(chatId, text, rows);
+          return;
+        }
+
+        if (payload === 'main:analytics' || payload === 'analytics:menu') {
+          const rows = [[callbackButton('⬅️ В меню', 'main:menu')]];
+          const text = `📊 <b>LinkRay Analytics</b>
+
+Выберите раздел:
+
+🖼 <b>Картинка по ссылке</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.
+
+📅 <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.`;
+          if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
+          else if (chatId && typeof msg === 'function') await msg(chatId, text, rows);
+          return;
+        }
+
+        await handleCallback(update);
+      } else {
+        await handleMessage(update);
+      }
+
   } catch(e) { console.error('[webhook] processing error:', e); }
 });
 
