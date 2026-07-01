@@ -2200,22 +2200,6 @@ async function lrCpmPreviewFinalV4(chatId, key, text, session) {
 
     // ===== CALLBACK CORE =====
 
-const linkrayDirectStubTexts = {
-  'stub:reports': '📈 <b>Отчёты</b>\n\nРаздел статистики размещений, просмотров и CPM скоро будет доступен.',
-  'stub:antifraud': '🛡 <b>Антифрод</b>\n\nРаздел проверки качества трафика и подозрительных скачков скоро будет доступен.',
-  'stub:creatives': '🗂 <b>Креативы</b>\n\nРаздел креативов скоро будет доступен.',
-  'stub:history': '📋 <b>История</b>\n\nИстория действий и публикаций скоро будет доступна.',
-  'stub:profile': '👤 <b>Профиль</b>\n\nПрофиль пользователя скоро будет доступен.',
-  'stub:tariffs': '💎 <b>Тарифы</b>\n\nТарифы LinkRay скоро будут доступны.'
-};
-
-if (linkrayDirectStubTexts[payload]) {
-  await reply(
-    linkrayDirectStubTexts[payload],
-    [[callbackButton('⬅️ Главное меню', 'main:menu')]]
-  );
-  return res.json({ ok: true });
-}
 
     if (payload === 'lr_core:noop' || payload === 'noop') {
       await notice('Выберите день');
@@ -6739,7 +6723,7 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
           await lrMsg('━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━', [
             [callbackButton('🚀 LinkRay Studio', 'main:posting')],
             [callbackButton('➕ Добавить канал', 'post:add_channel')],
-            [callbackButton('📈 Отчёты', 'stub:reports'), callbackButton('🛡 Антифрод', 'stub:antifraud')]
+            [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]
           ]);
         }
       }
@@ -8518,7 +8502,7 @@ function mainMenuRows() {
     [callbackButton('🚀 LinkRay Studio', 'main:posting')],
     [callbackButton('📊 Аналитика', 'main:analytics')],
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
-    [callbackButton('📈 Отчёты', 'stub:reports'), callbackButton('🛡 Антифрод', 'stub:antifraud')],
+    [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')],
   ];
 }
 async function showMainCallback(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
@@ -9289,7 +9273,28 @@ async function handleCallback(update) {
   if (payload === 'noop') return;
   if (payload === 'main:menu') return showMainCallback(callbackId);
   if (payload === 'main:posting') return showStudio(callbackId);
-  if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
+  
+/* LINKRAY_EXISTING_MENU_STUBS_START */
+if (payload === 'reports:menu' || payload === 'stub:reports') {
+  const text = '📈 <b>Отчёты</b>\n\nРаздел статистики размещений, просмотров и CPM скоро будет доступен.';
+  const rows = [[callbackButton('⬅️ Главное меню', 'main:menu')]];
+  if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
+  else if (chatId && typeof msg === 'function') await msg(chatId, text, rows, 'html');
+  else if (chatId && typeof sendMaxMessage === 'function') await sendMaxMessage({ chatId, text, format: 'html', attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows });
+  return res.json({ ok: true });
+}
+
+if (payload === 'fraud:menu' || payload === 'stub:antifraud') {
+  const text = '🛡 <b>Антифрод</b>\n\nРаздел проверки качества трафика и подозрительных скачков скоро будет доступен.';
+  const rows = [[callbackButton('⬅️ Главное меню', 'main:menu')]];
+  if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
+  else if (chatId && typeof msg === 'function') await msg(chatId, text, rows, 'html');
+  else if (chatId && typeof sendMaxMessage === 'function') await sendMaxMessage({ chatId, text, format: 'html', attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows });
+  return res.json({ ok: true });
+}
+/* LINKRAY_EXISTING_MENU_STUBS_END */
+
+if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
   if (payload === 'reports:menu') return cb(callbackId, '📊 Отчёты скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'fraud:menu') return cb(callbackId, '🛡 Антифрод скоро будет здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
