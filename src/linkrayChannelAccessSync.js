@@ -1,6 +1,6 @@
 import { query } from './db.js';
 
-const TAG = 'LR_CHANNEL_ACCESS_SYNC_V52_PRO';
+const TAG = 'LR_CHANNEL_ACCESS_SYNC_V53_QUIET';
 
 let running = false;
 let lastRunAt = 0;
@@ -625,20 +625,22 @@ async function syncChannelsAccess({ reason = 'manual', notifyChatId = null, forc
       const access = await botAccessCheck(maxChatId);
       result.checked++;
 
-      console.log(`[${TAG}] check`, safeJson({
-        id: ch.id,
-        maxChatId: String(maxChatId),
-        title: ch.title || null,
-        ok: access.ok,
-        delete: access.delete,
-        reason: access.reason,
-        chatHttp: access.chat?.http ?? null,
-        chatStatus: chatStatus(access.chat),
-        memberHttp: access.member?.http ?? null,
-        isAdmin: access.memberInfo?.isAdmin ?? null,
-        isOwner: access.memberInfo?.isOwner ?? null,
-        permissions: access.memberInfo?.permissions ?? []
-      }));
+      if (process.env.LR_VERBOSE_CHANNEL_SYNC === '1' || !access.ok) {
+        console.log(`[${TAG}] check`, safeJson({
+          id: ch.id,
+          maxChatId: String(maxChatId),
+          title: ch.title || null,
+          ok: access.ok,
+          delete: access.delete,
+          reason: access.reason,
+          chatHttp: access.chat?.http ?? null,
+          chatStatus: chatStatus(access.chat),
+          memberHttp: access.member?.http ?? null,
+          isAdmin: access.memberInfo?.isAdmin ?? null,
+          isOwner: access.memberInfo?.isOwner ?? null,
+          permissions: access.memberInfo?.permissions ?? []
+        }));
+      }
 
       if (access.ok) {
         result.active++;
@@ -666,7 +668,9 @@ async function syncChannelsAccess({ reason = 'manual', notifyChatId = null, forc
       result.errors++;
     }
 
-    console.log(`[${TAG}] sync done`, safeJson(result));
+    if (process.env.LR_VERBOSE_CHANNEL_SYNC === '1' || result.removed || result.errors) {
+      console.log(`[${TAG}] sync done`, safeJson(result));
+    }
     return result;
   } catch (e) {
     console.log(`[${TAG}] sync fatal`, e?.stack || e?.message || e);
@@ -713,7 +717,7 @@ export function mountLinkRayChannelAccessSync(app) {
       notifyChatId: null,
       force: false
     }).catch(e => console.log(`[${TAG}] interval sync error`, e?.message || e));
-  }, 30000).unref?.();
+  }, 300000).unref?.();
 
   setTimeout(() => {
     syncChannelsAccess({
