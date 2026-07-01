@@ -6707,9 +6707,14 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
         '━━━━━━━━━━━━━━'
       ].join('\n');
 
-      const buttons = [
-        [callbackButton('✏️ Заменить подпись', 'lr:sig:add:' + channelId + ':' + mode)],
-        [callbackButton(active ? '🔴 Выключить' : '🟢 Включить', 'lr:sig:toggle:' + channelId + ':' + mode)],
+      const buttons = (sig && String(sig.text || '').trim())
+    ? [
+        [callbackButton('✏️ Заменить автоподпись', 'lr:sig:add:' + channelId + ':' + mode)],
+        [callbackButton(active ? '🔴 Выключить автоподпись' : '🟢 Включить автоподпись', 'lr:sig:toggle:' + channelId + ':' + mode)],
+        [lrBack(mode)]
+      ]
+    : [
+        [callbackButton('✍️ Создать автоподпись', 'lr:sig:add:' + channelId + ':' + mode)],
         [lrBack(mode)]
       ];
 
@@ -9542,7 +9547,16 @@ async function handleCallback(update) {
   if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:media') { const s = await getSession(key); await setSession(key, 'wait_edit_media', s.data); return cb(callbackId, '🖼 Отправьте новое фото, видео или файл.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:button') { const s = await getSession(key); await setSession(key, 'wait_button', s.data); return cb(callbackId, '🔘 Формат кнопки:\n<code>Название - https://site.ru</code>\nНесколько в строке через |', [[callbackButton('⬅️ Назад','editor:back')]]); }
-  if (payload === 'editor:signature') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.isAd) return cb(callbackId, '💼 Для рекламного поста автоподпись не добавляется.', [[callbackButton('⬅️ В редактор','editor:back')]]); const channelId = draft.channelIds[0]; const sig = channelId ? await loadSignature(channelId) : null; const rows = [[callbackButton('✏️ Заменить подпись','sig:add')],[callbackButton(sig?.is_active ? '🚫 Выключить' : '✅ Включить', 'sig:toggle')],[callbackButton('⬅️ В редактор','editor:back')]]; return cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nСтатус: ${sig?.is_active ? 'включена' : 'выключена'}\n\n${sig?.text ? globalThis.__lrSigSaveSafeV11.preview(sig) : 'Подпись не создана.'}\n━━━━━━━━━━━━━━`, rows); }
+  if (payload === 'editor:signature') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.isAd) return cb(callbackId, '💼 Для рекламного поста автоподпись не добавляется.', [[callbackButton('⬅️ В редактор','editor:back')]]); const channelId = draft.channelIds[0]; const sig = channelId ? await loadSignature(channelId) : null; const rows = (sig && String(sig.text || '').trim())
+      ? [
+          [callbackButton('✏️ Заменить автоподпись','sig:add')],
+          [callbackButton(sig?.is_active ? '🔴 Выключить автоподпись' : '🟢 Включить автоподпись', 'sig:toggle')],
+          [callbackButton('⬅️ В редактор','editor:back')]
+        ]
+      : [
+          [callbackButton('✍️ Создать автоподпись','sig:add')],
+          [callbackButton('⬅️ В редактор','editor:back')]
+        ]; return cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподпись</b>\n\nСтатус: ${sig?.is_active ? 'включена' : 'выключена'}\n\n${sig?.text ? globalThis.__lrSigSaveSafeV11.preview(sig) : 'Подпись не создана.'}\n━━━━━━━━━━━━━━`, rows); }
   if (payload === 'sig:add') { const s = await getSession(key); await setSession(key, 'wait_signature', s.data); return cb(callbackId, '🏷 Отправьте подпись. Ссылки, жирный, курсив и подчёркивание MAX сохранятся.', [[callbackButton('⬅️ Назад','editor:signature')]]); }
   if (payload === 'sig:toggle') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.channelIds[0]) await setSignatureActive(draft.channelIds[0], true); return showEditor(callbackId, key, draft); }
   if (payload === 'editor:ad') {
