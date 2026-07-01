@@ -1,10 +1,7 @@
-
+import 'dotenv/config';
 import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
-import dotenv from 'dotenv';
 import { mountLinkRayChannelAnalytics, handleLinkRayChannelAnalyticsIncoming } from './linkrayChannelAnalytics.js';
-dotenv.config();
-
 import express from 'express'; import crypto from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { query } from './db.js';
@@ -797,7 +794,111 @@ globalThis.__lrSigRichV13 = (() => {
 })();
 // LR_SIG_RICH_V13_END
 
+
+/* LR_FORCE_CHANNEL_CONNECTED_TEXT_V3_START */
+function lrForceChannelConnectedTextV3(value) {
+  if (typeof value !== 'string') return value;
+
+  let text = value;
+
+  const hasOldTitle =
+    text.includes('Канал подключён к LinkRay') ||
+    text.includes('<b>Канал подключён к LinkRay</b>');
+
+  const hasOldDesc =
+    text.includes('Канал сохранён в базе и будет доступен при создании постов') ||
+    text.includes('Канал сохранен в базе и будет доступен при создании постов') ||
+    text.includes('Канал сохранён в базе и будет доступен для публикаций') ||
+    text.includes('Канал сохранен в базе и будет доступен для публикаций');
+
+  if (!hasOldTitle && !hasOldDesc) return value;
+
+  text = text
+    .replace(/✅\s*<b>Канал подключён к LinkRay<\/b>/g, '✅ <b>Канал подключён к LinkRay</b>')
+    .replace(/✅\s*Канал подключён к LinkRay/g, '✅ Канал подключён к LinkRay')
+    .replace(/Канал подключён к LinkRay/g, 'Канал подключён к LinkRay');
+
+  const newDescription =
+    'Канал сохранён в базе и будет использоваться для:\\n\\n' +
+    '🚀 <b>Публикаций</b> — посты, отложенный постинг и рекламные выходы.\\n' +
+    '📊 <b>Аналитики</b> — просмотры, ER и PNG-карточки.\\n' +
+    '📈 <b>Отчётов</b> — ежедневная статистика, ПДП, отписки и охваты.\\n' +
+    '🛡 <b>Антифрода</b> — проверка подозрительных скачков и качества рекламы.\\n' +
+    '💼 <b>Закупов</b> — работа с рекламными размещениями и донорами.';
+
+  text = text
+    .replace(/Канал сохран[её]н в базе и будет доступен при создании постов\./gi, newDescription)
+    .replace(/Канал сохран[её]н в базе и будет доступен для публикаций\./gi, newDescription)
+    .replace(/Канал сохран[её]н в базе и будет доступен при создании публикаций\./gi, newDescription);
+
+  return text;
+}
+
+function lrRewriteOutgoingPayloadV3(payload, depth = 0) {
+  if (depth > 8) return payload;
+
+  if (typeof payload === 'string') {
+    return lrForceChannelConnectedTextV3(payload);
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.map((item) => lrRewriteOutgoingPayloadV3(item, depth + 1));
+  }
+
+  if (payload && typeof payload === 'object') {
+    for (const key of Object.keys(payload)) {
+      payload[key] = lrRewriteOutgoingPayloadV3(payload[key], depth + 1);
+    }
+    return payload;
+  }
+
+  return payload;
+}
+
+if (!globalThis.__LR_FORCE_CHANNEL_CONNECTED_TEXT_V3 && typeof globalThis.fetch === 'function') {
+  globalThis.__LR_FORCE_CHANNEL_CONNECTED_TEXT_V3 = true;
+  const __lrOriginalFetchV3 = globalThis.fetch.bind(globalThis);
+
+  globalThis.fetch = async function lrForcedFetchV3(input, init = {}) {
+    try {
+      if (init && init.body) {
+        if (typeof init.body === 'string') {
+          const raw = init.body;
+
+          if (raw.includes('Канал подключён к LinkRay') || raw.includes('доступен при создании постов') || raw.includes('доступен для публикаций')) {
+            try {
+              const json = JSON.parse(raw);
+              init = { ...init, body: JSON.stringify(lrRewriteOutgoingPayloadV3(json)) };
+            } catch {
+              init = { ...init, body: lrForceChannelConnectedTextV3(raw) };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[LR_FORCE_CHANNEL_CONNECTED_TEXT_V3]', e?.message || e);
+    }
+
+    return __lrOriginalFetchV3(input, init);
+  };
+}
+/* LR_FORCE_CHANNEL_CONNECTED_TEXT_V3_END */
+
+
 const app = express();
+
+/* LR_GENERATED_STATIC_V34_START */
+try {
+  app.use('/generated', express.static('public/generated', {
+    maxAge: '10m',
+    etag: false,
+    setHeaders(res) {
+      res.setHeader('Cache-Control', 'public, max-age=600');
+    },
+  }));
+} catch {}
+/* LR_GENERATED_STATIC_V34_END */
+
 
 
 // LINKRAY_24H_REPORT_START
@@ -832,6 +933,102 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 // LINKRAY_PREEMPT_ANALYTICS_END
 
 app.use(express.json({ limit: '50mb' }));
+
+// LR_FORCE_START_MENU_V7_START
+function __lrForceMainMenuTextV7() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`;
+}
+
+function __lrForceMainMenuRowsV7() {
+  return [
+    [callbackButton('🚀 LinkRay Studio', 'main:posting')],
+    [callbackButton('📊 Аналитика', 'main:analytics')],
+    [callbackButton('➕ Добавить канал', 'post:add_channel')],
+    [
+      callbackButton('📈 Отчёты', 'reports:menu'),
+      callbackButton('🛡 Антифрод', 'fraud:menu')
+    ],
+  ];
+}
+
+function __lrForceMenuAttachmentsV7(rows) {
+  if (typeof inlineKeyboard === 'function') return inlineKeyboard(rows);
+  if (typeof buttonRows === 'function') return buttonRows(rows);
+  return rows;
+}
+
+app.use(async function lrForceStartMenuV7(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const text = String(getMessageText(update) || '').trim();
+    const payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const chatId = getChatId(update);
+
+    const isStart = /^\/start(?:\s|$)/i.test(text);
+    const isMainMenu = payload === 'main:menu' || payload === 'menu:main' || payload === 'start:menu';
+
+    if (!isStart && !isMainMenu) return next();
+
+    const menuText = __lrForceMainMenuTextV7();
+    const rows = __lrForceMainMenuRowsV7();
+    const attachments = __lrForceMenuAttachmentsV7(rows);
+
+    if (callbackId) {
+      await answerCallback({
+        callbackId,
+        text: menuText,
+        format: 'html',
+        attachments
+      });
+    } else if (chatId) {
+      await sendMaxMessage({
+        chatId,
+        text: menuText,
+        format: 'html',
+        attachments
+      });
+    } else {
+      return next();
+    }
+
+    console.log('[LR_FORCE_START_MENU_V7] sent priority main menu', JSON.stringify({
+      chatId: String(chatId || ''),
+      payload,
+      isStart,
+      isMainMenu
+    }));
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('[LR_FORCE_START_MENU_V7]', error && error.stack ? error.stack : error);
+    return next();
+  }
+});
+// LR_FORCE_START_MENU_V7_END
+
+
 
 // LR_ANALYTICS_PRIORITY_BEFORE_POSTING_START
 mountLinkRayChannelAnalytics(app);
@@ -1140,7 +1337,7 @@ app.use(async function lrFinalCalCpmV2(req, res, next) {
           `━━━━━━━━━━━━━━\n✅ <b>Пост отложен</b>\n\nПубликация: ${esc(humanDay(day))}, ${esc(nice)} МСК\n━━━━━━━━━━━━━━`,
           [
             [callbackButton('Посты', 'post:all')],
-            [callbackButton('LinkRay Studio', 'main:posting')],
+            [callbackButton('🚀 LinkRay Studio', 'main:posting')],
           ]
         );
       }
@@ -7006,7 +7203,139 @@ async function clearSession(key) { await setSession(key, 'idle', {}); }
 
 function buttonRows(rows) { return inlineKeyboard(rows); }
 async function cb(callbackId, text, rows = [], format = 'html') { return answerCallback({ callbackId, text, format, attachments: buttonRows(rows) }); }
+
+// LR_SAFE_SERVICE_GUARD_V2_START
+function __lrSafeRows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  return [];
+}
+
+function __lrServiceKind(text = '') {
+  const t = String(text || '').toLowerCase();
+
+  if (
+    t.includes('канал добавлен в linkray') ||
+    t.includes('канал сохранён в базе') ||
+    t.includes('канал сохранен в базе')
+  ) return 'channel_added';
+
+  if (
+    t.includes('команда не найдена') ||
+    t.includes('нажмите /start') ||
+    t.includes('главное меню') ||
+    t.includes('linkray studio') ||
+    t.includes('отправьте ссылку max-канала') ||
+    t.includes('ежедневный отчёт пдп') ||
+    t.includes('ежедневный отчет пдп')
+  ) return 'service';
+
+  return '';
+}
+
+async function __lrKnownChannelChatSafe(chatId) {
+  try {
+    const id = String(chatId || '').trim();
+    if (!id) return false;
+
+    if (typeof __lrIsKnownChannelChat === 'function') {
+      const known = await __lrIsKnownChannelChat(id).catch(() => false);
+      if (known) return true;
+    }
+
+    const cols = __lrSafeRows(await query(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='channels'`
+    ).catch(() => [])).map((r) => String(r.column_name));
+
+    const allowed = [
+      'id',
+      'chat_id',
+      'channel_id',
+      'max_chat_id',
+      'max_channel_id',
+      'max_id',
+      'external_id'
+    ].filter((c) => cols.includes(c));
+
+    if (!allowed.length) return false;
+
+    const where = allowed.map((c) => `"${c}"::text=$1`).join(' OR ');
+    const found = __lrSafeRows(await query(
+      `SELECT 1 FROM public.channels WHERE ${where} LIMIT 1`,
+      [id]
+    ).catch(() => []));
+
+    return found.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function __lrBlockServiceToChannel(chatId, text = '', buttons = []) {
+  const kind = __lrServiceKind(text);
+  const hasButtons = Array.isArray(buttons) && buttons.length > 0;
+  const knownChannel = await __lrKnownChannelChatSafe(chatId).catch(() => false);
+
+  if (knownChannel && (kind || hasButtons)) {
+    console.log('[SKIP_CHANNEL_REPLY] service message blocked', JSON.stringify({
+      chatId: String(chatId),
+      kind: kind || 'buttons',
+    }));
+    return true;
+  }
+
+  return false;
+}
+
+async function __lrSkipDuplicateChannelAdded(chatId, text = '') {
+  const kind = __lrServiceKind(text);
+  if (kind !== 'channel_added') return false;
+
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS public.lr_service_notice_dedupe (
+        id bigserial PRIMARY KEY,
+        chat_id text NOT NULL,
+        kind text NOT NULL,
+        fingerprint text NOT NULL,
+        sent_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(chat_id, kind, fingerprint)
+      )
+    `);
+
+    await query(`DELETE FROM public.lr_service_notice_dedupe WHERE sent_at < now() - interval '14 days'`).catch(() => {});
+
+    const fingerprint = String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 350);
+
+    const inserted = __lrSafeRows(await query(
+      `INSERT INTO public.lr_service_notice_dedupe(chat_id, kind, fingerprint, sent_at)
+       VALUES($1,$2,$3,now())
+       ON CONFLICT(chat_id, kind, fingerprint) DO NOTHING
+       RETURNING id`,
+      [String(chatId), kind, fingerprint]
+    ).catch(() => []));
+
+    if (!inserted.length) {
+      console.log('[SKIP_DUPLICATE_SERVICE] duplicate channel-added notice skipped', JSON.stringify({
+        chatId: String(chatId),
+      }));
+      return true;
+    }
+  } catch {}
+
+  return false;
+}
+// LR_SAFE_SERVICE_GUARD_V2_END
+
 async function msg(chatId, text, rows = [], format = 'html') {
+  if (await __lrBlockServiceToChannel(chatId, text, rows)) return null;
+  if (await __lrSkipDuplicateChannelAdded(chatId, text)) return null;
+
   const target = lrBuildSendTarget(chatId);
   return sendMaxMessage({
     ...target,
@@ -7017,6 +7346,9 @@ async function msg(chatId, text, rows = [], format = 'html') {
 }
 
 async function sendMessage(chatId, { text = '', buttons = [], format = 'html' } = {}) {
+  if (await __lrBlockServiceToChannel(chatId, text, buttons)) return null;
+  if (await __lrSkipDuplicateChannelAdded(chatId, text)) return null;
+
   return msg(chatId, text, buttons, format);
 }
 
@@ -8360,16 +8692,68 @@ async function composePostForChannel(draft, channelId) {
 
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
+function mainMenuTextV5() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b> и 🛡 <b>Антифрод</b>
+Контроль размещений и качество трафика.
+━━━━━━━━━━━━━━`;
+}
+
+
+function mainMenuTextV6() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`;
+}
+
 function mainMenuRows() {
   return [
     [callbackButton('🚀 LinkRay Studio', 'main:posting')],
     [callbackButton('📊 Аналитика', 'main:analytics')],
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
-    [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')],
+    [
+      callbackButton('📈 Отчёты', 'reports:menu'),
+      callbackButton('🛡 Антифрод', 'fraud:menu')
+    ],
   ];
 }
-async function showMainCallback(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
-async function sendMain(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
+
+async function showMainCallback(callbackId) {
+  await cb(callbackId, mainMenuTextV6(), mainMenuRows());
+}
+
+async function sendMain(chatId) {
+  await msg(chatId, mainMenuTextV6(), mainMenuRows());
+}
+
 function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
 async function showStudio(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nСобирайте посты, планируйте публикации и управляйте рекламными размещениями.\n━━━━━━━━━━━━━━`, studioRows()); }
 async function sendStudio(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━`, studioRows()); }
@@ -9125,11 +9509,11 @@ async function handleCallback(update) {
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = lrResolveReplyChatId(update, key);
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
 
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
 
   log('callback', { payload, key });
   if (!callbackId) return;
@@ -9385,7 +9769,7 @@ async function showChannels(callbackId) {
 4. Канал автоматически сохранится в базе LinkRay.
 
 После добавления бот пришлёт сообщение:
-✅ Канал добавлен в LinkRay
+✅ <b>Канал подключён к LinkRay</b>
 ━━━━━━━━━━━━`, [
     [callbackButton('🔗 Добавить канал', 'post:add_channel')],
     [callbackButton('⬅️ В меню', 'main:menu')]
@@ -9404,17 +9788,7 @@ function __lrGuardRows(result) {
 }
 
 function __lrLooksLikeChannelUpdate(update) {
-  const values = [
-    update?.chat?.type,
-    update?.message?.recipient?.type,
-    update?.message?.chat?.type,
-    update?.recipient?.type,
-    update?.body?.recipient?.type,
-    update?.chat_type,
-    update?.chatType,
-  ].map((x) => String(x || '').toLowerCase());
-
-  return values.includes('channel');
+  return __lrGuardLooksChannel(update);
 }
 
 async function __lrGetChannelColumns() {
@@ -9464,23 +9838,147 @@ async function __lrIsKnownChannelChat(chatId) {
   }
 }
 
-async function __lrShouldIgnoreInboundChannelUpdate(update) {
-  const chatId = getChatId(update);
-  const looksChannel = __lrLooksLikeChannelUpdate(update);
 
-  // Важно: пересланный пост может содержать внутри себя channel/chat,
-  // но сам апдейт пришёл в личку. Поэтому без явного channel-типа не игнорируем.
-  if (!looksChannel) return false;
+// LR_NO_CHANNEL_SERVICE_MESSAGES_V2_START
+function __lrGuardDirectChatObjects(update) {
+  return [
+    update?.chat,
+    update?.recipient,
+    update?.message?.chat,
+    update?.message?.recipient,
+    update?.message?.body?.chat,
+    update?.message?.body?.recipient,
+    update?.body?.chat,
+    update?.body?.recipient,
+    update?.callback?.chat,
+    update?.callback?.recipient,
+    update?.message_callback?.chat,
+    update?.message_callback?.recipient,
+  ].filter((x) => x && typeof x === 'object');
+}
+
+function __lrGuardDirectTypes(update) {
+  const out = [];
+
+  for (const obj of __lrGuardDirectChatObjects(update)) {
+    out.push(
+      obj.type,
+      obj.chat_type,
+      obj.chatType,
+      obj.kind,
+      obj.recipient_type,
+      obj.recipientType
+    );
+  }
+
+  out.push(
+    update?.chat_type,
+    update?.chatType,
+    update?.recipient_type,
+    update?.recipientType,
+    update?.message?.chat_type,
+    update?.message?.chatType,
+    update?.message?.recipient_type,
+    update?.message?.recipientType
+  );
+
+  return out.map((x) => String(x || '').toLowerCase()).filter(Boolean);
+}
+
+function __lrGuardLooksPrivate(update) {
+  const types = __lrGuardDirectTypes(update);
+  return types.some((x) =>
+    x === 'user' ||
+    x === 'private' ||
+    x === 'dialog' ||
+    x === 'direct' ||
+    x.includes('private') ||
+    x.includes('dialog') ||
+    x.includes('user')
+  );
+}
+
+function __lrGuardLooksChannel(update) {
+  const types = __lrGuardDirectTypes(update);
+
+  if (types.some((x) =>
+    x === 'channel' ||
+    x === 'chat' && !__lrGuardLooksPrivate(update) ||
+    x.includes('channel')
+  )) {
+    return true;
+  }
+
+  const rootType = String(update?.type || update?.update_type || update?.event_type || '').toLowerCase();
+
+  if (
+    rootType.includes('channel') ||
+    rootType.includes('chat_member') ||
+    rootType.includes('member_added') ||
+    rootType.includes('member_removed') ||
+    rootType.includes('bot_added') ||
+    rootType.includes('bot_removed')
+  ) {
+    return true;
+  }
+
+  for (const obj of __lrGuardDirectChatObjects(update)) {
+    const hasChannelId =
+      obj.channel_id ||
+      obj.channelId ||
+      obj.max_channel_id ||
+      obj.maxChannelId ||
+      obj.chat_id ||
+      obj.chatId;
+
+    const hasUserId =
+      obj.user_id ||
+      obj.userId ||
+      obj.sender_id ||
+      obj.senderId ||
+      obj.author_id ||
+      obj.authorId;
+
+    if (hasChannelId && !hasUserId && !__lrGuardLooksPrivate(update)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function __lrGuardIsSafePrivateChat(chatId, update = null) {
   if (!chatId) return false;
 
-  const knownChannel = await __lrIsKnownChannelChat(chatId);
+  if (update && __lrGuardLooksPrivate(update)) return true;
+  if (update && __lrGuardLooksChannel(update)) return false;
+
+  try {
+    if (await __lrIsKnownChannelChat(chatId)) return false;
+  } catch {}
+
+  return true;
+}
+// LR_NO_CHANNEL_SERVICE_MESSAGES_V2_END
+
+async function __lrShouldIgnoreInboundChannelUpdate(update) {
+  const chatId = getChatId(update);
+
+  if (!chatId) return false;
+
+  const knownChannel = await __lrIsKnownChannelChat(chatId).catch(() => false);
+  const looksChannel = __lrLooksLikeChannelUpdate(update);
+  const looksPrivate = __lrGuardLooksPrivate(update);
+
+  if (looksPrivate && !knownChannel) return false;
 
   if (knownChannel || looksChannel) {
-    console.log('[channel guard] ignored real channel update', JSON.stringify({
-      type: update?.type || update?.update_type || '',
+    console.log('[SKIP_CHANNEL_REPLY] ignored inbound channel update', JSON.stringify({
+      type: update?.type || update?.update_type || update?.event_type || '',
       chatId: String(chatId),
       knownChannel,
-      looksChannel
+      looksChannel,
+      looksPrivate,
     }));
     return true;
   }
@@ -9539,8 +10037,17 @@ function __lrChannelTitleFromRow(c) {
   }
 }
 
-async function __lrRememberPrivateChatId(chatId) {
+async function __lrRememberPrivateChatId(chatId, update = null) {
   if (!chatId) return;
+
+  const safePrivate = await __lrGuardIsSafePrivateChat(chatId, update).catch(() => false);
+
+  if (!safePrivate) {
+    console.log('[SKIP_CHANNEL_REPLY] not remembering channel as private chat', JSON.stringify({
+      chatId: String(chatId),
+    }));
+    return;
+  }
 
   await __lrEnsureChannelDbSyncTables();
 
@@ -9784,19 +10291,30 @@ async function __lrInitSeenChannelsIfNeeded(channels) {
   return false;
 }
 
-async function __lrNotifyNewChannels(targetChatId = '') {
+async function __lrNotifyNewChannels(targetChatId = '', update = null) {
   try {
     await __lrEnsureChannelDbSyncTables();
 
     const channels = await getChannels();
-
     const initialized = await __lrInitSeenChannelsIfNeeded(channels);
 
     if (!initialized) return;
 
-    const chatId = String(targetChatId || await __lrGetLastPrivateChatId() || '').trim();
+    let chatId = String(targetChatId || await __lrGetLastPrivateChatId() || '').trim();
+
+    if (chatId && !(await __lrGuardIsSafePrivateChat(chatId, update).catch(() => false))) {
+      console.log('[SKIP_CHANNEL_REPLY] new channel notification target is channel, fallback to private chat', JSON.stringify({
+        chatId,
+      }));
+      chatId = String(await __lrGetLastPrivateChatId() || '').trim();
+    }
 
     if (!chatId) return;
+
+    if (!(await __lrGuardIsSafePrivateChat(chatId, null).catch(() => false))) {
+      console.log('[SKIP_CHANNEL_REPLY] no safe private chat for channel notification');
+      return;
+    }
 
     for (const c of channels) {
       const key = __lrChannelKeyFromRow(c);
@@ -9819,7 +10337,10 @@ async function __lrNotifyNewChannels(targetChatId = '') {
       ).catch(() => {});
 
       await sendMessage(chatId, {
-        text: `✅ <b>Канал добавлен в LinkRay</b>\n\n${title}\n\nКанал сохранён в базе и будет доступен для публикаций.`,
+        text:
+          `✅ <b>Канал подключён к LinkRay</b>\n\n` +
+          `${title}\n\n` +
+          `Канал сохранён в базе и будет использоваться для публикаций, аналитики, отчётов, антифрода и рекламных закупов.`,
         buttons: [
           [callbackButton('🔗 Добавить ещё канал', 'post:add_channel')],
           [callbackButton('⬅️ В меню', 'main:menu')]
@@ -9959,11 +10480,11 @@ async function handleMessage(update) {
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
   const chatId = lrResolveReplyChatId(update, getSessionKey(update));
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
 
-  await __lrRememberPrivateChatId(chatId);
-  await __lrNotifyNewChannels(chatId);
+  await __lrRememberPrivateChatId(chatId, update);
+  await __lrNotifyNewChannels(chatId, update);
  const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) { await clearSession(key); return sendMain(chatId); }
