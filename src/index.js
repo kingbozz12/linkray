@@ -6871,21 +6871,7 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
         await lrMsg('✅ Подпись добавлена в канал.');
         await sendDraftPreview(chatId, draft);
         await msg(chatId, editorMenuText(), editorMenuRows(draft));
-      } else {
-        await clearSession(key);
-        await lrMsg('✅ Подпись добавлена в канал.');
-        if (typeof sendStudio === 'function') {
-          await sendStudio(chatId);
-        } else {
-          await lrMsg('━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━', [
-            [callbackButton('🧬 LinkRay Studio', 'main:posting')],
-            [callbackButton('🔗 Добавить канал', 'channel:add')],
-            [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]
-          ]);
-        }
-      }
-
-      return res.json({ ok: true });
+      } else { await clearSession(key); await lrMsg("✅ Подпись добавлена в канал."); return lrShowSigChannel(channelId, mode); } return res.json({ ok: true });
     }
 
     return next();
