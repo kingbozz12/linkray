@@ -6642,54 +6642,60 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
   }
 
   async function lrSaveSig(channelId, content) {
-    await lrEnsureSignatureTableClean();
+  await lrEnsureSignatureTableClean();
 
-    const cleanText = String(content && content.text ? content.text : '').trim();
-    if (!cleanText) throw new Error('empty signature text');
+  const lrSigRows = (v) => Array.isArray(v) ? v : (v && Array.isArray(v.rows) ? v.rows : []);
 
-    const markup = (Array.isArray(content && content.markup) ? content.markup : []).filter(function(m) {
-      const t = String((m && (m.type || m.kind)) || '').toLowerCase();
-      return !t.includes('quote') && !t.includes('blockquote') && !t.includes('citation') && !t.includes('cite');
-    });
+  const cleanText = String(content && content.text ? content.text : '').trim();
+  if (!cleanText) throw new Error('empty signature text');
 
-    const savedRows = await query(
-      `INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at)
-       VALUES($1, $2, $3, $4, $5, $6::jsonb, true, now(), now())
-       ON CONFLICT(channel_id, owner_key)
-       DO UPDATE SET
-         title=EXCLUDED.title,
-         text=EXCLUDED.text,
-         format=EXCLUDED.format,
-         markup=EXCLUDED.markup,
-         is_active=true,
-         updated_at=now()
-       RETURNING id, channel_id, owner_key, is_active, text, updated_at`,
-      [Number(channelId), 'global', 'Автоподпись', cleanText, 'html', JSON.stringify(markup)]
-    );
+  const markup = (Array.isArray(content && content.markup) ? content.markup : []).filter(function(m) {
+    const t = String((m && (m.type || m.kind)) || '').toLowerCase();
+    return !t.includes('quote') && !t.includes('blockquote') && !t.includes('citation') && !t.includes('cite');
+  });
 
-    const rows = Array.isArray(savedRows) ? savedRows : [];
-    if (!rows.length || !rows[0].id) {
-      throw new Error('signature insert returned no row');
-    }
+  await query("CREATE TABLE IF NOT EXISTS channel_signatures ( id serial PRIMARY KEY, channel_id integer NOT NULL, owner_key text NOT NULL DEFAULT 'global', title text, text text, format text DEFAULT 'html', markup jsonb DEFAULT '[]'::jsonb, is_active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now() )");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS owner_key text NOT NULL DEFAULT 'global'");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS title text");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS text text");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS format text DEFAULT 'html'");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS markup jsonb DEFAULT '[]'::jsonb");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()");
+  await query("ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()");
+  await query("CREATE UNIQUE INDEX IF NOT EXISTS channel_signatures_channel_owner_uq ON channel_signatures(channel_id, owner_key)");
 
-    const checkRows = await query(
-      `SELECT id, channel_id, owner_key, is_active, text, updated_at
-       FROM channel_signatures
-       WHERE id=$1
-       LIMIT 1`,
-      [rows[0].id]
-    );
+  const saved = await query(
+    "INSERT INTO channel_signatures(channel_id, owner_key, title, text, format, markup, is_active, created_at, updated_at) " +
+    "VALUES($1, $2, $3, $4, $5, $6::jsonb, true, now(), now()) " +
+    "ON CONFLICT(channel_id, owner_key) DO UPDATE SET " +
+    "title=EXCLUDED.title, text=EXCLUDED.text, format=EXCLUDED.format, markup=EXCLUDED.markup, is_active=true, updated_at=now() " +
+    "RETURNING id, channel_id, owner_key, is_active, text, updated_at",
+    [Number(channelId), 'global', 'Автоподпись', cleanText, 'html', JSON.stringify(markup)]
+  );
 
-    if (!Array.isArray(checkRows) || !checkRows.length) {
-      throw new Error('signature saved row not found after insert');
-    }
-
-    console.log('[autosign db save] saved+verified', JSON.stringify({
-      id: checkRows[0].id,
-      channelId: Number(channelId),
-      len: cleanText.length
-    }));
+  const savedRows = lrSigRows(saved);
+  if (!savedRows.length || !savedRows[0].id) {
+    throw new Error('autosign save returned no row');
   }
+
+  const check = await query(
+    "SELECT id, channel_id, owner_key, is_active, text, updated_at FROM channel_signatures WHERE id=$1 LIMIT 1",
+    [savedRows[0].id]
+  );
+
+  const checkRows = lrSigRows(check);
+  if (!checkRows.length) {
+    throw new Error('autosign saved row not found after save');
+  }
+
+  console.log('[autosign db save] saved+verified', JSON.stringify({
+    id: checkRows[0].id,
+    channelId: Number(channelId),
+    len: cleanText.length,
+    text: cleanText.slice(0, 40)
+  }));
+}
 
 function lrKb(rows) {
       return inlineKeyboard(rows);
