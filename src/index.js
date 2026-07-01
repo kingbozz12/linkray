@@ -804,13 +804,7 @@ const app = express();
 
 /* LR_GENERATED_STATIC_V34_START */
 try {
-  app.use('/generated', express.static('public/generated', {
-    maxAge: '10m',
-    etag: false,
-    setHeaders(res) {
-      res.setHeader('Cache-Control', 'public, max-age=600');
-    },
-  }));
+
 } catch {}
 /* LR_GENERATED_STATIC_V34_END */
 
@@ -827,56 +821,12 @@ import('./linkray24hReport.js')
 // LINKRAY_24H_REPORT_END
 
 // LINKRAY_BRAND_STATIC_START
-app.use('/brand', express.static('public/brand', { maxAge: '1h', fallthrough: true }));
+
 // LINKRAY_BRAND_STATIC_END
 
 // LINKRAY_PREEMPT_ANALYTICS_START
-app.get('/analytics/stats/:groupId', async (req, res, next) => {
-  try {
-    const mod = await import('./linkrayAnalyticsRoutes.js');
 
-    if (typeof mod.renderLinkRayAnalyticsRequest === 'function') {
-      return mod.renderLinkRayAnalyticsRequest(req, res, next);
-    }
-
-    return next();
-  } catch (error) {
-    console.error('[linkray analytics preempt]', error?.stack || error);
-    return next(error);
-  }
-});
 // LINKRAY_PREEMPT_ANALYTICS_END
-
-app.use(express.json({ limit: '50mb' }));
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 /* LR_CHANNEL_FORWARD_CONNECT_V64_MOUNT_START */
@@ -884,7 +834,6 @@ try {
   const { mountLinkRayChannelForwardConnectV64 } = await import('./linkrayChannelForwardConnectV64.js');
   mountLinkRayChannelForwardConnectV64(app);
 } catch (e) {
-  console.log('[LR_FORWARD_CHANNEL_CONNECT_V64] mount error', e?.stack || e?.message || e);
 }
 /* LR_CHANNEL_FORWARD_CONNECT_V64_MOUNT_END */
 

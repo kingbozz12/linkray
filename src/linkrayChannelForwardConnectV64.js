@@ -1,6 +1,5 @@
 import { query } from './db.js';
 
-const TAG = 'LR_FORWARD_CHANNEL_CONNECT_V64';
 
 function rows(r) {
   return Array.isArray(r) ? r : (r?.rows || []);
