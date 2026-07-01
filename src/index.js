@@ -868,14 +868,17 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
-/* LR_CHANNEL_AUTODISCOVER_V63_MOUNT_START */
+
+
+
+/* LR_CHANNEL_FORWARD_CONNECT_V64_MOUNT_START */
 try {
-  const { mountLinkRayChannelAutoDiscoverV63 } = await import('./linkrayChannelAutoDiscoverV63.js');
-  mountLinkRayChannelAutoDiscoverV63(app);
+  const { mountLinkRayChannelForwardConnectV64 } = await import('./linkrayChannelForwardConnectV64.js');
+  mountLinkRayChannelForwardConnectV64(app);
 } catch (e) {
-  console.log('[LR_CHANNEL_AUTODISCOVER_V63] mount error', e?.stack || e?.message || e);
+  console.log('[LR_FORWARD_CHANNEL_CONNECT_V64] mount error', e?.stack || e?.message || e);
 }
-/* LR_CHANNEL_AUTODISCOVER_V63_MOUNT_END */
+/* LR_CHANNEL_FORWARD_CONNECT_V64_MOUNT_END */
 
 
 /* LR_CHANNEL_ACCESS_SYNC_V52_PRO_START */
@@ -900,7 +903,15 @@ function __lrForceMainMenuTextV7() {
 PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
 
 ➕ <b>Добавить канал</b>
-Подключение MAX-канала к LinkRay.
+━━━━━━━━━━━━━━
+➕ <b>Добавить канал</b>
+
+1. Добавьте LinkRay администратором MAX-канала.
+2. Дайте права на публикацию, редактирование, удаление и чтение сообщений.
+3. Перешлите любой пост из этого канала сюда, в личку бота.
+
+После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
+━━━━━━━━━━━━━━
 
 📈 <b>Отчёты</b>
 Статистика размещений, просмотры и CPM.
@@ -7498,7 +7509,15 @@ function mainMenuTextV5() {
 PNG-карточки каналов, графики и ежедневный отчёт ПДП.
 
 ➕ <b>Добавить канал</b>
-Подключение MAX-канала к LinkRay.
+━━━━━━━━━━━━━━
+➕ <b>Добавить канал</b>
+
+1. Добавьте LinkRay администратором MAX-канала.
+2. Дайте права на публикацию, редактирование, удаление и чтение сообщений.
+3. Перешлите любой пост из этого канала сюда, в личку бота.
+
+После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
+━━━━━━━━━━━━━━
 
 📈 <b>Отчёты</b> и 🛡 <b>Антифрод</b>
 Контроль размещений и качество трафика.
@@ -7517,7 +7536,15 @@ function mainMenuTextV6() {
 PNG-карточки каналов, графики и ежедневный отчёт ПДП.
 
 ➕ <b>Добавить канал</b>
-Подключение MAX-канала к LinkRay.
+━━━━━━━━━━━━━━
+➕ <b>Добавить канал</b>
+
+1. Добавьте LinkRay администратором MAX-канала.
+2. Дайте права на публикацию, редактирование, удаление и чтение сообщений.
+3. Перешлите любой пост из этого канала сюда, в личку бота.
+
+После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
+━━━━━━━━━━━━━━
 
 📈 <b>Отчёты</b>
 Статистика размещений, просмотры и CPM.
