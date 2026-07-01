@@ -829,34 +829,6 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 // LINKRAY_PREEMPT_ANALYTICS_END
 
 app.use(express.json({ limit: '50mb' }));
-
-
-
-
-// LR_ANALYTICS_PRIORITY_BEFORE_POSTING_START
-mountLinkRayChannelAnalytics(app);
-
-app.use(async function lrAnalyticsPriorityBeforePosting(req, res, next) {
-  try {
-    if (req.method !== 'POST') {
-      return next();
-    }
-
-    const handled = await handleLinkRayChannelAnalyticsIncoming(req.body || {});
-
-    if (handled) {
-      console.log('[LR_ANALYTICS_PRIORITY] handled before posting');
-      return res.json({ ok: true, analytics: true });
-    }
-  } catch (error) {
-    console.error('[LR_ANALYTICS_PRIORITY]', error?.stack || error);
-  }
-
-  return next();
-});
-// LR_ANALYTICS_PRIORITY_BEFORE_POSTING_END
-
-
 /* LR_FINAL_CAL_CPM_V2_START */
 app.use(async function lrFinalCalCpmV2(req, res, next) {
   try {
