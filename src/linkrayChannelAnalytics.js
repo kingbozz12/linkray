@@ -1194,7 +1194,7 @@ function lrPayloadDeep(update) {
   const strings = lrDeepStrings(update);
 
   return strings.find((s) =>
-    /^(main:analytics|analytics:menu|lrchan:menu|lrchan:links|lrchan:daily|lrchan:on|lrchan:off|main:menu)$/.test(String(s))
+    /^(main:analytics|analytics:menu|lrchan:menu|lrchan:links|lrchan:daily|lrchan:on|lrchan:off)$/.test(String(s))
   ) || '';
 }
 
@@ -1432,7 +1432,7 @@ async function handleAnalyticsMenu(update) {
   const links = lrLinksDeep(update, text);
 
 
-  if (lrIsStartText(text) || payload === 'main:menu' || payload === 'start' || payload === '/start') {
+  if (false) {
     await showFallbackMainMenu(chatId, keys);
     return true;
   }

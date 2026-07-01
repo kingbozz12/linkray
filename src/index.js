@@ -9320,8 +9320,12 @@ async function handleCallback(update) {
   if (payload === 'main:posting') return showStudio(callbackId);
   
 /* LINKRAY_EXISTING_MENU_STUBS_START */
-  if (payload === 'reports:menu') return cb(callbackId, `📈 <b>Отчёты</b>\n\nРаздел статистики размещений, просмотров и CPM скоро будет доступен.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
-  if (payload === 'fraud:menu') return cb(callbackId, `🛡 <b>Антифрод</b>\n\nПроверка качества трафика и подозрительных скачков скоро будет доступна.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
+  if (payload === 'reports:menu') return cb(callbackId, `📈 <b>Отчёты</b>
+
+Раздел статистики размещений, просмотров и CPM скоро будет доступен.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
+  if (payload === 'fraud:menu') return cb(callbackId, `🛡 <b>Антифрод</b>
+
+Проверка качества трафика и подозрительных скачков скоро будет доступна.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
   if (payload === 'post:create') { const draft = emptyDraft(); return showChannelSelect(callbackId, key, draft, false); }
   if (payload === 'post:multi') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), true); }
