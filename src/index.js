@@ -10482,6 +10482,8 @@ async function lrSafeHydrateContent(update) {
   return lrFallbackContentFromUpdate(update);
 }
 
+const __lrStartDedupeMap = new Map();
+
 async function handleMessage(update) {
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
@@ -10494,7 +10496,18 @@ async function handleMessage(update) {
   await __lrNotifyNewChannels(chatId, update);
  const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
-  if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) { await clearSession(key); return sendMain(chatId); }
+  if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) {
+    const now = Date.now();
+    const dedupeKey = String(chatId || key || 'unknown');
+    const prev = __lrStartDedupeMap.get(dedupeKey) || 0;
+    __lrStartDedupeMap.set(dedupeKey, now);
+    if (now - prev < 3500) {
+      console.log('[start dedupe] skipped duplicate start menu', JSON.stringify({ chatId: dedupeKey, diff: now - prev }));
+      return;
+    }
+    await clearSession(key);
+    return sendMain(chatId);
+  }
   const session = await getSession(key); const draft = safeDraft(session.data);
   if (session.state === 'wait_post_content') { const content = await lrSafeHydrateContent(update); draft.content = { ...draft.content, ...content }; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
   if (session.state === 'wait_edit_text') { const content = await lrSafeHydrateContent(update); draft.content.text = content.text || text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
