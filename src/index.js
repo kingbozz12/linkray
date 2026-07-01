@@ -8498,15 +8498,17 @@ async function composePostForChannel(draft, channelId) {
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
 function mainMenuRows() {
+
   return [
     [callbackButton('🚀 LinkRay Studio', 'main:posting')],
     [callbackButton('📊 Аналитика', 'main:analytics')],
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
-    [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')],
+    [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]
   ];
 }
-async function showMainCallback(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🛡 <b>LinkRay</b>\n\nСтудия публикаций, очередь постов и рекламные отчёты для MAX.\n\nВыберите действие.\n━━━━━━━━━━━━━━`, mainMenuRows()); }
-async function sendMain(chatId) { await msg(chatId, `━━━━━━━━━━━━━━
+async function showMainCallback(callbackId) {
+
+  return cb(callbackId, `━━━━━━━━━━━━━━
 ⚡ <b>LinkRay</b>
 
 🚀 <b>LinkRay Studio</b>
@@ -8525,7 +8527,31 @@ PNG-карточки каналов, графики, просмотры и еж�
 Проверка качества трафика и подозрительных скачков.
 
 Выберите нужный раздел.
-━━━━━━━━━━━━━━`, mainMenuRows()); }
+━━━━━━━━━━━━━━`, mainMenuRows());
+}
+async function sendMain(chatId) {
+
+  return msg(chatId, `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`, mainMenuRows());
+}
 function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('➕ Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
 async function showStudio(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nСобирайте посты, планируйте публикации и управляйте рекламными размещениями.\n━━━━━━━━━━━━━━`, studioRows()); }
 async function sendStudio(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━`, studioRows()); }
@@ -9294,28 +9320,8 @@ async function handleCallback(update) {
   if (payload === 'main:posting') return showStudio(callbackId);
   
 /* LINKRAY_EXISTING_MENU_STUBS_START */
-if (payload === 'reports:menu' || payload === 'stub:reports') {
-  const text = '📈 <b>Отчёты</b>\n\nРаздел статистики размещений, просмотров и CPM скоро будет доступен.';
-  const rows = [[callbackButton('⬅️ Главное меню', 'main:menu')]];
-  if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
-  else if (chatId && typeof msg === 'function') await msg(chatId, text, rows, 'html');
-  else if (chatId && typeof sendMaxMessage === 'function') await sendMaxMessage({ chatId, text, format: 'html', attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows });
-  return res.json({ ok: true });
-}
-
-if (payload === 'fraud:menu' || payload === 'stub:antifraud') {
-  const text = '🛡 <b>Антифрод</b>\n\nРаздел проверки качества трафика и подозрительных скачков скоро будет доступен.';
-  const rows = [[callbackButton('⬅️ Главное меню', 'main:menu')]];
-  if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
-  else if (chatId && typeof msg === 'function') await msg(chatId, text, rows, 'html');
-  else if (chatId && typeof sendMaxMessage === 'function') await sendMaxMessage({ chatId, text, format: 'html', attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows });
-  return res.json({ ok: true });
-}
-/* LINKRAY_EXISTING_MENU_STUBS_END */
-
-if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
-  if (payload === 'reports:menu') return cb(callbackId, '📊 Отчёты скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
-  if (payload === 'fraud:menu') return cb(callbackId, '🛡 Антифрод скоро будет здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
+  if (payload === 'reports:menu') return cb(callbackId, `📈 <b>Отчёты</b>\n\nРаздел статистики размещений, просмотров и CPM скоро будет доступен.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
+  if (payload === 'fraud:menu') return cb(callbackId, `🛡 <b>Антифрод</b>\n\nПроверка качества трафика и подозрительных скачков скоро будет доступна.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
   if (payload === 'post:create') { const draft = emptyDraft(); return showChannelSelect(callbackId, key, draft, false); }
   if (payload === 'post:multi') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), true); }
@@ -9567,6 +9573,7 @@ if (payload.startsWith('sig:add_channel:')) {
 }
 
 async function showChannels(callbackId) {
+
   return cb(callbackId, `━━━━━━━━━━━━━━
 🔗 <b>Добавить канал</b>
 
@@ -9583,7 +9590,7 @@ async function showChannels(callbackId) {
 После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
 ━━━━━━━━━━━━━━`, [
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
-    [callbackButton('⬅️ В меню', 'main:menu')]
+    [callbackButton('⬅️ В Studio', 'main:posting')]
   ]);
 }
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
