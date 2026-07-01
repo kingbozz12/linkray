@@ -17,20 +17,56 @@ function lrNoPreviewPayload(payload) {
 
   const patched = { ...payload };
 
-  patched.disable_link_preview = false;
-  patched.disableLinkPreview = false;
+  function apply(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+
+    obj.disable_link_preview = true;
+    obj.disableLinkPreview = true;
+    obj.disable_web_page_preview = true;
+    obj.disableWebPagePreview = true;
+    obj.link_preview = false;
+    obj.linkPreview = false;
+
+    if (Array.isArray(obj.attachments)) {
+      obj.attachments = obj.attachments.filter((att) => {
+        const type = String(att?.type || att?.kind || '').toLowerCase();
+        return !(
+          type === 'link_preview' ||
+          type === 'rich_link' ||
+          type === 'preview' ||
+          type.includes('link_preview') ||
+          type.includes('rich_link')
+        );
+      });
+    }
+
+    return obj;
+  }
+
+  apply(patched);
 
   if (patched.message && typeof patched.message === 'object' && !Array.isArray(patched.message)) {
-    patched.message = {
-      ...patched.message,
-      disable_link_preview: false,
-      disableLinkPreview: false
-    };
+    patched.message = { ...patched.message };
+    apply(patched.message);
+  }
+
+  if (patched.body && typeof patched.body === 'object' && !Array.isArray(patched.body)) {
+    patched.body = { ...patched.body };
+    apply(patched.body);
+  }
+
+  if (patched.payload && typeof patched.payload === 'object' && !Array.isArray(patched.payload)) {
+    patched.payload = { ...patched.payload };
+    apply(patched.payload);
+
+    if (patched.payload.message && typeof patched.payload.message === 'object' && !Array.isArray(patched.payload.message)) {
+      patched.payload.message = { ...patched.payload.message };
+      apply(patched.payload.message);
+    }
   }
 
   return patched;
 }
-
 function cleanAttachments(attachments = []) {
   const out = [];
   const seen = new Set();
@@ -166,6 +202,43 @@ function cleanMarkup(markup = [], text = '') {
   return out;
 }
 
+
+function lrStripServicePreviewsV3(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+
+  const text = String(body.text || '');
+
+  const isServiceMessage =
+    text.includes('━━━━━━━━━━━━━━') ||
+    text.includes('LinkRay') ||
+    text.includes('К выпуску') ||
+    text.includes('CPM установлен') ||
+    text.includes('Рекламный пост опубликован') ||
+    text.includes('Страница отчёта') ||
+    text.includes('Ссылка наблюдателя') ||
+    text.includes('Редактор LinkRay') ||
+    text.includes('Автоудаление') ||
+    text.includes('Открыть отчёт');
+
+  if (!isServiceMessage) return body;
+
+  const cleaned = { ...body };
+
+  cleaned.text = String(cleaned.text || '')
+    .replace(/<a\b[^>]*href=["'][^"']+["'][^>]*>(.*?)<\/a>/gis, '$1')
+    .replace(/https?:\/\/linkray\.ru\/analytics\/stats\/[^\s<]+/gi, 'LinkRay Analytics')
+    .replace(/https?:\/\/max\.ru\/[^\s<]+/gi, 'канал');
+
+  if (Array.isArray(cleaned.markup)) {
+    cleaned.markup = cleaned.markup.filter((m) => {
+      const type = String(m?.type || m?.kind || '').toLowerCase();
+      return !m?.url && !m?.href && !type.includes('link');
+    });
+  }
+
+  return cleaned;
+}
+
 function buildMessageBody({ text = '', format = 'html', attachments = [], markup = [] } = {}) {
   const body = {
     text: String(text || ''),
@@ -226,26 +299,197 @@ async function fetchJson(url, options) {
   return data;
 }
 
+
+/* LR_CHANNEL_SEND_GUARD_V1 */
+const LR_CHANNEL_GUARD_CACHE = new Map();
+
+function lrGuardRows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function lrGuardText(value) {
+  return String(value || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lrLooksLikeServiceMessage(text = '') {
+  const t = lrGuardText(text);
+
+  if (!t) return false;
+
+  const patterns = [
+    /LinkRay/i,
+    /Сводный\s+отч[её]т/i,
+    /Ссылка\s+на\s+отч[её]т/i,
+    /Страница\s+отч[её]та/i,
+    /analytics\/stats/i,
+    /Главное\s+меню/i,
+    /Отслеживание\s+просмотров/i,
+    /Просмотры\s+за\s+24ч/i,
+    /Итоговая\s+стоимость/i,
+    /Публикации\s*:/i,
+    /Подсч[её]т\s*:\s*24ч/i,
+    /CPM\s*:/i,
+    /CPM\s+установлен/i,
+    /Рекламный\s+пост\s+опубликован/i,
+    /К\s+выпуску/i,
+    /Редактор\s+LinkRay/i,
+    /Автоудаление/i,
+    /Перейти\s+в\s+бота/i,
+    /Скопировать/i,
+    /данные\s+обновляются/i,
+    /Смотреть\s+график/i,
+    /отч[её]т\s+по\s+рекламному\s+посту/i,
+    /автопостинг\s+и\s+аналитика/i,
+  ];
+
+  return patterns.some((rx) => rx.test(t));
+}
+
+async function lrKnownChannelChat(chatId) {
+  const id = String(chatId || '').trim();
+
+  if (!id) return false;
+
+  const cached = LR_CHANNEL_GUARD_CACHE.get(id);
+
+  if (cached && cached.until > Date.now()) return cached.value;
+
+  let value = false;
+
+  try {
+    const db = await import('./db.js');
+
+    if (typeof db.query !== 'function') {
+      LR_CHANNEL_GUARD_CACHE.set(id, { value: false, until: Date.now() + 30000 });
+      return false;
+    }
+
+    const colsResult = await db.query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema='public'
+          AND table_name='channels'`
+    ).catch(() => []);
+
+    const cols = new Set(lrGuardRows(colsResult).map((r) => String(r.column_name)));
+
+    if (!cols.size || !cols.has('id')) {
+      LR_CHANNEL_GUARD_CACHE.set(id, { value: false, until: Date.now() + 30000 });
+      return false;
+    }
+
+    const candidates = [
+      'id',
+      'chat_id',
+      'channel_id',
+      'max_chat_id',
+      'max_channel_id',
+      'max_id',
+      'external_id',
+      'peer_id',
+      'username',
+      'handle',
+    ].filter((col) => cols.has(col));
+
+    const where = candidates.map((col) => `"${col}"::text=$1`).join(' OR ');
+
+    const found = await db.query(
+      `SELECT 1 FROM channels WHERE ${where} LIMIT 1`,
+      [id]
+    ).catch(() => []);
+
+    value = lrGuardRows(found).length > 0;
+  } catch (error) {
+    console.error('[LR_CHANNEL_GUARD] db check failed:', error.message || error);
+    value = false;
+  }
+
+  LR_CHANNEL_GUARD_CACHE.set(id, { value, until: Date.now() + 30000 });
+  return value;
+}
+
+async function lrAssertChannelSendAllowed({
+  chatId,
+  userId,
+  text,
+  purpose,
+  allowChannelService,
+  allowChannelPost,
+  bypassChannelGuard,
+} = {}) {
+  if (bypassChannelGuard) return;
+
+  if (!chatId || userId) return;
+
+  const isChannel = await lrKnownChannelChat(chatId);
+
+  if (!isChannel) return;
+
+  const service = lrLooksLikeServiceMessage(text);
+
+  if (service && !allowChannelService) {
+    const preview = lrGuardText(text).slice(0, 220);
+
+    console.error('[LR_CHANNEL_GUARD_BLOCKED]', JSON.stringify({
+      chatId: String(chatId),
+      purpose: String(purpose || ''),
+      preview,
+    }));
+
+    throw new Error('LR_CHANNEL_GUARD_BLOCKED: service/admin message cannot be sent to channel');
+  }
+
+  if (!allowChannelPost && !service) {
+    console.log('[LR_CHANNEL_GUARD_ALLOWED_POST]', JSON.stringify({
+      chatId: String(chatId),
+      purpose: String(purpose || 'post'),
+      preview: lrGuardText(text).slice(0, 120),
+    }));
+  }
+}
+
+
 export async function sendMaxMessage({
   chatId,
   userId,
   text = '',
   format = 'html',
   attachments = [],
-  markup = []
-}) {
+  markup = [],
+  purpose = '',
+  allowChannelService = false,
+  allowChannelPost = false,
+  bypassChannelGuard = false,
+} = {}) {
   const url = new URL(`${MAX_API_URL}/messages`);
 
-  if (chatId) url.searchParams.set('chat_id', String(chatId));
-  else if (userId) url.searchParams.set('user_id', String(userId));
-  else throw new Error('chatId or userId is required');
+  if (chatId) {
+    url.searchParams.set('chat_id', String(chatId));
+  } else if (userId) {
+    url.searchParams.set('user_id', String(userId));
+  } else {
+    throw new Error('chatId or userId is required');
+  }
+
+  await lrAssertChannelSendAllowed({
+    chatId,
+    userId,
+    text,
+    purpose,
+    allowChannelService,
+    allowChannelPost,
+    bypassChannelGuard,
+  });
 
   const body = buildMessageBody({ text, format, attachments, markup });
 
   return fetchJson(url, {
     method: 'POST',
     headers: headers(true),
-    body: JSON.stringify(lrNoPreviewPayload(body))
+    body: JSON.stringify(lrNoPreviewPayload(body)),
   });
 }
 
