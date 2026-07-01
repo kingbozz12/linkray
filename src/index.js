@@ -872,23 +872,27 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
-/* LR_ADD_CHANNEL_INSTRUCTION_V65_MOUNT_START */
-try {
-  const { mountLinkRayAddChannelInstructionV65 } = await import('./linkrayAddChannelInstructionV65.js');
-  mountLinkRayAddChannelInstructionV65(app);
-} catch (e) {
-  console.log('[LR_ADD_CHANNEL_INSTRUCTION_V65] mount error', e?.stack || e?.message || e);
-}
-/* LR_ADD_CHANNEL_INSTRUCTION_V65_MOUNT_END */
 
-/* LR_QUICK_POST_TEXT_V65_MOUNT_START */
+
+
+
+/* LR_ADD_CHANNEL_INSTRUCTION_V66_MOUNT_START */
 try {
-  const { mountLinkRayQuickPostTextV65 } = await import('./linkrayQuickPostTextV65.js');
-  mountLinkRayQuickPostTextV65(app);
+  const { mountLinkRayAddChannelInstructionV66 } = await import('./linkrayAddChannelInstructionV66.js');
+  mountLinkRayAddChannelInstructionV66(app);
 } catch (e) {
-  console.log('[LR_QUICK_POST_TEXT_V65] mount error', e?.stack || e?.message || e);
+  console.log('[LR_ADD_CHANNEL_INSTRUCTION_V66] mount error', e?.stack || e?.message || e);
 }
-/* LR_QUICK_POST_TEXT_V65_MOUNT_END */
+/* LR_ADD_CHANNEL_INSTRUCTION_V66_MOUNT_END */
+
+/* LR_QUICK_POST_TEXT_V66_MOUNT_START */
+try {
+  const { mountLinkRayQuickPostTextV66 } = await import('./linkrayQuickPostTextV66.js');
+  mountLinkRayQuickPostTextV66(app);
+} catch (e) {
+  console.log('[LR_QUICK_POST_TEXT_V66] mount error', e?.stack || e?.message || e);
+}
+/* LR_QUICK_POST_TEXT_V66_MOUNT_END */
 
 
 /* LR_CHANNEL_FORWARD_CONNECT_V64_MOUNT_START */
@@ -923,15 +927,7 @@ function __lrForceMainMenuTextV7() {
 PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
 
 ➕ <b>Добавить канал</b>
-━━━━━━━━━━━━━━
-➕ <b>Добавить канал</b>
-
-1. Добавьте LinkRay администратором MAX-канала.
-2. Дайте права на публикацию, редактирование, удаление и чтение сообщений.
-3. Перешлите любой пост из этого канала сюда, в личку бота.
-
-После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
-━━━━━━━━━━━━━━
+Подключение MAX-канала к LinkRay.
 
 📈 <b>Отчёты</b>
 Статистика размещений, просмотры и CPM.
@@ -7529,15 +7525,7 @@ function mainMenuTextV5() {
 PNG-карточки каналов, графики и ежедневный отчёт ПДП.
 
 ➕ <b>Добавить канал</b>
-━━━━━━━━━━━━━━
-➕ <b>Добавить канал</b>
-
-1. Добавьте LinkRay администратором MAX-канала.
-2. Дайте права на публикацию, редактирование, удаление и чтение сообщений.
-3. Перешлите любой пост из этого канала сюда, в личку бота.
-
-После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
-━━━━━━━━━━━━━━
+Подключение MAX-канала к LinkRay.
 
 📈 <b>Отчёты</b> и 🛡 <b>Антифрод</b>
 Контроль размещений и качество трафика.
@@ -7556,15 +7544,7 @@ function mainMenuTextV6() {
 PNG-карточки каналов, графики и ежедневный отчёт ПДП.
 
 ➕ <b>Добавить канал</b>
-━━━━━━━━━━━━━━
-➕ <b>Добавить канал</b>
-
-1. Добавьте LinkRay администратором MAX-канала.
-2. Дайте права на публикацию, редактирование, удаление и чтение сообщений.
-3. Перешлите любой пост из этого канала сюда, в личку бота.
-
-После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
-━━━━━━━━━━━━━━
+Подключение MAX-канала к LinkRay.
 
 📈 <b>Отчёты</b>
 Статистика размещений, просмотры и CPM.
