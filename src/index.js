@@ -794,7 +794,111 @@ globalThis.__lrSigRichV13 = (() => {
 })();
 // LR_SIG_RICH_V13_END
 
+
+/* LR_FORCE_CHANNEL_CONNECTED_TEXT_V3_START */
+function lrForceChannelConnectedTextV3(value) {
+  if (typeof value !== 'string') return value;
+
+  let text = value;
+
+  const hasOldTitle =
+    text.includes('Канал подключён к LinkRay') ||
+    text.includes('<b>Канал подключён к LinkRay</b>');
+
+  const hasOldDesc =
+    text.includes('Канал сохранён в базе и будет доступен при создании постов') ||
+    text.includes('Канал сохранен в базе и будет доступен при создании постов') ||
+    text.includes('Канал сохранён в базе и будет доступен для публикаций') ||
+    text.includes('Канал сохранен в базе и будет доступен для публикаций');
+
+  if (!hasOldTitle && !hasOldDesc) return value;
+
+  text = text
+    .replace(/✅\s*<b>Канал подключён к LinkRay<\/b>/g, '✅ <b>Канал подключён к LinkRay</b>')
+    .replace(/✅\s*Канал подключён к LinkRay/g, '✅ Канал подключён к LinkRay')
+    .replace(/Канал подключён к LinkRay/g, 'Канал подключён к LinkRay');
+
+  const newDescription =
+    'Канал сохранён в базе и будет использоваться для:\\n\\n' +
+    '🚀 <b>Публикаций</b> — посты, отложенный постинг и рекламные выходы.\\n' +
+    '📊 <b>Аналитики</b> — просмотры, ER и PNG-карточки.\\n' +
+    '📈 <b>Отчётов</b> — ежедневная статистика, ПДП, отписки и охваты.\\n' +
+    '🛡 <b>Антифрода</b> — проверка подозрительных скачков и качества рекламы.\\n' +
+    '💼 <b>Закупов</b> — работа с рекламными размещениями и донорами.';
+
+  text = text
+    .replace(/Канал сохран[её]н в базе и будет доступен при создании постов\./gi, newDescription)
+    .replace(/Канал сохран[её]н в базе и будет доступен для публикаций\./gi, newDescription)
+    .replace(/Канал сохран[её]н в базе и будет доступен при создании публикаций\./gi, newDescription);
+
+  return text;
+}
+
+function lrRewriteOutgoingPayloadV3(payload, depth = 0) {
+  if (depth > 8) return payload;
+
+  if (typeof payload === 'string') {
+    return lrForceChannelConnectedTextV3(payload);
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.map((item) => lrRewriteOutgoingPayloadV3(item, depth + 1));
+  }
+
+  if (payload && typeof payload === 'object') {
+    for (const key of Object.keys(payload)) {
+      payload[key] = lrRewriteOutgoingPayloadV3(payload[key], depth + 1);
+    }
+    return payload;
+  }
+
+  return payload;
+}
+
+if (!globalThis.__LR_FORCE_CHANNEL_CONNECTED_TEXT_V3 && typeof globalThis.fetch === 'function') {
+  globalThis.__LR_FORCE_CHANNEL_CONNECTED_TEXT_V3 = true;
+  const __lrOriginalFetchV3 = globalThis.fetch.bind(globalThis);
+
+  globalThis.fetch = async function lrForcedFetchV3(input, init = {}) {
+    try {
+      if (init && init.body) {
+        if (typeof init.body === 'string') {
+          const raw = init.body;
+
+          if (raw.includes('Канал подключён к LinkRay') || raw.includes('доступен при создании постов') || raw.includes('доступен для публикаций')) {
+            try {
+              const json = JSON.parse(raw);
+              init = { ...init, body: JSON.stringify(lrRewriteOutgoingPayloadV3(json)) };
+            } catch {
+              init = { ...init, body: lrForceChannelConnectedTextV3(raw) };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[LR_FORCE_CHANNEL_CONNECTED_TEXT_V3]', e?.message || e);
+    }
+
+    return __lrOriginalFetchV3(input, init);
+  };
+}
+/* LR_FORCE_CHANNEL_CONNECTED_TEXT_V3_END */
+
+
 const app = express();
+
+/* LR_GENERATED_STATIC_V34_START */
+try {
+  app.use('/generated', express.static('public/generated', {
+    maxAge: '10m',
+    etag: false,
+    setHeaders(res) {
+      res.setHeader('Cache-Control', 'public, max-age=600');
+    },
+  }));
+} catch {}
+/* LR_GENERATED_STATIC_V34_END */
+
 
 
 // LINKRAY_24H_REPORT_START
@@ -830,6 +934,99 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 
 app.use(express.json({ limit: '50mb' }));
 
+// LR_FORCE_START_MENU_V7_START
+function __lrForceMainMenuTextV7() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`;
+}
+
+function __lrForceMainMenuRowsV7() {
+  return [
+    [callbackButton('🚀 LinkRay Studio', 'main:posting')],
+    [callbackButton('📊 Аналитика', 'main:analytics')],
+    [callbackButton('➕ Добавить канал', 'post:add_channel')],
+    [
+      callbackButton('📈 Отчёты', 'reports:menu'),
+      callbackButton('🛡 Антифрод', 'fraud:menu')
+    ],
+  ];
+}
+
+function __lrForceMenuAttachmentsV7(rows) {
+  if (typeof inlineKeyboard === 'function') return inlineKeyboard(rows);
+  if (typeof buttonRows === 'function') return buttonRows(rows);
+  return rows;
+}
+
+app.use(async function lrForceStartMenuV7(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const text = String(getMessageText(update) || '').trim();
+    const payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const chatId = getChatId(update);
+
+    const isStart = /^\/start(?:\s|$)/i.test(text);
+    const isMainMenu = payload === 'main:menu' || payload === 'menu:main' || payload === 'start:menu';
+
+    if (!isStart && !isMainMenu) return next();
+
+    const menuText = __lrForceMainMenuTextV7();
+    const rows = __lrForceMainMenuRowsV7();
+    const attachments = __lrForceMenuAttachmentsV7(rows);
+
+    if (callbackId) {
+      await answerCallback({
+        callbackId,
+        text: menuText,
+        format: 'html',
+        attachments
+      });
+    } else if (chatId) {
+      await sendMaxMessage({
+        chatId,
+        text: menuText,
+        format: 'html',
+        attachments
+      });
+    } else {
+      return next();
+    }
+
+    console.log('[LR_FORCE_START_MENU_V7] sent priority main menu', JSON.stringify({
+      chatId: String(chatId || ''),
+      payload,
+      isStart,
+      isMainMenu
+    }));
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('[LR_FORCE_START_MENU_V7]', error && error.stack ? error.stack : error);
+    return next();
+  }
+});
+// LR_FORCE_START_MENU_V7_END
 
 
 
@@ -2000,7 +2197,7 @@ ${chLines}
 🧬 <a href="https://max.ru/se13353901_bot">LinkRay</a> — постинг, рекламные выходы и аналитика в MAX`,
           [
             [callbackButton('📁 Посты', 'post:all')],
-            [callbackButton('🚀 LinkRay Studio', 'main:posting')]
+            [callbackButton('🧬 LinkRay Studio', 'main:posting')]
           ]
         );
       }
@@ -2018,7 +2215,7 @@ ${chLines}
 ━━━━━━━━━━━━━━`,
         [
           [callbackButton('📁 Посты', 'post:all')],
-          [callbackButton('🚀 LinkRay Studio', 'main:posting')]
+          [callbackButton('🧬 LinkRay Studio', 'main:posting')]
         ]
       );
     }
@@ -2199,8 +2396,6 @@ async function lrCpmPreviewFinalV4(chatId, key, text, session) {
     }
 
     // ===== CALLBACK CORE =====
-
-
     if (payload === 'lr_core:noop' || payload === 'noop') {
       await notice('Выберите день');
       return res.json({ ok: true });
@@ -4567,7 +4762,7 @@ ${channelLines}
 
       return lrCalendarAnswer( text, [
         [callbackButton('📂 Посты', 'post:all')],
-        [callbackButton('🚀 LinkRay Studio', 'main:posting')]
+        [callbackButton('🧬 LinkRay Studio', 'main:posting')]
       ]);
     }
 
@@ -6721,9 +6916,9 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
           await sendStudio(chatId);
         } else {
           await lrMsg('━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━', [
-            [callbackButton('🚀 LinkRay Studio', 'main:posting')],
-            [callbackButton('➕ Добавить канал', 'post:add_channel')],
-            [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]
+            [callbackButton('🧬 LinkRay Studio', 'main:posting')],
+            [callbackButton('🔗 Добавить канал', 'channel:add')],
+            [callbackButton('📊 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]
           ]);
         }
       }
@@ -8497,69 +8692,76 @@ async function composePostForChannel(draft, channelId) {
 
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
-function mainMenuRows() {
+function mainMenuTextV5() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
 
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b> и 🛡 <b>Антифрод</b>
+Контроль размещений и качество трафика.
+━━━━━━━━━━━━━━`;
+}
+
+
+function mainMenuTextV6() {
+  return `━━━━━━━━━━━━━━
+⚡ <b>LinkRay</b>
+
+🚀 <b>LinkRay Studio</b>
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 <b>Аналитика</b>
+PNG-карточки каналов, графики и ежедневный отчёт ПДП.
+
+➕ <b>Добавить канал</b>
+Подключение MAX-канала к LinkRay.
+
+📈 <b>Отчёты</b>
+Статистика размещений, просмотры и CPM.
+
+🛡 <b>Антифрод</b>
+Проверка качества трафика и подозрительных скачков.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`;
+}
+
+function mainMenuRows() {
   return [
     [callbackButton('🚀 LinkRay Studio', 'main:posting')],
     [callbackButton('📊 Аналитика', 'main:analytics')],
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
-    [callbackButton('📈 Отчёты', 'reports:menu'), callbackButton('🛡 Антифрод', 'fraud:menu')]
+    [
+      callbackButton('📈 Отчёты', 'reports:menu'),
+      callbackButton('🛡 Антифрод', 'fraud:menu')
+    ],
   ];
 }
+
 async function showMainCallback(callbackId) {
-
-  return cb(callbackId, `━━━━━━━━━━━━━━
-⚡ <b>LinkRay</b>
-
-🚀 <b>LinkRay Studio</b>
-Создание постов, очередь публикаций и рекламные выходы.
-
-📊 <b>Аналитика</b>
-PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
-
-➕ <b>Добавить канал</b>
-Подключение MAX-канала к LinkRay.
-
-📈 <b>Отчёты</b>
-Статистика размещений, просмотры и CPM.
-
-🛡 <b>Антифрод</b>
-Проверка качества трафика и подозрительных скачков.
-
-Выберите нужный раздел.
-━━━━━━━━━━━━━━`, mainMenuRows());
+  await cb(callbackId, mainMenuTextV6(), mainMenuRows());
 }
+
 async function sendMain(chatId) {
-
-  return msg(chatId, `━━━━━━━━━━━━━━
-⚡ <b>LinkRay</b>
-
-🚀 <b>LinkRay Studio</b>
-Создание постов, очередь публикаций и рекламные выходы.
-
-📊 <b>Аналитика</b>
-PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
-
-➕ <b>Добавить канал</b>
-Подключение MAX-канала к LinkRay.
-
-📈 <b>Отчёты</b>
-Статистика размещений, просмотры и CPM.
-
-🛡 <b>Антифрод</b>
-Проверка качества трафика и подозрительных скачков.
-
-Выберите нужный раздел.
-━━━━━━━━━━━━━━`, mainMenuRows());
+  await msg(chatId, mainMenuTextV6(), mainMenuRows());
 }
-function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('➕ Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
+
+function studioRows() { return [[callbackButton('🧩 Собрать пост', 'post:create')],[callbackButton('🗂 Посты', 'post:all')],[callbackButton('🏷 Автоподписи', 'sig:menu')],[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В меню', 'main:menu')]]; }
 async function showStudio(callbackId) { await cb(callbackId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nСобирайте посты, планируйте публикации и управляйте рекламными размещениями.\n━━━━━━━━━━━━━━`, studioRows()); }
 async function sendStudio(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━`, studioRows()); }
 
 async function showChannelSelect(callbackId, key, draft, multi = false) {
   const channels = await getChannels();
   if (!channels.length) {
-    await cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и откройте «Каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('➕ Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В Studio', 'main:posting')]]);
+    await cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и откройте «Каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В Studio', 'main:posting')]]);
     return;
   }
   const rows = [];
@@ -8569,7 +8771,7 @@ async function showChannelSelect(callbackId, key, draft, multi = false) {
   }
   rows.push([callbackButton('🧩 Выбрать несколько', 'post:multi'), callbackButton('🌐 Все каналы', 'post:all_channels')]);
   if (multi) rows.push([callbackButton('➡️ Далее', 'post:channels_next')]);
-  rows.push([callbackButton('➕ Добавить канал', 'post:add_channel')],[callbackButton('⬅️ Назад', 'main:posting'), callbackButton('❌ Отмена', 'post:cancel')]);
+  rows.push([callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ Назад', 'main:posting'), callbackButton('❌ Отмена', 'post:cancel')]);
   await setSession(key, multi ? 'select_channels_multi' : 'select_channels', { draft });
   await cb(callbackId, `━━━━━━━━━━━━━━\n📡 <b>Куда выпустить пост?</b>\n\n${hasContent(draft) ? 'Материал уже принят. Выберите канал.' : 'Выберите канал, затем отправьте пост.'}\n━━━━━━━━━━━━━━`, rows);
 }
@@ -8907,7 +9109,7 @@ ${channelsLines(channels)}
 
   const rows = [
     [callbackButton('📂 Посты', 'post:all')],
-    [callbackButton('🚀 LinkRay Studio', 'main:posting')]
+    [callbackButton('🧬 LinkRay Studio', 'main:posting')]
   ];
 
   if (callbackId) {
@@ -9318,14 +9520,9 @@ async function handleCallback(update) {
   if (payload === 'noop') return;
   if (payload === 'main:menu') return showMainCallback(callbackId);
   if (payload === 'main:posting') return showStudio(callbackId);
-  
-/* LINKRAY_EXISTING_MENU_STUBS_START */
-  if (payload === 'reports:menu') return cb(callbackId, `📈 <b>Отчёты</b>
-
-Раздел статистики размещений, просмотров и CPM скоро будет доступен.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
-  if (payload === 'fraud:menu') return cb(callbackId, `🛡 <b>Антифрод</b>
-
-Проверка качества трафика и подозрительных скачков скоро будет доступна.`, [[callbackButton('⬅️ В меню', 'main:menu')]]);
+  if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
+  if (payload === 'reports:menu') return cb(callbackId, '📊 Отчёты скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
+  if (payload === 'fraud:menu') return cb(callbackId, '🛡 Антифрод скоро будет здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
   if (payload === 'post:create') { const draft = emptyDraft(); return showChannelSelect(callbackId, key, draft, false); }
   if (payload === 'post:multi') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), true); }
@@ -9334,21 +9531,7 @@ async function handleCallback(update) {
   if (payload === 'post:all_channels') { const s = await getSession(key); const draft = safeDraft(s.data); draft.channelIds = (await getChannels()).map(c=>Number(c.id)); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
   if (payload === 'post:channels_next') { const s = await getSession(key); const draft = safeDraft(s.data); if (!draft.channelIds.length) return cb(callbackId, 'Выберите хотя бы один канал.', [[callbackButton('⬅️ Назад','post:multi')]]); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
   if (payload === 'post:change_channels') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), false); }
-  if (payload === 'post:add_channel') return cb(callbackId, `━━━━━━━━━━━━━━
-🔗 <b>Добавить канал</b>
-
-1. Добавьте LinkRay администратором MAX-канала.
-2. Дайте права:
-• публикация сообщений
-• редактирование сообщений
-• удаление сообщений
-• чтение сообщений
-• изменение информации канала
-
-3. Перешлите любой пост из этого канала сюда, в личку бота.
-
-После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
-━━━━━━━━━━━━━━`, [[callbackButton('➕ Добавить канал', 'post:add_channel')],[callbackButton('⬅️ Назад','post:create')]]);
+  if (payload === 'post:add_channel') return cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и нажмите «Мои каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ Назад','post:create')]]);
   if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:media') { const s = await getSession(key); await setSession(key, 'wait_edit_media', s.data); return cb(callbackId, '🖼 Отправьте новое фото, видео или файл.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:button') { const s = await getSession(key); await setSession(key, 'wait_button', s.data); return cb(callbackId, '🔘 Формат кнопки:\n<code>Название - https://site.ru</code>\nНесколько в строке через |', [[callbackButton('⬅️ Назад','editor:back')]]); }
@@ -9577,24 +9760,19 @@ if (payload.startsWith('sig:add_channel:')) {
 }
 
 async function showChannels(callbackId) {
-
-  return cb(callbackId, `━━━━━━━━━━━━━━
+  return cb(callbackId, `━━━━━━━━━━━━
 🔗 <b>Добавить канал</b>
 
-1. Добавьте LinkRay администратором MAX-канала.
-2. Дайте права:
-• публикация сообщений
-• редактирование сообщений
-• удаление сообщений
-• чтение сообщений
-• изменение информации канала
+1. Откройте канал в MAX.
+2. Добавьте LinkRay в администраторы.
+3. Выдайте право публикации.
+4. Канал автоматически сохранится в базе LinkRay.
 
-3. Перешлите любой пост из этого канала сюда, в личку бота.
-
-После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
-━━━━━━━━━━━━━━`, [
-    [callbackButton('➕ Добавить канал', 'post:add_channel')],
-    [callbackButton('⬅️ В Studio', 'main:posting')]
+После добавления бот пришлёт сообщение:
+✅ <b>Канал подключён к LinkRay</b>
+━━━━━━━━━━━━`, [
+    [callbackButton('🔗 Добавить канал', 'post:add_channel')],
+    [callbackButton('⬅️ В меню', 'main:menu')]
   ]);
 }
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
@@ -10067,7 +10245,7 @@ async function __lrDeleteChannelByUpdate(update) {
     await sendMessage(chatId, {
       text: `🗑️ <b>Канал удалён из LinkRay</b>\n\n${names}\n\nБот больше не администратор этого канала, поэтому канал удалён из базы.`,
       buttons: [
-        [callbackButton('➕ Добавить канал', 'post:add_channel')],
+        [callbackButton('🔗 Добавить канал', 'post:add_channel')],
         [callbackButton('⬅️ В меню', 'main:menu')]
       ]
     }).catch((error) => {
@@ -10160,9 +10338,9 @@ async function __lrNotifyNewChannels(targetChatId = '', update = null) {
 
       await sendMessage(chatId, {
         text:
-          `✅ Канал добавлен в LinkRay\n\n` +
+          `✅ <b>Канал подключён к LinkRay</b>\n\n` +
           `${title}\n\n` +
-          `Канал сохранён в базе и будет доступен для публикаций.`,
+          `Канал сохранён в базе и будет использоваться для публикаций, аналитики, отчётов, антифрода и рекламных закупов.`,
         buttons: [
           [callbackButton('🔗 Добавить ещё канал', 'post:add_channel')],
           [callbackButton('⬅️ В меню', 'main:menu')]
