@@ -9907,6 +9907,21 @@ function __lrGuardDirectTypes(update) {
 }
 
 function __lrGuardLooksPrivate(update) {
+  if (update && (
+    update.privateChat === true ||
+    update.private_chat === true ||
+    update.isPrivate === true ||
+    update.is_private === true ||
+    update?.message?.privateChat === true ||
+    update?.message?.private_chat === true ||
+    update?.body?.privateChat === true ||
+    update?.body?.private_chat === true ||
+    update?.message_callback?.privateChat === true ||
+    update?.callback?.privateChat === true
+  )) {
+    return true;
+  }
+
   const types = __lrGuardDirectTypes(update);
   return types.some((x) =>
     x === 'user' ||
@@ -9984,14 +9999,16 @@ async function __lrGuardIsSafePrivateChat(chatId, update = null) {
 
 async function __lrShouldIgnoreInboundChannelUpdate(update) {
   const chatId = getChatId(update);
-
   if (!chatId) return false;
+
+  const looksPrivate = __lrGuardLooksPrivate(update);
+
+  // Пересланный пост из канала приходит в личку с privateChat=true.
+  // Его нельзя глушить как channel update, иначе после пересылки будет тишина.
+  if (looksPrivate) return false;
 
   const knownChannel = await __lrIsKnownChannelChat(chatId).catch(() => false);
   const looksChannel = __lrLooksLikeChannelUpdate(update);
-  const looksPrivate = __lrGuardLooksPrivate(update);
-
-  if (looksPrivate && !knownChannel) return false;
 
   if (knownChannel || looksChannel) {
     console.log('[SKIP_CHANNEL_REPLY] ignored inbound channel update', JSON.stringify({
