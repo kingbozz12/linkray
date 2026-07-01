@@ -11358,6 +11358,215 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
 app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.json({ ok: true, service: 'linkray-bot', db: true, time: nowIso() }); } catch(e) { res.status(500).json({ ok:false, error: e.message }); } });
 
 
+
+/* LR_AUTOSIGN_BEFORE_WEBHOOK_V8_START */
+app.use(async function lrAutosignBeforeWebhookV8(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+
+    const text = (() => {
+      try { if (typeof getMessageText === 'function') return String(getMessageText(update) || '').trim(); } catch {}
+      return String(
+        update?.message?.body?.text ||
+        update?.message?.text ||
+        update?.body?.text ||
+        update?.text ||
+        ''
+      ).trim();
+    })();
+
+    const payload = (() => {
+      try { if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || ''); } catch {}
+      return String(
+        update?.callback?.payload ||
+        update?.callback_query?.data ||
+        update?.payload ||
+        update?.data ||
+        ''
+      );
+    })();
+
+    const chatId = (() => {
+      try { if (typeof getChatId === 'function') return getChatId(update); } catch {}
+      return update?.message?.recipient?.chat_id || update?.message?.chat_id || update?.chat_id || update?.chat?.id || '';
+    })();
+
+    const key = (() => {
+      try { if (typeof getSessionKey === 'function') return String(getSessionKey(update) || ''); } catch {}
+      return chatId ? String(chatId) : '';
+    })();
+
+    const cbId = (() => {
+      try { if (typeof getCallbackId === 'function') return getCallbackId(update); } catch {}
+      return update?.callback?.callback_id || update?.callback_id || '';
+    })();
+
+    const rowsOf = (r) => Array.isArray(r) ? r : (Array.isArray(r?.rows) ? r.rows : []);
+
+    const ensureTables = async () => {
+      await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+        key text PRIMARY KEY,
+        value text,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`);
+
+      await query(`CREATE TABLE IF NOT EXISTS channel_signatures (
+        id bigserial PRIMARY KEY,
+        channel_id bigint NOT NULL,
+        owner_key text,
+        text text NOT NULL DEFAULT '',
+        is_active boolean NOT NULL DEFAULT true,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`);
+    };
+
+    const stateKeys = [...new Set([chatId, key].filter(Boolean).map(x => `autosign_wait_v8:${x}`))];
+
+    if (payload.startsWith('sig:add_channel:') || payload === 'sig:add') {
+      let channelId = Number(payload.split(':')[2] || 0);
+
+      if (!channelId && key && typeof getSession === 'function') {
+        const sess = await getSession(key).catch(() => null);
+        const data = sess?.data || {};
+        channelId = Number(
+          data?.channelId ||
+          data?.draft?.channelIds?.[0] ||
+          data?.channelIds?.[0] ||
+          0
+        );
+      }
+
+      if (channelId) {
+        await ensureTables();
+        const value = JSON.stringify({ channelId, ts: Date.now() });
+
+        for (const sk of stateKeys) {
+          await query(
+            `INSERT INTO lr_bot_state(key,value,updated_at)
+             VALUES($1,$2,now())
+             ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+            [sk, value]
+          );
+        }
+
+        console.log('[autosign v8] wait set', JSON.stringify({ channelId, chatId: String(chatId || ''), key: String(key || '') }));
+      }
+
+      return next();
+    }
+
+    if (text && text.startsWith('/')) {
+      if (stateKeys.length) {
+        await query(`DELETE FROM lr_bot_state WHERE key = ANY($1::text[])`, [stateKeys]).catch(() => {});
+      }
+      return next();
+    }
+
+    if (!text || !stateKeys.length) return next();
+
+    await ensureTables();
+
+    let pending = null;
+    for (const sk of stateKeys) {
+      const found = rowsOf(await query(`SELECT value FROM lr_bot_state WHERE key=$1 LIMIT 1`, [sk]).catch(() => []));
+      if (!found[0]?.value) continue;
+
+      try {
+        const parsed = JSON.parse(found[0].value);
+        if (Number(parsed?.channelId || 0)) {
+          pending = parsed;
+          break;
+        }
+      } catch {}
+    }
+
+    if (!pending?.channelId) return next();
+
+    const channelId = Number(pending.channelId);
+    const ownerKey = String(key || chatId || 'linkray').slice(0, 200);
+
+    const existing = rowsOf(
+      await query(`SELECT id FROM channel_signatures WHERE channel_id=$1 ORDER BY updated_at DESC LIMIT 1`, [channelId])
+    );
+
+    if (existing.length) {
+      await query(
+        `UPDATE channel_signatures
+         SET text=$2, owner_key=$3, is_active=true, updated_at=now()
+         WHERE channel_id=$1`,
+        [channelId, text, ownerKey]
+      );
+    } else {
+      await query(
+        `INSERT INTO channel_signatures(channel_id, owner_key, text, is_active, updated_at)
+         VALUES($1,$2,$3,true,now())`,
+        [channelId, ownerKey, text]
+      );
+    }
+
+    await query(`DELETE FROM lr_bot_state WHERE key = ANY($1::text[])`, [stateKeys]).catch(() => {});
+    if (key && typeof clearSession === 'function') await clearSession(key).catch(() => {});
+
+    const saved = rowsOf(
+      await query(
+        `SELECT id, channel_id, is_active, text
+         FROM channel_signatures
+         WHERE channel_id=$1
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+        [channelId]
+      )
+    )[0];
+
+    console.log('[autosign v8] saved+verified', JSON.stringify({
+      channelId,
+      saved: !!saved,
+      id: saved?.id || null,
+      len: String(saved?.text || '').length
+    }));
+
+    const out = `✅ Подпись сохранена в базе.
+
+━━━━━━━━━━━━━━
+🏷 <b>Автоподпись</b>
+
+Канал:
+${channelId}
+
+Статус: 🟢 включена
+
+${String(saved?.text || text)}
+━━━━━━━━━━━━━━`;
+
+    const buttons = [
+      [callbackButton('✏️ Заменить автоподпись', `sig:add_channel:${channelId}`)],
+      [callbackButton('🔴 Выключить', `sig:toggle_channel:${channelId}`)],
+      [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+      [callbackButton('⬅️ В Studio', 'main:posting')]
+    ];
+
+    if (chatId && typeof msg === 'function') {
+      await msg(chatId, out, buttons, 'html');
+    } else if (chatId && typeof sendMaxMessage === 'function') {
+      await sendMaxMessage({
+        chatId,
+        text: out,
+        format: 'html',
+        attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(buttons) : buttons
+      });
+    }
+
+    return res.json({ ok: true, autosign: true });
+  } catch (e) {
+    console.error('[autosign v8]', e?.stack || e?.message || e);
+    return next();
+  }
+});
+/* LR_AUTOSIGN_BEFORE_WEBHOOK_V8_END */
+
+
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
   if (process.env.WEBHOOK_SECRET && incomingSecret !== process.env.WEBHOOK_SECRET) return res.status(401).json({ ok: false });
