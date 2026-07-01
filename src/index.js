@@ -865,14 +865,17 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
-/* LR_CHANNEL_AUTODISCOVER_V62_MOUNT_START */
+
+
+
+/* LR_CHANNEL_AUTODISCOVER_V63_MOUNT_START */
 try {
-  const { mountLinkRayChannelAutoDiscoverV62 } = await import('./linkrayChannelAutoDiscoverV62.js');
-  mountLinkRayChannelAutoDiscoverV62(app);
+  const { mountLinkRayChannelAutoDiscoverV63 } = await import('./linkrayChannelAutoDiscoverV63.js');
+  mountLinkRayChannelAutoDiscoverV63(app);
 } catch (e) {
-  console.log('[LR_CHANNEL_AUTODISCOVER_V62] mount error', e?.stack || e?.message || e);
+  console.log('[LR_CHANNEL_AUTODISCOVER_V63] mount error', e?.stack || e?.message || e);
 }
-/* LR_CHANNEL_AUTODISCOVER_V62_MOUNT_END */
+/* LR_CHANNEL_AUTODISCOVER_V63_MOUNT_END */
 
 
 /* LR_CHANNEL_ACCESS_SYNC_V52_PRO_START */
