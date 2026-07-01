@@ -126,6 +126,11 @@ async function rememberDialog(update) {
 
   if (!chatId || !userId) return;
 
+  if (String(chatId).startsWith('-')) {
+    console.log(`[${TAG}] skip channel as dialog`, safeJson({ userId: String(userId), chatId: String(chatId) }));
+    return;
+  }
+
   await ensureTables();
 
   await query(`
@@ -144,6 +149,8 @@ async function latestDialog() {
   const r = rows(await query(`
     SELECT user_id, chat_id
     FROM lr_user_dialogs
+    WHERE chat_id IS NOT NULL
+      AND chat_id NOT LIKE '-%'
     ORDER BY updated_at DESC
     LIMIT 1
   `).catch(() => []));
@@ -182,7 +189,12 @@ async function sendNotice(html) {
   const d = await latestDialog();
 
   if (!d) {
-    console.log(`[${TAG}] notice skipped: no dialog`);
+    console.log(`[${TAG}] notice skipped: no private dialog`);
+    return false;
+  }
+
+  if (String(d.chat_id || '').startsWith('-')) {
+    console.log(`[${TAG}] notice blocked: channel chat target`, safeJson(d));
     return false;
   }
 

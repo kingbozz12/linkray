@@ -857,6 +857,57 @@ app.use(express.json({ limit: '50mb' }));
 
 
 
+
+/* LR_IGNORE_CHANNEL_MESSAGES_V59_START */
+try {
+  app.use((req, res, next) => {
+    try {
+      const method = String(req?.method || '').toUpperCase();
+      const url = String(req?.originalUrl || req?.url || '');
+
+      if (method === 'POST' && url.includes('/webhook')) {
+        const u = req.body || {};
+        const updateType = String(u.update_type || u.type || '').toLowerCase();
+
+        const chatId =
+          u?.message?.recipient?.chat_id ??
+          u?.message?.chat_id ??
+          u?.recipient?.chat_id ??
+          u?.chat_id ??
+          null;
+
+        const text =
+          u?.message?.body?.text ??
+          u?.message?.text ??
+          u?.body?.text ??
+          '';
+
+        const isChannelChat = String(chatId || '').startsWith('-');
+        const isNormalMessage = updateType === 'message_created' || !!text;
+
+        if (isChannelChat && isNormalMessage) {
+          console.log('[LR_IGNORE_CHANNEL_MESSAGES_V59] ignored channel message', JSON.stringify({
+            chatId: String(chatId),
+            updateType,
+            text: String(text || '').slice(0, 80)
+          }));
+          return res.status(200).json({ ok: true });
+        }
+      }
+    } catch (e) {
+      console.log('[LR_IGNORE_CHANNEL_MESSAGES_V59] error', e?.stack || e?.message || e);
+    }
+
+    next();
+  });
+
+  console.log('[LR_IGNORE_CHANNEL_MESSAGES_V59] mounted');
+} catch (e) {
+  console.log('[LR_IGNORE_CHANNEL_MESSAGES_V59] mount failed', e?.stack || e?.message || e);
+}
+/* LR_IGNORE_CHANNEL_MESSAGES_V59_END */
+
+
 /* LR_CHANNEL_WATCHDOG_V57_MOUNT_START */
 try {
   const { mountLinkRayChannelWatchdogV57 } = await import('./linkrayChannelWatchdogV57.js');
@@ -867,14 +918,6 @@ try {
 /* LR_CHANNEL_WATCHDOG_V57_MOUNT_END */
 
 
-/* LR_CHANNEL_LIFECYCLE_EXACT_V56_MOUNT_START */
-try {
-  const { mountLinkRayLifecycleExactV56 } = await import('./linkrayChannelLifecycleExact.js');
-  mountLinkRayLifecycleExactV56(app);
-} catch (e) {
-  console.log('[LR_CHANNEL_LIFECYCLE_EXACT_V56] mount error', e?.stack || e?.message || e);
-}
-/* LR_CHANNEL_LIFECYCLE_EXACT_V56_MOUNT_END */
 
 
 /* LR_CHANNEL_ACCESS_SYNC_V52_PRO_START */
