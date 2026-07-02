@@ -9935,7 +9935,382 @@ async function __lrAutosignV9Message(update) {
 }
 /* LR_AUTOSIGN_WAIT_CHANNEL_V9_END */
 
+
+/* LR_AUTOSIGN_DIRECT_SAVE_V12_START */
+function __lrV12Rows(x) {
+  if (Array.isArray(x)) return x;
+  if (Array.isArray(x?.rows)) return x.rows;
+  return [];
+}
+
+function __lrV12Strings(obj, out = [], depth = 0) {
+  if (!obj || depth > 9) return out;
+  if (typeof obj === 'string') {
+    out.push(obj);
+    return out;
+  }
+  if (typeof obj !== 'object') return out;
+  if (Array.isArray(obj)) {
+    for (const x of obj) __lrV12Strings(x, out, depth + 1);
+    return out;
+  }
+  for (const v of Object.values(obj)) __lrV12Strings(v, out, depth + 1);
+  return out;
+}
+
+function __lrV12Payload(update) {
+  try {
+    if (typeof getCallbackPayload === 'function') {
+      const p = String(getCallbackPayload(update) || '');
+      if (p) return p;
+    }
+  } catch {}
+
+  const direct = String(
+    update?.callback?.payload ||
+    update?.callback_query?.data ||
+    update?.message?.body?.payload ||
+    update?.message?.payload ||
+    update?.body?.payload ||
+    update?.payload ||
+    update?.data ||
+    ''
+  );
+
+  if (direct) return direct;
+
+  for (const x of __lrV12Strings(update)) {
+    const s = String(x || '');
+    const m = s.match(/sig:(?:channel|add_channel|toggle_channel):\d+|sig:add|sig:menu/);
+    if (m) return m[0];
+  }
+
+  return '';
+}
+
+function __lrV12Text(update) {
+  try {
+    if (typeof getMessageText === 'function') {
+      const t = String(getMessageText(update) || '').trim();
+      if (t) return t;
+    }
+  } catch {}
+
+  try {
+    if (typeof getText === 'function') {
+      const t = String(getText(update) || '').trim();
+      if (t) return t;
+    }
+  } catch {}
+
+  return String(
+    update?.message?.body?.text ||
+    update?.message?.text ||
+    update?.body?.text ||
+    update?.text ||
+    ''
+  ).trim();
+}
+
+function __lrV12ChatId(update) {
+  try {
+    if (typeof getChatId === 'function') {
+      const id = String(getChatId(update) || '');
+      if (id) return id;
+    }
+  } catch {}
+
+  return String(
+    update?.message?.recipient?.chat_id ||
+    update?.message?.chat_id ||
+    update?.chat_id ||
+    update?.chat?.id ||
+    update?.recipient?.chat_id ||
+    ''
+  );
+}
+
+function __lrV12Ids(update) {
+  const ids = new Set();
+  const add = (v) => {
+    if (v === null || v === undefined) return;
+    const x = String(v).trim();
+    if (!x || x === '[object Object]' || x.length > 140) return;
+    ids.add(x);
+  };
+
+  add(__lrV12ChatId(update));
+
+  const walk = (obj, depth = 0) => {
+    if (!obj || depth > 8 || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+      for (const x of obj) walk(x, depth + 1);
+      return;
+    }
+
+    for (const [k, v] of Object.entries(obj)) {
+      const key = String(k).toLowerCase();
+      if (
+        key === 'chat_id' ||
+        key === 'chatid' ||
+        key === 'user_id' ||
+        key === 'userid' ||
+        key === 'sender_id' ||
+        key === 'recipient_id' ||
+        key === 'from_id' ||
+        key === 'author_id'
+      ) {
+        if (typeof v !== 'object') add(v);
+      }
+
+      if (v && typeof v === 'object') walk(v, depth + 1);
+    }
+  };
+
+  walk(update);
+  return [...ids];
+}
+
+function __lrV12StateKeys(update, kind) {
+  const keys = [`autosign_direct_v12:${kind}:global`];
+  for (const id of __lrV12Ids(update)) keys.push(`autosign_direct_v12:${kind}:${id}`);
+  return [...new Set(keys)];
+}
+
+async function __lrV12EnsureDb() {
+  await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+    key text PRIMARY KEY,
+    value text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`);
+
+  await query(`CREATE TABLE IF NOT EXISTS channel_signatures (
+    id bigserial PRIMARY KEY,
+    channel_id bigint NOT NULL,
+    owner_key text,
+    text text NOT NULL DEFAULT '',
+    is_active boolean NOT NULL DEFAULT true,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`);
+
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS owner_key text`).catch(() => {});
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`).catch(() => {});
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`).catch(() => {});
+}
+
+async function __lrV12Put(keys, data) {
+  await __lrV12EnsureDb();
+  const value = JSON.stringify({ ...data, ts: Date.now() });
+
+  for (const key of keys) {
+    await query(
+      `INSERT INTO lr_bot_state(key,value,updated_at)
+       VALUES($1,$2,now())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [key, value]
+    );
+  }
+}
+
+async function __lrV12Get(keys) {
+  await __lrV12EnsureDb();
+
+  for (const key of keys) {
+    const rows = __lrV12Rows(await query(`SELECT value FROM lr_bot_state WHERE key=$1 LIMIT 1`, [key]).catch(() => []));
+    if (!rows[0]?.value) continue;
+
+    try {
+      const data = JSON.parse(rows[0].value);
+      if (data?.ts && Date.now() - Number(data.ts) > 6 * 60 * 60 * 1000) {
+        await query(`DELETE FROM lr_bot_state WHERE key=$1`, [key]).catch(() => {});
+        continue;
+      }
+      return data;
+    } catch {}
+  }
+
+  return null;
+}
+
+async function __lrV12Del(keys) {
+  await query(`DELETE FROM lr_bot_state WHERE key = ANY($1::text[])`, [keys]).catch(() => {});
+}
+
+function __lrV12FindChannelIdFromAny(update) {
+  const payload = __lrV12Payload(update);
+  const m = payload.match(/sig:(?:channel|add_channel|toggle_channel):(\d+)/);
+  if (m) return Number(m[1]);
+
+  for (const x of __lrV12Strings(update)) {
+    const mm = String(x || '').match(/sig:(?:channel|add_channel|toggle_channel):(\d+)/);
+    if (mm) return Number(mm[1]);
+  }
+
+  return 0;
+}
+
+async function __lrV12SaveSignature(channelId, text, ownerKey) {
+  await __lrV12EnsureDb();
+
+  const cid = Number(channelId || 0);
+  const clean = String(text || '').trim();
+  if (!cid || !clean) throw new Error('autosign save: empty channelId/text');
+
+  const owner = String(ownerKey || 'linkray').slice(0, 200);
+
+  const existed = __lrV12Rows(
+    await query(`SELECT id FROM channel_signatures WHERE channel_id=$1 ORDER BY updated_at DESC LIMIT 1`, [cid])
+  );
+
+  if (existed.length) {
+    await query(
+      `UPDATE channel_signatures
+       SET owner_key=$2, text=$3, is_active=true, updated_at=now()
+       WHERE channel_id=$1`,
+      [cid, owner, clean]
+    );
+  } else {
+    await query(
+      `INSERT INTO channel_signatures(channel_id, owner_key, text, is_active, updated_at)
+       VALUES($1,$2,$3,true,now())`,
+      [cid, owner, clean]
+    );
+  }
+
+  const saved = __lrV12Rows(
+    await query(
+      `SELECT id, channel_id, owner_key, is_active, text, updated_at
+       FROM channel_signatures
+       WHERE channel_id=$1
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [cid]
+    )
+  )[0];
+
+  if (!saved) throw new Error('autosign save verify failed');
+
+  console.log('[autosign direct v12] saved+verified', JSON.stringify({
+    id: saved.id,
+    channelId: saved.channel_id,
+    active: saved.is_active,
+    len: String(saved.text || '').length
+  }));
+
+  return saved;
+}
+
+async function __lrV12SendSaved(update, saved) {
+  const chatId = __lrV12ChatId(update);
+  if (!chatId) return;
+
+  const text = `✅ Подпись сохранена в базе.
+
+━━━━━━━━━━━━━━
+🏷 <b>Автоподпись</b>
+
+Статус: 🟢 включена
+
+${String(saved?.text || '').trim()}
+━━━━━━━━━━━━━━`;
+
+  const rows = [
+    [callbackButton('✏️ Заменить автоподпись', `sig:add_channel:${saved.channel_id}`)],
+    [callbackButton('🔴 Выключить', `sig:toggle_channel:${saved.channel_id}`)],
+    [callbackButton('⬅️ Автоподписи', 'sig:menu')],
+    [callbackButton('⬅️ В Studio', 'main:posting')]
+  ];
+
+  if (typeof msg === 'function') {
+    await msg(chatId, text, rows, 'html');
+  } else if (typeof sendMaxMessage === 'function') {
+    await sendMaxMessage({
+      chatId,
+      text,
+      format: 'html',
+      attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows
+    });
+  }
+}
+
+async function __lrAutosignDirectCallbackV12(update) {
+  const payload = __lrV12Payload(update);
+  if (!payload) return false;
+
+  const channelId = __lrV12FindChannelIdFromAny(update);
+
+  if (payload.startsWith('sig:channel:') && channelId) {
+    await __lrV12Put(__lrV12StateKeys(update, 'last_channel'), { channelId });
+    console.log('[autosign direct v12] remember channel', JSON.stringify({ channelId }));
+    return false;
+  }
+
+  if (payload.startsWith('sig:add_channel:') && channelId) {
+    await __lrV12Put(__lrV12StateKeys(update, 'last_channel'), { channelId });
+    await __lrV12Put(__lrV12StateKeys(update, 'wait'), { channelId });
+    console.log('[autosign direct v12] wait add_channel', JSON.stringify({ channelId }));
+    return false;
+  }
+
+  if (payload === 'sig:add') {
+    const last = await __lrV12Get(__lrV12StateKeys(update, 'last_channel'));
+    const cid = Number(last?.channelId || 0);
+    if (cid) {
+      await __lrV12Put(__lrV12StateKeys(update, 'wait'), { channelId: cid });
+      console.log('[autosign direct v12] wait sig:add', JSON.stringify({ channelId: cid }));
+    } else {
+      console.log('[autosign direct v12] sig:add without remembered channel');
+    }
+    return false;
+  }
+
+  return false;
+}
+
+async function __lrAutosignDirectMessageV12(update) {
+  const text = __lrV12Text(update);
+  if (!text) return false;
+
+  if (text.startsWith('/')) {
+    await __lrV12Del(__lrV12StateKeys(update, 'wait'));
+    return false;
+  }
+
+  let wait = await __lrV12Get(__lrV12StateKeys(update, 'wait'));
+
+  if (!wait?.channelId) {
+    try {
+      const chat = __lrV12ChatId(update);
+      if (typeof getSession === 'function' && chat) {
+        const ses = await getSession(chat).catch(() => null);
+        const state = String(ses?.state || ses?.mode || '');
+        const raw = JSON.stringify(ses || {});
+        if (/wait_signature|signature|autosign/i.test(state + ' ' + raw)) {
+          const m = raw.match(/"channelId"\s*:\s*(\d+)|"channel_id"\s*:\s*(\d+)|"channelIds"\s*:\s*\[\s*(\d+)/);
+          if (m) wait = { channelId: Number(m[1] || m[2] || m[3]) };
+        }
+      }
+    } catch {}
+  }
+
+  const channelId = Number(wait?.channelId || 0);
+  if (!channelId) return false;
+
+  const saved = await __lrV12SaveSignature(channelId, text, __lrV12ChatId(update) || 'linkray');
+  await __lrV12Del(__lrV12StateKeys(update, 'wait'));
+
+  try {
+    const chat = __lrV12ChatId(update);
+    if (typeof clearSession === 'function' && chat) await clearSession(chat).catch(() => {});
+  } catch {}
+
+  await __lrV12SendSaved(update, saved);
+  return true;
+}
+/* LR_AUTOSIGN_DIRECT_SAVE_V12_END */
+
 async function handleCallback(update) {
+  await __lrAutosignDirectCallbackV12(update).catch(e => console.error('[autosign direct v12 callback]', e?.stack || e?.message || e));
   await __lrAutosignV9Callback(update).catch(e => console.error('[autosign v9 callback]', e?.stack || e?.message || e));
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
@@ -11122,6 +11497,7 @@ async function __lrHandlePendingSignatureTextV5({ chatId, key, update, session, 
 
 
 async function handleMessage(update) {
+  if (await __lrAutosignDirectMessageV12(update).catch(e => { console.error('[autosign direct v12 message]', e?.stack || e?.message || e); return false; })) return;
   if (await __lrAutosignV9Message(update).catch(e => { console.error('[autosign v9 message]', e?.stack || e?.message || e); return false; })) return;
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
