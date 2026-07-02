@@ -10149,48 +10149,59 @@ function __lrV12FindChannelIdFromAny(update) {
   return 0;
 }
 
+
 async function __lrV12SaveSignature(channelId, text, ownerKey) {
   await __lrV12EnsureDb();
 
   const cid = Number(channelId || 0);
   const clean = String(text || '').trim();
-  if (!cid || !clean) throw new Error('autosign save: empty channelId/text');
+
+  if (!cid) throw new Error('autosign save: empty channelId');
+  if (!clean) throw new Error('autosign save: empty text');
 
   const owner = String(ownerKey || 'linkray').slice(0, 200);
 
-  const existed = __lrV12Rows(
-    await query(`SELECT id FROM channel_signatures WHERE channel_id=$1 ORDER BY updated_at DESC LIMIT 1`, [cid])
+  await query(
+    `DELETE FROM channel_signatures WHERE channel_id=$1`,
+    [cid]
   );
 
-  if (existed.length) {
-    await query(
-      `UPDATE channel_signatures
-       SET owner_key=$2, text=$3, is_active=true, updated_at=now()
-       WHERE channel_id=$1`,
-      [cid, owner, clean]
-    );
-  } else {
+  const inserted = __lrV12Rows(
     await query(
       `INSERT INTO channel_signatures(channel_id, owner_key, text, is_active, updated_at)
-       VALUES($1,$2,$3,true,now())`,
+       VALUES($1,$2,$3,true,now())
+       RETURNING id, channel_id, owner_key, is_active, text, updated_at`,
       [cid, owner, clean]
+    )
+  );
+
+  let saved = inserted[0] || null;
+
+  if (!saved) {
+    const check = __lrV12Rows(
+      await query(
+        `SELECT id, channel_id, owner_key, is_active, text, updated_at
+         FROM channel_signatures
+         WHERE channel_id=$1
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1`,
+        [cid]
+      )
     );
+    saved = check[0] || null;
   }
 
-  const saved = __lrV12Rows(
-    await query(
-      `SELECT id, channel_id, owner_key, is_active, text, updated_at
-       FROM channel_signatures
-       WHERE channel_id=$1
-       ORDER BY updated_at DESC
-       LIMIT 1`,
-      [cid]
-    )
-  )[0];
+  if (!saved) {
+    const all = __lrV12Rows(
+      await query(
+        `SELECT count(*)::int AS cnt FROM channel_signatures`,
+        []
+      ).catch(() => [])
+    );
+    throw new Error('autosign save verify failed after insert, total=' + String(all[0]?.cnt ?? 'unknown'));
+  }
 
-  if (!saved) throw new Error('autosign save verify failed');
-
-  console.log('[autosign direct v12] saved+verified', JSON.stringify({
+  console.log('[autosign direct v13] saved+verified', JSON.stringify({
     id: saved.id,
     channelId: saved.channel_id,
     active: saved.is_active,
@@ -10199,6 +10210,7 @@ async function __lrV12SaveSignature(channelId, text, ownerKey) {
 
   return saved;
 }
+
 
 async function __lrV12SendSaved(update, saved) {
   const chatId = __lrV12ChatId(update);
@@ -10310,7 +10322,7 @@ async function __lrAutosignDirectMessageV12(update) {
 /* LR_AUTOSIGN_DIRECT_SAVE_V12_END */
 
 async function handleCallback(update) {
-  await __lrAutosignDirectCallbackV12(update).catch(e => console.error('[autosign direct v12 callback]', e?.stack || e?.message || e));
+  await __lrAutosignDirectCallbackV12(update).catch(e => console.error('[autosign direct v13 callback]', e?.stack || e?.message || e));
   await __lrAutosignV9Callback(update).catch(e => console.error('[autosign v9 callback]', e?.stack || e?.message || e));
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
@@ -11497,7 +11509,7 @@ async function __lrHandlePendingSignatureTextV5({ chatId, key, update, session, 
 
 
 async function handleMessage(update) {
-  if (await __lrAutosignDirectMessageV12(update).catch(e => { console.error('[autosign direct v12 message]', e?.stack || e?.message || e); return false; })) return;
+  if (await __lrAutosignDirectMessageV12(update).catch(e => { console.error('[autosign direct v13 message]', e?.stack || e?.message || e); return false; })) return;
   if (await __lrAutosignV9Message(update).catch(e => { console.error('[autosign v9 message]', e?.stack || e?.message || e); return false; })) return;
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
