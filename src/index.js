@@ -6888,7 +6888,7 @@ function lrKb(rows) {
       if (mode === 'editor') {
         draft.signatureEnabled = true;
         await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft: draft });
-        await lrMsg('✅ Подпись добавлена в канал.');
+        await lrMsg('✅ Подпись к каналу добавлена.', [[callbackButton('⬅️ Назад', 'main:posting')]]);
         await sendDraftPreview(chatId, draft);
         await msg(chatId, editorMenuText(), editorMenuRows(draft));
       } else { await clearSession(key); await lrMsg("✅ Подпись добавлена в канал."); return lrShowSigChannel(channelId, mode); } return res.json({ ok: true });
@@ -10151,7 +10151,9 @@ function __lrV12FindChannelIdFromAny(update) {
 
 
 async function __lrV12SaveSignature(channelId, text, ownerKey) {
-  await __lrV12EnsureDb();
+  const pgMod = await import('pg');
+  const Pool = pgMod.Pool || (pgMod.default && pgMod.default.Pool);
+  if (!Pool) throw new Error('pg Pool not found');
 
   const cid = Number(channelId || 0);
   const clean = String(text || '').trim();
@@ -10160,49 +10162,92 @@ async function __lrV12SaveSignature(channelId, text, ownerKey) {
   if (!cid) throw new Error('autosign save: empty channelId');
   if (!clean) throw new Error('autosign save: empty text');
 
-  await query(
-    `DELETE FROM channel_signatures WHERE channel_id=$1`,
-    [cid]
-  );
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-  const savedRows = __lrV12Rows(await query(
-    `INSERT INTO channel_signatures
-       (channel_id, signature, enabled, owner_key, title, is_active, text, created_at, updated_at)
-     VALUES
-       ($1, $2, true, $3, 'Автоподпись', true, $2, now(), now())
-     RETURNING id, channel_id, signature, enabled, owner_key, title, is_active, text, updated_at`,
-    [cid, clean, owner]
-  ));
+  try {
+    await pool.query(
+      "DO $$ BEGIN " +
+      "IF EXISTS (" +
+      "SELECT 1 FROM information_schema.columns " +
+      "WHERE table_schema='public' AND table_name='channel_signatures' " +
+      "AND column_name='id' AND column_default IS NULL AND is_identity='NO' AND is_nullable='NO'" +
+      ") THEN " +
+      "CREATE SEQUENCE IF NOT EXISTS channel_signatures_id_seq; " +
+      "PERFORM setval('channel_signatures_id_seq', COALESCE((SELECT MAX(id) FROM channel_signatures),0)+1, false); " +
+      "ALTER TABLE channel_signatures ALTER COLUMN id SET DEFAULT nextval('channel_signatures_id_seq'); " +
+      "END IF; END $$;"
+    );
 
-  let saved = savedRows[0] || null;
+    let realCid = cid;
 
-  if (!saved) {
-    const checkRows = __lrV12Rows(await query(
-      `SELECT id, channel_id, signature, enabled, owner_key, title, is_active, text, updated_at
-       FROM channel_signatures
-       WHERE channel_id=$1
-       ORDER BY updated_at DESC NULLS LAST, id DESC NULLS LAST
-       LIMIT 1`,
-      [cid]
-    ));
-    saved = checkRows[0] || null;
+    try {
+      const cols = await pool.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='channels'"
+      );
+      const have = new Set(cols.rows.map(x => String(x.column_name)));
+      const where = [];
+
+      if (have.has('id')) where.push('id::text=$1');
+      if (have.has('chat_id')) where.push('chat_id::text=$1');
+      if (have.has('channel_id')) where.push('channel_id::text=$1');
+      if (have.has('external_id')) where.push('external_id::text=$1');
+      if (have.has('max_id')) where.push('max_id::text=$1');
+
+      if (where.length && have.has('id')) {
+        const found = await pool.query(
+          "SELECT id FROM channels WHERE " + where.join(" OR ") + " ORDER BY id LIMIT 1",
+          [String(cid)]
+        );
+        if (found.rows[0] && found.rows[0].id) realCid = Number(found.rows[0].id);
+      }
+    } catch (e) {
+      console.error('[autosign direct v18] channel resolve skipped', e && e.message ? e.message : e);
+    }
+
+    await pool.query(
+      "DELETE FROM channel_signatures WHERE channel_id=$1",
+      [realCid]
+    );
+
+    const savedRes = await pool.query(
+      "INSERT INTO channel_signatures " +
+      "(channel_id, signature, enabled, owner_key, title, is_active, text, created_at, updated_at) " +
+      "VALUES ($1, $2, true, $3, 'Автоподпись', true, $2, now(), now()) " +
+      "RETURNING id, channel_id, signature, enabled, owner_key, title, is_active, text, updated_at",
+      [realCid, clean, owner]
+    );
+
+    let saved = savedRes.rows[0] || null;
+
+    if (!saved) {
+      const checkRes = await pool.query(
+        "SELECT id, channel_id, signature, enabled, owner_key, title, is_active, text, updated_at " +
+        "FROM channel_signatures WHERE channel_id=$1 " +
+        "ORDER BY updated_at DESC NULLS LAST, id DESC NULLS LAST LIMIT 1",
+        [realCid]
+      );
+      saved = checkRes.rows[0] || null;
+    }
+
+    if (!saved) {
+      const totalRes = await pool.query("SELECT count(*)::int AS cnt FROM channel_signatures");
+      throw new Error('autosign save failed v18 total=' + String(totalRes.rows[0] && totalRes.rows[0].cnt));
+    }
+
+    console.log('[autosign direct v18] saved+verified', JSON.stringify({
+      id: saved.id || null,
+      rawChannelId: cid,
+      savedChannelId: saved.channel_id,
+      enabled: saved.enabled,
+      isActive: saved.is_active,
+      signatureLen: String(saved.signature || '').length,
+      textLen: String(saved.text || '').length
+    }));
+
+    return saved;
+  } finally {
+    await pool.end().catch(() => {});
   }
-
-  if (!saved) {
-    const totalRows = __lrV12Rows(await query(`SELECT count(*)::int AS cnt FROM channel_signatures`).catch(() => []));
-    throw new Error('autosign save failed v17 total=' + String(totalRows[0]?.cnt ?? 'unknown'));
-  }
-
-  console.log('[autosign direct v17] saved+verified', JSON.stringify({
-    id: saved.id || null,
-    channelId: saved.channel_id,
-    enabled: saved.enabled,
-    isActive: saved.is_active,
-    signatureLen: String(saved.signature || '').length,
-    textLen: String(saved.text || '').length
-  }));
-
-  return saved;
 }
 
 async function __lrV12SendSaved(update, saved) {
@@ -10315,7 +10360,7 @@ async function __lrAutosignDirectMessageV12(update) {
 /* LR_AUTOSIGN_DIRECT_SAVE_V12_END */
 
 async function handleCallback(update) {
-  await __lrAutosignDirectCallbackV12(update).catch(e => console.error('[autosign direct v17 callback]', e?.stack || e?.message || e));
+  await __lrAutosignDirectCallbackV12(update).catch(e => console.error('[autosign direct v18 callback]', e?.stack || e?.message || e));
   await __lrAutosignV9Callback(update).catch(e => console.error('[autosign v9 callback]', e?.stack || e?.message || e));
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
@@ -11502,7 +11547,7 @@ async function __lrHandlePendingSignatureTextV5({ chatId, key, update, session, 
 
 
 async function handleMessage(update) {
-  if (await __lrAutosignDirectMessageV12(update).catch(e => { console.error('[autosign direct v17 message]', e?.stack || e?.message || e); return true; })) return;
+  if (await __lrAutosignDirectMessageV12(update).catch(e => { console.error('[autosign direct v18 message]', e?.stack || e?.message || e); return true; })) return;
   if (await __lrAutosignV9Message(update).catch(e => { console.error('[autosign v9 message]', e?.stack || e?.message || e); return false; })) return;
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
