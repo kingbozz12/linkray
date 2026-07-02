@@ -10157,6 +10157,31 @@ async function __lrV23AutosignSavedBack(update) {
   ]);
 }
 
+async function __lrV24AutosignSavedBack(update) {
+  const chatId = __lrV12ChatId(update);
+  const rows = [[callbackButton('⬅️ Назад', 'main:posting')]];
+
+  try {
+    if (typeof msg === 'function') {
+      await msg(chatId, '✅ Подпись к каналу добавлена.', rows);
+      return true;
+    }
+  } catch (e) {
+    console.error('[autosign success v24 msg]', e?.stack || e?.message || e);
+  }
+
+  try {
+    if (typeof lrMsg === 'function') {
+      await lrMsg('✅ Подпись к каналу добавлена.', rows);
+      return true;
+    }
+  } catch (e) {
+    console.error('[autosign success v24 lrMsg]', e?.stack || e?.message || e);
+  }
+
+  return true;
+}
+
 async function __lrV12SaveSignature(channelId, text, ownerKey) {
   const pgMod = await import('pg');
   const Pool = pgMod.Pool || (pgMod.default && pgMod.default.Pool);
