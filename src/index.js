@@ -6891,7 +6891,7 @@ function lrKb(rows) {
         await __lrV23AutosignSavedBack(update);
         await sendDraftPreview(chatId, draft);
         await msg(chatId, editorMenuText(), editorMenuRows(draft));
-      } else { await clearSession(key); await lrMsg("✅ Подпись добавлена в канал."); return lrShowSigChannel(channelId, mode); } return res.json({ ok: true });
+      } else { await clearSession(key); await msg(chatId, '✅ Подпись к каналу добавлена.', [[callbackButton('⬅️ Назад', 'main:posting')]]); return res.json({ ok: true }); } return res.json({ ok: true });
     }
 
     return next();
