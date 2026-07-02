@@ -6888,7 +6888,7 @@ function lrKb(rows) {
       if (mode === 'editor') {
         draft.signatureEnabled = true;
         await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft: draft });
-        await lrMsg('✅ Подпись к каналу добавлена.', [[callbackButton('⬅️ Назад', 'main:posting')]]);
+        await __lrV23AutosignSavedBack(update);
         await sendDraftPreview(chatId, draft);
         await msg(chatId, editorMenuText(), editorMenuRows(draft));
       } else { await clearSession(key); await lrMsg("✅ Подпись добавлена в канал."); return lrShowSigChannel(channelId, mode); } return res.json({ ok: true });
@@ -10149,6 +10149,13 @@ function __lrV12FindChannelIdFromAny(update) {
   return 0;
 }
 
+
+async function __lrV23AutosignSavedBack(update) {
+  const chatId = __lrV12ChatId(update);
+  return msg(chatId, '✅ Подпись к каналу добавлена.', [
+    [callbackButton('⬅️ Назад', 'main:posting')]
+  ]);
+}
 
 async function __lrV12SaveSignature(channelId, text, ownerKey) {
   const pgMod = await import('pg');
