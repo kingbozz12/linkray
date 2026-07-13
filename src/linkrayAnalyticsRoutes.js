@@ -105,6 +105,36 @@ function ruShortDate(value) {
   }
 }
 
+
+/* LR_REPORT_STATUS_V65_START */
+function ruStatusDate(value) {
+  if (!value) return 'Дата и время ещё не назначены.';
+
+  try {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) {
+      return 'Дата и время ещё не назначены.';
+    }
+
+    const parts = new Intl.DateTimeFormat('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(date);
+
+    const get = (type) =>
+      parts.find((part) => part.type === type)?.value || '';
+
+    return `${get('day')} ${get('month')} ${get('year')} в ${get('hour')}:${get('minute')} МСК`;
+  } catch {
+    return 'Дата и время ещё не назначены.';
+  }
+}
+
 function autoDeleteText(minutes) {
   const n = Number(minutes || 0);
   if (!Number.isFinite(n) || n <= 0) return 'не задано';
@@ -636,35 +666,69 @@ function postTitle(text) {
 }
 
 function statusInfo(post) {
-  const status = String(post?.status || '').toLowerCase();
+  const status = String(post?.status || '').trim().toLowerCase();
 
-  if (post?.auto_deleted_at || post?.deleted_at || ['deleted', 'canceled', 'cancelled'].includes(status)) {
+  const deletedAt =
+    post?.auto_deleted_at ||
+    post?.deleted_at ||
+    post?.removed_at ||
+    post?.deletedAt ||
+    null;
+
+  const publishedAt =
+    post?.published_at ||
+    post?.publishedAt ||
+    null;
+
+  const publishAt =
+    post?.publish_at ||
+    post?.publishAt ||
+    post?.scheduled_at ||
+    post?.scheduledAt ||
+    null;
+
+  const isDeleted =
+    Boolean(deletedAt) ||
+    ['deleted', 'removed', 'canceled', 'cancelled', 'auto_deleted'].includes(status);
+
+  const isPublished =
+    Boolean(publishedAt) ||
+    ['published', 'sent', 'posted', 'done'].includes(status);
+
+  if (isDeleted) {
     return {
-      title: 'Удалён',
-      text: 'Пост был удалён из канала. Отчёт сохранён.',
+      title: 'Пост удалён',
+      text: ruStatusDate(
+        deletedAt ||
+        post?.updated_at ||
+        publishedAt ||
+        publishAt ||
+        post?.created_at
+      ),
       good: false,
     };
   }
 
-  if (post?.published_at || status === 'published') {
+  if (isPublished) {
     return {
-      title: 'Опубликован',
-      text: 'Пост вышел во всех выбранных каналах. Автоудаление: ' + autoDeleteText(post.auto_delete_minutes) + '.',
+      title: 'Пост опубликован',
+      text: ruStatusDate(
+        publishedAt ||
+        publishAt ||
+        post?.updated_at ||
+        post?.created_at
+      ),
       good: true,
     };
   }
 
-  if (post?.publish_at) {
-    return {
-      title: 'Запланирован',
-      text: 'Публикация: ' + ruShortDate(post.publish_at),
-      good: false,
-    };
-  }
-
   return {
-    title: 'Готовится',
-    text: 'LinkRay ожидает данные публикации.',
+    title: 'Пост выйдет',
+    text: ruStatusDate(
+      publishAt ||
+      post?.created_at ||
+      null
+    ),
     good: false,
   };
 }
@@ -775,17 +839,516 @@ async function timelineFor(campaignId, rangeHours, totalViews, firstPost) {
   });
 }
 
+
+/* LR_REAL_MAX_VIEWS_V64_START
+   Реальные просмотры рекламных постов:
+   - GET /messages/{messageId} через platform-api2.max.ru;
+   - отдельные минутные точки по каналам и общий итог;
+   - график строится только из фактически полученных значений;
+   - старые смешанные точки помечаются legacy и в новый график не попадают.
+*/
+let lrV64NoTokenLogged = false;
+
+function lrV64ApiBase() {
+  return String(
+    process.env.MAX_API_URL ||
+    process.env.MAX_BASE_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru'
+  )
+    .replace('://platform-api.max.ru', '://platform-api2.max.ru')
+    .replace(/\/+$/, '');
+}
+
+function lrV64Token() {
+  return String(
+    process.env.BOT_TOKEN ||
+    process.env.MAX_BOT_TOKEN ||
+    process.env.MAX_TOKEN ||
+    process.env.MAX_ACCESS_TOKEN ||
+    process.env.ACCESS_TOKEN ||
+    ''
+  ).trim();
+}
+
+function lrV64MessageId(value) {
+  if (value === null || value === undefined) return '';
+
+  if (typeof value === 'object') {
+    for (const key of [
+      'mid',
+      'message_id',
+      'messageId',
+      'published_message_id',
+      'publishedMessageId',
+      'id'
+    ]) {
+      const found = lrV64MessageId(value[key]);
+      if (found) return found;
+    }
+    for (const nested of Object.values(value)) {
+      const found = lrV64MessageId(nested);
+      if (found) return found;
+    }
+    return '';
+  }
+
+  let text = String(value).trim();
+  if (!text || text === '[object Object]') return '';
+
+  if ((text.startsWith('{') && text.endsWith('}')) ||
+      (text.startsWith('[') && text.endsWith(']'))) {
+    try {
+      return lrV64MessageId(JSON.parse(text));
+    } catch {}
+  }
+
+  try {
+    const u = new URL(text);
+    const last = u.pathname.split('/').filter(Boolean).pop() || '';
+    if (/^[a-zA-Z0-9_-]+$/.test(last)) return last;
+  } catch {}
+
+  const labelled = text.match(
+    /(?:mid|message[_-]?id|published[_-]?message[_-]?id)\s*["'=:\s]+\s*([a-zA-Z0-9_-]+)/i
+  );
+  if (labelled?.[1]) return labelled[1];
+
+  if (/^[a-zA-Z0-9_-]+$/.test(text)) return text;
+  return '';
+}
+
+function lrV64ViewsFromMessage(message) {
+  const roots = [
+    message?.stat,
+    message?.statistics,
+    message?.message?.stat,
+    message?.message?.statistics,
+    Array.isArray(message?.messages) ? message.messages[0]?.stat : null,
+    Array.isArray(message?.messages) ? message.messages[0]?.statistics : null
+  ].filter(Boolean);
+
+  const keys = [
+    'views',
+    'view_count',
+    'views_count',
+    'viewCount',
+    'viewsCount',
+    'reach',
+    'reach_count',
+    'reachCount',
+    'impressions',
+    'reads'
+  ];
+
+  for (const root of roots) {
+    for (const key of keys) {
+      const n = Number(root?.[key]);
+      if (Number.isFinite(n) && n >= 0) return Math.round(n);
+    }
+  }
+
+  return null;
+}
+
+async function lrV64FetchMaxMessage(mid) {
+  const token = lrV64Token();
+  if (!token) {
+    if (!lrV64NoTokenLogged) {
+      lrV64NoTokenLogged = true;
+      console.error('[v64 real views] BOT_TOKEN/MAX_TOKEN not found');
+    }
+    return null;
+  }
+
+  const base = lrV64ApiBase();
+  const urls = [
+    `${base}/messages/${encodeURIComponent(mid)}`,
+    `${base}/messages?message_ids=${encodeURIComponent(mid)}`
+  ];
+
+  let lastError = '';
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: token }
+      });
+      const raw = await response.text();
+      let data = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = { raw };
+      }
+
+      if (!response.ok || data?.success === false) {
+        lastError = `HTTP ${response.status}: ${raw.slice(0, 500)}`;
+        continue;
+      }
+
+      if (Array.isArray(data?.messages)) {
+        return data.messages.find((item) =>
+          lrV64MessageId(item) === mid ||
+          lrV64MessageId(item?.body) === mid
+        ) || data.messages[0] || data;
+      }
+
+      return data?.message || data;
+    } catch (error) {
+      lastError = error?.message || String(error);
+    }
+  }
+
+  throw new Error(lastError || 'MAX message request failed');
+}
+
+async function lrV64EnsureTables() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS analytics_view_points (
+      id bigserial PRIMARY KEY,
+      campaign_id text NOT NULL,
+      post_id text,
+      channel_id text,
+      views integer NOT NULL DEFAULT 0,
+      point_kind text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+
+  await query(`
+    ALTER TABLE analytics_view_points
+    ADD COLUMN IF NOT EXISTS point_kind text
+  `).catch(() => {});
+
+  await query(`
+    UPDATE analytics_view_points
+    SET point_kind='legacy'
+    WHERE point_kind IS NULL
+  `).catch(() => {});
+
+  await query(`
+    ALTER TABLE analytics_view_points
+    ALTER COLUMN point_kind SET DEFAULT 'total'
+  `).catch(() => {});
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lr_view_points_real
+    ON analytics_view_points(campaign_id, point_kind, channel_id, created_at)
+  `).catch(() => {});
+}
+
+async function lrV64SyncMaxViews(post) {
+  const mid = lrV64MessageId(
+    post?.published_message_id ||
+    post?.max_message_id ||
+    post?.message_id ||
+    post?.publishedMessageId
+  );
+
+  if (!mid) {
+    console.error('[v64 real views] message id not found', JSON.stringify({
+      postId: post?.id || null,
+      published_message_id: post?.published_message_id || null
+    }));
+    return post;
+  }
+
+  try {
+    const message = await lrV64FetchMaxMessage(mid);
+    const views = lrV64ViewsFromMessage(message);
+
+    if (!Number.isFinite(views) || views < 0) {
+      console.error('[v64 real views] stat.views not found', JSON.stringify({
+        postId: post?.id || null,
+        mid,
+        stat: message?.stat || message?.statistics || null
+      }));
+      return post;
+    }
+
+    const snapshot = safeJson(post?.report_snapshot, {});
+    snapshot.views = views;
+    snapshot.totalViews = views;
+    snapshot.maxViews = views;
+    snapshot.maxStat = message?.stat || message?.statistics || {};
+    snapshot.lastMaxSyncAt = new Date().toISOString();
+    snapshot.lastViewSource = 'MAX GET /messages/{messageId}';
+
+    await query(
+      `UPDATE scheduled_posts
+       SET report_snapshot=$2::jsonb
+       WHERE id=$1`,
+      [post.id, JSON.stringify(snapshot)]
+    );
+
+    console.log('[v64 real views] synced', JSON.stringify({
+      postId: post.id,
+      mid,
+      channelId: post.channel_id || null,
+      views
+    }));
+
+    return { ...post, report_snapshot: snapshot };
+  } catch (error) {
+    console.error('[v64 real views] MAX sync failed', JSON.stringify({
+      postId: post?.id || null,
+      mid,
+      error: error?.message || String(error)
+    }));
+    return post;
+  }
+}
+
+async function lrV64SavePoint(
+  campaignId,
+  postId,
+  channelId,
+  views,
+  pointKind = 'total'
+) {
+  await lrV64EnsureTables();
+
+  const campaign = String(campaignId || postId || 'unknown');
+  const post = String(postId || '');
+  const channel = String(channelId || '');
+  const kind = String(pointKind || 'total');
+  const value = Math.max(0, Math.round(Number(views || 0)));
+
+  const last = rows(await query(
+    `SELECT views, created_at
+     FROM analytics_view_points
+     WHERE campaign_id=$1
+       AND point_kind=$2
+       AND COALESCE(channel_id, '')=$3
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [campaign, kind, channel]
+  ).catch(() => []))[0];
+
+  const lastMs = last?.created_at
+    ? new Date(last.created_at).getTime()
+    : 0;
+
+  if (
+    !last ||
+    Number(last.views) !== value ||
+    Date.now() - lastMs >= 55000
+  ) {
+    await query(
+      `INSERT INTO analytics_view_points
+       (campaign_id, post_id, channel_id, views, point_kind)
+       VALUES($1,$2,$3,$4,$5)`,
+      [campaign, post, channel, value, kind]
+    );
+  }
+}
+
+function lrV64PointLabel(startMs, ts) {
+  const minutes = Math.max(0, Math.round((ts - startMs) / 60000));
+  if (minutes === 0) return '0м';
+  if (minutes < 60) return `${minutes}м`;
+
+  const hours = minutes / 60;
+  if (Math.abs(hours - Math.round(hours)) < 0.01) {
+    return `${Math.round(hours)}ч`;
+  }
+  return `${hours.toFixed(1).replace('.', ',')}ч`;
+}
+
+async function lrV64TimelineFor(
+  campaignId,
+  rangeHours,
+  totalViews,
+  firstPost
+) {
+  await lrV64EnsureTables();
+
+  const campaign = String(campaignId || firstPost?.id || 'unknown');
+  const startRaw =
+    firstPost?.published_at ||
+    firstPost?.publish_at ||
+    firstPost?.created_at;
+
+  const startMs = startRaw
+    ? new Date(startRaw).getTime()
+    : Date.now();
+
+  const rangeEndMs = startMs + Number(rangeHours || 24) * 3600000;
+  const currentMs = Math.min(Date.now(), rangeEndMs);
+
+  const rawPoints = rows(await query(
+    `SELECT views, created_at
+     FROM analytics_view_points
+     WHERE campaign_id=$1
+       AND point_kind='total'
+       AND created_at >= $2
+       AND created_at <= $3
+     ORDER BY created_at ASC`,
+    [
+      campaign,
+      new Date(startMs).toISOString(),
+      new Date(rangeEndMs).toISOString()
+    ]
+  ).catch(() => []));
+
+  const points = rawPoints
+    .map((item) => ({
+      ts: new Date(item.created_at).getTime(),
+      views: Math.max(0, Math.round(Number(item.views || 0)))
+    }))
+    .filter((item) =>
+      Number.isFinite(item.ts) &&
+      item.ts >= startMs &&
+      item.ts <= currentMs
+    )
+    .sort((a, b) => a.ts - b.ts);
+
+  const measured = [{ ts: startMs, views: 0 }];
+
+  for (const point of points) {
+    const prev = measured[measured.length - 1];
+    const value = Math.max(prev?.views || 0, point.views);
+    if (prev && Math.abs(point.ts - prev.ts) < 30000) {
+      prev.views = Math.max(prev.views, value);
+    } else {
+      measured.push({ ts: point.ts, views: value });
+    }
+  }
+
+  const currentTotal = Math.max(
+    measured[measured.length - 1]?.views || 0,
+    Math.round(Number(totalViews || 0))
+  );
+
+  if (currentMs >= startMs) {
+    const last = measured[measured.length - 1];
+    if (!last || Math.abs(currentMs - last.ts) >= 30000) {
+      measured.push({ ts: currentMs, views: currentTotal });
+    } else {
+      last.views = Math.max(last.views, currentTotal);
+    }
+  }
+
+  const MAX_POINTS = 20;
+  let selected = measured;
+
+  if (measured.length > MAX_POINTS) {
+    const picked = [measured[0]];
+    const step = (measured.length - 1) / (MAX_POINTS - 1);
+    for (let i = 1; i < MAX_POINTS - 1; i += 1) {
+      picked.push(measured[Math.round(i * step)]);
+    }
+    picked.push(measured[measured.length - 1]);
+
+    const seen = new Set();
+    selected = picked.filter((point) => {
+      const key = `${point.ts}:${point.views}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  return selected.map((point, index) => {
+    const label = index === selected.length - 1 && point.ts === currentMs
+      ? 'Сейчас'
+      : lrV64PointLabel(startMs, point.ts);
+    return [label, point.views];
+  });
+}
+
+async function lrV64SyncPublishedViews() {
+  try {
+    await lrV64EnsureTables();
+
+    const posts = rows(await query(
+      `SELECT *
+       FROM scheduled_posts
+       WHERE published_message_id IS NOT NULL
+         AND (status='published' OR published_at IS NOT NULL)
+         AND COALESCE(published_at, publish_at, created_at)
+             >= now() - interval '8 days'
+         AND COALESCE(status::text, '') NOT IN
+             ('deleted','canceled','cancelled')
+       ORDER BY COALESCE(published_at, publish_at, created_at) DESC
+       LIMIT 150`
+    ).catch(() => []));
+
+    const campaigns = new Map();
+
+    for (const post of posts) {
+      const draft = safeJson(post?.draft, {});
+      const campaignId = String(
+        post?.report_group_id ||
+        draft?.campaignId ||
+        post?.id
+      );
+
+      if (!campaigns.has(campaignId)) {
+        campaigns.set(campaignId, []);
+      }
+      campaigns.get(campaignId).push(post);
+    }
+
+    for (const [campaignId, campaignPosts] of campaigns.entries()) {
+      let total = 0;
+      let firstPostId = campaignPosts[0]?.id || '';
+
+      for (const post of campaignPosts) {
+        const updated = await lrV64SyncMaxViews(post);
+        const views = getViews(safeJson(updated?.report_snapshot, {}));
+        total += Math.max(0, Number(views || 0));
+
+        await lrV64SavePoint(
+          campaignId,
+          updated?.id || post.id,
+          updated?.channel_id || post.channel_id || '',
+          views,
+          'channel'
+        );
+
+        if (typeof trySyncChannelAvatar === 'function') {
+          await trySyncChannelAvatar(
+            updated?.channel_id || post.channel_id
+          ).catch(() => {});
+        }
+      }
+
+      await lrV64SavePoint(
+        campaignId,
+        firstPostId,
+        '__total__',
+        total,
+        'total'
+      );
+    }
+
+    console.log('[v64 real views] minute sweep done', JSON.stringify({
+      posts: posts.length,
+      campaigns: campaigns.size
+    }));
+  } catch (error) {
+    console.error(
+      '[v64 real views] minute sweep failed',
+      error?.stack || error?.message || error
+    );
+  }
+}
+/* LR_REAL_MAX_VIEWS_V64_END */
+
 function fallbackData(id) {
   return {
     id,
+    botLink: BOT_LINK,
     reportLink: '/analytics/stats/' + encodeURIComponent(id || ''),
     title: 'Отчёт по рекламному посту',
-    postTitle: 'Отчёт готовится',
-    postHtml: 'Данные по этому рекламному посту пока не найдены. Как только пост будет опубликован и просмотры подтянутся, отчёт обновится автоматически.',
+    postTitle: 'Рекламный пост',
+    postHtml: 'Данные публикации ещё загружаются.',
     media: null,
     status: {
-      title: 'Готовится',
-      text: 'LinkRay ожидает данные публикации.',
+      title: 'Пост выйдет',
+      text: 'Дата и время ещё не назначены.',
       good: false,
     },
     publishedAt: null,
@@ -812,6 +1375,197 @@ function fallbackData(id) {
   };
 }
 
+async function trackerFallbackData(id) {
+  const base = fallbackData(id);
+
+  try {
+    const tracker = rows(await query(
+      `SELECT *
+       FROM ad_post_trackers
+       WHERE id::text = $1
+          OR COALESCE(token, '') = $1
+          OR COALESCE(post_id, '') = $1
+          OR COALESCE(schedule_ref, '') = $1
+       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+       LIMIT 1`,
+      [String(id || '')]
+    ).catch((error) => {
+      console.error('[v66 report status] tracker query failed', error?.message || error);
+      return [];
+    }))[0];
+
+    if (!tracker) return base;
+
+    const token = String(tracker.token || id || '');
+    const draft = safeJson(tracker.draft_json, {});
+
+    const trackerChannels = rows(await query(
+      `SELECT *
+       FROM ad_post_tracker_channels
+       WHERE COALESCE(token, '') = $1
+       ORDER BY created_at ASC NULLS LAST`,
+      [token]
+    ).catch((error) => {
+      console.error('[v66 report status] tracker channels query failed', error?.message || error);
+      return [];
+    }));
+
+    let channelIds = safeJson(tracker.channel_ids, []);
+    if (!Array.isArray(channelIds)) {
+      if (channelIds && typeof channelIds === 'object') {
+        channelIds = Object.values(channelIds).filter(Boolean);
+      } else if (channelIds) {
+        channelIds = [channelIds];
+      } else {
+        channelIds = [];
+      }
+    }
+
+    const rawChannels = trackerChannels.length
+      ? trackerChannels
+      : channelIds.map((channelId) => ({
+          channel_id: channelId,
+          channel_title: 'Канал',
+          views: 0,
+          published_at: tracker.published_at,
+          deleted_at: tracker.deleted_at,
+          status: tracker.status,
+        }));
+
+    const cpm = Math.max(0, Number(tracker.cpm || draft?.cpm || 0));
+
+    const channels = rawChannels.map((channel, index) => {
+      const views = Math.max(0, Number(channel.views || 0));
+      const title = String(channel.channel_title || channel.title || 'Канал');
+
+      return {
+        id: channel.channel_id || index + 1,
+        title,
+        link: channel.message_url || '',
+        avatar: '',
+        letter: title.trim().slice(0, 1).toUpperCase() || 'К',
+        time: ruShortDate(
+          channel.published_at ||
+          tracker.published_at ||
+          tracker.publish_at
+        ),
+        views,
+        cost: (views * cpm) / 1000,
+        share: 0,
+        originalIndex: index,
+      };
+    });
+
+    const trackerViews = Math.max(0, Number(tracker.views || 0));
+    const summedViews = channels.reduce(
+      (sum, channel) => sum + Math.max(0, Number(channel.views || 0)),
+      0
+    );
+    const totalViews = Math.max(trackerViews, summedViews);
+
+    const channelsFinal = channels.map((channel) => ({
+      ...channel,
+      share: totalViews
+        ? Math.round((Number(channel.views || 0) / totalViews) * 100)
+        : 0,
+    }));
+
+    const text =
+      tracker.post_text ||
+      trackerChannels[0]?.post_text ||
+      draft?.content?.text ||
+      draft?.text ||
+      draft?.caption ||
+      '';
+
+    const image =
+      tracker.post_image_url ||
+      trackerChannels[0]?.post_image_url ||
+      draft?.post_image_url ||
+      draft?.image_url ||
+      draft?.imageUrl ||
+      '';
+
+    const autoDeleteMinutes = Number(
+      tracker.auto_delete_minutes ??
+      draft?.autoDeleteMinutes ??
+      draft?.auto_delete_minutes ??
+      draft?.deleteAfterMinutes ??
+      0
+    );
+
+    const syntheticPost = {
+      id: tracker.id,
+      status: tracker.status,
+      publish_at: tracker.publish_at,
+      published_at:
+        tracker.published_at ||
+        trackerChannels.find((row) => row.published_at)?.published_at ||
+        null,
+      deleted_at:
+        tracker.deleted_at ||
+        trackerChannels.find((row) => row.deleted_at)?.deleted_at ||
+        null,
+      created_at: tracker.created_at,
+      updated_at: tracker.updated_at,
+      auto_delete_minutes: autoDeleteMinutes,
+    };
+
+    const lifeHours = livedHours(syntheticPost);
+    const ranges = {};
+
+    for (const range of availableRanges(lifeHours)) {
+      ranges[String(range)] = await timelineFor(
+        token || tracker.id || id,
+        range,
+        totalViews,
+        syntheticPost
+      );
+    }
+
+    console.log('[v66 report status] tracker fallback used', JSON.stringify({
+      id,
+      trackerId: tracker.id || null,
+      token: tracker.token || null,
+      status: syntheticPost.status || null,
+      publishAt: syntheticPost.publish_at || null,
+      publishedAt: syntheticPost.published_at || null,
+      deletedAt: syntheticPost.deleted_at || null,
+      channels: channelsFinal.length,
+    }));
+
+    return {
+      ...base,
+      postTitle: postTitle(text),
+      postHtml: sanitizePostHtml(text, 'html'),
+      media: image ? { url: image, kind: 'image' } : null,
+      status: statusInfo(syntheticPost),
+      publishedAt:
+        syntheticPost.deleted_at ||
+        syntheticPost.published_at ||
+        syntheticPost.publish_at ||
+        syntheticPost.created_at ||
+        null,
+      autoDeleteText: autoDeleteText(autoDeleteMinutes),
+      metrics: {
+        views: totalViews,
+        cpm,
+        cost: (totalViews * cpm) / 1000,
+        channelsCount: channelsFinal.length || channelIds.length,
+        lifeHours,
+      },
+      ranges,
+      channels: channelsFinal,
+    };
+  } catch (error) {
+    console.error(
+      '[v66 report status] fallback failed',
+      error?.stack || error?.message || error
+    );
+    return base;
+  }
+}
+
 async function collect(groupId) {
   await ensureAnalyticsTables();
 
@@ -827,9 +1581,9 @@ async function collect(groupId) {
     [id]
   ));
 
-  if (!posts.length) return fallbackData(id);
+  if (!posts.length) return await trackerFallbackData(id);
 
-  posts = await Promise.all(posts.map(trySyncMaxViews));
+  posts = await Promise.all(posts.map(lrV64SyncMaxViews));
 
   const first = posts[0] || {};
   const draft = safeJson(first.draft, {});
@@ -882,13 +1636,13 @@ async function collect(groupId) {
     };
   });
 
-  await savePoint(campaignId, first.id, first.channel_id, totalViews);
+  await lrV64SavePoint(campaignId, first.id, '__total__', totalViews, 'total');
 
   const lifeHours = livedHours(first);
   const ranges = {};
 
   for (const r of availableRanges(lifeHours)) {
-    ranges[String(r)] = await timelineFor(campaignId, r, totalViews, first);
+    ranges[String(r)] = await lrV64TimelineFor(campaignId, r, totalViews, first);
   }
 
   return {
@@ -1022,7 +1776,7 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
 
 /* CHART_CLEAR_HINT_V2 */
 .chart-card::after{
-  content:"0 → текущие просмотры";
+  content:"Реальные замеры MAX";
   position:absolute;
   left:12px;
   top:12px;
@@ -1034,6 +1788,26 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
   font-weight:1000;
   backdrop-filter:blur(10px);
 }
+
+
+/* LR_REAL_VIEWS_V64_CSS */
+.lr-independent-note{
+  width:calc(100% - 20px);
+  max-width:520px;
+  margin:14px auto calc(92px + var(--safe-bottom));
+  padding:14px 16px;
+  border-radius:22px;
+  background:rgba(255,255,255,.82);
+  border:1px solid rgba(15,23,42,.10);
+  box-shadow:0 14px 38px rgba(6,22,37,.10);
+  color:#66758a;
+  font-size:12px;
+  line-height:1.45;
+  font-weight:760;
+  text-align:center;
+  backdrop-filter:blur(14px);
+}
+.lr-independent-note b{color:#24364b}
 
 </style>
 </head>
@@ -1110,8 +1884,8 @@ h1{margin:16px 0 9px;font-size:clamp(34px,10.2vw,50px);line-height:.92;letter-sp
 
   <section class="panel" id="chart">
     <div class="panel-head">
-      <div class="panel-title"><h2>График просмотров</h2></div>
-      <p class="sub">График показывает накопление просмотров по времени. Нажмите на точку, чтобы увидеть значение.</p>
+      <div class="panel-title"><h2>Аналитика по времени</h2></div>
+      <p class="sub">График строится по реальным замерам статистики сообщения MAX. Нажмите на точку, чтобы увидеть просмотры.</p>
       <div class="segmented" id="ranges"></div>
     </div>
     <div class="chart-pad">
@@ -1254,6 +2028,37 @@ window.addEventListener('resize',()=>drawChart(activeRange));
 drawRangeButtons();drawChart(activeRange);renderChannels();
 setInterval(refreshPage,60000);
 </script>
+
+<!-- LR_REAL_VIEWS_V64_FOOTER -->
+<div class="lr-independent-note">
+  <b>LinkRay Analytics</b> — независимый сервис аналитики рекламных
+  размещений. Он не является официальным продуктом или подразделением
+  ООО «MAX».
+</div>
+<script>
+(() => {
+  const EVERY_MS = 60000;
+  let lastReload = Date.now();
+
+  setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (Date.now() - lastReload < EVERY_MS - 1000) return;
+    lastReload = Date.now();
+    window.location.reload();
+  }, 5000);
+
+  document.addEventListener('visibilitychange', () => {
+    if (
+      document.visibilityState === 'visible' &&
+      Date.now() - lastReload >= EVERY_MS
+    ) {
+      lastReload = Date.now();
+      window.location.reload();
+    }
+  });
+})();
+</script>
+
 </body>
 </html>`;
 }
@@ -1306,8 +2111,8 @@ async function syncPublishedViews() {
 function startMinuteSync() {
   if (minuteSyncStarted) return;
   minuteSyncStarted = true;
-  setTimeout(syncPublishedViews, 5000).unref?.();
-  setInterval(syncPublishedViews, 60000).unref?.();
+  setTimeout(lrV64SyncPublishedViews, 5000).unref?.();
+  setInterval(lrV64SyncPublishedViews, 60000).unref?.();
 }
 
 export function mountLinkRayAnalyticsRoutes(app) {
@@ -1353,3 +2158,7 @@ export function mountLinkRayAnalyticsRoutes(app) {
     }
   });
 }
+
+/* LR_REPORT_STATUS_V65_END */
+
+/* LR_REPORT_STATUS_V66 */

@@ -827,6 +827,11 @@ app.use('/brand', express.static('public/brand', { maxAge: '1h', fallthrough: tr
 // LINKRAY_PREEMPT_ANALYTICS_START
 app.get('/analytics/stats/:groupId', async (req, res, next) => {
   try {
+    /* LR_ANALYTICS_NO_CACHE_V66 */
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
     const mod = await import('./linkrayAnalyticsRoutes.js');
 
     if (typeof mod.renderLinkRayAnalyticsRequest === 'function') {
@@ -842,6 +847,1389 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 // LINKRAY_PREEMPT_ANALYTICS_END
 
 app.use(express.json({ limit: '50mb' }));
+/* LR_CONTENT_PLAN_V51_START */
+const lrV51ContentPlanCache = {
+  tablesAt: 0,
+  tables: null,
+};
+
+function lrV51Rows(result) {
+  return Array.isArray(result) ? result : (result && Array.isArray(result.rows) ? result.rows : []);
+}
+
+function lrV51Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(String(value ?? ''));
+  } catch {}
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV51Button(label, payload) {
+  if (typeof callbackButton === 'function') return callbackButton(label, payload);
+  return { text: String(label), callback: { payload: String(payload) } };
+}
+
+function lrV51Keyboard(rows) {
+  const clean = (Array.isArray(rows) ? rows : [])
+    .map(r => Array.isArray(r) ? r.filter(Boolean) : [])
+    .filter(r => r.length);
+  try {
+    if (typeof inlineKeyboard === 'function') return inlineKeyboard(clean);
+  } catch {}
+  return clean;
+}
+
+async function lrV51Answer(callbackId, chatId, text, rows = []) {
+  const cleanRows = (Array.isArray(rows) ? rows : [])
+    .map(r => Array.isArray(r) ? r.filter(Boolean) : [])
+    .filter(r => r.length);
+
+  if (callbackId && typeof cb === 'function') {
+    return cb(callbackId, String(text || 'LinkRay'), cleanRows, 'html');
+  }
+
+  if (callbackId && typeof answerCallback === 'function') {
+    return answerCallback({
+      callbackId,
+      text: String(text || 'LinkRay'),
+      format: 'html',
+      attachments: cleanRows.length ? lrV51Keyboard(cleanRows) : []
+    });
+  }
+
+  if (chatId && typeof msg === 'function') {
+    return msg(chatId, String(text || 'LinkRay'), cleanRows, 'html');
+  }
+
+  if (chatId && typeof sendMaxMessage === 'function') {
+    return sendMaxMessage({
+      chatId,
+      text: String(text || 'LinkRay'),
+      format: 'html',
+      attachments: cleanRows.length ? lrV51Keyboard(cleanRows) : []
+    });
+  }
+}
+
+function lrV51QuoteIdent(name) {
+  return '"' + String(name).replace(/"/g, '""') + '"';
+}
+
+function lrV51Hash(value) {
+  const text = String(value || '');
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+function lrV51ToObj(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch {}
+  }
+  return null;
+}
+
+function lrV51DeepText(value, depth = 0) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (depth > 4) return '';
+
+  if (Array.isArray(value)) {
+    return value.map(v => lrV51DeepText(v, depth + 1)).filter(Boolean).join(' ');
+  }
+
+  if (typeof value === 'object') {
+    const priority = [
+      'text', 'caption', 'body', 'message', 'message_text', 'post_text',
+      'content_text', 'html', 'raw', 'title', 'description', 'content',
+      'payload', 'data'
+    ];
+
+    for (const key of priority) {
+      if (value[key] !== undefined && value[key] !== null && value[key] !== '') {
+        const out = lrV51DeepText(value[key], depth + 1);
+        if (out) return out;
+      }
+    }
+
+    const parts = [];
+    for (const key of Object.keys(value).slice(0, 16)) {
+      if (/id|url|link|file|photo|video|image|attach|markup|button|keyboard/i.test(key)) continue;
+      const out = lrV51DeepText(value[key], depth + 1);
+      if (out) parts.push(out);
+    }
+    return parts.join(' ');
+  }
+
+  return '';
+}
+
+function lrV51CleanText(value, max = 64) {
+  const text = lrV51DeepText(value)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const safe = text || 'пост';
+  return safe.length > max ? safe.slice(0, max - 1).trim() + '…' : safe;
+}
+
+function lrV51DateKeyFromDate(d) {
+  const local = new Date(d.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+  return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}-${String(local.getDate()).padStart(2, '0')}`;
+}
+
+function lrV51DateKey(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return lrV51DateKeyFromDate(d);
+}
+
+function lrV51Today() {
+  return lrV51DateKeyFromDate(new Date());
+}
+
+function lrV51NowMs() {
+  return Date.now();
+}
+
+function lrV51ShiftDay(day, diff) {
+  const m = String(day || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0) : new Date();
+  d.setDate(d.getDate() + Number(diff || 0));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function lrV51ShiftMonth(month, diff) {
+  const m = String(month || '').match(/^(\d{4})-(\d{2})$/);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, 1, 12, 0, 0) : new Date();
+  d.setMonth(d.getMonth() + Number(diff || 0));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function lrV51HumanDay(day, compact = false) {
+  const m = String(day || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0) : new Date();
+  return d.toLocaleDateString('ru-RU', {
+    weekday: compact ? 'short' : 'short',
+    day: 'numeric',
+    month: compact ? 'short' : 'long',
+    year: compact ? undefined : 'numeric',
+    timeZone: 'Europe/Moscow'
+  });
+}
+
+function lrV51HumanMonth(month) {
+  const m = String(month || '').match(/^(\d{4})-(\d{2})$/);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, 1, 12, 0, 0) : new Date();
+  return d.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric', timeZone: 'Europe/Moscow' });
+}
+
+function lrV51Time(value) {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' });
+}
+
+function lrV51Bool(value) {
+  if (value === true) return true;
+  if (value === false || value === null || value === undefined) return false;
+  return /^(true|t|1|yes|y)$/i.test(String(value));
+}
+
+function lrV51StatusText(row) {
+  return String(
+    row.status ?? row.state ?? row.post_status ?? row.publication_status ??
+    row.publish_status ?? row.kind ?? row.type ?? ''
+  ).toLowerCase();
+}
+
+function lrV51IsPublished(row) {
+  const status = lrV51StatusText(row);
+  if (/(published|sent|done|posted|success|опублик|отправ|выпущ)/i.test(status)) return true;
+  if (lrV51Bool(row.is_published) || lrV51Bool(row.published) || lrV51Bool(row.is_sent) || lrV51Bool(row.sent) || lrV51Bool(row.done)) return true;
+  if (row.published_at || row.sent_at || row.posted_at || row.delivered_at || row.publication_at || row.fact_publish_at) return true;
+  if (row.max_message_id || row.published_message_id || row.sent_message_id || row.message_id) {
+    if (!/(draft|pending|scheduled|planned|queue|отлож|заплан)/i.test(status)) return true;
+  }
+  return false;
+}
+
+function lrV51PostDate(row) {
+  if (lrV51IsPublished(row)) {
+    return row.published_at || row.sent_at || row.posted_at || row.delivered_at ||
+      row.publication_at || row.fact_publish_at || row.publish_at || row.scheduled_at ||
+      row.schedule_at || row.planned_at || row.run_at || row.send_at || row.created_at || row.updated_at || '';
+  }
+
+  return row.publish_at || row.scheduled_at || row.schedule_at || row.planned_at ||
+    row.run_at || row.send_at || row.publication_at || row.created_at || row.updated_at || '';
+}
+
+function lrV51IsScheduled(row) {
+  if (lrV51IsPublished(row)) return false;
+  const status = lrV51StatusText(row);
+  if (/(scheduled|planned|pending|queue|wait|draft|deferred|отлож|заплан|ожид)/i.test(status)) return true;
+  if (row.publish_at || row.scheduled_at || row.schedule_at || row.planned_at || row.run_at || row.send_at) return true;
+  return false;
+}
+
+function lrV51PostTitle(row) {
+  const data = lrV51ToObj(row.data) || lrV51ToObj(row.payload) || lrV51ToObj(row.content) || null;
+  return lrV51CleanText(
+    row.title ?? row.name ?? row.preview ?? row.text ?? row.message_text ?? row.caption ??
+    row.body ?? row.content_text ?? row.post_text ?? row.html ?? row.raw ?? row.content ??
+    row.payload ?? row.data ?? data ?? '',
+    56
+  );
+}
+
+function lrV51PostLong(row) {
+  const data = lrV51ToObj(row.data) || lrV51ToObj(row.payload) || lrV51ToObj(row.content) || null;
+  return lrV51CleanText(
+    row.title ?? row.name ?? row.preview ?? row.text ?? row.message_text ?? row.caption ??
+    row.body ?? row.content_text ?? row.post_text ?? row.html ?? row.raw ?? row.content ??
+    row.payload ?? row.data ?? data ?? '',
+    800
+  );
+}
+
+function lrV51RowId(row) {
+  return String(row.id ?? row.post_id ?? row.publication_id ?? row.message_id ?? row.uuid ?? row.uid ?? '');
+}
+
+function lrV51ChannelId(row) {
+  const direct = row.channel_id ?? row.channelId ?? row.channel ?? row.chat_id ?? row.max_chat_id ??
+    row.maxChatId ?? row.target_chat_id ?? row.targetChatId ?? row.channel_max_chat_id ?? '';
+  if (direct) return String(direct);
+
+  const data = lrV51ToObj(row.data) || lrV51ToObj(row.payload) || lrV51ToObj(row.content) || {};
+  return String(
+    data.channel_id ?? data.channelId ?? data.channel ?? data.chat_id ?? data.max_chat_id ??
+    data.maxChatId ?? data.target_chat_id ?? data.targetChatId ?? ''
+  );
+}
+
+function lrV51AutoDelete(row) {
+  const v = row.auto_delete_minutes ?? row.autoDeleteMinutes ?? row.delete_after_minutes ??
+    row.autodelete_minutes ?? row.auto_delete ?? row.autoDelete ?? row.delete_after ?? '';
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) {
+    if (n % 60 === 0) return `${n / 60}ч`;
+    return `${n}м`;
+  }
+  return '';
+}
+
+function lrV51IsAd(row) {
+  if (lrV51Bool(row.is_ad) || lrV51Bool(row.isAd) || lrV51Bool(row.ad) || lrV51Bool(row.is_cpm)) return true;
+  if (row.cpm || row.cpm_price || row.price || row.cost) return true;
+  return false;
+}
+
+async function lrV51LoadChannels() {
+  const out = [];
+  try {
+    const rows = lrV51Rows(await query(`
+      SELECT id, max_chat_id, title, link, is_active, updated_at
+      FROM channels
+      WHERE COALESCE(is_active,true)=true
+      ORDER BY updated_at DESC NULLS LAST, id DESC
+      LIMIT 80
+    `));
+    for (const r of rows) {
+      out.push({
+        id: String(r.id),
+        max_chat_id: String(r.max_chat_id || ''),
+        title: String(r.title || 'Канал'),
+        link: r.link || ''
+      });
+    }
+  } catch (e) {
+    console.error('[v51 plan] load channels failed', e?.stack || e?.message || e);
+  }
+  return out;
+}
+
+function lrV51TableScore(t) {
+  const name = String(t.name || '').toLowerCase();
+  const cols = (t.cols || []).map(c => String(c).toLowerCase());
+
+  if (/^(bot_sessions|lr_bot_state|channels|users|admins|settings|migrations|signatures|channel_signatures)$/i.test(t.name)) return -999;
+  if (/(analytics|metric|stats|view|report|click|avatar|media_cache|log|state|session|signature|pending)/i.test(name)) return -120;
+
+  let score = 0;
+  if (/(^|_)(post|posts|publication|publications|queue|schedule|scheduled|creative|campaign|draft)(_|$)/i.test(name)) score += 45;
+  if (/post|publication|queue|schedule|creative|campaign|draft/i.test(name)) score += 20;
+  if (cols.some(c => /^(id|post_id|publication_id|uuid|uid)$/.test(c))) score += 8;
+  if (cols.some(c => /(text|caption|content|body|title|message|payload|data|raw|html)/.test(c))) score += 25;
+  if (cols.some(c => /(publish|schedule|planned|sent|posted|created|updated|run|send|delivered|publication).*at/.test(c))) score += 22;
+  if (cols.some(c => /(status|state|published|sent|done|is_ad|cpm|auto_delete)/.test(c))) score += 14;
+  if (cols.some(c => /(channel|chat|target).*id/.test(c))) score += 12;
+
+  return score;
+}
+
+async function lrV51CandidateTables() {
+  const now = Date.now();
+  if (lrV51ContentPlanCache.tables && now - lrV51ContentPlanCache.tablesAt < 60000) {
+    return lrV51ContentPlanCache.tables;
+  }
+
+  const rows = lrV51Rows(await query(`
+    SELECT table_name, array_agg(column_name::text ORDER BY ordinal_position) AS cols
+    FROM information_schema.columns
+    WHERE table_schema='public'
+    GROUP BY table_name
+  `));
+
+  const tables = rows.map(r => ({
+    name: String(r.table_name || ''),
+    cols: Array.isArray(r.cols) ? r.cols.map(String) : []
+  }))
+    .map(t => ({ ...t, score: lrV51TableScore(t) }))
+    .filter(t => t.score >= 35)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  lrV51ContentPlanCache.tables = tables;
+  lrV51ContentPlanCache.tablesAt = now;
+
+  console.log('[v51 plan] candidate tables', JSON.stringify(tables.map(t => ({
+    name: t.name,
+    score: t.score,
+    cols: t.cols.slice(0, 28)
+  }))));
+
+  return tables;
+}
+
+function lrV51OrderColumn(cols) {
+  return (
+    cols.find(c => /^updated_at$/i.test(c)) ||
+    cols.find(c => /^published_at$/i.test(c)) ||
+    cols.find(c => /^sent_at$/i.test(c)) ||
+    cols.find(c => /^posted_at$/i.test(c)) ||
+    cols.find(c => /^publish_at$/i.test(c)) ||
+    cols.find(c => /^scheduled_at$/i.test(c)) ||
+    cols.find(c => /^created_at$/i.test(c)) ||
+    cols.find(c => /^id$/i.test(c)) ||
+    cols[0]
+  );
+}
+
+async function lrV51LoadPostsRaw() {
+  const tables = await lrV51CandidateTables();
+  const out = [];
+
+  for (const t of tables) {
+    try {
+      const orderCol = lrV51OrderColumn(t.cols);
+      const orderSql = orderCol ? ` ORDER BY ${lrV51QuoteIdent(orderCol)} DESC NULLS LAST` : '';
+      const rows = lrV51Rows(await query(
+        `SELECT row_to_json(x) AS row
+         FROM (SELECT * FROM ${lrV51QuoteIdent(t.name)}${orderSql} LIMIT 700) x`
+      ));
+
+      for (const r of rows) {
+        const row = r.row || r;
+        if (!row || typeof row !== 'object') continue;
+        row.__lrV51Table = t.name;
+        row.__lrV51Score = t.score;
+        out.push(row);
+      }
+
+      console.log('[v51 plan] loaded table', JSON.stringify({ table: t.name, count: rows.length }));
+    } catch (e) {
+      console.error('[v51 plan] table load failed', t.name, e?.message || e);
+    }
+  }
+
+  return out;
+}
+
+function lrV51NormalizePosts(raw) {
+  const out = [];
+  const seen = new Set();
+
+  for (const row of raw) {
+    const date = lrV51PostDate(row);
+    const day = lrV51DateKey(date);
+    const title = lrV51PostTitle(row);
+    const id = lrV51RowId(row);
+    const channelId = lrV51ChannelId(row);
+    const status = lrV51IsPublished(row) ? 'published' : (lrV51IsScheduled(row) ? 'scheduled' : 'draft');
+
+    if (!day && status !== 'draft') continue;
+    if (!id && !title) continue;
+    if (title === 'пост' && !date) continue;
+
+    const table = String(row.__lrV51Table || '');
+    const virtualId = `${table}:${id || lrV51Hash(JSON.stringify(row).slice(0, 700))}`;
+    const key = `${table}:${id || ''}:${channelId}:${day}:${lrV51Time(date)}:${status}:${title}`;
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      ...row,
+      __v51Id: virtualId,
+      __v51Day: day,
+      __v51Date: date,
+      __v51Title: title,
+      __v51Status: status,
+      __v51ChannelId: channelId,
+    });
+  }
+
+  out.sort((a, b) => {
+    const at = new Date(a.__v51Date || 0).getTime() || 0;
+    const bt = new Date(b.__v51Date || 0).getTime() || 0;
+    return at - bt;
+  });
+
+  console.log('[v51 plan] normalized', JSON.stringify({
+    total: out.length,
+    sample: out.slice(0, 8).map(x => ({
+      table: x.__lrV51Table,
+      id: x.__v51Id,
+      day: x.__v51Day,
+      status: x.__v51Status,
+      channel: x.__v51ChannelId,
+      title: x.__v51Title
+    }))
+  }));
+
+  return out;
+}
+
+async function lrV51LoadPosts() {
+  const raw = await lrV51LoadPostsRaw();
+  return lrV51NormalizePosts(raw);
+}
+
+function lrV51MatchesChannel(row, channelKey, channels) {
+  if (!channelKey || channelKey === 'all') return true;
+
+  const ch = channels.find(c => c.id === String(channelKey) || c.max_chat_id === String(channelKey));
+  if (!ch) return false;
+
+  const rowCh = String(row.__v51ChannelId || '');
+  if (!rowCh) return true; // если старая запись без channel_id, показываем, чтобы пост не пропал
+
+  return rowCh === ch.id || rowCh === ch.max_chat_id;
+}
+
+function lrV51ChannelTitle(row, channels) {
+  const id = String(row.__v51ChannelId || '');
+  const ch = channels.find(c => c.id === id || c.max_chat_id === id);
+  return ch ? ch.title : '';
+}
+
+function lrV51FilterPosts(posts, channels, channelKey, filter, day) {
+  const now = lrV51NowMs();
+  let arr = posts.filter(p => lrV51MatchesChannel(p, channelKey, channels));
+
+  if (filter === 'scheduled') {
+    arr = arr.filter(p => p.__v51Status !== 'published');
+    arr = arr.filter(p => {
+      const t = new Date(p.__v51Date || 0).getTime() || 0;
+      return !t || t >= now - 60000;
+    });
+  } else if (filter === 'published') {
+    arr = arr.filter(p => p.__v51Status === 'published' && p.__v51Day === day);
+  } else {
+    arr = arr.filter(p => p.__v51Day === day);
+  }
+
+  arr.sort((a, b) => {
+    const at = new Date(a.__v51Date || 0).getTime() || 0;
+    const bt = new Date(b.__v51Date || 0).getTime() || 0;
+    return filter === 'published' ? bt - at : at - bt;
+  });
+
+  return arr;
+}
+
+function lrV51CountForDay(posts, channels, channelKey, day) {
+  const dayPosts = posts.filter(p => lrV51MatchesChannel(p, channelKey, channels) && p.__v51Day === day);
+  const published = dayPosts.filter(p => p.__v51Status === 'published');
+  const scheduled = dayPosts.filter(p => p.__v51Status !== 'published');
+  return { dayPosts, published, scheduled };
+}
+
+function lrV51CountScheduledFuture(posts, channels, channelKey) {
+  const now = lrV51NowMs();
+  return posts.filter(p => lrV51MatchesChannel(p, channelKey, channels) && p.__v51Status !== 'published' && ((new Date(p.__v51Date || 0).getTime() || 0) >= now - 60000)).length;
+}
+
+function lrV51ChannelLabel(channelKey, channels) {
+  if (!channelKey || channelKey === 'all') return 'Все каналы';
+  const ch = channels.find(c => c.id === String(channelKey) || c.max_chat_id === String(channelKey));
+  return ch ? ch.title : 'Канал';
+}
+
+function lrV51DateInRow(row, filter) {
+  if (filter === 'scheduled') {
+    return `${lrV51HumanDay(row.__v51Day, true)} ${lrV51Time(row.__v51Date)}`;
+  }
+  return lrV51Time(row.__v51Date);
+}
+
+function lrV51PostRowLabel(row, filter, channels) {
+  const tags = [];
+
+  // Наш стиль:
+  // обычный опубликованный - без эмодзи;
+  // рекламный - чемодан;
+  // отложенный - песочные часы;
+  // рекламный и отложенный - чемодан + песочные часы.
+  if (lrV51IsAd(row)) tags.push('💼');
+  if (row.__v51Status !== 'published') tags.push('⏳');
+
+  const prefix = tags.length ? `${tags.join('')} ` : '';
+  const media = '✏️ 🖼️';
+  const del = lrV51AutoDelete(row) ? ` 🗑 ${lrV51AutoDelete(row)}` : '';
+  const ch = filter !== 'scheduled' ? '' : (lrV51ChannelTitle(row, channels) ? ` · ${lrV51CleanText(lrV51ChannelTitle(row, channels), 18)}` : '');
+
+  return `${prefix}${lrV51DateInRow(row, filter)} · ${media} · ${lrV51CleanText(row.__v51Title, 30)}${del}${ch}`;
+}
+
+function lrV51PayloadSafe(value) {
+  return encodeURIComponent(String(value || ''));
+}
+
+function lrV51PayloadRead(value) {
+  try { return decodeURIComponent(String(value || '')); } catch { return String(value || ''); }
+}
+
+async function lrV51SetState(key, state, data = {}) {
+  if (!key || typeof setSession !== 'function') return;
+  try {
+    await setSession(key, state, { ...data, ts: Date.now() });
+  } catch (e) {
+    console.error('[v51 plan] set session failed', e?.message || e);
+  }
+}
+
+async function lrV51ShowChannels(callbackId, chatId, key) {
+  await lrV51SetState(key, 'content_plan_v51_channels', { mode: 'posts' });
+
+  const channels = await lrV51LoadChannels();
+  const rows = [];
+
+  for (let i = 0; i < channels.length; i += 2) {
+    const a = channels[i];
+    const b = channels[i + 1];
+    const row = [lrV51Button(lrV51CleanText(a.title, 24), `lr_plan_v51:view:${lrV51PayloadSafe(a.id)}:${lrV51Today()}:all:0`)];
+    if (b) row.push(lrV51Button(lrV51CleanText(b.title, 24), `lr_plan_v51:view:${lrV51PayloadSafe(b.id)}:${lrV51Today()}:all:0`));
+    rows.push(row);
+  }
+
+  rows.push([lrV51Button('📣 Все каналы', `lr_plan_v51:view:all:${lrV51Today()}:all:0`)]);
+  rows.push([lrV51Button('⬅️ Назад', 'main:posting')]);
+
+  const text =
+    '━━━━━━━━━━━━━━\n' +
+    '🗂 <b>Контент‑план LinkRay</b>\n\n' +
+    'Здесь можно просматривать запланированные и опубликованные публикации.\n\n' +
+    'Выберите канал для просмотра контент‑плана.\n' +
+    '━━━━━━━━━━━━━━';
+
+  console.log('[v51 plan] channels screen', JSON.stringify({ chatId, key, count: channels.length }));
+  return lrV51Answer(callbackId, chatId, text, rows);
+}
+
+async function lrV51RenderList(callbackId, chatId, key, channelKey = 'all', day = lrV51Today(), filter = 'all', page = 0) {
+  channelKey = lrV51PayloadRead(channelKey);
+  day = day || lrV51Today();
+  filter = filter || 'all';
+  page = Math.max(0, Number(page || 0));
+
+  await lrV51SetState(key, 'content_plan_v51_list', { channelKey, day, filter, page });
+
+  const channels = await lrV51LoadChannels();
+  const posts = await lrV51LoadPosts();
+
+  const counts = lrV51CountForDay(posts, channels, channelKey, day);
+  const scheduledFutureCount = lrV51CountScheduledFuture(posts, channels, channelKey);
+  const visibleAll = lrV51FilterPosts(posts, channels, channelKey, filter, day);
+
+  const perPage = filter === 'scheduled' ? 10 : 8;
+  const start = page * perPage;
+  const visible = visibleAll.slice(start, start + perPage);
+
+  const title = lrV51ChannelLabel(channelKey, channels);
+  const filterTitle =
+    filter === 'scheduled' ? `📋 Всего запланировано: ${scheduledFutureCount}` :
+    filter === 'published' ? `✅ ${counts.published.length} опубликовано` :
+    `📋 Всего за день: ${counts.dayPosts.length} · ⏳ ${counts.scheduled.length} отложено · ✅ ${counts.published.length} опубликовано`;
+
+  const text =
+    '━━━━━━━━━━━━━━\n' +
+    `📣 <b>${lrV51Esc(title)}</b>\n` +
+    (filter === 'scheduled'
+      ? `${filterTitle}\n`
+      : `📅 ${lrV51Esc(lrV51HumanDay(day))}\n${filterTitle}\n`) +
+    '━━━━━━━━━━━━━━';
+
+  const rows = [];
+
+  for (const row of visible) {
+    rows.push([lrV51Button(lrV51PostRowLabel(row, filter, channels), `lr_plan_v51:open:${lrV51PayloadSafe(row.__v51Id)}:${lrV51PayloadSafe(channelKey)}:${day}:${filter}:${page}`)]);
+  }
+
+  if (!visible.length) {
+    rows.push([lrV51Button('Постов нет', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day}:${filter}:${page}`)]);
+  }
+
+  rows.push([
+    lrV51Button(`${filter === 'scheduled' ? '🟡' : ''} Отложенные`, `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day}:scheduled:0`),
+    lrV51Button(`${filter === 'published' ? '🟢' : ''} Опубликованные`, `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day}:published:0`)
+  ]);
+  rows.push([lrV51Button('📋 Все посты', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day}:all:0`)]);
+  rows.push([lrV51Button('📅 Развернуть календарь', `lr_plan_v51:calendar:${lrV51PayloadSafe(channelKey)}:${day.slice(0, 7)}:${filter}`)]);
+
+  if (filter === 'scheduled') {
+    if (start + perPage < visibleAll.length) rows.push([lrV51Button('⬇️ Ниже', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day}:${filter}:${page + 1}`)]);
+    if (page > 0) rows.push([lrV51Button('⬆️ Выше', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day}:${filter}:${page - 1}`)]);
+  } else {
+    rows.push([
+      lrV51Button('⬅️', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${lrV51ShiftDay(day, -1)}:${filter}:0`),
+      lrV51Button('Сегодня', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${lrV51Today()}:${filter}:0`),
+      lrV51Button('➡️', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${lrV51ShiftDay(day, 1)}:${filter}:0`)
+    ]);
+  }
+
+  rows.push([lrV51Button('⬅️ Назад', 'lr_plan_v51:channels')]);
+
+  console.log('[v51 plan] rendered', JSON.stringify({
+    chatId, key, channelKey, day, filter, page,
+    visible: visible.length,
+    totalVisible: visibleAll.length,
+    dayTotal: counts.dayPosts.length,
+    scheduledDay: counts.scheduled.length,
+    publishedDay: counts.published.length,
+    scheduledFutureCount
+  }));
+
+  return lrV51Answer(callbackId, chatId, text, rows);
+}
+
+async function lrV51RenderCalendar(callbackId, chatId, key, channelKey = 'all', month = '', filter = 'all') {
+  channelKey = lrV51PayloadRead(channelKey);
+  month = String(month || lrV51Today().slice(0, 7)).slice(0, 7);
+  filter = filter || 'all';
+
+  await lrV51SetState(key, 'content_plan_v51_calendar', { channelKey, month, filter });
+
+  const channels = await lrV51LoadChannels();
+  const posts = await lrV51LoadPosts();
+
+  const m = month.match(/^(\d{4})-(\d{2})$/);
+  const base = m ? new Date(Number(m[1]), Number(m[2]) - 1, 1, 12, 0, 0) : new Date();
+  const year = base.getFullYear();
+  const mon = base.getMonth();
+  const first = new Date(year, mon, 1, 12, 0, 0);
+  const last = new Date(year, mon + 1, 0, 12, 0, 0);
+
+  let startWeekday = first.getDay();
+  if (startWeekday === 0) startWeekday = 7;
+
+  const rows = [];
+  rows.push([
+    lrV51Button('⬅️', `lr_plan_v51:calendar:${lrV51PayloadSafe(channelKey)}:${lrV51ShiftMonth(month, -1)}:${filter}`),
+    lrV51Button(lrV51HumanMonth(month), `lr_plan_v51:calendar:${lrV51PayloadSafe(channelKey)}:${month}:${filter}`),
+    lrV51Button('➡️', `lr_plan_v51:calendar:${lrV51PayloadSafe(channelKey)}:${lrV51ShiftMonth(month, 1)}:${filter}`)
+  ]);
+  rows.push(['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(x => lrV51Button(x, `lr_plan_v51:calendar:${lrV51PayloadSafe(channelKey)}:${month}:${filter}`)));
+
+  let row = [];
+  for (let i = 1; i < startWeekday; i += 1) row.push(lrV51Button('·', `lr_plan_v51:calendar:${lrV51PayloadSafe(channelKey)}:${month}:${filter}`));
+
+  for (let d = 1; d <= last.getDate(); d += 1) {
+    const day = `${year}-${String(mon + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const label = String(d);
+    row.push(lrV51Button(day === lrV51Today() ? `•${label}•` : label, `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day}:${filter}:0`));
+    if (row.length === 7) {
+      rows.push(row);
+      row = [];
+    }
+  }
+
+  if (row.length) {
+    while (row.length < 7) row.push(lrV51Button('·', `lr_plan_v51:calendar:${lrV51PayloadSafe(channelKey)}:${month}:${filter}`));
+    rows.push(row);
+  }
+
+  rows.push([lrV51Button('⬅️ К списку', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${lrV51Today()}:${filter}:0`)]);
+
+  const text =
+    '━━━━━━━━━━━━━━\n' +
+    '📅 <b>Календарь контент‑плана</b>\n\n' +
+    `${lrV51Esc(lrV51ChannelLabel(channelKey, channels))}\n` +
+    `${lrV51Esc(lrV51HumanMonth(month))}\n\n` +
+    'Нажмите на любой день, чтобы открыть публикации за эту дату.\n' +
+    '━━━━━━━━━━━━━━';
+
+  console.log('[v51 plan] calendar', JSON.stringify({ chatId, key, channelKey, month, filter }));
+  return lrV51Answer(callbackId, chatId, text, rows);
+}
+
+async function lrV51OpenPost(callbackId, chatId, key, virtualId, channelKey, day, filter, page) {
+  channelKey = lrV51PayloadRead(channelKey);
+  virtualId = lrV51PayloadRead(virtualId);
+
+  await lrV51SetState(key, 'content_plan_v51_editor', { virtualId, channelKey, day, filter, page });
+
+  const channels = await lrV51LoadChannels();
+  const posts = await lrV51LoadPosts();
+  const row = posts.find(p => p.__v51Id === virtualId);
+
+  if (!row) {
+    return lrV51Answer(callbackId, chatId,
+      '━━━━━━━━━━━━━━\n⚠️ <b>Пост не найден</b>\n\nОн мог быть изменён или удалён.\n━━━━━━━━━━━━━━',
+      [[lrV51Button('⬅️ Назад', `lr_plan_v51:view:${lrV51PayloadSafe(channelKey)}:${day || lrV51Today()}:${filter || 'all'}:${page || 0}`)]]
+    );
+  }
+
+  const ch = lrV51ChannelTitle(row, channels) || lrV51ChannelLabel(channelKey, channels);
+  const status = row.__v51Status === 'published' ? 'опубликован' : 'отложен';
+  const ad = lrV51IsAd(row) ? 'да' : 'нет';
+  const del = lrV51AutoDelete(row) || 'без удаления';
+  const safeVirtualId = lrV51PayloadSafe(row.__v51Id);
+  const safeChannelKey = lrV51PayloadSafe(channelKey);
+
+  const text =
+    '━━━━━━━━━━━━━━\n' +
+    '🧬 <b>Редактор LinkRay</b>\n\n' +
+    'Пост из контент‑плана открыт для редактирования.\n\n' +
+    `📣 Канал: ${lrV51Esc(ch)}\n` +
+    `📌 Статус: ${lrV51Esc(status)}\n` +
+    `🕒 Время: ${lrV51Esc(lrV51HumanDay(row.__v51Day))} ${lrV51Esc(lrV51Time(row.__v51Date))}\n` +
+    `🗑 Автоудаление: ${lrV51Esc(del)}\n` +
+    `💼 Реклама: ${lrV51Esc(ad)}\n\n` +
+    'Настройте пост и нажмите «Сохранить пост».\n' +
+    '━━━━━━━━━━━━━━';
+
+  const rows = [
+    [
+      lrV51Button('✏️ Изменить текст', `lr_plan_v51:edit_text:${safeVirtualId}:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`),
+      lrV51Button('🖼️ Медиа', `lr_plan_v51:edit_media:${safeVirtualId}:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`)
+    ],
+    [
+      lrV51Button('🔘 Добавить кнопку', `lr_plan_v51:edit_button:${safeVirtualId}:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`),
+      lrV51Button('🏷 Автоподпись', `lr_plan_v51:edit_signature:${safeVirtualId}:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`)
+    ],
+    [lrV51Button('💼 Рекламный пост', `lr_plan_v51:edit_ad:${safeVirtualId}:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`)],
+    [lrV51Button('💾 Сохранить пост', `lr_plan_v51:save:${safeVirtualId}:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`)],
+    [
+      lrV51Button('⬅️ К списку', `lr_plan_v51:view:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`),
+      lrV51Button('❌ Отмена', `lr_plan_v51:view:${safeChannelKey}:${day || row.__v51Day || lrV51Today()}:${filter || 'all'}:${page || 0}`)
+    ]
+  ];
+
+  console.log('[v52 plan ui] post editor opened', JSON.stringify({
+    chatId, key, id: row.__v51Id, status: row.__v51Status, isAd: lrV51IsAd(row)
+  }));
+
+  return lrV51Answer(callbackId, chatId, text, rows);
+}
+
+function lrV51IsPlanEntryPayload(payload) {
+  const p = String(payload || '');
+  return (
+    p === 'post:all' ||
+    p === 'posts:menu' ||
+    p === 'posts:all' ||
+    p === 'post:history' ||
+    p === 'post:list' ||
+    p === 'post:scheduled' ||
+    p === 'post:published' ||
+    p === 'post:posted'
+  );
+}
+
+app.use(async function lrContentPlanV51Router(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = String((typeof getCallbackPayload === 'function' ? getCallbackPayload(update) : '') || '');
+    const callbackId = typeof getCallbackId === 'function' ? getCallbackId(update) : '';
+    const chatId = typeof getChatId === 'function' ? getChatId(update) : '';
+    const key = typeof getSessionKey === 'function' ? getSessionKey(update) : String(chatId || '');
+
+    if (lrV51IsPlanEntryPayload(payload)) {
+      if (payload === 'post:scheduled') {
+        await lrV51RenderList(callbackId, chatId, key, 'all', lrV51Today(), 'scheduled', 0);
+      } else if (payload === 'post:published' || payload === 'post:posted') {
+        await lrV51RenderList(callbackId, chatId, key, 'all', lrV51Today(), 'published', 0);
+      } else {
+        await lrV51ShowChannels(callbackId, chatId, key);
+      }
+      return res.json({ ok: true, v51: true, entry: payload });
+    }
+
+    if (payload === 'lr_plan_v51:channels') {
+      await lrV51ShowChannels(callbackId, chatId, key);
+      return res.json({ ok: true, v51: true, channels: true });
+    }
+
+    if (payload.startsWith('lr_plan_v51:view:')) {
+      const parts = payload.split(':');
+      await lrV51RenderList(
+        callbackId,
+        chatId,
+        key,
+        parts[2] || 'all',
+        parts[3] || lrV51Today(),
+        parts[4] || 'all',
+        parts[5] || 0
+      );
+      return res.json({ ok: true, v51: true, view: true });
+    }
+
+    if (payload.startsWith('lr_plan_v51:calendar:')) {
+      const parts = payload.split(':');
+      await lrV51RenderCalendar(
+        callbackId,
+        chatId,
+        key,
+        parts[2] || 'all',
+        parts[3] || lrV51Today().slice(0, 7),
+        parts[4] || 'all'
+      );
+      return res.json({ ok: true, v51: true, calendar: true });
+    }
+
+
+
+    if (payload.startsWith('lr_plan_v51:edit_text:')) {
+      const parts = payload.split(':');
+      await lrV51SetState(key, 'content_plan_v53_wait_text', {
+        virtualId: lrV51PayloadRead(parts[2] || ''),
+        channelKey: lrV51PayloadRead(parts[3] || 'all'),
+        day: parts[4] || lrV51Today(),
+        filter: parts[5] || 'all',
+        page: parts[6] || 0
+      });
+      await lrV51Answer(callbackId, chatId,
+        '━━━━━━━━━━━━━━\n✏️ <b>Изменить текст</b>\n\nОтправьте новый текст поста следующим сообщением.\nПосле отправки текст будет сохранён и редактор откроется снова.\n━━━━━━━━━━━━━━',
+        [[lrV51Button('⬅️ К редактору', `lr_plan_v51:open:${parts[2] || ''}:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)]]
+      );
+      console.log('[v53 plan editor] wait text', JSON.stringify({ chatId, key, payload }));
+      return res.json({ ok: true, v53: true, wait: 'text' });
+    }
+
+    if (payload.startsWith('lr_plan_v51:edit_media:')) {
+      const parts = payload.split(':');
+      await lrV51SetState(key, 'content_plan_v53_wait_media', {
+        virtualId: lrV51PayloadRead(parts[2] || ''),
+        channelKey: lrV51PayloadRead(parts[3] || 'all'),
+        day: parts[4] || lrV51Today(),
+        filter: parts[5] || 'all',
+        page: parts[6] || 0
+      });
+      await lrV51Answer(callbackId, chatId,
+        '━━━━━━━━━━━━━━\n🖼️ <b>Медиа</b>\n\nОтправьте новое фото, видео, файл или пост следующим сообщением.\nПосле отправки медиа будет сохранено и редактор откроется снова.\n━━━━━━━━━━━━━━',
+        [[lrV51Button('⬅️ К редактору', `lr_plan_v51:open:${parts[2] || ''}:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)]]
+      );
+      console.log('[v53 plan editor] wait media', JSON.stringify({ chatId, key, payload }));
+      return res.json({ ok: true, v53: true, wait: 'media' });
+    }
+
+    if (payload.startsWith('lr_plan_v51:edit_button:')) {
+      const parts = payload.split(':');
+      await lrV51SetState(key, 'content_plan_v53_wait_button', {
+        virtualId: lrV51PayloadRead(parts[2] || ''),
+        channelKey: lrV51PayloadRead(parts[3] || 'all'),
+        day: parts[4] || lrV51Today(),
+        filter: parts[5] || 'all',
+        page: parts[6] || 0
+      });
+      await lrV51Answer(callbackId, chatId,
+        '━━━━━━━━━━━━━━\n🔘 <b>Добавить кнопку</b>\n\nОтправьте название и ссылку двумя строками:\n\nКупить рекламу\nhttps://site.ru\n━━━━━━━━━━━━━━',
+        [[lrV51Button('⬅️ К редактору', `lr_plan_v51:open:${parts[2] || ''}:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)]]
+      );
+      console.log('[v53 plan editor] wait button', JSON.stringify({ chatId, key, payload }));
+      return res.json({ ok: true, v53: true, wait: 'button' });
+    }
+
+    if (payload.startsWith('lr_plan_v51:edit_signature:')) {
+      const parts = payload.split(':');
+      const virtualId = lrV51PayloadRead(parts[2] || '');
+      const posts = await lrV51LoadPosts();
+      const row = posts.find(p => p.__v51Id === virtualId);
+      let result = { ok: false };
+      if (row) result = await lrV53ToggleBoolean(row, ['signature_enabled','signatureEnabled','use_signature','with_signature','signature']);
+      await lrV51Answer(callbackId, chatId,
+        result.ok
+          ? '━━━━━━━━━━━━━━\n✅ <b>Автоподпись переключена</b>\n\nИзменение сохранено.\n━━━━━━━━━━━━━━'
+          : '━━━━━━━━━━━━━━\n⚠️ <b>Автоподпись</b>\n\nНе удалось найти поле автоподписи у этого поста.\n━━━━━━━━━━━━━━',
+        [[lrV51Button('⬅️ К редактору', `lr_plan_v51:open:${parts[2] || ''}:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)]]
+      );
+      console.log('[v53 plan editor] signature toggle', JSON.stringify({ chatId, key, ok: result.ok, payload }));
+      return res.json({ ok: true, v53: true, signature: result.ok });
+    }
+
+    if (payload.startsWith('lr_plan_v51:edit_ad:')) {
+      const parts = payload.split(':');
+      const virtualId = lrV51PayloadRead(parts[2] || '');
+      const posts = await lrV51LoadPosts();
+      const row = posts.find(p => p.__v51Id === virtualId);
+      let result = { ok: false };
+      if (row) result = await lrV53ToggleBoolean(row, ['is_ad','isAd','ad','is_advertising','advertising','promo']);
+      await lrV51Answer(callbackId, chatId,
+        result.ok
+          ? '━━━━━━━━━━━━━━\n✅ <b>Рекламный режим переключён</b>\n\nИзменение сохранено.\n━━━━━━━━━━━━━━'
+          : '━━━━━━━━━━━━━━\n⚠️ <b>Рекламный пост</b>\n\nНе удалось найти поле рекламы у этого поста.\n━━━━━━━━━━━━━━',
+        [[lrV51Button('⬅️ К редактору', `lr_plan_v51:open:${parts[2] || ''}:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)]]
+      );
+      console.log('[v53 plan editor] ad toggle', JSON.stringify({ chatId, key, ok: result.ok, payload }));
+      return res.json({ ok: true, v53: true, ad: result.ok });
+    }
+
+
+    if (payload.startsWith('lr_plan_v51:save:')) {
+      const parts = payload.split(':');
+      await lrV51Answer(
+        callbackId,
+        chatId,
+        '━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>\n\nИзменения сохранены в редакторе LinkRay.\n━━━━━━━━━━━━━━',
+        [[lrV51Button('⬅️ К списку', `lr_plan_v51:view:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)]]
+      );
+      console.log('[v52 plan ui] save clicked', JSON.stringify({ chatId, key, payload }));
+      return res.json({ ok: true, v52: true, save: true });
+    }
+
+    if (
+      payload.startsWith('lr_plan_v51:edit_text:') ||
+      payload.startsWith('lr_plan_v51:edit_media:') ||
+      payload.startsWith('lr_plan_v51:edit_button:') ||
+      payload.startsWith('lr_plan_v51:edit_signature:') ||
+      payload.startsWith('lr_plan_v51:edit_ad:')
+    ) {
+      const parts = payload.split(':');
+      const action = parts[1] || 'edit';
+      await lrV51SetState(key, `content_plan_v51_${action}`, {
+        virtualId: lrV51PayloadRead(parts[2] || ''),
+        channelKey: lrV51PayloadRead(parts[3] || 'all'),
+        day: parts[4] || lrV51Today(),
+        filter: parts[5] || 'all',
+        page: parts[6] || 0
+      });
+      await lrV51Answer(
+        callbackId,
+        chatId,
+        '━━━━━━━━━━━━━━\n🧬 <b>Редактор LinkRay</b>\n\nЭтот пункт открыт из контент‑плана.\nНажмите «Сохранить пост» или вернитесь к списку.\n━━━━━━━━━━━━━━',
+        [
+          [lrV51Button('💾 Сохранить пост', `lr_plan_v51:save:${parts[2] || ''}:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)],
+          [lrV51Button('⬅️ К списку', `lr_plan_v51:view:${parts[3] || 'all'}:${parts[4] || lrV51Today()}:${parts[5] || 'all'}:${parts[6] || 0}`)]
+        ]
+      );
+      console.log('[v52 plan ui] editor action clicked', JSON.stringify({ chatId, key, action, payload }));
+      return res.json({ ok: true, v52: true, editorAction: action });
+    }
+
+    if (payload.startsWith('lr_plan_v51:open:')) {
+      const parts = payload.split(':');
+      await lrV51OpenPost(
+        callbackId,
+        chatId,
+        key,
+        parts[2] || '',
+        parts[3] || 'all',
+        parts[4] || lrV51Today(),
+        parts[5] || 'all',
+        parts[6] || 0
+      );
+      return res.json({ ok: true, v51: true, open: true });
+    }
+  } catch (e) {
+    console.error('[v51 plan] router failed', e?.stack || e?.message || e);
+    try {
+      if (!res.headersSent) return res.json({ ok: true, v51: true, error: String(e?.message || e) });
+    } catch {}
+  }
+
+  return next();
+});
+
+console.log('[v51 plan] content plan router installed');
+
+/* LR_PLAN_EDITOR_ACTIONS_V53_START */
+function lrV53Rows(result) {
+  return Array.isArray(result) ? result : (result && Array.isArray(result.rows) ? result.rows : []);
+}
+
+function lrV53Q(name) {
+  return '"' + String(name || '').replace(/"/g, '""') + '"';
+}
+
+function lrV53PostNumericIds(row) {
+  const ids = [];
+  for (const v of [row?.id, row?.post_id, row?.postId, row?.publication_id, row?.publicationId, row?.queue_id, row?.queueId, row?.db_id, row?.dbId, row?.__v51DbId]) {
+    const n = Number(String(v || '').replace(/\D+/g, ''));
+    if (Number.isFinite(n) && n > 0 && !ids.includes(n)) ids.push(n);
+  }
+  const tail = String(row?.__v51Id || '').match(/(\d+)(?!.*\d)/);
+  if (tail) {
+    const n = Number(tail[1]);
+    if (Number.isFinite(n) && n > 0 && !ids.includes(n)) ids.push(n);
+  }
+  return ids;
+}
+
+async function lrV53FindDbTarget(row) {
+  if (typeof query !== 'function') return null;
+
+  const ids = lrV53PostNumericIds(row);
+  if (!ids.length) return null;
+
+  const meta = lrV53Rows(await query(`
+    SELECT table_schema, table_name, column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema='public'
+    ORDER BY table_name, ordinal_position
+  `));
+
+  const byTable = new Map();
+  for (const m of meta) {
+    const k = `${m.table_schema}.${m.table_name}`;
+    if (!byTable.has(k)) byTable.set(k, { schema: m.table_schema, table: m.table_name, cols: new Map() });
+    byTable.get(k).cols.set(m.column_name, m.data_type);
+  }
+
+  const postish = /(post|publication|queue|schedule|campaign|creative|message)/i;
+  for (const id of ids) {
+    for (const t of byTable.values()) {
+      if (!t.cols.has('id')) continue;
+      if (!postish.test(t.table)) continue;
+
+      try {
+        const sql = `SELECT * FROM ${lrV53Q(t.schema)}.${lrV53Q(t.table)} WHERE id=$1 LIMIT 1`;
+        const rows = lrV53Rows(await query(sql, [id]));
+        if (rows.length) {
+          return { schema: t.schema, table: t.table, id, cols: t.cols, row: rows[0] };
+        }
+      } catch (e) {}
+    }
+  }
+
+  return null;
+}
+
+function lrV53TextFromUpdate(update) {
+  try {
+    return String(
+      update?.message?.body?.text ??
+      update?.message?.text ??
+      update?.body?.text ??
+      update?.content?.text ??
+      update?.text ??
+      ''
+    ).trim();
+  } catch {
+    return '';
+  }
+}
+
+async function lrV53HydrateContent(update) {
+  try {
+    if (typeof lrSafeHydrateContent === 'function') return await lrSafeHydrateContent(update);
+  } catch (e) {
+    console.error('[v53 plan editor] hydrate failed', e?.message || e);
+  }
+
+  const text = lrV53TextFromUpdate(update);
+  const raw = update?.message || update;
+  const attachments =
+    update?.message?.body?.attachments ||
+    update?.message?.attachments ||
+    update?.body?.attachments ||
+    update?.content?.attachments ||
+    [];
+  return {
+    raw,
+    text,
+    format: 'html',
+    markup: [],
+    attachments: Array.isArray(attachments) ? attachments : []
+  };
+}
+
+function lrV53PostTitle(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  return t.length > 90 ? t.slice(0, 87) + '...' : (t || 'пост');
+}
+
+async function lrV53UpdateText(row, text) {
+  const target = await lrV53FindDbTarget(row);
+  if (!target) return { ok: false, reason: 'post target not found' };
+
+  const cols = target.cols;
+  const set = [];
+
+  for (const c of ['text', 'caption', 'body', 'message_text', 'content_text', 'html', 'description']) {
+    if (cols.has(c)) set.push(`${lrV53Q(c)}=$2`);
+  }
+
+  if (cols.has('title')) set.push(`${lrV53Q('title')}=$3`);
+
+  if (cols.has('content')) {
+    const type = String(cols.get('content') || '').toLowerCase();
+    if (type.includes('json')) {
+      set.push(`${lrV53Q('content')}=jsonb_set(COALESCE(${lrV53Q('content')}::jsonb, '{}'::jsonb), '{text}', to_jsonb($2::text), true)`);
+    } else if (!set.length) {
+      set.push(`${lrV53Q('content')}=$2`);
+    }
+  }
+
+  if (cols.has('updated_at')) set.push(`${lrV53Q('updated_at')}=now()`);
+  if (cols.has('edited_at')) set.push(`${lrV53Q('edited_at')}=now()`);
+
+  if (!set.length) return { ok: false, reason: 'text columns not found', target };
+
+  const sql = `UPDATE ${lrV53Q(target.schema)}.${lrV53Q(target.table)} SET ${set.join(', ')} WHERE id=$1`;
+  await query(sql, [target.id, text, lrV53PostTitle(text)]);
+  console.log('[v53 plan editor] text updated', JSON.stringify({ table: target.table, id: target.id }));
+  return { ok: true, target };
+}
+
+async function lrV53UpdateContent(row, content) {
+  const target = await lrV53FindDbTarget(row);
+  if (!target) return { ok: false, reason: 'post target not found' };
+
+  const cols = target.cols;
+  const set = [];
+  const params = [target.id, JSON.stringify(content), content?.text || ''];
+
+  if (cols.has('raw')) {
+    const type = String(cols.get('raw') || '').toLowerCase();
+    set.push(type.includes('json') ? `${lrV53Q('raw')}=$2::jsonb` : `${lrV53Q('raw')}=$2`);
+  }
+
+  if (cols.has('attachments')) {
+    const type = String(cols.get('attachments') || '').toLowerCase();
+    const att = JSON.stringify(content?.attachments || []);
+    params.push(att);
+    set.push(type.includes('json') ? `${lrV53Q('attachments')}=$4::jsonb` : `${lrV53Q('attachments')}=$4`);
+  }
+
+  if (cols.has('content')) {
+    const type = String(cols.get('content') || '').toLowerCase();
+    set.push(type.includes('json') ? `${lrV53Q('content')}=$2::jsonb` : `${lrV53Q('content')}=$3`);
+  }
+
+  for (const c of ['text', 'caption', 'body', 'message_text']) {
+    if (cols.has(c) && content?.text) set.push(`${lrV53Q(c)}=$3`);
+  }
+
+  if (cols.has('title') && content?.text) {
+    params.push(lrV53PostTitle(content.text));
+    set.push(`${lrV53Q('title')}=$${params.length}`);
+  }
+
+  if (cols.has('updated_at')) set.push(`${lrV53Q('updated_at')}=now()`);
+
+  if (!set.length) return { ok: false, reason: 'content columns not found', target };
+
+  const sql = `UPDATE ${lrV53Q(target.schema)}.${lrV53Q(target.table)} SET ${set.join(', ')} WHERE id=$1`;
+  await query(sql, params);
+  console.log('[v53 plan editor] content updated', JSON.stringify({ table: target.table, id: target.id }));
+  return { ok: true, target };
+}
+
+function lrV53ParseButton(text) {
+  const lines = String(text || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+  let title = '';
+  let url = '';
+  if (lines.length >= 2) {
+    title = lines[0];
+    url = lines[1];
+  } else {
+    const m = String(text || '').match(/(.+?)\s+(https?:\/\/\S+)/i);
+    if (m) {
+      title = m[1].trim();
+      url = m[2].trim();
+    }
+  }
+  if (!/^https?:\/\//i.test(url)) return null;
+  return { title: title || 'Перейти', text: title || 'Перейти', url };
+}
+
+async function lrV53UpdateButtons(row, button) {
+  const target = await lrV53FindDbTarget(row);
+  if (!target) return { ok: false, reason: 'post target not found' };
+
+  const cols = target.cols;
+  const buttons = [button];
+  const payload = JSON.stringify(buttons);
+  const set = [];
+  const params = [target.id, payload];
+
+  for (const c of ['buttons', 'inline_buttons', 'keyboard', 'inline_keyboard']) {
+    if (!cols.has(c)) continue;
+    const type = String(cols.get(c) || '').toLowerCase();
+    set.push(type.includes('json') ? `${lrV53Q(c)}=$2::jsonb` : `${lrV53Q(c)}=$2`);
+  }
+
+  if (cols.has('content')) {
+    const type = String(cols.get('content') || '').toLowerCase();
+    if (type.includes('json')) {
+      set.push(`${lrV53Q('content')}=jsonb_set(COALESCE(${lrV53Q('content')}::jsonb, '{}'::jsonb), '{buttons}', $2::jsonb, true)`);
+    }
+  }
+
+  if (cols.has('updated_at')) set.push(`${lrV53Q('updated_at')}=now()`);
+
+  if (!set.length) return { ok: false, reason: 'button columns not found', target };
+
+  const sql = `UPDATE ${lrV53Q(target.schema)}.${lrV53Q(target.table)} SET ${set.join(', ')} WHERE id=$1`;
+  await query(sql, params);
+  console.log('[v53 plan editor] button updated', JSON.stringify({ table: target.table, id: target.id }));
+  return { ok: true, target };
+}
+
+async function lrV53ToggleBoolean(row, names) {
+  const target = await lrV53FindDbTarget(row);
+  if (!target) return { ok: false, reason: 'post target not found' };
+
+  const cols = target.cols;
+  const col = names.find(c => cols.has(c));
+  if (!col) return { ok: false, reason: 'column not found', target };
+
+  const set = [`${lrV53Q(col)} = NOT COALESCE(${lrV53Q(col)}, false)`];
+  if (cols.has('updated_at')) set.push(`${lrV53Q('updated_at')}=now()`);
+
+  const sql = `UPDATE ${lrV53Q(target.schema)}.${lrV53Q(target.table)} SET ${set.join(', ')} WHERE id=$1`;
+  await query(sql, [target.id]);
+  console.log('[v53 plan editor] boolean toggled', JSON.stringify({ table: target.table, id: target.id, col }));
+  return { ok: true, target, col };
+}
+
+async function lrV53ReopenPlanEditor(chatId, key, ctx, note) {
+  const virtualId = ctx?.virtualId || '';
+  const channelKey = ctx?.channelKey || 'all';
+  const day = ctx?.day || lrV51Today();
+  const filter = ctx?.filter || 'all';
+  const page = ctx?.page || 0;
+
+  if (note && typeof msg === 'function') {
+    await msg(chatId, note, [], 'html').catch(e => console.error('[v53 plan editor] note failed', e?.message || e));
+  }
+
+  if (typeof lrV51OpenPost === 'function') {
+    return lrV51OpenPost(null, chatId, key, virtualId, channelKey, day, filter, page);
+  }
+}
+
+async function lrV53PlanEditorInput(update) {
+  const type = typeof getUpdateType === 'function' ? getUpdateType(update) : (update?.update_type || update?.type || '');
+  if (String(type) !== 'message_created') return false;
+
+  const chatId = typeof getChatId === 'function' ? getChatId(update) : (update?.chat_id || update?.chatId || update?.message?.recipient?.chat_id || update?.message?.chat_id);
+  const key = typeof getSessionKey === 'function' ? getSessionKey(update) : String(chatId || '');
+  if (!chatId || !key || typeof getSession !== 'function') return false;
+
+  const session = await getSession(key).catch(() => null);
+  const state = String(session?.state || '');
+  if (!state.startsWith('content_plan_v53_wait_')) return false;
+
+  const data = session?.data || {};
+  const ctx = {
+    virtualId: data.virtualId || '',
+    channelKey: data.channelKey || 'all',
+    day: data.day || lrV51Today(),
+    filter: data.filter || 'all',
+    page: data.page || 0
+  };
+
+  const posts = await lrV51LoadPosts();
+  const row = posts.find(p => p.__v51Id === ctx.virtualId);
+  if (!row) {
+    if (typeof clearSession === 'function') await clearSession(key).catch(()=>{});
+    await msg(chatId, '⚠️ Пост не найден. Откройте список постов заново.', [[lrV51Button('⬅️ К списку', `lr_plan_v51:view:${lrV51PayloadSafe(ctx.channelKey)}:${ctx.day}:${ctx.filter}:${ctx.page}`)]], 'html').catch(()=>{});
+    return true;
+  }
+
+  try {
+    if (state === 'content_plan_v53_wait_text') {
+      const text = lrV53TextFromUpdate(update);
+      if (!text) {
+        await msg(chatId, '⚠️ Отправьте новый текст поста обычным сообщением.', [], 'html').catch(()=>{});
+        return true;
+      }
+      const r = await lrV53UpdateText(row, text);
+      if (typeof clearSession === 'function') await clearSession(key).catch(()=>{});
+      await lrV53ReopenPlanEditor(chatId, key, ctx, r.ok ? '✅ Текст поста обновлён.' : '⚠️ Не удалось обновить текст в базе. Нужна проверка структуры таблицы постов.');
+      return true;
+    }
+
+    if (state === 'content_plan_v53_wait_media') {
+      const content = await lrV53HydrateContent(update);
+      const r = await lrV53UpdateContent(row, content);
+      if (typeof clearSession === 'function') await clearSession(key).catch(()=>{});
+      await lrV53ReopenPlanEditor(chatId, key, ctx, r.ok ? '✅ Медиа/контент поста обновлены.' : '⚠️ Не удалось обновить медиа в базе. Нужна проверка структуры таблицы постов.');
+      return true;
+    }
+
+    if (state === 'content_plan_v53_wait_button') {
+      const text = lrV53TextFromUpdate(update);
+      const button = lrV53ParseButton(text);
+      if (!button) {
+        await msg(chatId, '⚠️ Отправьте кнопку так:\n\nНазвание кнопки\nhttps://site.ru', [], 'html').catch(()=>{});
+        return true;
+      }
+      const r = await lrV53UpdateButtons(row, button);
+      if (typeof clearSession === 'function') await clearSession(key).catch(()=>{});
+      await lrV53ReopenPlanEditor(chatId, key, ctx, r.ok ? '✅ Кнопка поста обновлена.' : '⚠️ Не удалось сохранить кнопку в базе. Нужна проверка структуры таблицы постов.');
+      return true;
+    }
+  } catch (e) {
+    console.error('[v53 plan editor] input failed', e?.stack || e?.message || e);
+    await msg(chatId, '❌ Ошибка при сохранении изменений поста. Скиньте логи v53 plan editor.', [], 'html').catch(()=>{});
+    return true;
+  }
+
+  return false;
+}
+
+try {
+  if (typeof handleMessage === 'function' && !handleMessage.__lrV53PlanEditorWrapped) {
+    const __lrV53OldHandleMessage = handleMessage;
+    handleMessage = async function lrV53PlanEditorHandleMessage(update) {
+      if (await lrV53PlanEditorInput(update)) return true;
+      return __lrV53OldHandleMessage(update);
+    };
+    handleMessage.__lrV53PlanEditorWrapped = true;
+  }
+} catch (e) {
+  console.error('[v53 plan editor] handleMessage wrap failed', e?.stack || e?.message || e);
+}
+
+console.log('[v53 plan editor] installed: edit buttons now have actions');
+/* LR_PLAN_EDITOR_ACTIONS_V53_END */
+
+/* LR_CONTENT_PLAN_UI_V52_START */
+console.log('[v52 plan ui] installed: calendar clean, post emojis, editor menu');
+/* LR_CONTENT_PLAN_UI_V52_END */
+/* LR_CONTENT_PLAN_V51_END */
+
+
 
 // LR_FORCE_START_MENU_V7_START
 function __lrForceMainMenuTextV7() {
@@ -890,6 +2278,7 @@ app.use(async function lrForceStartMenuV7(req, res, next) {
     if (req.method !== 'POST') return next();
 
     const update = req.body || {};
+  __lrAddConfirmWatch(update).catch(e => console.error('[channel add confirm watch] hook failed', e?.message || e));
     const text = String(getMessageText(update) || '').trim();
     const payload = String(getCallbackPayload(update) || '');
     const callbackId = getCallbackId(update);
@@ -1436,6 +2825,123 @@ app.use(async function lrFinalCalCpmV2(req, res, next) {
 /* LR_FINAL_CAL_CPM_V2_END */
 
 /* LR_EDITOR_CORE_V1_START */
+/* LR_EDITOR_PREVIEW_ABOVE_MENU_V45_START */
+function lrV45MessageId(value) {
+  if (!value) return null;
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  return (
+    value.message_id ||
+    value.messageId ||
+    value.id ||
+    value.mid ||
+    value.message?.message_id ||
+    value.message?.messageId ||
+    value.message?.id ||
+    value.result?.message_id ||
+    value.result?.messageId ||
+    value.result?.id ||
+    null
+  );
+}
+
+function lrV45EditorRows(draft) {
+  try {
+    if (typeof editorMenuRows === 'function') return editorMenuRows(draft);
+  } catch (e) {
+    console.error('[v45 editor order] editor rows failed', e?.message || e);
+  }
+
+  return [
+    [callbackButton('✏️ Изменить текст', 'editor:text'), callbackButton('🖼 Медиа', 'editor:media')],
+    [callbackButton('⚫ Добавить кнопку', 'editor:button'), callbackButton('🏷 Автоподпись', 'editor:signature')],
+    [callbackButton('💼 Рекламный пост', 'editor:ad')],
+    [callbackButton('➡️ Далее', 'editor:next')],
+    [callbackButton('⬅️ Назад', 'editor:back'), callbackButton('❌ Отмена', 'post:cancel')]
+  ];
+}
+
+function lrV45EditorText() {
+  try {
+    if (typeof editorMenuText === 'function') return editorMenuText();
+  } catch {}
+
+  return `━━━━━━━━━━━━━━
+🧬 <b>Редактор LinkRay</b>
+
+Пост-превью находится выше.
+При изменении текста, медиа, кнопок или автоподписи превью будет обновляться.
+
+Настройте оформление.
+━━━━━━━━━━━━━━`;
+}
+
+async function lrV45ShowEditorPreviewFirst(chatId, key, draft, noticeText = '') {
+  if (!chatId) return false;
+
+  try {
+    if (typeof setSession === 'function') {
+      await setSession(key, draft?.postId ? 'edit_existing' : 'edit_draft', { draft });
+    }
+  } catch (e) {
+    console.error('[v45 editor order] setSession failed', e?.message || e);
+  }
+
+  try {
+    if (noticeText && typeof answerCallback === 'function' && typeof callbackId !== 'undefined' && callbackId) {
+      await answerCallback({ callbackId, notification: String(noticeText) });
+    }
+  } catch {}
+
+  // Сначала отправляем/обновляем превью поста.
+  try {
+    if (typeof sendDraftPreview === 'function') {
+      const result = await sendDraftPreview(chatId, draft);
+      const mid = lrV45MessageId(result);
+      if (mid) {
+        draft.previewMessageId = mid;
+        draft.preview_message_id = mid;
+      }
+
+      if (typeof setSession === 'function') {
+        await setSession(key, draft?.postId ? 'edit_existing' : 'edit_draft', { draft });
+      }
+
+      console.log('[v45 editor order] preview sent before menu', JSON.stringify({ chatId, mid }));
+    }
+  } catch (e) {
+    console.error('[v45 editor order] preview failed', e?.stack || e?.message || e);
+  }
+
+  // Потом отправляем меню редактора ниже превью.
+  try {
+    const rows = lrV45EditorRows(draft);
+    const attachments = rows && rows.length && typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows;
+
+    if (typeof sendMaxMessage === 'function') {
+      await sendMaxMessage({
+        chatId,
+        text: lrV45EditorText(),
+        format: 'html',
+        attachments
+      });
+      console.log('[v45 editor order] menu sent after preview', JSON.stringify({ chatId }));
+      return true;
+    }
+
+    if (typeof msg === 'function') {
+      await msg(chatId, lrV45EditorText(), rows, 'html');
+      console.log('[v45 editor order] menu msg after preview', JSON.stringify({ chatId }));
+      return true;
+    }
+  } catch (e) {
+    console.error('[v45 editor order] menu failed', e?.stack || e?.message || e);
+  }
+
+  return false;
+}
+
+console.log('[v45 editor order] installed');
+/* LR_EDITOR_PREVIEW_ABOVE_MENU_V45_END */
 app.use(async function lrEditorCoreV1(req, res, next) {
   try {
     if (req.method !== 'POST') return next();
@@ -4332,7 +5838,7 @@ app.use(async function lrCleanCalendarSplitTimeV1(req, res, next) {
       for (let day = 1; day <= last.getDate(); day++) {
         const d = new Date(year, monthIndex, day);
         const dk = dayKeyFromDate(d);
-        const label = dk === todayKey ? `•${day}•` : String(day);
+        const label = dk === todayKey ? `🟡 ${day}` : String(day);
 
         row.push(callbackButton(label, `lr_clean_cal:day:${dk}`));
 
@@ -6903,6 +8409,1175 @@ function lrKb(rows) {
 /* LR_CLEAN_SIGNATURE_FIX_END */
 
 // LR_CHANNEL_DB_SYNC_MIDDLEWARE_START
+/* LR_MAX_SUBSCRIPTIONS_CORE_V31_START */
+/*
+  LinkRay MAX subscriptions core v31.
+
+  Назначение:
+  - убрать зависимость от общего GET /chats как списка каналов;
+  - хранить каналы в таблице channels;
+  - принимать bot_added / bot_removed / chat_title_changed через webhook;
+  - ставить/обрабатывать режим "Добавить канал";
+  - вернуть стабильную обработку кнопок Studio post:*;
+  - один блок вместо временных v21-v30.
+*/
+
+function lrV31Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function lrV31Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(text.toLowerCase())) return '';
+  return text;
+}
+
+function lrV31Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch {}
+
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV31Type(update) {
+  return String(
+    update?.update_type ||
+    update?.type ||
+    update?.body?.update_type ||
+    update?.body?.type ||
+    ''
+  );
+}
+
+function lrV31Payload(update) {
+  try {
+    const p = typeof getCallbackPayload === 'function' ? getCallbackPayload(update) : '';
+    if (typeof p === 'string') return p;
+  } catch {}
+
+  const p =
+    update?.callback?.payload ||
+    update?.callback?.payload?.payload ||
+    update?.message?.callback?.payload ||
+    update?.body?.callback?.payload ||
+    update?.payload ||
+    update?.body?.payload ||
+    '';
+
+  return typeof p === 'string' ? p : '';
+}
+
+function lrV31CallbackId(update) {
+  try {
+    return typeof getCallbackId === 'function' ? getCallbackId(update) : '';
+  } catch {
+    return '';
+  }
+}
+
+function lrV31Key(update) {
+  try {
+    return String(getSessionKey(update) || '');
+  } catch {
+    return '';
+  }
+}
+
+function lrV31ChatId(update, key = '') {
+  try {
+    if (typeof lrResolveReplyChatId === 'function') {
+      const id = lrV31Clean(lrResolveReplyChatId(update, key));
+      if (id) return id;
+    }
+  } catch {}
+
+  try {
+    if (typeof getChatId === 'function') {
+      const id = lrV31Clean(getChatId(update));
+      if (id) return id;
+    }
+  } catch {}
+
+  return lrV31Clean(
+    update?.chat_id ||
+    update?.chatId ||
+    update?.body?.chat_id ||
+    update?.body?.chatId ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.message?.chat_id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id ||
+    update?.body?.message?.chat_id ||
+    key ||
+    ''
+  );
+}
+
+function lrV31UserId(update) {
+  return lrV31Clean(
+    update?.user?.user_id ||
+    update?.user?.id ||
+    update?.user_id ||
+    update?.sender?.user_id ||
+    update?.sender?.id ||
+    update?.message?.sender?.user_id ||
+    update?.message?.sender?.id ||
+    update?.body?.user?.user_id ||
+    update?.body?.user?.id ||
+    ''
+  );
+}
+
+function lrV31PrivateChatId(update, fallback = '') {
+  const keyFallback = lrV31Clean(fallback, 100);
+
+  const directChat = lrV31Clean(
+    update?.chat_id ||
+    update?.chatId ||
+    update?.body?.chat_id ||
+    update?.body?.chatId ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id ||
+    '',
+    100
+  );
+
+  // Для личного диалога MAX даёт положительный chatId. Его и надо использовать для ответа.
+  if (directChat && !String(directChat).startsWith('-')) return String(directChat);
+
+  if (keyFallback && !String(keyFallback).startsWith('-')) return String(keyFallback);
+
+  try {
+    const resolved = lrV31Clean(lrV31ChatId(update, keyFallback), 100);
+    if (resolved && !String(resolved).startsWith('-')) return String(resolved);
+  } catch {}
+
+  // user_id не равен chat_id. Поэтому он только последний fallback, а не основной адрес для уведомления.
+  const userId = lrV31Clean(
+    update?.user?.user_id ||
+    update?.user?.id ||
+    update?.sender?.user_id ||
+    update?.sender?.id ||
+    update?.message?.sender?.user_id ||
+    update?.message?.sender?.id ||
+    update?.body?.user?.user_id ||
+    update?.body?.user?.id ||
+    '',
+    100
+  );
+
+  return lrV31Clean(
+    process.env.LR_OWNER_CHAT_ID ||
+    process.env.OWNER_CHAT_ID ||
+    process.env.ADMIN_CHAT_ID ||
+    keyFallback ||
+    userId ||
+    '405954311',
+    100
+  ) || '405954311';
+}
+
+function lrV31ApiBase() {
+  return String(
+    process.env.MAX_API_BASE ||
+    process.env.MAX_BASE_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru'
+  ).replace(/\/+$/, '');
+}
+
+function lrV31ApiToken() {
+  for (const k of ['MAX_TOKEN', 'MAX_BOT_TOKEN', 'MAX_ACCESS_TOKEN', 'BOT_TOKEN', 'ACCESS_TOKEN', 'API_TOKEN', 'TOKEN']) {
+    if (process.env[k]) return String(process.env[k]);
+  }
+
+  try {
+    if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN);
+  } catch {}
+
+  try {
+    if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN);
+  } catch {}
+
+  return '';
+}
+
+async function lrV31Api(path, options = {}) {
+  const token = lrV31ApiToken();
+  const headers = {
+    ...(options.headers || {}),
+    Authorization: token
+  };
+
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+
+  const response = await fetch(`${lrV31ApiBase()}${path}`, {
+    ...options,
+    headers
+  });
+
+  const raw = await response.text().catch(() => '');
+  let data = null;
+
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = { raw };
+  }
+
+  if (!response.ok) {
+    console.error('[v31 core] MAX API failed', JSON.stringify({
+      path,
+      status: response.status,
+      preview: raw.slice(0, 500)
+    }));
+  }
+
+  return {
+    ok: response.ok && data?.success !== false,
+    status: response.status,
+    data,
+    raw
+  };
+}
+
+async function lrV31ApiGet(path) {
+  return lrV31Api(path, { method: 'GET' });
+}
+
+async function lrV31ApiPost(path, body) {
+  return lrV31Api(path, {
+    method: 'POST',
+    body: JSON.stringify(body || {})
+  });
+}
+
+async function lrV31EnsureSchema() {
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS channels (
+      id serial PRIMARY KEY,
+      max_chat_id text UNIQUE,
+      title text,
+      link text,
+      is_public boolean DEFAULT false,
+      is_channel boolean DEFAULT true,
+      is_active boolean DEFAULT true,
+      bot_added_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS max_chat_id text`);
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS title text`);
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS link text`);
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_public boolean DEFAULT false`);
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_channel boolean DEFAULT true`);
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean DEFAULT true`);
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS bot_added_at timestamptz`);
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS channels_max_chat_id_uidx ON channels(max_chat_id)`);
+
+    await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+      key text PRIMARY KEY,
+      value text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  } catch (e) {
+    console.error('[v31 core] ensure schema failed', e?.stack || e?.message || e);
+  }
+}
+
+async function lrV31PutState(key, value) {
+  await lrV31EnsureSchema();
+
+  await query(
+    `INSERT INTO lr_bot_state(key, value, updated_at)
+     VALUES($1, $2, now())
+     ON CONFLICT(key) DO UPDATE
+       SET value=EXCLUDED.value,
+           updated_at=now()`,
+    [String(key), JSON.stringify(value || {})]
+  );
+}
+
+async function lrV31GetState(keys) {
+  await lrV31EnsureSchema();
+
+  const rows = lrV31Rows(await query(
+    `SELECT key, value, updated_at
+     FROM lr_bot_state
+     WHERE key = ANY($1::text[])
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [keys.map(String)]
+  ));
+
+  if (!rows[0]) return null;
+
+  try {
+    return JSON.parse(rows[0].value || '{}');
+  } catch {
+    return null;
+  }
+}
+
+async function lrV31DelAddStates() {
+  try {
+    await query(
+      `DELETE FROM lr_bot_state
+       WHERE key = 'lr_v31_add_wait_global'
+          OR key LIKE 'lr_v31_add_wait:%'
+          OR key LIKE 'lr_v30_add_wait:%'
+          OR key LIKE 'lr_v29_add_wait:%'
+          OR key LIKE 'lr_v28_add_wait:%'
+          OR key LIKE 'lr_v27_add_wait:%'
+          OR key LIKE 'lr_v23_add_wait:%'
+          OR key LIKE 'lr_add_channel_wait:%'
+          OR key LIKE 'add_channel_wait:%'
+          OR key LIKE 'channel_add_wait:%'`
+    );
+  } catch {}
+
+  globalThis.__lrV31AddWait = null;
+
+  try {
+    if (globalThis.__lrV31WatcherTimer) clearInterval(globalThis.__lrV31WatcherTimer);
+  } catch {}
+
+  globalThis.__lrV31WatcherTimer = null;
+}
+
+function lrV31ExtractChatTitleFromApi(data) {
+  const root = data?.chat || data?.result || data || {};
+  return lrV31Clean(root.title || root.name || root.chat?.title || root.chat?.name || '');
+}
+
+function lrV31ExtractChatLinkFromApi(data) {
+  const root = data?.chat || data?.result || data || {};
+  return lrV31Clean(root.link || root.invite_link || root.inviteLink || root.chat?.link || root.chat?.invite_link || '', 800);
+}
+
+async function lrV31FetchChatInfo(chatId) {
+  if (!chatId) return {};
+
+  try {
+    const r = await lrV31ApiGet(`/chats/${encodeURIComponent(String(chatId))}`);
+
+    if (r.ok) {
+      return {
+        title: lrV31ExtractChatTitleFromApi(r.data),
+        link: lrV31ExtractChatLinkFromApi(r.data),
+        raw: r.data
+      };
+    }
+  } catch (e) {
+    console.error('[v31 core] fetch chat info failed', e?.message || e);
+  }
+
+  return {};
+}
+
+async function lrV31CheckBotAdmin(chatId) {
+  if (!chatId) return { ok: false, admin: false, status: 0 };
+
+  let last = { ok: false, admin: false, status: 0 };
+
+  for (const path of [
+    `/chats/${encodeURIComponent(String(chatId))}/members/me`,
+    `/chats/${encodeURIComponent(String(chatId))}/members/me/`
+  ]) {
+    try {
+      const r = await lrV31ApiGet(path);
+      const box = r.data?.member || r.data?.user || r.data?.result || r.data?.profile || r.data?.payload || r.data || {};
+      const perms = box.permissions || box.rights || box.chat_permissions || [];
+      const permSet = new Set(Array.isArray(perms) ? perms.map(x => String(x).toLowerCase()) : []);
+
+      const admin =
+        box.is_admin === true ||
+        box.isAdmin === true ||
+        box.admin === true ||
+        box.role === 'admin' ||
+        box.role === 'administrator' ||
+        permSet.has('write') ||
+        permSet.has('edit') ||
+        permSet.has('delete') ||
+        permSet.has('read_all_messages') ||
+        permSet.has('change_chat_info') ||
+        permSet.has('add_remove_members');
+
+      last = { ok: r.ok, admin, status: r.status, data: r.data };
+
+      if (r.status !== 404) return last;
+    } catch (e) {
+      console.error('[v31 core] check admin failed', e?.message || e);
+    }
+  }
+
+  return last;
+}
+
+async function lrV31UpsertChannel(chatId, title = '', link = '', isChannel = true) {
+  await lrV31EnsureSchema();
+
+  const id = lrV31Clean(chatId, 100);
+  if (!id) throw new Error('Не найден chat_id канала.');
+
+  let finalTitle = lrV31Clean(title, 300);
+  let finalLink = lrV31Clean(link, 800);
+
+  if (!finalTitle || /^канал$/i.test(finalTitle) || /^channel$/i.test(finalTitle)) {
+    const info = await lrV31FetchChatInfo(id);
+    finalTitle = lrV31Clean(info.title || finalTitle, 300);
+    finalLink = lrV31Clean(info.link || finalLink, 800);
+  }
+
+  if (!finalTitle) finalTitle = `Канал ${id}`;
+
+  const rows = lrV31Rows(await query(
+    `INSERT INTO channels(max_chat_id, title, link, is_public, is_channel, is_active, bot_added_at, updated_at)
+     VALUES($1,$2,$3,$4,$5,true,now(),now())
+     ON CONFLICT(max_chat_id) DO UPDATE
+       SET title=EXCLUDED.title,
+           link=COALESCE(NULLIF(EXCLUDED.link,''), channels.link),
+           is_public=EXCLUDED.is_public,
+           is_channel=EXCLUDED.is_channel,
+           is_active=true,
+           bot_added_at=COALESCE(channels.bot_added_at, now()),
+           updated_at=now()
+     RETURNING id, max_chat_id, title, link, is_active, updated_at`,
+    [String(id), finalTitle, finalLink || null, Boolean(finalLink), Boolean(isChannel)]
+  ));
+
+  const ch = rows[0] || { max_chat_id: id, title: finalTitle, link: finalLink, is_active: true };
+  console.log('[v31 core] channel upserted', JSON.stringify({ id: ch.id, max_chat_id: ch.max_chat_id, title: ch.title }));
+  return ch;
+}
+
+async function lrV31DeactivateChannel(chatId) {
+  await lrV31EnsureSchema();
+
+  const id = lrV31Clean(chatId, 100);
+  if (!id) return null;
+
+  const rows = lrV31Rows(await query(
+    `UPDATE channels
+     SET is_active=false, updated_at=now()
+     WHERE max_chat_id=$1
+     RETURNING id, max_chat_id, title, link, is_active, updated_at`,
+    [String(id)]
+  ));
+
+  console.log('[v31 core] channel deactivated', JSON.stringify({ chat_id: id, found: Boolean(rows[0]) }));
+  return rows[0] || null;
+}
+
+async function lrV31GetChannelsFromDb() {
+  await lrV31EnsureSchema();
+
+  return lrV31Rows(await query(
+    `SELECT id, max_chat_id, title, link, is_active, updated_at
+     FROM channels
+     WHERE COALESCE(is_active,true)=true
+     ORDER BY title NULLS LAST, id`
+  ));
+}
+
+async function lrV31Send(chatId, text, rows = null) {
+  rows = rows || [[callbackButton('⬅️ В меню', 'main:menu')]];
+
+  if (typeof msg === 'function') {
+    try {
+      await msg(chatId, text, rows, 'html');
+      console.log('[v31 core] msg sent', JSON.stringify({ chatId }));
+      return true;
+    } catch (e) {
+      console.error('[v31 core] msg failed', e?.stack || e?.message || e);
+    }
+  }
+
+  if (typeof sendMaxMessage === 'function') {
+    try {
+      const payload = { chatId, text, format: 'html' };
+      if (typeof inlineKeyboard === 'function') payload.attachments = inlineKeyboard(rows);
+      await sendMaxMessage(payload);
+      console.log('[v31 core] sendMaxMessage sent', JSON.stringify({ chatId }));
+      return true;
+    } catch (e) {
+      console.error('[v31 core] sendMaxMessage failed', e?.stack || e?.message || e);
+    }
+  }
+
+  return false;
+}
+
+async function lrV31NotifyConnected(privateChatId, key, channel) {
+  const title = lrV31Clean(channel?.title || '', 300);
+  if (!title) return false;
+
+  const lockKey = `lr_v31_channel_connected_notified:${privateChatId}:${channel.id || channel.max_chat_id}`;
+
+  try {
+    const rows = lrV31Rows(await query(
+      `SELECT key FROM lr_bot_state WHERE key=$1 AND updated_at > now() - interval '2 minutes' LIMIT 1`,
+      [lockKey]
+    ));
+
+    if (rows[0]) {
+      console.log('[v31 core] duplicate connected notification skipped', JSON.stringify({ privateChatId, title }));
+      return true;
+    }
+  } catch {}
+
+  const ok = await lrV31Send(privateChatId, `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV31Esc(title)}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);
+
+  if (ok) {
+    await lrV31PutState(lockKey, { privateChatId, key, channel, ts: Date.now() }).catch(() => {});
+
+    try {
+      if (key && typeof clearSession === 'function') await clearSession(String(key));
+    } catch {}
+
+    await lrV31DelAddStates();
+
+    console.log('[v31 core] connected notification done', JSON.stringify({
+      privateChatId,
+      key,
+      id: channel.id,
+      max_chat_id: channel.max_chat_id,
+      title
+    }));
+  }
+
+  return ok;
+}
+
+async function lrV31NotifyRemoved(privateChatId, channel) {
+  /* LR_V37_REMOVED_PATCH */
+  try {
+    if (typeof lrV37NotifyChannelRemoved === 'function') {
+      const ok = await lrV37NotifyChannelRemoved(channel, null, 'bot_removed_event');
+      if (ok) return true;
+    }
+  } catch (e) {
+    console.error('[v37 notify] lrV31NotifyRemoved patch failed', e?.message || e);
+  }
+
+  const title = lrV31Clean(channel?.title || 'канал', 300);
+
+  await lrV31Send(privateChatId, `✅ <b>Канал удалён из LinkRay</b>
+
+${lrV31Esc(title)}
+
+Канал отключён в базе и больше не будет использоваться для постов, автоподписей, аналитики и отчётов.`);
+}
+
+async function lrV31NotifyFailed(privateChatId, errText = '') {
+  return lrV31Send(privateChatId, `❌ <b>Канал не добавлен</b>
+
+LinkRay не смог подтвердить права администратора или определить канал.
+
+Проверьте:
+1. LinkRay добавлен в администраторы канала.
+2. Выдано право публикации.
+3. Переслан именно пост из канала.
+
+После этого перешлите другой пост из этого канала сюда, в бота.${errText ? `
+
+Ошибка: ${lrV31Esc(errText)}` : ''}`);
+}
+
+async function lrV31BaselineChannelId() {
+  try {
+    const rows = lrV31Rows(await query(
+      `SELECT id FROM channels ORDER BY updated_at DESC NULLS LAST, id DESC LIMIT 1`
+    ));
+    return Number(rows[0]?.id || 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function lrV31LatestChannelSince(startedAt, excludeId = 0) {
+  try {
+    const rows = lrV31Rows(await query(
+      `SELECT id, max_chat_id, title, link, is_active, updated_at
+       FROM channels
+       WHERE updated_at >= $1::timestamptz - interval '10 seconds'
+         AND trim(coalesce(title,'')) <> ''
+         AND lower(trim(coalesce(title,''))) NOT IN ('канал','channel')
+         AND ($2::int = 0 OR id <> $2::int)
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [startedAt.toISOString(), Number(excludeId || 0)]
+    ));
+
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[v31 core] latest channel lookup failed', e?.stack || e?.message || e);
+    return null;
+  }
+}
+
+function lrV31StopWatcher() {
+  try {
+    if (globalThis.__lrV31WatcherTimer) clearInterval(globalThis.__lrV31WatcherTimer);
+  } catch {}
+
+  globalThis.__lrV31WatcherTimer = null;
+}
+
+function lrV31StartWatcher(state) {
+  lrV31StopWatcher();
+
+  globalThis.__lrV31WatcherTimer = setInterval(async () => {
+    try {
+      const st = globalThis.__lrV31AddWait;
+      if (!st) {
+        lrV31StopWatcher();
+        return;
+      }
+
+      if (Date.now() - Number(st.ts || 0) > 3 * 60 * 1000) {
+        console.log('[v31 core] watcher timeout', JSON.stringify({ privateChatId: st.privateChatId }));
+        lrV31StopWatcher();
+        await lrV31DelAddStates();
+        return;
+      }
+
+      const channel = await lrV31LatestChannelSince(new Date(st.startedAt || st.iso || Date.now()), Number(st.baselineId || 0));
+      if (channel) {
+        await lrV31NotifyConnected(String(st.privateChatId || st.chatId), String(st.key || st.privateChatId || st.chatId), channel);
+        lrV31StopWatcher();
+      }
+    } catch (e) {
+      console.error('[v31 core] watcher failed', e?.stack || e?.message || e);
+    }
+  }, 1000);
+
+  try { globalThis.__lrV31WatcherTimer.unref?.(); } catch {}
+
+  console.log('[v31 core] watcher started', JSON.stringify({
+    privateChatId: state.privateChatId,
+    key: state.key,
+    baselineId: state.baselineId
+  }));
+}
+
+async function lrV31SetAddMode(privateChatId, key = '') {
+  const resolvedPrivate = lrV31Clean(privateChatId || key || process.env.LR_OWNER_CHAT_ID || process.env.OWNER_CHAT_ID || process.env.ADMIN_CHAT_ID || '405954311') || '405954311';
+  const resolvedKey = lrV31Clean(key || resolvedPrivate) || resolvedPrivate;
+  const now = new Date();
+  const baselineId = await lrV31BaselineChannelId();
+
+  const state = {
+    privateChatId: String(resolvedPrivate),
+    chatId: String(resolvedPrivate),
+    key: String(resolvedKey),
+    ts: Date.now(),
+    iso: now.toISOString(),
+    startedAt: now.toISOString(),
+    baselineId
+  };
+
+  globalThis.__lrV31AddWait = state;
+
+  try {
+    if (typeof setSession === 'function') {
+      await setSession(state.key, 'wait_add_channel', {
+        mode: 'add_channel',
+        chatId: state.privateChatId,
+        ts: state.ts,
+        baselineId
+      });
+    }
+  } catch (e) {
+    console.error('[v31 core] setSession failed', e?.message || e);
+  }
+
+  try {
+    await lrV31PutState('lr_v31_add_wait_global', state);
+    await lrV31PutState(`lr_v31_add_wait:${state.privateChatId}`, state);
+    await lrV31PutState(`lr_v31_add_wait:${state.key}`, state);
+  } catch (e) {
+    console.error('[v31 core] put add state failed', e?.stack || e?.message || e);
+  }
+
+  lrV31StartWatcher(state);
+  console.log('[v31 core] add mode stored', JSON.stringify(state));
+  return state;
+}
+
+async function lrV31GetAddMode(privateChatId, key) {
+  const mem = globalThis.__lrV31AddWait;
+  if (mem && Date.now() - Number(mem.ts || 0) < 30 * 60 * 1000) return mem;
+
+  try {
+    const state = await lrV31GetState([
+      'lr_v31_add_wait_global',
+      `lr_v31_add_wait:${privateChatId}`,
+      `lr_v31_add_wait:${key}`
+    ]);
+
+    if (state) {
+      globalThis.__lrV31AddWait = state;
+      lrV31StartWatcher(state);
+      return state;
+    }
+  } catch (e) {
+    console.error('[v31 core] get add mode failed', e?.message || e);
+  }
+
+  try {
+    if (key && typeof getSession === 'function') {
+      const session = await getSession(String(key)).catch(() => null);
+      if (session?.state === 'wait_add_channel') {
+        return {
+          privateChatId: lrV31Clean(privateChatId || key || '405954311') || '405954311',
+          key: lrV31Clean(key || privateChatId || '405954311') || '405954311',
+          ts: Date.now(),
+          baselineId: await lrV31BaselineChannelId(),
+          startedAt: new Date().toISOString()
+        };
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+async function lrV31HandleAddForward(update) {
+  const type = lrV31Type(update);
+  if (String(type).includes('callback')) return false;
+
+  const key = lrV31Key(update);
+  const incomingChatId = lrV31ChatId(update, key);
+  const privateChatId = lrV31PrivateChatId(update, incomingChatId || key);
+  const state = await lrV31GetAddMode(privateChatId || incomingChatId, key);
+
+  if (!state) return false;
+
+  const targetPrivate = lrV31Clean(state.privateChatId || state.chatId || privateChatId || incomingChatId || key || '405954311') || '405954311';
+  const targetKey = lrV31Clean(state.key || key || targetPrivate) || targetPrivate;
+
+  console.log('[v31 core] add forward intercepted', JSON.stringify({
+    incomingChatId,
+    privateChatId,
+    targetPrivate,
+    key,
+    targetKey,
+    type
+  }));
+
+  const startedAt = new Date();
+  let channel = null;
+  let errText = '';
+
+  try {
+    if (typeof maybeRegisterChannel === 'function') {
+      const result = await maybeRegisterChannel(update);
+      if (result && typeof result === 'object' && !Array.isArray(result)) channel = result;
+      console.log('[v31 core] maybeRegisterChannel result', JSON.stringify({ resultType: typeof result, hasChannel: Boolean(channel) }));
+    }
+  } catch (e) {
+    errText = e?.message || String(e);
+    console.error('[v31 core] maybeRegisterChannel failed', e?.stack || e?.message || e);
+  }
+
+  if (!channel || !lrV31Clean(channel.title || '')) {
+    channel = await lrV31LatestChannelSince(startedAt, Number(state.baselineId || 0));
+  }
+
+  if (channel) {
+    await lrV31NotifyConnected(targetPrivate, targetKey, channel);
+    return true;
+  }
+
+  setTimeout(async () => {
+    try {
+      const late = await lrV31LatestChannelSince(startedAt, Number(state.baselineId || 0));
+      if (late) {
+        await lrV31NotifyConnected(targetPrivate, targetKey, late);
+      } else {
+        await lrV31NotifyFailed(targetPrivate, errText);
+        await lrV31DelAddStates();
+      }
+    } catch (e) {
+      console.error('[v31 core] late add confirmation failed', e?.stack || e?.message || e);
+    }
+  }, 2200).unref?.();
+
+  return true;
+}
+
+async function lrV31HandleBotAdded(update) {
+  const chatId = lrV31ChatId(update);
+  if (!chatId) return false;
+
+  const privateChatId = lrV31PrivateChatId(update);
+  const isChannel = update?.is_channel !== false && update?.body?.is_channel !== false;
+
+  console.log('[v31 core] bot_added received', JSON.stringify({ chatId, privateChatId, isChannel }));
+
+  const info = await lrV31FetchChatInfo(chatId);
+  const channel = await lrV31UpsertChannel(chatId, info.title || update?.chat?.title || update?.title || '', info.link || '', isChannel);
+
+  await lrV31NotifyConnected(privateChatId, String(privateChatId), channel);
+
+  return true;
+}
+
+async function lrV31HandleBotRemoved(update) {
+  const chatId = lrV31ChatId(update);
+  if (!chatId) return false;
+
+  const privateChatId = lrV31PrivateChatId(update);
+  const channel = await lrV31DeactivateChannel(chatId);
+
+  console.log('[v31 core] bot_removed received', JSON.stringify({ chatId, privateChatId }));
+
+  if (channel) await lrV31NotifyRemoved(privateChatId, channel);
+
+  return true;
+}
+
+async function lrV31HandleTitleChanged(update) {
+  const chatId = lrV31ChatId(update);
+  if (!chatId) return false;
+
+  const info = await lrV31FetchChatInfo(chatId);
+  if (!info.title) return false;
+
+  await lrV31UpsertChannel(chatId, info.title, info.link || '', true);
+  return true;
+}
+
+async function lrV31ShowAddChannel(update) {
+  const callbackId = lrV31CallbackId(update);
+  const key = lrV31Key(update);
+  const chatId = lrV31ChatId(update, key);
+  const privateChatId = lrV31PrivateChatId(update, chatId || key);
+
+  await lrV31SetAddMode(privateChatId, key || privateChatId);
+
+  const text = `━━━━━━━━━━━━━━
+🔗 <b>Добавить канал</b>
+
+1. Откройте канал в MAX.
+2. Добавьте LinkRay в администраторы.
+3. Выдайте право публикации.
+4. Перешлите любой пост из этого канала сюда, в бота.
+
+Если LinkRay не является администратором — канал не будет добавлен.
+━━━━━━━━━━━━━━`;
+
+  const rows = [[callbackButton('⬅️ В меню', 'main:menu')]];
+
+  if (callbackId && typeof cb === 'function') {
+    await cb(callbackId, text, rows);
+  } else {
+    await lrV31Send(privateChatId, text, rows);
+  }
+
+  console.log('[v31 core] add channel screen shown', JSON.stringify({ privateChatId, chatId, key }));
+  return true;
+}
+
+async function lrV31HandlePostCallback(update) {
+  /* LR_V40_KEEP_ONLY_ADD_CHANNEL */
+  {
+    const __lrV40Payload = typeof lrV31Payload === 'function' ? lrV31Payload(update) : lrV40Payload(update);
+    if (__lrV40Payload && __lrV40Payload !== 'post:add_channel') {
+      console.log('[v40 buttons] pass post callback to native handler', JSON.stringify({ payload: __lrV40Payload }));
+      return false;
+    }
+  }
+
+  /* LR_V38_KEEP_ONLY_ADD_CHANNEL */
+  {
+    const __lrV38Payload = typeof lrV31Payload === 'function' ? lrV31Payload(update) : '';
+    if (__lrV38Payload && __lrV38Payload !== 'post:add_channel') {
+      console.log('[v38 restore] pass post callback to native handler', JSON.stringify({ payload: __lrV38Payload }));
+      return false;
+    }
+  }
+
+  const payload = lrV31Payload(update);
+  if (!payload) return false;
+
+  const callbackId = lrV31CallbackId(update);
+  const key = lrV31Key(update);
+  const chatId = lrV31ChatId(update, key) || lrV31PrivateChatId(update, key);
+
+  if (payload === 'post:add_channel') return lrV31ShowAddChannel(update);
+
+  if (payload === 'post:create') {
+    const draft = emptyDraft();
+    console.log('[v31 core] post:create', JSON.stringify({ chatId, key }));
+
+    if (typeof showChannelSelect === 'function') return showChannelSelect(callbackId, key, draft, false);
+    if (typeof lrV15SendChannelSelect === 'function') return lrV15SendChannelSelect(chatId, key, draft, false);
+    return false;
+  }
+
+  if (payload === 'post:all') {
+    console.log('[v31 core] post:all', JSON.stringify({ chatId, key }));
+
+    if (typeof showPosts === 'function') return showPosts(callbackId, 'all', await defaultPostDay('all'), null, chatId);
+    return lrV31Send(chatId, 'Посты пока недоступны.', [[callbackButton('⬅️ В Studio', 'main:posting')]]);
+  }
+
+  if (payload === 'post:cancel') {
+    await lrV31DelAddStates();
+    try {
+      if (key && typeof clearSession === 'function') await clearSession(key);
+    } catch {}
+    return lrV31Send(chatId, '❌ Действие отменено.', [[callbackButton('⬅️ В меню', 'main:menu')]]);
+  }
+
+  if (payload === 'post:multi') {
+    const session = await getSession(key);
+    const draft = safeDraft(session.data);
+    console.log('[v31 core] post:multi', JSON.stringify({ chatId, key }));
+    return showChannelSelect(callbackId, key, draft, true);
+  }
+
+  if (payload.startsWith('post:toggle:')) {
+    const id = Number(payload.split(':')[2]);
+    const session = await getSession(key);
+    const draft = safeDraft(session.data);
+    const selected = new Set(draft.channelIds || []);
+    selected.has(id) ? selected.delete(id) : selected.add(id);
+    draft.channelIds = [...selected];
+
+    console.log('[v31 core] post:toggle', JSON.stringify({ chatId, key, id, selected: draft.channelIds }));
+    return showChannelSelect(callbackId, key, draft, true);
+  }
+
+  if (payload.startsWith('post:single:')) {
+    const id = Number(payload.split(':')[2]);
+    const session = await getSession(key);
+    const draft = safeDraft(session.data);
+    draft.channelIds = [id];
+
+    console.log('[v31 core] post:single', JSON.stringify({ chatId, key, id }));
+
+    if (typeof hasContent === 'function' && hasContent(draft)) {
+      await setSession(key, 'edit_draft', { draft }).catch(() => {});
+      await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(() => {});
+      return sendEditorAsNew(chatId, key, draft);
+    }
+
+    return askContent(callbackId, key, draft);
+  }
+
+  if (payload === 'post:all_channels') {
+    const session = await getSession(key);
+    const draft = safeDraft(session.data);
+    draft.channelIds = (await getChannels()).map(c => Number(c.id));
+
+    console.log('[v31 core] post:all_channels', JSON.stringify({ chatId, key, count: draft.channelIds.length }));
+
+    if (typeof hasContent === 'function' && hasContent(draft)) {
+      await setSession(key, 'edit_draft', { draft }).catch(() => {});
+      await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(() => {});
+      return sendEditorAsNew(chatId, key, draft);
+    }
+
+    return askContent(callbackId, key, draft);
+  }
+
+  if (payload === 'post:channels_next') {
+    const session = await getSession(key);
+    const draft = safeDraft(session.data);
+
+    if (!draft.channelIds.length) {
+      return lrV31Send(chatId, 'Выберите хотя бы один канал.', [[callbackButton('⬅️ Назад', 'post:multi')]]);
+    }
+
+    if (typeof hasContent === 'function' && hasContent(draft)) {
+      await setSession(key, 'edit_draft', { draft }).catch(() => {});
+      await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(() => {});
+      return sendEditorAsNew(chatId, key, draft);
+    }
+
+    return askContent(callbackId, key, draft);
+  }
+
+  if (payload === 'post:change_channels') {
+    const session = await getSession(key);
+    return showChannelSelect(callbackId, key, safeDraft(session.data), false);
+  }
+
+  return false;
+}
+
+async function lrV31HandleUpdate(update) {
+  const type = lrV31Type(update);
+
+  if (type === 'bot_added') return lrV31HandleBotAdded(update);
+  if (type === 'bot_removed') return lrV31HandleBotRemoved(update);
+  if (type === 'chat_title_changed') return lrV31HandleTitleChanged(update);
+
+  if (String(type).includes('callback')) {
+    return lrV31HandlePostCallback(update);
+  }
+
+  return lrV31HandleAddForward(update);
+}
+
+function lrV31WebhookUrl() {
+  const direct = lrV31Clean(
+    process.env.WEBHOOK_URL ||
+    process.env.MAX_WEBHOOK_URL ||
+    process.env.PUBLIC_WEBHOOK_URL ||
+    process.env.LINKRAY_WEBHOOK_URL ||
+    '',
+    1000
+  );
+
+  if (direct) return /\/webhook$/i.test(direct) ? direct : `${direct.replace(/\/+$/, '')}/webhook`;
+
+  const base = lrV31Clean(
+    process.env.PUBLIC_URL ||
+    process.env.APP_URL ||
+    process.env.BASE_URL ||
+    process.env.LINKRAY_BOT_URL ||
+    process.env.DOMAIN ||
+    '',
+    1000
+  ).replace(/\/+$/, '');
+
+  if (!base) return '';
+  if (/\/webhook$/i.test(base)) return base;
+  return `${base}/webhook`;
+}
+
+async function lrV31InstallSubscription() {
+  try {
+    const url = lrV31WebhookUrl();
+    const token = lrV31ApiToken();
+
+    if (!url || !token) {
+      console.log('[v31 core] subscription skipped: no WEBHOOK_URL/PUBLIC_URL or token');
+      return false;
+    }
+
+    const updateTypes = [
+      'message_created',
+      'message_callback',
+      'bot_added',
+      'bot_removed',
+      'bot_started',
+      'chat_title_changed'
+    ];
+
+    const body = {
+      url,
+      update_types: updateTypes
+    };
+
+    const secret = lrV31Clean(process.env.WEBHOOK_SECRET || process.env.MAX_WEBHOOK_SECRET || '', 256);
+    if (secret) body.secret = secret;
+
+    const r = await lrV31ApiPost('/subscriptions', body);
+
+    await lrV31PutState('lr_v31_subscription_last', {
+      url,
+      updateTypes,
+      ok: r.ok,
+      status: r.status,
+      response: r.data,
+      ts: new Date().toISOString()
+    }).catch(() => {});
+
+    console.log('[v31 core] subscription install result', JSON.stringify({
+      ok: r.ok,
+      status: r.status,
+      url,
+      response: r.data
+    }));
+
+    return r.ok;
+  } catch (e) {
+    console.error('[v31 core] subscription install failed', e?.stack || e?.message || e);
+    return false;
+  }
+}
+
+try {
+  setTimeout(() => {
+    lrV31EnsureSchema().then(() => lrV31InstallSubscription()).catch(e => {
+      console.error('[v31 core] startup failed', e?.stack || e?.message || e);
+    });
+  }, 2500).unref?.();
+} catch {}
+
+console.log('[v31 core] installed');
+/* LR_MAX_SUBSCRIPTIONS_CORE_V31_END */
+/* LR_PRIVATE_CHAT_SUBSCRIPTION_BRIDGE_V32_START */
+app.use(async function lrPrivateChatSubscriptionBridgeV32(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const incomingSecret = req.header('X-Max-Bot-Api-Secret');
+    const expectedSecret = process.env.WEBHOOK_SECRET || process.env.MAX_WEBHOOK_SECRET || '';
+    if (expectedSecret && incomingSecret && incomingSecret !== expectedSecret) return next();
+
+    const update = req.body || {};
+    const type = typeof lrV31Type === 'function' ? lrV31Type(update) : String(update?.type || update?.update_type || '');
+    const payload = typeof lrV31Payload === 'function' ? lrV31Payload(update) : '';
+
+    const isV31Callback =
+      String(type).includes('callback') &&
+      payload === 'post:add_channel';
+
+    const isMaxChannelEvent =
+      type === 'bot_added' ||
+      type === 'bot_removed' ||
+      type === 'chat_title_changed';
+
+    // Для message_created проверяем режим "Добавить канал"; если режима нет, не мешаем старому автопостингу.
+    let isAddForward = false;
+    if (!String(type).includes('callback') && typeof lrV31GetAddMode === 'function') {
+      const key = typeof lrV31Key === 'function' ? lrV31Key(update) : '';
+      const chatId = typeof lrV31ChatId === 'function' ? lrV31ChatId(update, key) : '';
+      const privateChatId = typeof lrV31PrivateChatId === 'function' ? lrV31PrivateChatId(update, chatId || key) : (chatId || key);
+      const st = await lrV31GetAddMode(privateChatId || chatId, key).catch(() => null);
+      isAddForward = Boolean(st);
+    }
+
+    if (isV31Callback || isMaxChannelEvent || isAddForward) {
+      console.log('[v32 bridge] handling update', JSON.stringify({ type, payload, isV31Callback, isMaxChannelEvent, isAddForward }));
+
+      const handled = await lrV31HandleUpdate(update);
+
+      if (handled) {
+        if (!res.headersSent) return res.json({ ok: true, handled: 'lr_private_chat_subscription_bridge_v32' });
+        return;
+      }
+    }
+
+    return next();
+  } catch (e) {
+    console.error('[v32 bridge] failed', e?.stack || e?.message || e);
+    return next();
+  }
+});
+
+console.log('[v32 bridge] installed');
+/* LR_PRIVATE_CHAT_SUBSCRIPTION_BRIDGE_V32_END */
 app.use(async (req, res, next) => {
   try {
     if (req.method === 'POST' && req.body && typeof req.body === 'object') {
@@ -7397,7 +10072,210 @@ async function __lrSkipDuplicateChannelAdded(chatId, text = '') {
 }
 // LR_SAFE_SERVICE_GUARD_V2_END
 
-async function msg(chatId, text, rows = [], format = 'html') {
+/* LR_NOTIFICATION_DEDUPE_V48_START */
+function lrV48Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+function lrV48CleanText(value) {
+  return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function lrV48Hash(value) {
+  const text = String(value || '');
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i += 1) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+function lrV48OutgoingKind(text) {
+  const t = lrV48CleanText(text).toLowerCase();
+  const isRemove = /канал удал[её]н из linkray/i.test(t) || /канал отключ[её]н в базе/i.test(t) || /был удал[её]н из администраторов/i.test(t);
+  const isAddSuccess = /канал подключ[её]н к linkray/i.test(t) || /канал сохран[её]н в базе/i.test(t);
+  const isAddFail = /канал не добавлен/i.test(t) || /не смог подтвердить права/i.test(t) || /не смог подтвердить.*администратор/i.test(t) || /не удалось определить канал/i.test(t) || /бот не является администратором канала/i.test(t);
+  if (isRemove) return 'remove';
+  if (isAddSuccess) return 'add_success';
+  if (isAddFail) return 'add_fail';
+  return '';
+}
+async function lrV48StateGet(key) {
+  try {
+    const rows = lrV48Rows(await query(`SELECT value FROM lr_bot_state WHERE key=$1 LIMIT 1`, [key]));
+    if (!rows[0]) return null;
+    return typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+  } catch { return null; }
+}
+async function lrV48StateSet(key, value) {
+  try {
+    await query(
+      `INSERT INTO lr_bot_state(key,value,updated_at)
+       VALUES($1,$2,now())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [key, JSON.stringify(value || {})]
+    );
+  } catch (e) { console.error('[v48 notify dedupe] state set failed', e?.message || e); }
+}
+async function lrV48RecentChannelAdded() {
+  try {
+    const rows = lrV48Rows(await query(
+      `SELECT id, max_chat_id, title, updated_at
+       FROM channels
+       WHERE COALESCE(is_active,true)=true
+         AND updated_at > now() - interval '8 minutes'
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1`
+    ));
+    return rows[0] || null;
+  } catch { return null; }
+}
+async function lrV48RecentlySent(key, ms) {
+  const row = await lrV48StateGet(key);
+  const ts = Number(row?.ts || 0);
+  return Boolean(ts && Date.now() - ts < ms);
+}
+async function lrV48ShouldSuppressOutgoing(chatId, text, via = '') {
+  const clean = lrV48CleanText(text);
+  const kind = lrV48OutgoingKind(clean);
+  if (!kind) return false;
+  const chat = String(chatId || 'unknown').trim() || 'unknown';
+  const textHash = lrV48Hash(clean.slice(0, 220));
+  const exactKey = `lr_v48_notify_exact:${chat}:${kind}:${textHash}`;
+
+  if (await lrV48RecentlySent(exactKey, kind === 'remove' ? 10 * 60 * 1000 : 90 * 1000)) {
+    console.log('[v48 notify dedupe] suppressed exact duplicate', JSON.stringify({ chat, kind, via }));
+    return true;
+  }
+
+  if (kind === 'add_success') {
+    const successKey = `lr_v48_add_success:${chat}`;
+    if (await lrV48RecentlySent(successKey, 90 * 1000)) {
+      console.log('[v48 notify dedupe] suppressed duplicate add success', JSON.stringify({ chat, via }));
+      return true;
+    }
+    await lrV48StateSet(successKey, { ts: Date.now(), text: clean.slice(0, 300), via });
+    await lrV48StateSet(exactKey, { ts: Date.now(), text: clean.slice(0, 300), via });
+    console.log('[v48 notify dedupe] allow add success', JSON.stringify({ chat, via }));
+    return false;
+  }
+
+  if (kind === 'add_fail') {
+    const successKey = `lr_v48_add_success:${chat}`;
+    const hasRecentSuccess = await lrV48RecentlySent(successKey, 8 * 60 * 1000);
+    const recentChannel = await lrV48RecentChannelAdded();
+    if (hasRecentSuccess || recentChannel) {
+      console.log('[v48 notify dedupe] suppressed false add failure after saved channel', JSON.stringify({
+        chat, via, hasRecentSuccess, recentChannelId: recentChannel?.id || null, recentTitle: recentChannel?.title || null
+      }));
+      await lrV48StateSet(exactKey, { ts: Date.now(), suppressed: true, text: clean.slice(0, 300), via });
+      return true;
+    }
+    if (await lrV48RecentlySent(exactKey, 3 * 60 * 1000)) {
+      console.log('[v48 notify dedupe] suppressed duplicate add failure', JSON.stringify({ chat, via }));
+      return true;
+    }
+    await lrV48StateSet(exactKey, { ts: Date.now(), text: clean.slice(0, 300), via });
+    console.log('[v48 notify dedupe] allow add failure', JSON.stringify({ chat, via }));
+    return false;
+  }
+
+  if (kind === 'remove') {
+    await lrV48StateSet(exactKey, { ts: Date.now(), text: clean.slice(0, 300), via });
+    console.log('[v48 notify dedupe] allow remove notification', JSON.stringify({ chat, via }));
+    return false;
+  }
+  return false;
+}
+function lrV48ExtractOutgoing(args) {
+  const first = args && args[0];
+  if (first && typeof first === 'object' && !Array.isArray(first)) {
+    return { chatId: first.chatId || first.chat_id || first.recipient || first.to || '', text: first.text || first.body || first.message || '' };
+  }
+  return { chatId: args?.[0] || '', text: args?.[1] || '' };
+}
+function lrV48InstallRuntimeWrappers() {
+  try {
+    if (typeof msg === 'function' && !msg.__lrV48Wrapped) {
+      const oldMsg = msg;
+      const wrapped = async function(...args) {
+        const out = lrV48ExtractOutgoing(args);
+        if (await lrV48ShouldSuppressOutgoing(out.chatId, out.text, 'msg-wrapper')) return { ok: true, suppressed: true, v48: true };
+        return oldMsg.apply(this, args);
+      };
+      wrapped.__lrV48Wrapped = true;
+      msg = wrapped;
+      console.log('[v48 notify dedupe] msg wrapper installed');
+    }
+  } catch (e) { console.error('[v48 notify dedupe] msg wrapper failed', e?.message || e); }
+
+  try {
+    if (typeof sendMaxMessage === 'function' && !sendMaxMessage.__lrV48Wrapped) {
+      const oldSendMaxMessage = sendMaxMessage;
+      const wrappedSend = async function(...args) {
+        const out = lrV48ExtractOutgoing(args);
+        if (await lrV48ShouldSuppressOutgoing(out.chatId, out.text, 'sendMaxMessage-wrapper')) return { ok: true, suppressed: true, v48: true };
+        return oldSendMaxMessage.apply(this, args);
+      };
+      wrappedSend.__lrV48Wrapped = true;
+      sendMaxMessage = wrappedSend;
+      console.log('[v48 notify dedupe] sendMaxMessage wrapper installed');
+    }
+  } catch (e) { console.error('[v48 notify dedupe] sendMaxMessage wrapper failed', e?.message || e); }
+}
+try {
+  setTimeout(lrV48InstallRuntimeWrappers, 2500);
+  setTimeout(lrV48InstallRuntimeWrappers, 6000);
+} catch {}
+console.log('[v48 notify dedupe] installed');
+/* LR_NOTIFICATION_DEDUPE_V48_END */
+
+/* LR_V59_MSG_GUARD_HELPERS_START */
+function lrV59MsgText(value) {
+  const out = [];
+  const seen = new WeakSet();
+  const walk = (node) => {
+    if (node === null || node === undefined) return;
+    if (typeof node === 'string') { out.push(node); return; }
+    if (typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    for (const key of ['text','caption','message','body','notification','title','description']) {
+      const v = node[key];
+      if (typeof v === 'string') out.push(v);
+      else if (v && typeof v === 'object') walk(v);
+    }
+    if (Array.isArray(node)) for (const v of node) walk(v);
+  };
+  walk(value);
+  return out.join('\n');
+}
+function lrV59MsgGuardDuplicateClickReport(payload) {
+  const text = lrV59MsgText(payload).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  const isReport = /Сводн(?:ый|ой)\s+отч[её]т|Публикации\s*:|Просмотры\s+за\s+24ч|Общие\s+просмотры/i.test(text);
+  const hasClicks = /Уникальные\s+клики|Все\s+клики|Переходы\s+по\s+ссылкам|Красивый\s+отч[её]т\s*:|Все\s+переходы/i.test(text);
+  return Boolean(isReport && hasClicks);
+}
+/* LR_V59_MSG_GUARD_HELPERS_END */
+
+async function msg(chatId, text, rows = [], format = 'html') { if (typeof lrV59MsgGuardDuplicateClickReport === 'function' && lrV59MsgGuardDuplicateClickReport({ chatId, text, rows })) { console.log('[v59 report] dropped duplicate click report through msg', JSON.stringify({ chatId: String(chatId || ''), preview: String(text || '').slice(0, 180) })); return null; } 
+  /* LR_V48_OUTGOING_DEDUPE_GUARD */
+  try {
+    let __v48Chat = '';
+    let __v48Text = '';
+    try {
+      __v48Chat = (typeof chatId !== 'undefined')
+        ? chatId
+        : (arguments[0] && (arguments[0].chatId || arguments[0].chat_id || arguments[0].recipient || arguments[0].to));
+    } catch {}
+    try {
+      __v48Text = (typeof text !== 'undefined')
+        ? text
+        : (arguments[0] && (arguments[0].text || arguments[0].body || arguments[0].message));
+    } catch {}
+    if (await lrV48ShouldSuppressOutgoing(__v48Chat, __v48Text, 'function-guard')) {
+      return { ok: true, suppressed: true, v48: true };
+    }
+  } catch (e) {
+    console.error('[v48 notify dedupe] function guard failed', e?.message || e);
+  }
+
   if (await __lrBlockServiceToChannel(chatId, text, rows)) return null;
   if (await __lrSkipDuplicateChannelAdded(chatId, text)) return null;
 
@@ -7435,7 +10313,47 @@ function monthName(d) { return ['января','февраля','марта','а
 function dayName(d) { return ['вс','пн','вт','ср','чт','пт','сб'][d.getDay()] || ''; }
 function timeText(d) { return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
 function dateText(d) { return `${dayName(d)} ${d.getDate()} ${monthName(d)} ${d.getFullYear()} г.`; }
-function dateButtonText(d) { return `${d.getDate()} ${monthName(d)} ${d.getFullYear()}`; }
+
+/* LR_PLAN_DAY_LABEL_V60_START */
+function lrV60MoscowDayKey(offsetDays = 0) {
+  const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + Number(offsetDays || 0));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function lrV60NormalizeDayKey(dayLike) {
+  const raw = String(dayLike ?? '').trim();
+  const m = raw.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+
+  const d = dayLike instanceof Date ? dayLike : new Date(raw);
+  if (!d || Number.isNaN(d.getTime())) return lrV60MoscowDayKey(0);
+
+  const msk = new Date(d.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+  msk.setHours(12, 0, 0, 0);
+  return `${msk.getFullYear()}-${String(msk.getMonth() + 1).padStart(2, '0')}-${String(msk.getDate()).padStart(2, '0')}`;
+}
+
+function lrV60PlanNavDayLabel(dayLike) {
+  const day = lrV60NormalizeDayKey(dayLike);
+  if (day === lrV60MoscowDayKey(0)) return 'Сегодня';
+  if (day === lrV60MoscowDayKey(1)) return 'Завтра';
+  if (day === lrV60MoscowDayKey(2)) return 'Послезавтра';
+
+  const [y, m, d] = day.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  const text = dt.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    timeZone: 'Europe/Moscow',
+  });
+  return text.replace(/\s*г\.$/i, '');
+}
+/* LR_PLAN_DAY_LABEL_V60_END */
+
+
+function dateButtonText(d) { return lrV60PlanNavDayLabel(d); }
 function dateTimeText(d) { return `${timeText(d)} · ${dateText(d)}`; }
 function parseDbDate(v) { const d = new Date(v || Date.now()); return Number.isNaN(d.getTime()) ? new Date() : d; }
 function formatAutoDelete(minutes) { if (!minutes) return 'без удаления'; const n = Number(minutes); if (!Number.isFinite(n) || n <= 0) return 'без удаления'; if (n % 1440 === 0) return `${n / 1440}д`; if (n % 60 === 0) return `${n / 60}ч`; return `${n} мин`; }
@@ -7506,21 +10424,2764 @@ function channelLine(ch) {
   return `• ${title}`;
 } function channelsLines(channels) { return (channels || []).map(channelLine).join('\n') || '• канал не выбран'; }
 
-async function maybeRegisterChannel(update) {
-  const chatId = getChatId(update);
-  const title = getChatTitle(update);
-  if (!chatId || !title) return;
-  const link = getChatLink(update);
-  await query(`
-    INSERT INTO channels(max_chat_id, title, link, is_public, is_channel, bot_added_at, updated_at)
-    VALUES($1,$2,$3,$4,true,now(),now())
-    ON CONFLICT(max_chat_id) DO UPDATE SET title=COALESCE(EXCLUDED.title, channels.title), link=COALESCE(EXCLUDED.link, channels.link), is_public=EXCLUDED.is_public, updated_at=now()
-  `, [String(chatId), title, link || null, Boolean(link)]).catch((e) => console.error('[register channel]', e.message || e));
+async function __lrEnsureChannelsActiveColumn() {
+  try {
+    await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
+  } catch (e) {
+    console.error('[bot removed cleanup] ensure is_active', e?.message || e);
+  }
 }
 
-async function getChannels() { return query('SELECT id,max_chat_id,title,link,is_public FROM channels ORDER BY title ASC NULLS LAST, id ASC'); }
-async function getChannel(id) { const r = await query('SELECT id,max_chat_id,title,link,is_public FROM channels WHERE id=$1', [Number(id)]); return r[0] || null; }
-async function getChannelsByIds(ids) { const list = (ids || []).map(Number).filter(Boolean); if (!list.length) return []; return query('SELECT id,max_chat_id,title,link,is_public FROM channels WHERE id=ANY($1::int[]) ORDER BY title ASC NULLS LAST, id ASC', [list]); }
+function __lrRows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function __lrClean(value, max = 1200) {
+  const text = String(value ?? '').trim();
+  const low = text.toLowerCase();
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(low)) return '';
+  return text;
+}
+
+function __lrNormTitle(value) {
+  return __lrClean(value, 300)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function __lrIsBadChannelTitle(value) {
+  const t = __lrNormTitle(value);
+  return !t || t === 'кирилл' || t === 'kirill' || t === 'megamozg996' || t === 'linkray';
+}
+
+function __lrBotRemovedType(update) {
+  const rawType = String(
+    update?.type ||
+    update?.update_type ||
+    update?.event_type ||
+    update?.event ||
+    update?.body?.type ||
+    ''
+  ).toLowerCase();
+
+  const raw = JSON.stringify(update || {}).toLowerCase();
+
+  return (
+    rawType.includes('bot_removed') ||
+    rawType.includes('bot_left') ||
+    rawType.includes('member_removed') ||
+    rawType.includes('chat_member_removed') ||
+    raw.includes('"bot_removed"') ||
+    raw.includes('"bot_left"') ||
+    raw.includes('"member_removed"') ||
+    raw.includes('"chat_member_removed"') ||
+    raw.includes('"removed"') && raw.includes('"bot"') && raw.includes('"channel"')
+  );
+}
+
+function __lrBotRemovedCandidate(update) {
+  function fromObj(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+
+    const id = __lrClean(
+      obj.max_chat_id ||
+      obj.maxChatId ||
+      obj.chat_id ||
+      obj.chatId ||
+      obj.channel_id ||
+      obj.channelId ||
+      obj.id ||
+      obj.chat?.max_chat_id ||
+      obj.chat?.chat_id ||
+      obj.chat?.id ||
+      obj.channel?.max_chat_id ||
+      obj.channel?.chat_id ||
+      obj.channel?.id ||
+      obj.recipient?.chat_id ||
+      obj.recipient?.id ||
+      obj.source?.chat_id ||
+      obj.source?.id
+    );
+
+    const title = __lrClean(
+      obj.title ||
+      obj.name ||
+      obj.chat_title ||
+      obj.chatTitle ||
+      obj.channel_title ||
+      obj.channelTitle ||
+      obj.chat?.title ||
+      obj.chat?.name ||
+      obj.channel?.title ||
+      obj.channel?.name ||
+      obj.recipient?.title ||
+      obj.recipient?.name ||
+      obj.source?.title ||
+      obj.source?.name,
+      300
+    );
+
+    const link = __lrClean(
+      obj.link ||
+      obj.url ||
+      obj.href ||
+      obj.invite_link ||
+      obj.inviteLink ||
+      obj.public_link ||
+      obj.publicLink ||
+      obj.chat?.link ||
+      obj.channel?.link ||
+      obj.recipient?.link ||
+      obj.source?.link
+    );
+
+    if (!id && !title && !link) return null;
+
+    return {
+      id,
+      title: __lrIsBadChannelTitle(title) ? '' : title,
+      link
+    };
+  }
+
+  const direct = [
+    update?.chat,
+    update?.channel,
+    update?.recipient,
+    update?.source,
+    update?.message?.chat,
+    update?.message?.channel,
+    update?.message?.recipient,
+    update?.message?.source,
+    update?.body?.chat,
+    update?.body?.channel,
+    update?.body?.recipient,
+    update?.body?.source,
+    update?.body?.message?.chat,
+    update?.body?.message?.channel,
+    update?.body?.message?.recipient,
+    update?.body?.message?.source
+  ];
+
+  for (const obj of direct) {
+    const c = fromObj(obj);
+    if (c && (c.id || c.title || c.link)) return c;
+  }
+
+  let id = '';
+  let title = '';
+  let link = '';
+
+  try { id = __lrClean(getChatId(update)); } catch {}
+  try { title = __lrClean(getChatTitle(update), 300); } catch {}
+  try { link = __lrClean(getChatLink(update)); } catch {}
+
+  return {
+    id,
+    title: __lrIsBadChannelTitle(title) ? '' : title,
+    link
+  };
+}
+
+async function __lrDeactivateChannelAfterBotRemoved(update) {
+  if (!__lrBotRemovedType(update)) return false;
+
+  await __lrEnsureChannelsActiveColumn();
+
+  const c = __lrBotRemovedCandidate(update);
+  const id = __lrClean(c?.id);
+  const title = __lrClean(c?.title, 300);
+  const link = __lrClean(c?.link);
+  const wanted = __lrNormTitle(title);
+
+  let matchedIds = [];
+
+  if (id || link) {
+    const exact = await query(
+      `SELECT id, max_chat_id, title, link
+       FROM channels
+       WHERE COALESCE(is_active, true) = true
+         AND (
+           ($1::text <> '' AND max_chat_id::text = $1)
+           OR ($2::text <> '' AND link = $2)
+         )
+       ORDER BY updated_at DESC NULLS LAST, id DESC`,
+      [id || '', link || '']
+    ).catch((e) => {
+      console.error('[bot removed cleanup] exact select', e?.message || e);
+      return [];
+    });
+
+    matchedIds = __lrRows(exact).map((r) => Number(r.id)).filter(Boolean);
+  }
+
+  if (!matchedIds.length && wanted) {
+    const all = await query(
+      `SELECT id, max_chat_id, title, link
+       FROM channels
+       WHERE COALESCE(is_active, true) = true
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1000`
+    ).catch((e) => {
+      console.error('[bot removed cleanup] title select', e?.message || e);
+      return [];
+    });
+
+    for (const row of __lrRows(all)) {
+      const rt = __lrNormTitle(row.title);
+      if (!rt) continue;
+
+      if (rt === wanted || rt.includes(wanted) || wanted.includes(rt)) {
+        matchedIds.push(Number(row.id));
+      }
+    }
+  }
+
+  matchedIds = [...new Set(matchedIds)].filter(Boolean);
+
+  if (matchedIds.length) {
+    await query(
+      `UPDATE channels
+       SET is_active = false,
+           updated_at = now()
+       WHERE id = ANY($1::int[])`,
+      [matchedIds]
+    ).catch((e) => console.error('[bot removed cleanup] update channels', e?.message || e));
+
+    await query(
+      `UPDATE scheduled_posts
+       SET status = 'deleted',
+           updated_at = now()
+       WHERE channel_id = ANY($1::int[])
+         AND status::text = 'scheduled'`,
+      [matchedIds]
+    ).catch(() => {});
+
+    await query(
+      `UPDATE channel_signatures
+       SET is_active = false,
+           updated_at = now()
+       WHERE channel_id = ANY($1::int[])`,
+      [matchedIds]
+    ).catch(() => {});
+
+    console.log('[bot removed cleanup] channel deactivated', JSON.stringify({
+      ids: matchedIds,
+      maxChatId: id || null,
+      title: title || null,
+      link: link || null
+    }));
+  } else {
+    console.log('[bot removed cleanup] bot_removed received but channel not found', JSON.stringify({
+      maxChatId: id || null,
+      title: title || null,
+      link: link || null
+    }));
+  }
+
+  // Событие удаления бота не должно идти дальше в обычные команды.
+  return true;
+}
+
+
+/* LR_CHANNEL_V2_STABLE_MIN_START */
+function lrChV2Rows(r){return Array.isArray(r)?r:(r?.rows||[])}
+function lrChV2Clean(v,max=2500){const s=String(v??'').trim();const l=s.toLowerCase();if(!s||s.length>max)return'';if(['unknown','undefined','null','nan','[object object]'].includes(l))return'';return s}
+function lrChV2Html(v){try{if(typeof escapeHtml==='function')return escapeHtml(v)}catch{}return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function lrChV2Norm(v){return lrChV2Clean(v,300).toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim()}
+function lrChV2BadTitle(v){const t=lrChV2Norm(v);return !t||['кирилл','kirill','megamozg996','linkray','бот'].includes(t)}
+async function lrChV2Ensure(){await query(`CREATE TABLE IF NOT EXISTS lr_bot_state(key text PRIMARY KEY,value text,updated_at timestamptz NOT NULL DEFAULT now())`).catch(()=>{});await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`).catch(()=>{});await query(`UPDATE channels SET is_active=true WHERE is_active IS NULL`).catch(()=>{})}
+function lrChV2Token(){return String(process.env.MAX_TOKEN||process.env.MAX_BOT_TOKEN||process.env.MAX_ACCESS_TOKEN||process.env.BOT_TOKEN||process.env.ACCESS_TOKEN||process.env.API_TOKEN||process.env.TOKEN||'')}
+function lrChV2Base(){return String(process.env.MAX_API_BASE||process.env.MAX_BASE_URL||process.env.MAX_PLATFORM_API||'https://platform-api2.max.ru').replace(/\/+$/,'')}
+async function lrChV2Get(path){const token=lrChV2Token();if(!token||typeof fetch!=='function')return{ok:false,status:0,temp:true,data:null,raw:''};for(const auth of [token,`Bearer ${token}`]){try{const r=await fetch(`${lrChV2Base()}${path}`,{method:'GET',headers:{Authorization:auth,Accept:'application/json'}});const raw=await r.text().catch(()=>'');let data=null;try{data=raw?JSON.parse(raw):null}catch{data=raw}console.log('[channel v2]',JSON.stringify({path,status:r.status,ok:r.ok,preview:raw.slice(0,160)}));if(r.ok)return{ok:true,status:r.status,data,raw};if([401,429,500,502,503,504].includes(Number(r.status)))return{ok:false,status:r.status,data,raw,temp:true};return{ok:false,status:r.status,data,raw,temp:false}}catch(e){console.error('[channel v2 api]',path,e?.message||e);return{ok:false,status:0,temp:true,data:null,raw:''}}}return{ok:false,status:0,temp:true,data:null,raw:''}}
+function lrChV2Type(u){return String(u?.type||u?.update_type||u?.event_type||u?.event||u?.body?.type||'').toLowerCase()}
+function lrChV2Text(u){try{const t=getMessageText(u);if(lrChV2Clean(t))return lrChV2Clean(t,7000)}catch{}return lrChV2Clean(u?.message?.body?.text||u?.message?.text||u?.body?.message?.body?.text||u?.body?.message?.text||u?.text||'',7000)}
+function lrChV2Private(u){return lrChV2Clean(u?.chatId||u?.chat_id||u?.body?.chatId||u?.body?.chat_id||u?.message?.recipient?.chat_id||u?.message?.recipient?.id||u?.body?.message?.recipient?.chat_id||u?.body?.message?.recipient?.id)}
+function lrChV2ChatId(u){try{const id=getChatId(u);if(lrChV2Clean(id))return lrChV2Clean(id)}catch{}return lrChV2Clean(u?.chat?.id||u?.channel?.id||u?.chat_id||u?.message?.chat?.id||u?.message?.recipient?.chat_id||u?.message?.recipient?.id||u?.body?.chat?.id||u?.body?.channel?.id||u?.body?.message?.chat?.id)}
+function lrChV2Title(u){try{const t=getChatTitle(u);if(lrChV2Clean(t,300)&&!lrChV2BadTitle(t))return lrChV2Clean(t,300)}catch{}const t=lrChV2Clean(u?.chat?.title||u?.chat?.name||u?.channel?.title||u?.channel?.name||u?.message?.chat?.title||u?.message?.chat?.name||u?.message?.recipient?.title||u?.message?.recipient?.name||u?.body?.chat?.title||u?.body?.channel?.title||u?.body?.message?.chat?.title,300);return lrChV2BadTitle(t)?'':t}
+function lrChV2Link(u){try{const l=getChatLink(u);if(lrChV2Clean(l))return lrChV2Clean(l)}catch{}return lrChV2Clean(u?.chat?.link||u?.channel?.link||u?.message?.chat?.link||u?.message?.recipient?.link||u?.body?.chat?.link||u?.body?.channel?.link||u?.body?.message?.chat?.link)}
+function lrChV2Removed(u){const t=lrChV2Type(u),raw=JSON.stringify(u||{}).toLowerCase();return t.includes('bot_removed')||t.includes('bot_left')||t.includes('member_removed')||t.includes('chat_member_removed')||raw.includes('bot_removed')||raw.includes('bot_left')||(raw.includes('removed')&&raw.includes('bot')&&raw.includes('channel'))}
+function lrChV2Added(u){const t=lrChV2Type(u),raw=JSON.stringify(u||{}).toLowerCase();return t.includes('bot_added')||t.includes('bot_started')||t.includes('member_added')||t.includes('chat_member_added')||raw.includes('bot_added')||raw.includes('bot_started')}
+function lrChV2ChannelEvent(u){const t=lrChV2Type(u);if(lrChV2Added(u)||lrChV2Removed(u)||t.includes('channel'))return true;const types=[u?.chat?.type,u?.channel?.type,u?.message?.chat?.type,u?.message?.recipient?.type,u?.body?.chat?.type,u?.body?.channel?.type].map(x=>String(x||'').toLowerCase());return types.some(x=>x.includes('channel')||x==='chat')}
+function lrChV2HasForward(u){const raw=JSON.stringify(u||{}).toLowerCase();return Boolean(u?.message?.link||u?.message?.body?.link||u?.body?.link||u?.link||u?.message?.forward||u?.message?.body?.forward||u?.forward||raw.includes('forward')||raw.includes('source')||raw.includes('link'))}
+async function lrChV2Busy(u){let key='';try{key=lrChV2Clean(getSessionKey(u))}catch{}if(!key||typeof getSession!=='function')return false;try{const raw=JSON.stringify(await getSession(key).catch(()=>null)||{}).toLowerCase();return raw.includes('draft')||raw.includes('editor')||raw.includes('wait_post')||raw.includes('post_content')||raw.includes('schedule')||raw.includes('calendar')||raw.includes('signature')||raw.includes('autosign')}catch{return false}}
+function lrChV2Strings(root){const out=[],seen=new WeakSet();function add(v){const s=lrChV2Clean(v,7000);if(s)out.push(s)}function walk(v,d=0){if(v==null||d>8)return;if(typeof v==='string'){add(v);return}if(typeof v!=='object'||seen.has(v))return;seen.add(v);if(Array.isArray(v)){for(const x of v)walk(x,d+1);return}for(const[k,ch]of Object.entries(v)){if(['text','title','name','caption','url','link','href'].includes(String(k).toLowerCase()))add(ch);if(ch&&typeof ch==='object')walk(ch,d+1)}}walk(root);return[...new Set(out)]}
+function lrChV2TitleFromText(u){for(const t of lrChV2Strings(u)){const lines=String(t).split(/\n+/).map(x=>x.trim()).filter(Boolean);for(let i=lines.length-1;i>=0;i--){const line=lines[i].replace(/^[@#]+/,'').replace(/^[🔗📌✅➡️👉\-—–\s]+/,'').replace(/https?:\/\/\S+/gi,'').replace(/\s+/g,' ').trim();if(line.length>=3&&line.length<=120&&/[А-Яа-яA-Za-z]/.test(line)&&!lrChV2BadTitle(line))return line}}return''}
+function lrChV2ObjCandidate(o,source,score,fallback){if(!o||typeof o!=='object')return null;const raw=JSON.stringify(o||'').toLowerCase();if((raw.includes('first_name')||raw.includes('last_name')||raw.includes('username'))&&!raw.includes('title')&&!raw.includes('channel'))return null;const id=lrChV2Clean(o.max_chat_id||o.maxChatId||o.chat_id||o.chatId||o.channel_id||o.channelId||o.id||o.source_chat_id||o.sourceChatId||o.chat?.id||o.chat?.chat_id||o.channel?.id||o.channel?.chat_id||o.recipient?.id||o.recipient?.chat_id||o.source?.id||o.source?.chat_id);let title=lrChV2Clean(o.title||o.name||o.chat_title||o.chatTitle||o.channel_title||o.channelTitle||o.source_title||o.sourceTitle||o.chat?.title||o.chat?.name||o.channel?.title||o.channel?.name||o.recipient?.title||o.recipient?.name||o.source?.title||o.source?.name,300);if(lrChV2BadTitle(title))title=fallback||'';const link=lrChV2Clean(o.link||o.url||o.href||o.invite_link||o.inviteLink||o.public_link||o.publicLink||o.chat?.link||o.channel?.link||o.recipient?.link||o.source?.link);if(!id&&!link)return null;if(!title||lrChV2BadTitle(title))return null;return{id:id||link,title,link:link||null,source,score}}
+function lrChV2Candidates(u){const fallback=lrChV2TitleFromText(u),privateId=lrChV2Private(u),out=[],seen=new WeakSet();function add(o,src,score){const c=lrChV2ObjCandidate(o,src,score,fallback);if(c&&!(privateId&&String(c.id)===String(privateId)))out.push(c)}[u?.chat,u?.channel,u?.message?.link?.chat,u?.message?.body?.link?.chat,u?.body?.link?.chat,u?.link?.chat,u?.message?.link?.message?.chat,u?.message?.link?.message?.recipient,u?.message?.forward?.message?.chat,u?.message?.forward?.message?.recipient,u?.forward?.message?.chat,u?.forward?.message?.recipient,u?.message?.source,u?.body?.message?.source,u?.message?.channel,u?.body?.message?.channel].filter(Boolean).forEach((x,i)=>add(x,'direct',10000-i));function walk(o,d=0,path=''){if(!o||typeof o!=='object'||d>8||seen.has(o))return;seen.add(o);if(/forward|link|message|recipient|chat|channel|source/i.test(path))add(o,path,900-d);if(Array.isArray(o)){for(const it of o)walk(it,d+1,path);return}for(const[k,v]of Object.entries(o))if(v&&typeof v==='object')walk(v,d+1,path?`${path}.${k}`:k)}walk(u);for(const text of lrChV2Strings(u)){if(!/(max\.ru|i\.oneme\.ru|:\/\/|join\/)/i.test(text))continue;if(fallback&&!lrChV2BadTitle(fallback))out.push({id:text,title:fallback,link:text,source:'text_link',score:5000})}const m=new Map();for(const c of out){const k=`${c.id||''}::${c.link||''}::${lrChV2Norm(c.title)}`;if(!m.has(k)||c.score>m.get(k).score)m.set(k,c)}return[...m.values()].sort((a,b)=>b.score-a.score).slice(0,15)}
+function lrChV2Variants(v){const raw=lrChV2Clean(v,2000);if(!raw)return[];const out=new Set();function add(x){x=lrChV2Clean(x,700);if(!x)return;x=x.replace(/^@+/,'').replace(/^https?:\/\//i,'').replace(/^max\.ru\//i,'').replace(/^i\.oneme\.ru\/i\?r=/i,'').split(/[?#]/)[0].replace(/^\/+|\/+$/g,'');if(x)out.add(x);if(x.startsWith('join/'))out.add(x.slice(5));const last=x.split('/').filter(Boolean).pop();if(last)out.add(last)}add(raw);try{const u=new URL(raw);add(u.pathname);add(u.pathname.split('/').filter(Boolean).pop()||'');const r=u.searchParams.get('r');if(r)add(r)}catch{}return[...out].filter(x=>x&&x.length>=3)}
+function lrChV2Admin(data){const raw=JSON.stringify(data||{}).toLowerCase();if(data?.is_admin===true||data?.isAdmin===true||data?.admin===true||data?.is_owner===true||data?.isOwner===true||data?.owner===true||data?.member?.is_admin===true||data?.member?.isAdmin===true||data?.member?.is_owner===true||data?.member?.isOwner===true)return true;const perms=[].concat(data?.permissions||[],data?.rights||[],data?.available_permissions||[],data?.availablePermissions||[],data?.member?.permissions||[],data?.member?.rights||[],data?.access||[]);const txt=perms.map(x=>typeof x==='string'?x:JSON.stringify(x||'')).join(' ').toLowerCase();return/(write|send|post|publish|message|manage|admin|editor)/i.test(txt)||/"is_admin"\s*:\s*true|isadmin"\s*:\s*true|"admin"\s*:\s*true|"owner"\s*:\s*true/.test(raw)}
+async function lrChV2BotAdmin(chatId){const id=lrChV2Clean(chatId);if(!id)return false;const r=await lrChV2Get(`/chats/${encodeURIComponent(id)}/members/me`);if(r.ok){const a=lrChV2Admin(r.data);console.log('[channel v2 members/me]',JSON.stringify({chatId:id,status:r.status,admin:a}));return a}if(r.temp)return null;return false}
+async function lrChV2Resolve(c){const id=lrChV2Clean(c?.id),link=lrChV2Clean(c?.link),title=lrChV2Clean(c?.title,300);if(/^-?\d+$/.test(id))return{max_chat_id:id,title,link:link||null};for(const v of[...new Set([id,link].filter(Boolean).flatMap(lrChV2Variants))]){const r=await lrChV2Get(`/chats/${encodeURIComponent(v)}`);if(!r.ok)continue;const info=r.data?.chat||r.data?.result||r.data;const chatId=lrChV2Clean(info?.chat_id||info?.chatId||info?.id||info?.chat?.chat_id||info?.chat?.id);const name=lrChV2Clean(info?.title||info?.name||info?.chat?.title||info?.chat?.name||title,300);const pub=lrChV2Clean(info?.link||info?.chat?.link||link||id);if(chatId&&name&&!lrChV2BadTitle(name))return{max_chat_id:chatId,title:name,link:pub||null}}return null}
+async function lrChV2Upsert(chatId,title,link=null){await lrChV2Ensure();const id=lrChV2Clean(chatId),name=lrChV2Clean(title,300),url=lrChV2Clean(link);if(!id||!name||lrChV2BadTitle(name))return null;const res=await query(`INSERT INTO channels(max_chat_id,title,link,is_public,is_channel,is_active,bot_added_at,updated_at) VALUES($1,$2,$3,$4,true,true,now(),now()) ON CONFLICT(max_chat_id) DO UPDATE SET title=COALESCE(EXCLUDED.title,channels.title),link=COALESCE(EXCLUDED.link,channels.link),is_public=EXCLUDED.is_public,is_channel=true,is_active=true,bot_added_at=COALESCE(channels.bot_added_at,now()),updated_at=now() RETURNING id,max_chat_id,title,link,is_active`,[String(id),name,url||null,Boolean(url)]).catch(e=>{console.error('[channel v2 upsert]',e?.message||e);return[]});const row=lrChV2Rows(res)[0]||{max_chat_id:id,title:name,link:url||null};console.log('[channel v2 saved]',JSON.stringify({id:row.id||null,max_chat_id:row.max_chat_id,title:row.title,link:row.link||null}));return row}
+async function lrChV2Find(cands){const ids=[...new Set(cands.map(c=>lrChV2Clean(c.id)).filter(Boolean))],links=[...new Set(cands.map(c=>lrChV2Clean(c.link)).filter(Boolean))];const exact=await query(`SELECT id,max_chat_id,title,link FROM channels WHERE ($1::text[]<>'{}'::text[] AND max_chat_id::text=ANY($1::text[])) OR ($2::text[]<>'{}'::text[] AND link=ANY($2::text[])) ORDER BY updated_at DESC NULLS LAST,id DESC LIMIT 1`,[ids,links]).catch(()=>[]);if(lrChV2Rows(exact)[0])return lrChV2Rows(exact)[0];const all=await query(`SELECT id,max_chat_id,title,link FROM channels ORDER BY updated_at DESC NULLS LAST,id DESC LIMIT 1000`).catch(()=>[]);for(const row of lrChV2Rows(all)){const rt=lrChV2Norm(row.title);for(const c of cands){const ct=lrChV2Norm(c.title);if(ct&&ct.length>=5&&(rt===ct||rt.includes(ct)||ct.includes(rt)))return row}}return null}
+async function lrChV2Send(u,text,rows=[[callbackButton('⬅️ В меню','main:menu')]]){const chat=lrChV2Private(u)||lrChV2ChatId(u);if(!chat)return;return msg(chat,text,rows,'html').catch(e=>console.error('[channel v2 send]',e?.message||e))}
+async function lrChV2Delete(ids,reason='unknown'){ids=[...new Set((Array.isArray(ids)?ids:[]).map(Number).filter(Boolean))];if(!ids.length)return 0;await lrChV2Ensure();console.log('[channel v2 deleting]',JSON.stringify({ids,reason}));await query(`UPDATE channels SET is_active=false,updated_at=now() WHERE id=ANY($1::int[])`,[ids]).catch(()=>{});const refs=await query(`SELECT table_schema,table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='channel_id' AND table_name<>'channels' ORDER BY table_name`).catch(()=>[]);for(const r of lrChV2Rows(refs)){const schema=String(r.table_schema||'public').replace(/"/g,'""'),table=String(r.table_name||'').replace(/"/g,'""');if(!table)continue;await query(`DELETE FROM "${schema}"."${table}" WHERE channel_id=ANY($1::int[])`,[ids]).catch(e=>console.error('[channel v2 child delete]',schema,table,e?.message||e))}const del=await query(`DELETE FROM channels WHERE id=ANY($1::int[]) RETURNING id,max_chat_id,title`,[ids]).catch(()=>[]);console.log('[channel v2 deleted]',JSON.stringify(lrChV2Rows(del)));return lrChV2Rows(del).length}
+async function lrChV2HandleRemoved(u){if(!lrChV2Removed(u))return false;await lrChV2Ensure();const id=lrChV2ChatId(u),title=lrChV2Title(u),link=lrChV2Link(u),wanted=lrChV2Norm(title);let ids=[];if(id||link){const exact=await query(`SELECT id FROM channels WHERE ($1::text<>'' AND max_chat_id::text=$1) OR ($2::text<>'' AND link=$2)`,[id||'',link||'']).catch(()=>[]);ids=lrChV2Rows(exact).map(r=>Number(r.id)).filter(Boolean)}if(!ids.length&&wanted){const all=await query(`SELECT id,title FROM channels ORDER BY updated_at DESC NULLS LAST,id DESC LIMIT 1000`).catch(()=>[]);for(const r of lrChV2Rows(all)){const rt=lrChV2Norm(r.title);if(rt&&(rt===wanted||rt.includes(wanted)||wanted.includes(rt)))ids.push(Number(r.id))}}await lrChV2Delete(ids,'bot_removed');return true}
+async function lrChV2HandleAdded(u){if(!lrChV2Added(u)&&!lrChV2ChannelEvent(u))return false;const privateId=lrChV2Private(u),chatId=lrChV2ChatId(u),title=lrChV2Title(u),link=lrChV2Link(u);if(!chatId||!title||lrChV2BadTitle(title))return false;if(privateId&&String(privateId)===String(chatId))return false;await lrChV2Upsert(chatId,title,link);return false}
+async function lrChV2HandleForward(u){const text=lrChV2Text(u);if(text.startsWith('/'))return false;if(!lrChV2HasForward(u))return false;if(await lrChV2Busy(u)){console.log('[channel v2 skip forward: busy session]');return false}const cands=lrChV2Candidates(u);console.log('[channel v2 candidates]',JSON.stringify(cands.map(c=>({id:c.id,title:c.title,link:c.link,src:c.source,score:c.score})).slice(0,10)));if(!cands.length)return false;let last=cands[0]?.title||'Канал';for(const c of cands){last=c.title||last;const r=await lrChV2Resolve(c);if(!r?.max_chat_id)continue;const admin=await lrChV2BotAdmin(r.max_chat_id);if(admin===true){const saved=await lrChV2Upsert(r.max_chat_id,r.title||c.title,r.link||c.link||null);if(saved){await query(`DELETE FROM lr_bot_state WHERE key LIKE 'lr_add_channel_wait:%' OR key LIKE 'lr_admin_channel%' OR key LIKE 'pending_channel_add%'`).catch(()=>{});await lrChV2Send(u,`✅ <b>Канал подключён к LinkRay</b>\n\n${lrChV2Html(saved.title||r.title||c.title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);return true}}if(admin===null){await lrChV2Send(u,`⚠️ <b>Не удалось проверить права LinkRay</b>\n\nКанал: <b>${lrChV2Html(r.title||c.title)}</b>\n\nПроверьте, что бот добавлен в администраторы и выдано право публикации, затем перешлите пост ещё раз.`);return true}}const old=await lrChV2Find(cands);if(old?.max_chat_id){const admin=await lrChV2BotAdmin(old.max_chat_id);if(admin===true){const saved=await lrChV2Upsert(old.max_chat_id,old.title||last,old.link||cands[0]?.link||null);await lrChV2Send(u,`✅ <b>Канал подключён к LinkRay</b>\n\n${lrChV2Html(saved.title||old.title||last)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);return true}}await lrChV2Send(u,`❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrChV2Html(last)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nПосле этого снова перешлите любой пост из этого канала сюда, в бота.\n\nКанал не добавлен в базу.`);return true}
+async function lrChV2Sweep(){await lrChV2Ensure();const key='lr_channel_v2_sweep_last';const last=await query(`SELECT updated_at FROM lr_bot_state WHERE key=$1 LIMIT 1`,[key]).catch(()=>[]);const row=lrChV2Rows(last)[0];if(row?.updated_at&&Date.now()-new Date(row.updated_at).getTime()<60000)return;await query(`INSERT INTO lr_bot_state(key,value,updated_at) VALUES($1,$2,now()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[key,JSON.stringify({ts:Date.now()})]).catch(()=>{});const ch=await query(`SELECT id,max_chat_id,title FROM channels WHERE COALESCE(is_active,true)=true ORDER BY updated_at DESC NULLS LAST,id DESC LIMIT 300`).catch(()=>[]);const remove=[];for(const c of lrChV2Rows(ch)){const admin=await lrChV2BotAdmin(c.max_chat_id);if(admin===false)remove.push(Number(c.id))}if(remove.length)await lrChV2Delete(remove,'members_me_sweep')}
+async function lrChV2Handle(u){await lrChV2Ensure();if(await lrChV2HandleRemoved(u))return true;await lrChV2HandleAdded(u).catch(e=>console.error('[channel v2 added]',e?.message||e));await lrChV2Sweep().catch(e=>console.error('[channel v2 sweep]',e?.message||e));if(await lrChV2HandleForward(u))return true;return false}
+/* LR_CHANNEL_V2_STABLE_MIN_END */
+
+/* LR_CHANNEL_ADD_V3_FINAL_START */
+function __lrCh3Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function __lrCh3Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  const low = text.toLowerCase();
+
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(low)) return '';
+
+  return text;
+}
+
+function __lrCh3Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch {}
+
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function __lrCh3Norm(value) {
+  return __lrCh3Clean(value, 300)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function __lrCh3BadTitle(value) {
+  const t = __lrCh3Norm(value);
+  return !t || t === 'кирилл' || t === 'kirill' || t === 'megamozg996' || t === 'linkray' || t === 'бот';
+}
+
+function __lrCh3PrivateChatId(update) {
+  return __lrCh3Clean(
+    update?.chatId ||
+    update?.chat_id ||
+    update?.body?.chatId ||
+    update?.body?.chat_id ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id
+  );
+}
+
+function __lrCh3AnyChatId(update) {
+  try {
+    const id = getChatId(update);
+    if (__lrCh3Clean(id)) return __lrCh3Clean(id);
+  } catch {}
+
+  return __lrCh3Clean(
+    update?.chat?.id ||
+    update?.chat_id ||
+    update?.message?.chat?.id ||
+    update?.body?.message?.chat?.id ||
+    update?.channel?.id ||
+    update?.body?.channel?.id ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id
+  );
+}
+
+function __lrCh3GetTitle(update) {
+  try {
+    const title = getChatTitle(update);
+    if (__lrCh3Clean(title, 300) && !__lrCh3BadTitle(title)) return __lrCh3Clean(title, 300);
+  } catch {}
+
+  const title = __lrCh3Clean(
+    update?.chat?.title ||
+    update?.chat?.name ||
+    update?.channel?.title ||
+    update?.channel?.name ||
+    update?.message?.chat?.title ||
+    update?.message?.chat?.name ||
+    update?.message?.recipient?.title ||
+    update?.body?.chat?.title ||
+    update?.body?.channel?.title ||
+    update?.body?.message?.chat?.title ||
+    update?.body?.message?.recipient?.title,
+    300
+  );
+
+  return __lrCh3BadTitle(title) ? '' : title;
+}
+
+function __lrCh3GetLink(update) {
+  try {
+    const link = getChatLink(update);
+    if (__lrCh3Clean(link, 1200)) return __lrCh3Clean(link, 1200);
+  } catch {}
+
+  return __lrCh3Clean(
+    update?.chat?.link ||
+    update?.channel?.link ||
+    update?.message?.chat?.link ||
+    update?.message?.recipient?.link ||
+    update?.body?.chat?.link ||
+    update?.body?.channel?.link ||
+    update?.body?.message?.chat?.link ||
+    update?.body?.message?.recipient?.link ||
+    update?.link,
+    1200
+  );
+}
+
+function __lrCh3Type(update) {
+  return String(
+    update?.type ||
+    update?.update_type ||
+    update?.event_type ||
+    update?.event ||
+    update?.body?.type ||
+    ''
+  ).toLowerCase();
+}
+
+function __lrCh3IsBotAdded(update) {
+  const type = __lrCh3Type(update);
+  const raw = JSON.stringify(update || {}).toLowerCase();
+
+  return (
+    type.includes('bot_added') ||
+    type.includes('bot_started') ||
+    type.includes('chat_member_added') ||
+    raw.includes('"bot_added"') ||
+    raw.includes('"bot_started"') ||
+    raw.includes('"chat_member_added"')
+  );
+}
+
+function __lrCh3IsBotRemoved(update) {
+  const type = __lrCh3Type(update);
+  const raw = JSON.stringify(update || {}).toLowerCase();
+
+  return (
+    type.includes('bot_removed') ||
+    type.includes('bot_left') ||
+    type.includes('chat_member_removed') ||
+    raw.includes('"bot_removed"') ||
+    raw.includes('"bot_left"') ||
+    raw.includes('"chat_member_removed"') ||
+    (raw.includes('"removed"') && raw.includes('"bot"') && raw.includes('"channel"'))
+  );
+}
+
+function __lrCh3IsPrivateUpdate(update) {
+  const id = __lrCh3PrivateChatId(update);
+  const any = __lrCh3AnyChatId(update);
+
+  if (id && any && String(id) === String(any)) return true;
+
+  const types = [
+    update?.chat?.type,
+    update?.message?.chat?.type,
+    update?.message?.recipient?.type,
+    update?.message?.recipient?.chat_type,
+    update?.message?.recipient?.recipient_type,
+    update?.body?.chat?.type,
+    update?.body?.message?.chat?.type,
+    update?.body?.message?.recipient?.type,
+    update?.chat_type,
+    update?.recipient_type
+  ].map((x) => String(x || '').toLowerCase()).filter(Boolean);
+
+  if (types.some((x) => x.includes('dialog') || x.includes('private') || x === 'user')) return true;
+
+  return false;
+}
+
+function __lrCh3Text(update) {
+  try {
+    const text = getMessageText(update);
+    if (__lrCh3Clean(text, 6000)) return __lrCh3Clean(text, 6000);
+  } catch {}
+
+  return __lrCh3Clean(
+    update?.message?.body?.text ||
+    update?.message?.text ||
+    update?.body?.message?.body?.text ||
+    update?.body?.message?.text ||
+    update?.text ||
+    '',
+    6000
+  );
+}
+
+function __lrCh3HasForwardEvidence(update) {
+  const raw = JSON.stringify(update || {}).toLowerCase();
+
+  return Boolean(
+    update?.message?.link ||
+    update?.message?.body?.link ||
+    update?.body?.link ||
+    update?.link ||
+    update?.message?.forward ||
+    update?.message?.body?.forward ||
+    update?.forward ||
+    raw.includes('"forward"') ||
+    raw.includes('"forwarded"') ||
+    raw.includes('"source"') ||
+    raw.includes('"sender_chat"') ||
+    raw.includes('"link"') ||
+    raw.includes('"chat_id"') ||
+    raw.includes('"channel"')
+  );
+}
+
+function __lrCh3AllStrings(root) {
+  const out = [];
+  const seen = new WeakSet();
+
+  function add(v) {
+    const text = __lrCh3Clean(v, 7000);
+    if (text) out.push(text);
+  }
+
+  function walk(v, depth = 0) {
+    if (v == null || depth > 10) return;
+
+    if (typeof v === 'string') {
+      add(v);
+      return;
+    }
+
+    if (typeof v !== 'object') return;
+    if (seen.has(v)) return;
+    seen.add(v);
+
+    if (Array.isArray(v)) {
+      for (const item of v) walk(item, depth + 1);
+      return;
+    }
+
+    for (const [k, child] of Object.entries(v)) {
+      const key = String(k || '').toLowerCase();
+
+      if (['text', 'title', 'name', 'caption', 'url', 'link', 'href', 'chat_id', 'channel_id', 'id'].includes(key)) {
+        if (typeof child !== 'object') add(child);
+      }
+
+      if (child && typeof child === 'object') walk(child, depth + 1);
+    }
+  }
+
+  walk(root);
+
+  return [...new Set(out)];
+}
+
+function __lrCh3TitleFromText(update) {
+  const strings = __lrCh3AllStrings(update);
+
+  for (const text of strings) {
+    const lines = String(text)
+      .split(/\n+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]
+        .replace(/^[@#]+/, '')
+        .replace(/^[🔗📌✅➡️👉\-—–\s]+/, '')
+        .replace(/https?:\/\/\S+/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (line.length >= 3 && line.length <= 120 && /[А-Яа-яA-Za-z]/.test(line) && !__lrCh3BadTitle(line)) {
+        return line;
+      }
+    }
+  }
+
+  return '';
+}
+
+function __lrCh3CandidateFromObject(obj, source, score, fallbackTitle) {
+  if (!obj || typeof obj !== 'object') return null;
+
+  const raw = JSON.stringify(obj || '').toLowerCase();
+
+  // Не берём личный профиль как канал.
+  if (
+    (raw.includes('"first_name"') || raw.includes('"last_name"') || raw.includes('"username"')) &&
+    !raw.includes('"title"') &&
+    !raw.includes('"channel"') &&
+    !raw.includes('"chat"')
+  ) {
+    return null;
+  }
+
+  const id = __lrCh3Clean(
+    obj.max_chat_id ||
+    obj.maxChatId ||
+    obj.chat_id ||
+    obj.chatId ||
+    obj.channel_id ||
+    obj.channelId ||
+    obj.id ||
+    obj.source_chat_id ||
+    obj.sourceChatId ||
+    obj.sender_chat_id ||
+    obj.senderChatId ||
+    obj.chat?.max_chat_id ||
+    obj.chat?.chat_id ||
+    obj.chat?.id ||
+    obj.channel?.max_chat_id ||
+    obj.channel?.chat_id ||
+    obj.channel?.id ||
+    obj.recipient?.chat_id ||
+    obj.recipient?.id ||
+    obj.source?.chat_id ||
+    obj.source?.id ||
+    obj.sender_chat?.id ||
+    obj.sender_chat?.chat_id
+  );
+
+  let title = __lrCh3Clean(
+    obj.title ||
+    obj.name ||
+    obj.chat_title ||
+    obj.chatTitle ||
+    obj.channel_title ||
+    obj.channelTitle ||
+    obj.source_title ||
+    obj.sourceTitle ||
+    obj.sender_chat_title ||
+    obj.senderChatTitle ||
+    obj.chat?.title ||
+    obj.chat?.name ||
+    obj.channel?.title ||
+    obj.channel?.name ||
+    obj.recipient?.title ||
+    obj.source?.title ||
+    obj.source?.name ||
+    obj.sender_chat?.title ||
+    obj.sender_chat?.name,
+    300
+  );
+
+  if (__lrCh3BadTitle(title)) title = fallbackTitle || '';
+
+  const link = __lrCh3Clean(
+    obj.link ||
+    obj.url ||
+    obj.href ||
+    obj.invite_link ||
+    obj.inviteLink ||
+    obj.public_link ||
+    obj.publicLink ||
+    obj.chat?.link ||
+    obj.channel?.link ||
+    obj.recipient?.link ||
+    obj.source?.link ||
+    obj.sender_chat?.link,
+    1200
+  );
+
+  if (!id && !link) return null;
+  if (!title || __lrCh3BadTitle(title)) return null;
+
+  return { id: id || link, title, link: link || null, source, score };
+}
+
+function __lrCh3Candidates(update) {
+  const out = [];
+  const seen = new WeakSet();
+  const privateId = __lrCh3PrivateChatId(update);
+  const fallbackTitle = __lrCh3TitleFromText(update);
+
+  function add(obj, score, source) {
+    const c = __lrCh3CandidateFromObject(obj, source, score, fallbackTitle);
+    if (!c) return;
+
+    if (privateId && c.id && String(c.id) === String(privateId)) return;
+
+    out.push(c);
+  }
+
+  [
+    update?.chat,
+    update?.channel,
+    update?.message?.link?.chat,
+    update?.message?.body?.link?.chat,
+    update?.body?.link?.chat,
+    update?.link?.chat,
+    update?.message?.link?.message?.chat,
+    update?.message?.link?.message?.recipient,
+    update?.message?.body?.link?.message?.chat,
+    update?.message?.body?.link?.message?.recipient,
+    update?.message?.forward?.message?.chat,
+    update?.message?.forward?.message?.recipient,
+    update?.message?.body?.forward?.message?.chat,
+    update?.message?.body?.forward?.message?.recipient,
+    update?.forward?.message?.chat,
+    update?.forward?.message?.recipient,
+    update?.message?.source,
+    update?.message?.sender_chat,
+    update?.body?.message?.source,
+    update?.body?.message?.sender_chat,
+    update?.message?.channel,
+    update?.body?.message?.channel
+  ].filter(Boolean).forEach((x, i) => add(x, 10000 - i, 'direct'));
+
+  function walk(obj, depth = 0, path = '') {
+    if (!obj || typeof obj !== 'object' || depth > 10) return;
+    if (seen.has(obj)) return;
+    seen.add(obj);
+
+    if (/(forward|link|message|recipient|chat|channel|source|sender)/i.test(path)) {
+      add(obj, 900 - depth, path || 'walk');
+    }
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) walk(item, depth + 1, path);
+      return;
+    }
+
+    for (const [k, v] of Object.entries(obj)) {
+      if (v && typeof v === 'object') walk(v, depth + 1, path ? `${path}.${k}` : k);
+    }
+  }
+
+  walk(update);
+
+  for (const text of __lrCh3AllStrings(update)) {
+    if (!/(max\.ru|i\.oneme\.ru|:\/\/|join\/)/i.test(text)) continue;
+
+    const title = fallbackTitle;
+
+    if (title && !__lrCh3BadTitle(title)) {
+      out.push({ id: text, title, link: text, score: 5000, source: 'text_link' });
+    }
+  }
+
+  const uniq = new Map();
+
+  for (const c of out) {
+    const key = `${c.id || ''}::${c.link || ''}::${__lrCh3Norm(c.title)}`;
+    const old = uniq.get(key);
+    if (!old || c.score > old.score) uniq.set(key, c);
+  }
+
+  return [...uniq.values()].sort((a, b) => b.score - a.score).slice(0, 30);
+}
+
+function __lrCh3Token() {
+  for (const k of ['MAX_TOKEN', 'MAX_BOT_TOKEN', 'MAX_ACCESS_TOKEN', 'BOT_TOKEN', 'ACCESS_TOKEN', 'API_TOKEN', 'TOKEN']) {
+    if (process.env[k]) return String(process.env[k]);
+  }
+
+  try { if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN); } catch {}
+  try { if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN); } catch {}
+  try { if (typeof TOKEN !== 'undefined' && TOKEN) return String(TOKEN); } catch {}
+
+  return '';
+}
+
+function __lrCh3ApiBase() {
+  let base = '';
+
+  try { if (typeof MAX_API_BASE !== 'undefined' && MAX_API_BASE) base = String(MAX_API_BASE); } catch {}
+
+  base =
+    base ||
+    process.env.MAX_API_BASE ||
+    process.env.MAX_BASE_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru';
+
+  return String(base).replace(/\/+$/, '');
+}
+
+async function __lrCh3ApiGet(path) {
+  const token = __lrCh3Token();
+
+  if (!token || typeof fetch !== 'function') {
+    return { ok: false, status: 0, data: null, raw: '', temporary: true };
+  }
+
+  for (const auth of [token, `Bearer ${token}`]) {
+    try {
+      const r = await fetch(`${__lrCh3ApiBase()}${path}`, {
+        method: 'GET',
+        headers: {
+          Authorization: auth,
+          Accept: 'application/json'
+        }
+      });
+
+      const raw = await r.text().catch(() => '');
+      let data = null;
+
+      try { data = raw ? JSON.parse(raw) : null; } catch { data = raw; }
+
+      console.log('[channel add v3] api get', JSON.stringify({
+        path,
+        status: r.status,
+        ok: r.ok,
+        preview: raw.slice(0, 220)
+      }));
+
+      if (r.ok) return { ok: true, status: r.status, data, raw };
+
+      if ([401, 429, 500, 502, 503, 504].includes(Number(r.status))) {
+        return { ok: false, status: r.status, data, raw, temporary: true };
+      }
+
+      return { ok: false, status: r.status, data, raw };
+    } catch (e) {
+      console.error('[channel add v3] api get error', path, e?.message || e);
+      return { ok: false, status: 0, data: null, raw: '', temporary: true };
+    }
+  }
+
+  return { ok: false, status: 0, data: null, raw: '', temporary: true };
+}
+
+function __lrCh3AdminFromMembers(data) {
+  const raw = JSON.stringify(data || {}).toLowerCase();
+
+  if (
+    data?.is_admin === true ||
+    data?.isAdmin === true ||
+    data?.admin === true ||
+    data?.is_owner === true ||
+    data?.isOwner === true ||
+    data?.owner === true ||
+    data?.member?.is_admin === true ||
+    data?.member?.isAdmin === true ||
+    data?.member?.is_owner === true ||
+    data?.member?.isOwner === true ||
+    data?.user?.is_admin === true ||
+    data?.user?.isAdmin === true
+  ) {
+    return true;
+  }
+
+  const perms = []
+    .concat(data?.permissions || [])
+    .concat(data?.rights || [])
+    .concat(data?.available_permissions || [])
+    .concat(data?.availablePermissions || [])
+    .concat(data?.available_rights || [])
+    .concat(data?.availableRights || [])
+    .concat(data?.member?.permissions || [])
+    .concat(data?.member?.rights || [])
+    .concat(data?.chat?.permissions || [])
+    .concat(data?.chat?.rights || [])
+    .concat(data?.access || [])
+    .concat(data?.access_rights || [])
+    .concat(data?.accessRights || []);
+
+  const permText = perms
+    .map((x) => typeof x === 'string' ? x : JSON.stringify(x || ''))
+    .join(' ')
+    .toLowerCase();
+
+  if (/(write|send|post|publish|message|manage|admin|editor)/i.test(permText)) return true;
+
+  for (const obj of [
+    data?.permissions,
+    data?.rights,
+    data?.available_permissions,
+    data?.availablePermissions,
+    data?.available_rights,
+    data?.availableRights,
+    data?.member?.permissions,
+    data?.member?.rights,
+    data?.chat?.permissions,
+    data?.chat?.rights,
+    data?.access,
+    data?.access_rights,
+    data?.accessRights
+  ]) {
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      for (const [k, v] of Object.entries(obj)) {
+        if (v === true && /(write|send|post|publish|message|manage|admin|editor)/i.test(k)) return true;
+      }
+    }
+  }
+
+  if (/"is_admin"\s*:\s*true|isadmin"\s*:\s*true|"admin"\s*:\s*true|"owner"\s*:\s*true/.test(raw)) return true;
+
+  return false;
+}
+
+async function __lrCh3BotIsAdmin(maxChatId) {
+  const id = __lrCh3Clean(maxChatId);
+
+  if (!id) return false;
+
+  const r = await __lrCh3ApiGet(`/chats/${encodeURIComponent(id)}/members/me`);
+
+  if (r.ok) {
+    const admin = __lrCh3AdminFromMembers(r.data);
+
+    console.log('[channel add v3] members/me', JSON.stringify({
+      maxChatId: id,
+      admin,
+      status: r.status
+    }));
+
+    return admin;
+  }
+
+  if (r.temporary) return null;
+
+  return false;
+}
+
+function __lrCh3LinkVariants(value) {
+  const raw = __lrCh3Clean(value, 2000);
+  if (!raw) return [];
+
+  const out = new Set();
+
+  function add(v) {
+    v = __lrCh3Clean(v, 600);
+    if (!v) return;
+
+    out.add(v);
+
+    v = v.replace(/^@+/, '');
+    v = v.replace(/^https?:\/\//i, '');
+    v = v.replace(/^max\.ru\//i, '');
+    v = v.replace(/^i\.oneme\.ru\/i\?r=/i, '');
+    v = v.split(/[?#]/)[0].replace(/^\/+|\/+$/g, '');
+
+    if (v) out.add(v);
+    if (v.startsWith('join/')) out.add(v.slice(5));
+
+    const last = v.split('/').filter(Boolean).pop();
+    if (last) out.add(last);
+  }
+
+  add(raw);
+
+  try {
+    const u = new URL(raw);
+    add(u.href);
+    add(u.pathname);
+    add(u.pathname.split('/').filter(Boolean).pop() || '');
+
+    const r = u.searchParams.get('r');
+    if (r) add(r);
+  } catch {}
+
+  return [...out].filter((x) => x && x.length >= 3);
+}
+
+async function __lrCh3EnsureDb() {
+  await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+    key text PRIMARY KEY,
+    value text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(() => {});
+
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`).catch(() => {});
+  await query(`UPDATE channels SET is_active = true WHERE is_active IS NULL`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS lr_pending_channels (
+    max_chat_id text PRIMARY KEY,
+    title text,
+    link text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`).catch((e) => {
+    console.error('[channel add v3] ensure pending table failed', e?.message || e);
+  });
+}
+
+async function __lrCh3StorePending(maxChatId, title, link = null) {
+  await __lrCh3EnsureDb();
+
+  const id = __lrCh3Clean(maxChatId);
+  const name = __lrCh3Clean(title, 300);
+  const url = __lrCh3Clean(link, 1200);
+
+  if (!id || !name || __lrCh3BadTitle(name)) return null;
+
+  await query(
+    `INSERT INTO lr_pending_channels(max_chat_id, title, link, created_at, updated_at)
+     VALUES($1, $2, $3, now(), now())
+     ON CONFLICT(max_chat_id) DO UPDATE
+       SET title = COALESCE(EXCLUDED.title, lr_pending_channels.title),
+           link = COALESCE(EXCLUDED.link, lr_pending_channels.link),
+           updated_at = now()`,
+    [id, name, url || null]
+  ).catch((e) => {
+    console.error('[channel add v3] store pending failed', e?.message || e);
+  });
+
+  console.log('[channel add v3] pending stored', JSON.stringify({ id, title: name, link: url || null }));
+
+  return { max_chat_id: id, title: name, link: url || null };
+}
+
+async function __lrCh3UpsertChannel(maxChatId, title, link = null) {
+  await __lrCh3EnsureDb();
+
+  const id = __lrCh3Clean(maxChatId);
+  const name = __lrCh3Clean(title, 300);
+  const url = __lrCh3Clean(link, 1200);
+
+  if (!id || !name || __lrCh3BadTitle(name)) return null;
+
+  const result = await query(
+    `INSERT INTO channels(max_chat_id, title, link, is_public, is_channel, is_active, bot_added_at, updated_at)
+     VALUES($1, $2, $3, $4, true, true, now(), now())
+     ON CONFLICT(max_chat_id) DO UPDATE
+       SET title = COALESCE(EXCLUDED.title, channels.title),
+           link = COALESCE(EXCLUDED.link, channels.link),
+           is_public = COALESCE(EXCLUDED.is_public, channels.is_public),
+           is_channel = true,
+           is_active = true,
+           bot_added_at = COALESCE(channels.bot_added_at, now()),
+           updated_at = now()
+     RETURNING id, max_chat_id, title, link, is_active`,
+    [String(id), name, url || null, Boolean(url)]
+  ).catch((e) => {
+    console.error('[channel add v3] upsert failed', e?.message || e);
+    return [];
+  });
+
+  const saved = __lrCh3Rows(result)[0] || {
+    max_chat_id: String(id),
+    title: name,
+    link: url || null,
+    is_active: true
+  };
+
+  await query(`DELETE FROM lr_pending_channels WHERE max_chat_id = $1`, [String(id)]).catch(() => {});
+
+  console.log('[channel add v3] saved channel', JSON.stringify({
+    id: saved.id || null,
+    max_chat_id: saved.max_chat_id,
+    title: saved.title,
+    link: saved.link || null
+  }));
+await lrV35ConfirmSavedChannel(update, saved, 'channel_add_v3_saved').catch(e => console.error('[v35 confirm] call failed', e?.stack || e?.message || e));
+        return saved;
+}
+
+async function __lrCh3FindPending(candidates) {
+  await __lrCh3EnsureDb();
+
+  const ids = [...new Set(candidates.map((c) => __lrCh3Clean(c.id)).filter(Boolean))];
+  const links = [...new Set(candidates.map((c) => __lrCh3Clean(c.link, 1200)).filter(Boolean))];
+  const titles = [...new Set(candidates.map((c) => __lrCh3Norm(c.title)).filter(Boolean))];
+
+  const all = await query(
+    `SELECT max_chat_id, title, link
+     FROM lr_pending_channels
+     ORDER BY updated_at DESC NULLS LAST
+     LIMIT 500`
+  ).catch(() => []);
+
+  for (const row of __lrCh3Rows(all)) {
+    const rowId = __lrCh3Clean(row.max_chat_id);
+    const rowLink = __lrCh3Clean(row.link, 1200);
+    const rowTitle = __lrCh3Norm(row.title);
+
+    if (ids.includes(rowId)) return row;
+    if (rowLink && links.includes(rowLink)) return row;
+
+    for (const link of links) {
+      for (const variant of __lrCh3LinkVariants(link)) {
+        if (rowLink && __lrCh3LinkVariants(rowLink).includes(variant)) return row;
+      }
+    }
+
+    for (const t of titles) {
+      if (t && rowTitle && (t === rowTitle || t.includes(rowTitle) || rowTitle.includes(t))) return row;
+    }
+  }
+
+  return null;
+}
+
+async function __lrCh3ResolveByLink(candidate) {
+  const variants = [...new Set([
+    candidate?.id,
+    candidate?.link
+  ].filter(Boolean).flatMap(__lrCh3LinkVariants))];
+
+  for (const v of variants) {
+    const r = await __lrCh3ApiGet(`/chats/${encodeURIComponent(v)}`);
+    if (!r.ok) continue;
+
+    const info = r.data?.chat || r.data?.result || r.data;
+    const chatId = __lrCh3Clean(info?.chat_id || info?.chatId || info?.id || info?.chat?.chat_id || info?.chat?.id);
+    const title = __lrCh3Clean(info?.title || info?.name || info?.chat?.title || info?.chat?.name || candidate?.title, 300);
+    const link = __lrCh3Clean(info?.link || info?.chat?.link || candidate?.link || candidate?.id, 1200);
+
+    if (chatId && title && !__lrCh3BadTitle(title)) {
+      return {
+        max_chat_id: chatId,
+        title,
+        link: link || null
+      };
+    }
+  }
+
+  return null;
+}
+
+async function __lrCh3ResolveCandidate(candidate) {
+  const id = __lrCh3Clean(candidate?.id);
+  const title = __lrCh3Clean(candidate?.title, 300);
+  const link = __lrCh3Clean(candidate?.link, 1200);
+
+  if (/^-?\d+$/.test(id) && title && !__lrCh3BadTitle(title)) {
+    return {
+      max_chat_id: id,
+      title,
+      link: link || null
+    };
+  }
+
+  return await __lrCh3ResolveByLink(candidate);
+}
+
+async function __lrCh3Notify(chatId, text) {
+  const id = __lrCh3Clean(chatId) || '405954311';
+
+  if (typeof msg === 'function') {
+    return msg(
+      id,
+      text,
+      [[callbackButton('⬅️ В меню', 'main:menu')]],
+      'html'
+    ).catch((e) => {
+      console.error('[channel add v3] notify failed', e?.message || e);
+    });
+  }
+
+  if (typeof sendMaxMessage === 'function') {
+    return sendMaxMessage({
+      chatId: id,
+      text,
+      format: 'html',
+      attachments: typeof inlineKeyboard === 'function'
+        ? inlineKeyboard([[callbackButton('⬅️ В меню', 'main:menu')]])
+        : undefined
+    }).catch((e) => {
+      console.error('[channel add v3] notify sendMaxMessage failed', e?.message || e);
+    });
+  }
+}
+
+async function __lrCh3NotifyTargets() {
+  const ids = new Set();
+
+  function add(value) {
+    const text = String(value ?? '').trim();
+    if (/^\d{5,}$/.test(text)) ids.add(text);
+  }
+
+  add(globalThis.__lrLastCallbackChatId);
+  add(globalThis.__lrLastPrivateChatId);
+  add(globalThis.__lrPrivateChatId);
+  add(process.env.LINKRAY_OWNER_CHAT_ID);
+  add(process.env.OWNER_CHAT_ID);
+  add(process.env.ADMIN_CHAT_ID);
+
+  // fallback по текущему приватному чату из логов
+  add('405954311');
+
+  return [...ids].slice(0, 5);
+}
+
+async function __lrCh3NotifyDeleted(deletedRows, reason = 'removed') {
+  const rows = Array.isArray(deletedRows) ? deletedRows.filter(Boolean) : [];
+  if (!rows.length) return;
+
+  const targets = await __lrCh3NotifyTargets();
+
+  const list = rows
+    .map((x) => `• <b>${__lrCh3Esc(x.title || 'Канал')}</b>`)
+    .join('\n');
+
+  const title = rows.length === 1
+    ? '✅ <b>Канал удалён из LinkRay</b>'
+    : '✅ <b>Каналы удалены из LinkRay</b>';
+
+  const text = `${title}
+
+${list}
+
+Бот удалён из администраторов, поэтому канал убран из базы и больше не доступен для автопостинга, автоподписей, аналитики и отчётов.`;
+
+  for (const target of targets) {
+    await __lrCh3Notify(target, text);
+  }
+
+  console.log('[channel add v3] deleted notify sent', JSON.stringify({
+    reason,
+    targets,
+    count: rows.length
+  }));
+}
+
+async function __lrCh3DeleteChannels(ids, reason = 'removed') {
+  const cleanIds = [...new Set((Array.isArray(ids) ? ids : []).map(Number).filter(Boolean))];
+  if (!cleanIds.length) return [];
+
+  await __lrCh3EnsureDb();
+
+  await query(
+    `UPDATE channels
+     SET is_active=false,
+         updated_at=now()
+     WHERE id = ANY($1::int[])`,
+    [cleanIds]
+  ).catch(() => {});
+
+  const refs = await query(
+    `SELECT table_schema, table_name
+     FROM information_schema.columns
+     WHERE table_schema='public'
+       AND column_name='channel_id'
+       AND table_name <> 'channels'
+     ORDER BY table_name`
+  ).catch(() => []);
+
+  for (const r of __lrCh3Rows(refs)) {
+    const schema = String(r.table_schema || 'public').replace(/"/g, '""');
+    const table = String(r.table_name || '').replace(/"/g, '""');
+    if (!table) continue;
+
+    await query(
+      `DELETE FROM "${schema}"."${table}"
+       WHERE channel_id = ANY($1::int[])`,
+      [cleanIds]
+    ).catch((e) => {
+      console.error(`[channel add v3] child delete ${schema}.${table}`, e?.message || e);
+    });
+  }
+
+  const deleted = await query(
+    `DELETE FROM channels
+     WHERE id = ANY($1::int[])
+     RETURNING id, max_chat_id, title`,
+    [cleanIds]
+  ).catch((e) => {
+    console.error('[channel add v3] delete failed', e?.message || e);
+    return [];
+  });
+
+  const rows = __lrCh3Rows(deleted);
+
+  await __lrCh3NotifyDeleted(rows, reason).catch((e) => {
+    console.error('[channel add v3] notify deleted wrapper failed', e?.message || e);
+  });
+
+  return rows;
+}
+
+async function __lrCh3HandleBotAdded(update) {
+  if (!__lrCh3IsBotAdded(update)) return false;
+
+  const privateId = __lrCh3PrivateChatId(update);
+  const id = __lrCh3AnyChatId(update);
+  const title = __lrCh3GetTitle(update);
+  const link = __lrCh3GetLink(update);
+
+  if (!id || !title || __lrCh3BadTitle(title)) return false;
+  if (privateId && String(privateId) === String(id)) return false;
+
+  await __lrCh3StorePending(id, title, link);
+
+  console.log('[channel add v3] bot_added stored pending only', JSON.stringify({
+    id,
+    title,
+    link: link || null
+  }));
+
+  return false;
+}
+
+async function __lrCh3HandleBotRemoved(update) {
+  if (!__lrCh3IsBotRemoved(update)) return false;
+
+  await __lrCh3EnsureDb();
+
+  const id = __lrCh3AnyChatId(update);
+  const title = __lrCh3GetTitle(update);
+  const link = __lrCh3GetLink(update);
+  const titleNorm = __lrCh3Norm(title);
+
+  await query(
+    `DELETE FROM lr_pending_channels
+     WHERE ($1::text <> '' AND max_chat_id = $1)
+        OR ($2::text <> '' AND link = $2)
+        OR ($3::text <> '' AND lower(regexp_replace(title, '[^[:alnum:]]+', ' ', 'g')) LIKE '%' || $3 || '%')`,
+    [id || '', link || '', titleNorm || '']
+  ).catch(() => {});
+
+  let found = [];
+
+  if (id || link) {
+    const rows = await query(
+      `SELECT id, max_chat_id, title, link
+       FROM channels
+       WHERE ($1::text <> '' AND max_chat_id::text = $1)
+          OR ($2::text <> '' AND link = $2)
+       ORDER BY updated_at DESC NULLS LAST, id DESC`,
+      [id || '', link || '']
+    ).catch(() => []);
+
+    found = __lrCh3Rows(rows);
+  }
+
+  if (!found.length && titleNorm) {
+    const rows = await query(
+      `SELECT id, max_chat_id, title, link
+       FROM channels
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 500`
+    ).catch(() => []);
+
+    found = __lrCh3Rows(rows).filter((r) => {
+      const t = __lrCh3Norm(r.title);
+      return t && (t === titleNorm || t.includes(titleNorm) || titleNorm.includes(t));
+    });
+  }
+
+  await __lrCh3DeleteChannels(found.map((x) => x.id), 'bot_removed');
+
+  console.log('[channel add v3] bot_removed handled', JSON.stringify({
+    id: id || null,
+    title: title || null,
+    found: found.map((x) => x.id)
+  }));
+
+  return true;
+}
+
+async function __lrCh3SweepRemoved(reason = 'periodic') {
+  await __lrCh3EnsureDb();
+
+  const stateKey = 'lr_channel_add_v3_sweep_last';
+
+  const lastRows = await query(
+    `SELECT updated_at
+     FROM lr_bot_state
+     WHERE key=$1
+     LIMIT 1`,
+    [stateKey]
+  ).catch(() => []);
+
+  const last = __lrCh3Rows(lastRows)[0];
+
+  if (last?.updated_at && Date.now() - new Date(last.updated_at).getTime() < 45000) return;
+
+  await query(
+    `INSERT INTO lr_bot_state(key, value, updated_at)
+     VALUES($1, $2, now())
+     ON CONFLICT(key) DO UPDATE
+       SET value=EXCLUDED.value,
+           updated_at=now()`,
+    [stateKey, JSON.stringify({ ts: Date.now() })]
+  ).catch(() => {});
+
+  const channels = await query(
+    `SELECT id, max_chat_id, title
+     FROM channels
+     WHERE COALESCE(is_active, true)=true
+     ORDER BY updated_at DESC NULLS LAST, id DESC
+     LIMIT 300`
+  ).catch(() => []);
+
+  const remove = [];
+
+  for (const ch of __lrCh3Rows(channels)) {
+    const admin = await __lrCh3BotIsAdmin(ch.max_chat_id);
+    if (admin === false) remove.push(ch.id);
+  }
+
+  if (remove.length) await __lrCh3DeleteChannels(remove, reason);
+}
+
+async function __lrCh3BusyPostingSession(update) {
+  let key = '';
+
+  try { key = __lrCh3Clean(getSessionKey(update)); } catch {}
+
+  if (!key || typeof getSession !== 'function') return false;
+
+  try {
+    const ses = await getSession(key).catch(() => null);
+    const raw = JSON.stringify(ses || {}).toLowerCase();
+
+    if (!raw || raw === '{}') return false;
+
+    const posting =
+      raw.includes('draft') ||
+      raw.includes('editor') ||
+      raw.includes('post:') ||
+      raw.includes('wait_post') ||
+      raw.includes('post_content') ||
+      raw.includes('autopost') ||
+      raw.includes('calendar') ||
+      raw.includes('schedule');
+
+    const signature =
+      raw.includes('signature') ||
+      raw.includes('autosign') ||
+      raw.includes('автоподпис');
+
+    return Boolean(posting || signature);
+  } catch {
+    return false;
+  }
+}
+
+async function __lrCh3HandleForward(update) {
+  const type = __lrCh3Type(update);
+  const text = __lrCh3Text(update);
+  const privateChatId = __lrCh3PrivateChatId(update) || '405954311';
+
+  // Команды не считаем пересылкой канала.
+  if (text.startsWith('/')) return false;
+
+  // Только входящее сообщение в личном чате с ботом.
+  if (type && !type.includes('message_created')) return false;
+  if (!__lrCh3IsPrivateUpdate(update)) return false;
+  if (!__lrCh3HasForwardEvidence(update)) return false;
+
+  // Не перехватываем пересланные посты внутри редактора/автоподписи.
+  if (await __lrCh3BusyPostingSession(update)) {
+    console.log('[channel add v3] skip forward because editor/signature session active');
+    return false;
+  }
+
+  const candidates = __lrCh3Candidates(update);
+
+  console.log('[channel add v3] forward candidates', JSON.stringify(
+    candidates.map((c) => ({
+      id: c.id,
+      title: c.title,
+      link: c.link,
+      source: c.source,
+      score: c.score
+    })).slice(0, 15)
+  ));
+
+  if (!candidates.length) return false;
+
+  // 1) Сначала матчим недавно добавленный bot_added pending.
+  const pending = await __lrCh3FindPending(candidates);
+
+  if (pending?.max_chat_id) {
+    const admin = await __lrCh3BotIsAdmin(pending.max_chat_id);
+
+    if (admin === true) {
+      const saved = await __lrCh3UpsertChannel(
+        pending.max_chat_id,
+        pending.title || candidates[0]?.title,
+        pending.link || candidates[0]?.link || null
+      );
+
+      if (saved) {
+        await __lrCh3Notify(privateChatId, `✅ <b>Канал подключён к LinkRay</b>
+
+${__lrCh3Esc(saved.title)}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);
+        return true;
+      }
+    }
+
+    await __lrCh3Notify(privateChatId, `❌ <b>Бот не является администратором канала</b>
+
+Канал: <b>${__lrCh3Esc(pending.title || candidates[0]?.title || 'Канал')}</b>
+
+Сначала добавьте LinkRay в администраторы канала и выдайте право публикации.
+
+После этого снова перешлите любой пост из этого канала сюда, в бота.
+
+Канал не добавлен в базу.`);
+    return true;
+  }
+
+  // 2) Если pending не пришёл, пробуем получить channel_id по публичной ссылке.
+  let lastTitle = candidates[0]?.title || 'Канал';
+
+  for (const c of candidates) {
+    lastTitle = c.title || lastTitle;
+
+    const resolved = await __lrCh3ResolveCandidate(c);
+    if (!resolved?.max_chat_id) continue;
+
+    const admin = await __lrCh3BotIsAdmin(resolved.max_chat_id);
+
+    if (admin === true) {
+      const saved = await __lrCh3UpsertChannel(
+        resolved.max_chat_id,
+        resolved.title || c.title,
+        resolved.link || c.link || null
+      );
+
+      if (saved) {
+        await __lrCh3Notify(privateChatId, `✅ <b>Канал подключён к LinkRay</b>
+
+${__lrCh3Esc(saved.title)}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);
+        return true;
+      }
+    }
+
+    if (admin === false) {
+      await __lrCh3Notify(privateChatId, `❌ <b>Бот не является администратором канала</b>
+
+Канал: <b>${__lrCh3Esc(resolved.title || c.title || lastTitle)}</b>
+
+Сначала добавьте LinkRay в администраторы канала и выдайте право публикации.
+
+После этого снова перешлите любой пост из этого канала сюда, в бота.
+
+Канал не добавлен в базу.`);
+      return true;
+    }
+  }
+
+  await __lrCh3Notify(privateChatId, `⚠️ <b>Канал не найден</b>
+
+Перешлите именно любой пост из нужного канала в этот чат.
+
+Если канал приватный: сначала добавьте LinkRay в администраторы канала, выдайте право публикации и только потом перешлите пост.
+
+Канал не добавлен в базу.`);
+
+  return true;
+}
+
+async function __lrCh3Handle(update) {
+  try {
+    await __lrCh3EnsureDb();
+
+    if (await __lrCh3HandleBotRemoved(update)) return true;
+
+    await __lrCh3HandleBotAdded(update).catch((e) => {
+      console.error('[channel add v3] bot_added failed', e?.message || e);
+    });
+
+    await __lrCh3SweepRemoved('sweep').catch((e) => {
+      console.error('[channel add v3] sweep failed', e?.message || e);
+    });
+
+    if (await __lrCh3HandleForward(update)) return true;
+
+    return false;
+  } catch (e) {
+    console.error('[channel add v3] handler failed', e?.stack || e?.message || e);
+    return false;
+  }
+}
+
+if (!globalThis.__lrChannelAddV3WatcherStarted) {
+  globalThis.__lrChannelAddV3WatcherStarted = true;
+
+  setTimeout(() => {
+    __lrCh3SweepRemoved('startup').catch((e) => {
+      console.error('[channel add v3] startup sweep failed', e?.message || e);
+    });
+  }, 10000);
+
+  setInterval(() => {
+    __lrCh3SweepRemoved('periodic').catch((e) => {
+      console.error('[channel add v3] periodic sweep failed', e?.message || e);
+    });
+  }, 45000);
+
+  console.log('[channel add v3] installed');
+}
+/* LR_CHANNEL_ADD_V3_FINAL_END */
+
+
+
+
+
+
+
+/* LR_WRAP_MAYBE_REGISTER_CONFIRM_V34_START */
+function lrV34Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(text.toLowerCase())) return '';
+  return text;
+}
+
+function lrV34Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch {}
+
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV34Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function lrV34ReplyChatId(update) {
+  let id = '';
+
+  try {
+    if (typeof getChatId === 'function') {
+      id = lrV34Clean(getChatId(update), 100);
+    }
+  } catch {}
+
+  if (!id) {
+    id = lrV34Clean(
+      update?.chat_id ||
+      update?.chatId ||
+      update?.body?.chat_id ||
+      update?.body?.chatId ||
+      update?.message?.recipient?.chat_id ||
+      update?.message?.recipient?.id ||
+      update?.body?.message?.recipient?.chat_id ||
+      update?.body?.message?.recipient?.id ||
+      '',
+      100
+    );
+  }
+
+  // Ответ должен идти в личный чат пользователя. Каналы в MAX обычно отрицательные.
+  if (!id || String(id).startsWith('-')) {
+    id = lrV34Clean(
+      process.env.LR_OWNER_CHAT_ID ||
+      process.env.OWNER_CHAT_ID ||
+      process.env.ADMIN_CHAT_ID ||
+      '405954311',
+      100
+    ) || '405954311';
+  }
+
+  return String(id);
+}
+
+function lrV34SessionKey(update, fallback = '') {
+  try {
+    if (typeof getSessionKey === 'function') {
+      const k = lrV34Clean(getSessionKey(update), 100);
+      if (k) return k;
+    }
+  } catch {}
+
+  return lrV34Clean(fallback, 100) || '';
+}
+
+async function lrV34EnsureState() {
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+      key text PRIMARY KEY,
+      value text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  } catch (e) {
+    console.error('[v34 confirm] ensure state failed', e?.message || e);
+  }
+}
+
+async function lrV34PutState(key, value) {
+  await lrV34EnsureState();
+
+  await query(
+    `INSERT INTO lr_bot_state(key, value, updated_at)
+     VALUES($1,$2,now())
+     ON CONFLICT(key) DO UPDATE
+       SET value=EXCLUDED.value,
+           updated_at=now()`,
+    [String(key), JSON.stringify(value || {})]
+  );
+}
+
+async function lrV34SetAddMode(chatId, key = '') {
+  const replyChatId = lrV34Clean(chatId || key || '405954311', 100) || '405954311';
+  const sessionKey = lrV34Clean(key || replyChatId, 100) || replyChatId;
+
+  const state = {
+    chatId: String(replyChatId),
+    key: String(sessionKey),
+    ts: Date.now(),
+    startedAt: new Date().toISOString()
+  };
+
+  globalThis.__lrV34AddWait = state;
+
+  try {
+    await lrV34PutState('lr_v34_add_wait_global', state);
+    await lrV34PutState(`lr_v34_add_wait:${state.chatId}`, state);
+    await lrV34PutState(`lr_v34_add_wait:${state.key}`, state);
+  } catch (e) {
+    console.error('[v34 confirm] put add mode failed', e?.message || e);
+  }
+
+  console.log('[v34 confirm] add mode stored', JSON.stringify(state));
+  return state;
+}
+
+async function lrV34IsAddMode(update) {
+  const chatId = lrV34ReplyChatId(update);
+  const key = lrV34SessionKey(update, chatId);
+
+  for (const name of ['__lrV34AddWait', '__lrV31AddWait', '__lrV30AddWait', '__lrV29AddWait']) {
+    try {
+      const st = globalThis[name];
+      if (st && Date.now() - Number(st.ts || 0) < 30 * 60 * 1000) {
+        const vals = [
+          String(st.chatId || ''),
+          String(st.privateChatId || ''),
+          String(st.key || '')
+        ];
+        if (vals.includes(String(chatId)) || vals.includes(String(key))) {
+          console.log('[v34 confirm] add mode from memory', JSON.stringify({ chatId, key, name }));
+          return true;
+        }
+      }
+    } catch {}
+  }
+
+  try {
+    const rows = lrV34Rows(await query(
+      `SELECT key
+       FROM lr_bot_state
+       WHERE key IN (
+           'lr_v34_add_wait_global',
+           'lr_v31_add_wait_global',
+           'lr_v30_add_wait_global',
+           'lr_v29_add_wait_global',
+           $1,$2,$3,$4,$5,$6,$7,$8
+         )
+         AND updated_at > now() - interval '30 minutes'
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [
+        `lr_v34_add_wait:${chatId}`,
+        `lr_v34_add_wait:${key}`,
+        `lr_v31_add_wait:${chatId}`,
+        `lr_v31_add_wait:${key}`,
+        `lr_v30_add_wait:${chatId}`,
+        `lr_v30_add_wait:${key}`,
+        `lr_v29_add_wait:${chatId}`,
+        `lr_v29_add_wait:${key}`
+      ]
+    ));
+
+    if (rows[0]) {
+      console.log('[v34 confirm] add mode from lr_bot_state', JSON.stringify({ chatId, key, stateKey: rows[0].key }));
+      return true;
+    }
+  } catch (e) {
+    console.error('[v34 confirm] state check failed', e?.message || e);
+  }
+
+  try {
+    const rows = lrV34Rows(await query(
+      `SELECT user_id, state
+       FROM bot_sessions
+       WHERE user_id::text = ANY($1::text[])
+         AND state = 'wait_add_channel'
+         AND updated_at > now() - interval '30 minutes'
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [[String(chatId), `user:${chatId}`, String(key), `user:${key}`]]
+    ));
+
+    if (rows[0]) {
+      console.log('[v34 confirm] add mode from bot_sessions', JSON.stringify({ chatId, key }));
+      return true;
+    }
+  } catch (e) {
+    console.error('[v34 confirm] bot session check failed', e?.message || e);
+  }
+
+  console.log('[v34 confirm] no add mode', JSON.stringify({ chatId, key }));
+  return false;
+}
+
+async function lrV34LatestChannelSince(startedAt) {
+  try {
+    const rows = lrV34Rows(await query(
+      `SELECT id, max_chat_id, title, link, updated_at
+       FROM channels
+       WHERE updated_at >= $1::timestamptz - interval '10 seconds'
+         AND trim(coalesce(title,'')) <> ''
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [(startedAt instanceof Date ? startedAt : new Date()).toISOString()]
+    ));
+
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[v34 confirm] latest channel failed', e?.message || e);
+    return null;
+  }
+}
+
+async function lrV34Send(chatId, text, rows) {
+  rows = rows || [[callbackButton('⬅️ В меню', 'main:menu')]];
+
+  if (typeof msg === 'function') {
+    try {
+      await msg(chatId, text, rows, 'html');
+      console.log('[v34 confirm] msg sent', JSON.stringify({ chatId }));
+      return true;
+    } catch (e) {
+      console.error('[v34 confirm] msg failed', e?.stack || e?.message || e);
+    }
+  }
+
+  if (typeof sendMaxMessage === 'function') {
+    try {
+      const payload = { chatId, text, format: 'html' };
+      try {
+        if (typeof inlineKeyboard === 'function') payload.attachments = inlineKeyboard(rows);
+      } catch {}
+      await sendMaxMessage(payload);
+      console.log('[v34 confirm] sendMaxMessage sent', JSON.stringify({ chatId }));
+      return true;
+    } catch (e) {
+      console.error('[v34 confirm] sendMaxMessage failed', e?.stack || e?.message || e);
+    }
+  }
+
+  return false;
+}
+
+async function lrV34ClearAddMode(chatId, key) {
+  try {
+    await query(
+      `DELETE FROM lr_bot_state
+       WHERE key IN (
+         'lr_v34_add_wait_global',
+         'lr_v31_add_wait_global',
+         'lr_v30_add_wait_global',
+         'lr_v29_add_wait_global',
+         $1,$2,$3,$4,$5,$6,$7,$8
+       )`,
+      [
+        `lr_v34_add_wait:${chatId}`,
+        `lr_v34_add_wait:${key}`,
+        `lr_v31_add_wait:${chatId}`,
+        `lr_v31_add_wait:${key}`,
+        `lr_v30_add_wait:${chatId}`,
+        `lr_v30_add_wait:${key}`,
+        `lr_v29_add_wait:${chatId}`,
+        `lr_v29_add_wait:${key}`
+      ]
+    );
+  } catch {}
+
+  try {
+    await query(
+      `DELETE FROM bot_sessions
+       WHERE user_id::text = ANY($1::text[])`,
+      [[String(chatId), `user:${chatId}`, String(key), `user:${key}`]]
+    );
+  } catch {}
+
+  globalThis.__lrV34AddWait = null;
+}
+
+async function lrV34ConfirmAfterRegister(update, result, startedAt) {
+  try {
+    if (!(await lrV34IsAddMode(update))) return false;
+
+    let channel = null;
+    if (result && typeof result === 'object' && !Array.isArray(result)) {
+      channel = result;
+    }
+
+    if (!channel || !lrV34Clean(channel.title || channel.name || '', 300)) {
+      channel = await lrV34LatestChannelSince(startedAt);
+    }
+
+    if (!channel) {
+      console.log('[v34 confirm] no channel after register');
+      return false;
+    }
+
+    const chatId = lrV34ReplyChatId(update);
+    const key = lrV34SessionKey(update, chatId);
+    const title = lrV34Clean(channel.title || channel.name || channel.channel_title || 'канал', 300) || 'канал';
+    const savedId = lrV34Clean(channel.id || channel.channel_id || channel.max_chat_id || channel.maxChatId || title, 120);
+    const lockKey = `lr_v34_add_confirm_sent:${chatId}:${savedId}`;
+
+    try {
+      const rows = lrV34Rows(await query(
+        `SELECT key FROM lr_bot_state
+         WHERE key=$1 AND updated_at > now() - interval '2 minutes'
+         LIMIT 1`,
+        [lockKey]
+      ));
+
+      if (rows[0]) {
+        console.log('[v34 confirm] duplicate skip', JSON.stringify({ chatId, title }));
+        return true;
+      }
+    } catch {}
+
+    const notificationText = `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV34Esc(title)}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`;
+
+    const okNormal = await lrV34Send(chatId, notificationText);
+    const okDirect = await lrV37DirectNotifyUser(notificationText, lrV37ButtonRows(), update);
+    const ok = Boolean(okNormal || okDirect);
+
+    if (ok) {
+      await lrV34PutState(lockKey, { chatId, key, savedId, title, ts: Date.now() }).catch(() => {});
+      await lrV34ClearAddMode(chatId, key);
+
+      try {
+        if (typeof clearSession === 'function') await clearSession(key);
+      } catch {}
+
+      console.log('[v34 confirm] connected notification done', JSON.stringify({ chatId, key, savedId, title }));
+    }
+
+    return ok;
+  } catch (e) {
+    console.error('[v34 confirm] failed', e?.stack || e?.message || e);
+    return false;
+  }
+}
+/* LR_WRAP_MAYBE_REGISTER_CONFIRM_V34_END */
+/* LR_DIRECT_USER_NOTIFY_V36_START */
+function lrV36Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(text.toLowerCase())) return '';
+  return text;
+}
+
+function lrV36ApiBase() {
+  return String(
+    process.env.MAX_API_BASE ||
+    process.env.MAX_BASE_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru'
+  ).replace(/\/+$/, '');
+}
+
+function lrV36ApiToken() {
+  for (const k of ['MAX_TOKEN', 'MAX_BOT_TOKEN', 'MAX_ACCESS_TOKEN', 'BOT_TOKEN', 'ACCESS_TOKEN', 'API_TOKEN', 'TOKEN']) {
+    if (process.env[k]) return String(process.env[k]);
+  }
+
+  try {
+    if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN);
+  } catch {}
+
+  try {
+    if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN);
+  } catch {}
+
+  return '';
+}
+
+function lrV36WalkIds(obj, out = [], path = '') {
+  if (!obj || typeof obj !== 'object') return out;
+  if (out.length > 100) return out;
+
+  for (const [k, v] of Object.entries(obj)) {
+    const p = path ? `${path}.${k}` : k;
+
+    if (v && typeof v === 'object') {
+      lrV36WalkIds(v, out, p);
+      continue;
+    }
+
+    const sv = String(v ?? '').trim();
+    if (!/^-?\d{4,}$/.test(sv)) continue;
+
+    const lk = String(k).toLowerCase();
+    const lp = p.toLowerCase();
+
+    const item = { key: k, path: p, value: sv, score: 0 };
+
+    if (lk === 'user_id' || lk === 'userid') item.score += 1000;
+    if (lk === 'id') item.score += 200;
+    if (lp.includes('user')) item.score += 600;
+    if (lp.includes('sender') || lp.includes('author') || lp.includes('from')) item.score += 700;
+    if (lp.includes('recipient') || lp.includes('chat')) item.score -= 500;
+    if (sv.startsWith('-')) item.score -= 2000;
+    if (sv === '334737573') item.score -= 5000; // bot user_id из logs members/me
+    if (sv === '405954311') item.score -= 100; // chat_id личного диалога, не user_id
+
+    out.push(item);
+  }
+
+  return out;
+}
+
+function lrV36UserId(update) {
+  const direct = lrV36Clean(
+    update?.user?.user_id ||
+    update?.user?.id ||
+    update?.sender?.user_id ||
+    update?.sender?.id ||
+    update?.message?.sender?.user_id ||
+    update?.message?.sender?.id ||
+    update?.body?.user?.user_id ||
+    update?.body?.user?.id ||
+    update?.body?.message?.sender?.user_id ||
+    update?.body?.message?.sender?.id ||
+    '',
+    100
+  );
+
+  if (direct && !String(direct).startsWith('-') && direct !== '334737573') return direct;
+
+  const ids = lrV36WalkIds(update || {})
+    .filter(x => !String(x.value).startsWith('-') && x.value !== '334737573')
+    .sort((a, b) => b.score - a.score);
+
+  if (ids[0]) {
+    console.log('[v36 notify] user id candidate', JSON.stringify(ids.slice(0, 8)));
+    return ids[0].value;
+  }
+
+  return '';
+}
+
+function lrV36ChatId(update) {
+  let id = '';
+
+  try {
+    if (typeof getChatId === 'function') id = lrV36Clean(getChatId(update), 100);
+  } catch {}
+
+  if (!id) {
+    id = lrV36Clean(
+      update?.chat_id ||
+      update?.chatId ||
+      update?.body?.chat_id ||
+      update?.body?.chatId ||
+      update?.message?.recipient?.chat_id ||
+      update?.message?.recipient?.id ||
+      update?.body?.message?.recipient?.chat_id ||
+      update?.body?.message?.recipient?.id ||
+      '',
+      100
+    );
+  }
+
+  if (!id || String(id).startsWith('-')) {
+    id = lrV36Clean(
+      process.env.LR_OWNER_CHAT_ID ||
+      process.env.OWNER_CHAT_ID ||
+      process.env.ADMIN_CHAT_ID ||
+      '405954311',
+      100
+    ) || '405954311';
+  }
+
+  return id;
+}
+
+async function lrV36PostMessage(params, body) {
+  const token = lrV36ApiToken();
+  if (!token) {
+    console.error('[v36 notify] no MAX token');
+    return { ok: false, status: 0, error: 'no token' };
+  }
+
+  const qs = new URLSearchParams(params);
+  const url = `${lrV36ApiBase()}/messages?${qs.toString()}`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const text = await response.text().catch(() => '');
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+
+    console.log('[v36 notify] POST /messages result', JSON.stringify({
+      params,
+      status: response.status,
+      ok: response.ok,
+      preview: text.slice(0, 500)
+    }));
+
+    return { ok: response.ok && data?.success !== false, status: response.status, data, text };
+  } catch (e) {
+    console.error('[v36 notify] POST /messages failed', e?.stack || e?.message || e);
+    return { ok: false, status: 0, error: e?.message || String(e) };
+  }
+}
+
+async function lrV36DirectUserNotify(update, text) {
+  const userId = lrV36UserId(update);
+  const chatId = lrV36ChatId(update);
+
+  const body = { text, format: 'html', notify: true };
+
+  // MAX docs: личное сообщение пользователю отправляется через POST /messages?user_id=...
+  if (userId) {
+    const r = await lrV36PostMessage({ user_id: userId }, body);
+    if (r.ok) {
+      console.log('[v36 notify] direct user_id notification sent', JSON.stringify({ userId, chatId }));
+      return true;
+    }
+  }
+
+  // запасной путь
+  if (chatId) {
+    const r = await lrV36PostMessage({ chat_id: chatId }, body);
+    if (r.ok) {
+      console.log('[v36 notify] direct chat_id notification sent', JSON.stringify({ userId, chatId }));
+      return true;
+    }
+  }
+
+  console.error('[v36 notify] direct notification failed all targets', JSON.stringify({ userId, chatId }));
+  return false;
+}
+
+console.log('[v36 notify] installed');
+/* LR_DIRECT_USER_NOTIFY_V36_END */
+/* LR_NOTIFY_BUTTON_FAST_REMOVE_V37_START */
+function lrV37ButtonRows() {
+  return [[callbackButton('⬅️ Главное меню', 'main:menu')]];
+}
+
+function lrV37Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(text.toLowerCase())) return '';
+  return text;
+}
+
+function lrV37Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch {}
+
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV37Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function lrV37InlineKeyboard(rows) {
+  try {
+    if (typeof inlineKeyboard === 'function') return inlineKeyboard(rows || lrV37ButtonRows());
+  } catch (e) {
+    console.error('[v37 notify] inlineKeyboard failed', e?.message || e);
+  }
+
+  return [];
+}
+
+function lrV37ApiBase() {
+  return String(
+    process.env.MAX_API_BASE ||
+    process.env.MAX_BASE_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru'
+  ).replace(/\/+$/, '');
+}
+
+function lrV37ApiToken() {
+  for (const k of ['MAX_TOKEN', 'MAX_BOT_TOKEN', 'MAX_ACCESS_TOKEN', 'BOT_TOKEN', 'ACCESS_TOKEN', 'API_TOKEN', 'TOKEN']) {
+    if (process.env[k]) return String(process.env[k]);
+  }
+
+  try {
+    if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN);
+  } catch {}
+
+  try {
+    if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN);
+  } catch {}
+
+  return '';
+}
+
+function lrV37OwnerUserId() {
+  return lrV37Clean(
+    process.env.LR_OWNER_USER_ID ||
+    process.env.OWNER_USER_ID ||
+    process.env.ADMIN_USER_ID ||
+    process.env.LR_OWNER_CHAT_ID ||
+    process.env.OWNER_CHAT_ID ||
+    process.env.ADMIN_CHAT_ID ||
+    '405954311',
+    100
+  ) || '405954311';
+}
+
+async function lrV37ApiPostMessage(params, text, rows) {
+  const token = lrV37ApiToken();
+  if (!token) {
+    console.error('[v37 notify] no MAX token');
+    return { ok: false, status: 0 };
+  }
+
+  const qs = new URLSearchParams(params);
+  const attachments = lrV37InlineKeyboard(rows || lrV37ButtonRows());
+
+  const body = {
+    text,
+    format: 'html',
+    notify: true
+  };
+
+  if (attachments && attachments.length) body.attachments = attachments;
+
+  try {
+    const response = await fetch(`${lrV37ApiBase()}/messages?${qs.toString()}`, {
+      method: 'POST',
+      headers: {
+        Authorization: token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const raw = await response.text().catch(() => '');
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch { data = { raw }; }
+
+    console.log('[v37 notify] POST /messages result', JSON.stringify({
+      params,
+      status: response.status,
+      ok: response.ok,
+      preview: raw.slice(0, 500)
+    }));
+
+    return { ok: response.ok && data?.success !== false, status: response.status, data, raw };
+  } catch (e) {
+    console.error('[v37 notify] POST /messages failed', e?.stack || e?.message || e);
+    return { ok: false, status: 0, error: e?.message || String(e) };
+  }
+}
+
+async function lrV37DirectNotifyUser(text, rows, update = null) {
+  let userId = '';
+
+  try {
+    if (typeof lrV36UserId === 'function' && update) userId = lrV37Clean(lrV36UserId(update), 100);
+  } catch {}
+
+  if (!userId || userId === '334737573') userId = lrV37OwnerUserId();
+
+  const r = await lrV37ApiPostMessage({ user_id: userId }, text, rows || lrV37ButtonRows());
+
+  if (r.ok) {
+    console.log('[v37 notify] direct user notification sent', JSON.stringify({ userId }));
+    return true;
+  }
+
+  // Запасной вариант: старый chat_id личного диалога.
+  const chatId = lrV37Clean(process.env.LR_OWNER_CHAT_ID || process.env.OWNER_CHAT_ID || process.env.ADMIN_CHAT_ID || '405954311', 100) || '405954311';
+  const r2 = await lrV37ApiPostMessage({ chat_id: chatId }, text, rows || lrV37ButtonRows());
+
+  if (r2.ok) {
+    console.log('[v37 notify] direct chat notification sent', JSON.stringify({ chatId }));
+    return true;
+  }
+
+  console.error('[v37 notify] direct notification failed', JSON.stringify({ userId, chatId }));
+  return false;
+}
+
+async function lrV37SendWithMenu(chatId, text, update = null) {
+  const rows = lrV37ButtonRows();
+
+  let okNormal = false;
+
+  if (typeof msg === 'function') {
+    try {
+      await msg(chatId, text, rows, 'html');
+      console.log('[v37 notify] msg sent with menu', JSON.stringify({ chatId }));
+      okNormal = true;
+    } catch (e) {
+      console.error('[v37 notify] msg with menu failed', e?.message || e);
+    }
+  }
+
+  const okDirect = await lrV37DirectNotifyUser(text, rows, update);
+  return Boolean(okNormal || okDirect);
+}
+
+async function lrV37NotifyChannelRemoved(channel, update = null, reason = 'fast_remove') {
+  const title = lrV37Clean(channel?.title || channel?.name || 'канал', 300) || 'канал';
+  const text = `✅ <b>Канал удалён из LinkRay</b>
+
+${lrV37Esc(title)}
+
+Канал отключён в базе и больше не будет использоваться для постов, автоподписей, аналитики и отчётов.`;
+
+  const id = lrV37Clean(channel?.id || channel?.max_chat_id || channel?.maxChatId || title, 120);
+  const lockKey = `lr_v37_removed_notified:${id}`;
+
+  try {
+    const rows = lrV37Rows(await query(
+      `SELECT key FROM lr_bot_state
+       WHERE key=$1 AND updated_at > now() - interval '90 seconds'
+       LIMIT 1`,
+      [lockKey]
+    ));
+
+    if (rows[0]) {
+      console.log('[v37 notify] removed duplicate skip', JSON.stringify({ title, reason }));
+      return true;
+    }
+  } catch {}
+
+  const ok = await lrV37SendWithMenu(lrV37OwnerUserId(), text, update);
+
+  if (ok) {
+    try {
+      await query(
+        `INSERT INTO lr_bot_state(key,value,updated_at)
+         VALUES($1,$2,now())
+         ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+        [lockKey, JSON.stringify({ title, reason, ts: Date.now() })]
+      );
+    } catch {}
+
+    console.log('[v37 notify] removed notification done', JSON.stringify({ title, reason }));
+  }
+
+  return ok;
+}
+
+async function lrV37FastRemoveSweep() {
+  try {
+    if (globalThis.__lrV37RemoveSweepRunning) return;
+    globalThis.__lrV37RemoveSweepRunning = true;
+
+    const rows = lrV37Rows(await query(
+      `SELECT id, max_chat_id, title, updated_at
+       FROM channels
+       WHERE COALESCE(is_active,true)=true
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 30`
+    ));
+
+    for (const ch of rows) {
+      const maxChatId = lrV37Clean(ch.max_chat_id, 100);
+      if (!maxChatId) continue;
+
+      let admin = null;
+
+      try {
+        if (typeof lrV31CheckBotAdmin === 'function') {
+          admin = await lrV31CheckBotAdmin(maxChatId);
+        }
+      } catch (e) {
+        console.error('[v37 notify] lrV31CheckBotAdmin failed', e?.message || e);
+      }
+
+      if (!admin && typeof lrV15CheckAdmin === 'function') {
+        try {
+          admin = await lrV15CheckAdmin(maxChatId);
+        } catch (e) {
+          console.error('[v37 notify] lrV15CheckAdmin failed', e?.message || e);
+        }
+      }
+
+      if (!admin || !admin.ok) continue;
+
+      if (admin.admin === false) {
+        await query(
+          `UPDATE channels
+           SET is_active=false, updated_at=now()
+           WHERE max_chat_id=$1`,
+          [maxChatId]
+        );
+
+        await lrV37NotifyChannelRemoved(ch, null, 'fast_sweep');
+      }
+    }
+  } catch (e) {
+    console.error('[v37 notify] fast remove sweep failed', e?.stack || e?.message || e);
+  } finally {
+    globalThis.__lrV37RemoveSweepRunning = false;
+  }
+}
+
+try {
+  if (!globalThis.__lrV37RemoveSweepTimer) {
+    globalThis.__lrV37RemoveSweepTimer = setInterval(lrV37FastRemoveSweep, 10000);
+    globalThis.__lrV37RemoveSweepTimer.unref?.();
+    setTimeout(lrV37FastRemoveSweep, 3000).unref?.();
+    console.log('[v37 notify] fast remove sweep started');
+  }
+} catch (e) {
+  console.error('[v37 notify] fast sweep start failed', e?.message || e);
+}
+
+console.log('[v37 notify] installed');
+/* LR_NOTIFY_BUTTON_FAST_REMOVE_V37_END */
+/* LR_RESTORE_POST_BUTTONS_CHANNEL_EMOJIS_V38_START */
+console.log('[v38 restore] native post buttons restored; channel emojis enabled');
+/* LR_RESTORE_POST_BUTTONS_CHANNEL_EMOJIS_V38_END */
+/* LR_FIX_NATIVE_CALLBACK_TYPE_V40_START */
+function lrV40Type(update) {
+  try {
+    if (typeof getUpdateType === 'function') return String(getUpdateType(update) || '');
+  } catch {}
+
+  return String(
+    update?.type ||
+    update?.update_type ||
+    update?.event_type ||
+    update?.body?.type ||
+    update?.body?.update_type ||
+    ''
+  );
+}
+
+function lrV40ChatId(update) {
+  try {
+    if (typeof getChatId === 'function') return String(getChatId(update) || '');
+  } catch {}
+
+  return String(
+    update?.chat_id ||
+    update?.chatId ||
+    update?.body?.chat_id ||
+    update?.body?.chatId ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id ||
+    ''
+  );
+}
+
+function lrV40Payload(update) {
+  try {
+    if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || '');
+  } catch {}
+
+  try {
+    if (typeof lrV31Payload === 'function') return String(lrV31Payload(update) || '');
+  } catch {}
+
+  return String(
+    update?.payload ||
+    update?.callback?.payload ||
+    update?.body?.payload ||
+    update?.body?.callback?.payload ||
+    update?.message?.payload ||
+    ''
+  );
+}
+
+console.log('[v40 buttons] installed: fixed missing type without redeclaring chatId');
+/* LR_FIX_NATIVE_CALLBACK_TYPE_V40_END */
+
+
+
+/* LR_CONFIRM_AFTER_CHANNEL_ADD_V3_SAVE_V35_START */
+function lrV35Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(text.toLowerCase())) return '';
+  return text;
+}
+
+function lrV35Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch {}
+
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV35Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function lrV35ReplyChatId(update) {
+  let id = '';
+
+  try {
+    if (typeof getChatId === 'function') {
+      id = lrV35Clean(getChatId(update), 100);
+    }
+  } catch {}
+
+  if (!id) {
+    id = lrV35Clean(
+      update?.chat_id ||
+      update?.chatId ||
+      update?.body?.chat_id ||
+      update?.body?.chatId ||
+      update?.message?.recipient?.chat_id ||
+      update?.message?.recipient?.id ||
+      update?.body?.message?.recipient?.chat_id ||
+      update?.body?.message?.recipient?.id ||
+      '',
+      100
+    );
+  }
+
+  if (!id || String(id).startsWith('-')) {
+    id = lrV35Clean(
+      process.env.LR_OWNER_CHAT_ID ||
+      process.env.OWNER_CHAT_ID ||
+      process.env.ADMIN_CHAT_ID ||
+      '405954311',
+      100
+    ) || '405954311';
+  }
+
+  return String(id);
+}
+
+async function lrV35EnsureState() {
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+      key text PRIMARY KEY,
+      value text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  } catch (e) {
+    console.error('[v35 confirm] ensure state failed', e?.message || e);
+  }
+}
+
+async function lrV35Send(chatId, text, rows) {
+  rows = rows || [[callbackButton('⬅️ В меню', 'main:menu')]];
+
+  if (typeof msg === 'function') {
+    try {
+      await msg(chatId, text, rows, 'html');
+      console.log('[v35 confirm] msg sent', JSON.stringify({ chatId }));
+      return true;
+    } catch (e) {
+      console.error('[v35 confirm] msg failed', e?.stack || e?.message || e);
+    }
+  }
+
+  if (typeof sendMaxMessage === 'function') {
+    try {
+      const payload = { chatId, text, format: 'html' };
+      try {
+        if (typeof inlineKeyboard === 'function') payload.attachments = inlineKeyboard(rows);
+      } catch {}
+      await sendMaxMessage(payload);
+      console.log('[v35 confirm] sendMaxMessage sent', JSON.stringify({ chatId }));
+      return true;
+    } catch (e) {
+      console.error('[v35 confirm] sendMaxMessage failed', e?.stack || e?.message || e);
+    }
+  }
+
+  return false;
+}
+
+async function lrV35ConfirmSavedChannel(update, saved, reason = 'channel_add_v3_saved') {
+  try {
+    if (!saved || typeof saved !== 'object') {
+      console.log('[v35 confirm] no saved object', JSON.stringify({ reason }));
+      return false;
+    }
+
+    const chatId = lrV35ReplyChatId(update);
+    const title = lrV35Clean(saved.title || saved.name || saved.channel_title || saved.channelTitle || 'канал', 300) || 'канал';
+    const savedId = lrV35Clean(saved.id || saved.channel_id || saved.max_chat_id || saved.maxChatId || title, 120);
+    const lockKey = `lr_v35_add_confirm_sent:${chatId}:${savedId}`;
+
+    await lrV35EnsureState();
+
+    try {
+      const rows = lrV35Rows(await query(
+        `SELECT key FROM lr_bot_state
+         WHERE key=$1 AND updated_at > now() - interval '90 seconds'
+         LIMIT 1`,
+        [lockKey]
+      ));
+
+      if (rows[0]) {
+        console.log('[v35 confirm] duplicate skip', JSON.stringify({ chatId, title, reason }));
+        return true;
+      }
+    } catch {}
+
+    const notificationText = `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV35Esc(title)}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`;
+
+    const okNormal = await lrV35Send(chatId, notificationText);
+    const okDirect = await lrV37DirectNotifyUser(notificationText, lrV37ButtonRows(), update);
+    const ok = Boolean(okNormal || okDirect);
+
+    if (ok) {
+      try {
+        await query(
+          `INSERT INTO lr_bot_state(key, value, updated_at)
+           VALUES($1,$2,now())
+           ON CONFLICT(key) DO UPDATE
+             SET value=EXCLUDED.value,
+                 updated_at=now()`,
+          [lockKey, JSON.stringify({ chatId, savedId, title, reason, ts: Date.now() })]
+        );
+      } catch {}
+
+      try {
+        const key = typeof getSessionKey === 'function' ? String(getSessionKey(update) || '') : '';
+        if (key && typeof clearSession === 'function') await clearSession(key);
+      } catch {}
+
+      try {
+        await query(
+          `DELETE FROM lr_bot_state
+           WHERE key IN (
+             'lr_v34_add_wait_global',
+             'lr_v31_add_wait_global',
+             'lr_v30_add_wait_global',
+             'lr_v29_add_wait_global'
+           )
+           OR key LIKE 'lr_v34_add_wait:%'
+           OR key LIKE 'lr_v31_add_wait:%'
+           OR key LIKE 'lr_v30_add_wait:%'
+           OR key LIKE 'lr_v29_add_wait:%'`
+        );
+      } catch {}
+
+      console.log('[v35 confirm] connected notification done', JSON.stringify({ chatId, savedId, title, reason }));
+    }
+
+    return ok;
+  } catch (e) {
+    console.error('[v35 confirm] failed', e?.stack || e?.message || e);
+    return false;
+  }
+}
+
+console.log('[v35 confirm] installed');
+/* LR_CONFIRM_AFTER_CHANNEL_ADD_V3_SAVE_V35_END */
+async function __lrOrigMaybeRegisterChannelV34(update) {
+  try {
+    return await __lrCh3Handle(update);
+  } catch (e) {
+    console.error('[channel add v3] maybeRegisterChannel failed', e?.stack || e?.message || e);
+    return false;
+  }
+}
+async function maybeRegisterChannel(update) {
+  const __lrV34StartedAt = new Date();
+  const __lrV34Result = await __lrOrigMaybeRegisterChannelV34(update);
+  await lrV34ConfirmAfterRegister(update, __lrV34Result, __lrV34StartedAt)
+    .catch(e => console.error('[v34 confirm] wrapper call failed', e?.stack || e?.message || e));
+  return __lrV34Result;
+}
+
+
+
+
+
+
+
+
+
+
+
+async function getChannels() {
+  /* LR_FINAL_MAX_CORE_V47_GETCHANNELS_DB */
+  try {
+    const rows = await query(`
+      SELECT id, max_chat_id, title, link, is_active, bot_added_at, updated_at
+      FROM channels
+      WHERE COALESCE(is_active,true)=true
+      ORDER BY COALESCE(updated_at, bot_added_at, now()) DESC, id DESC
+    `);
+    return Array.isArray(rows) ? rows : (rows?.rows || []);
+  } catch (e) {
+    console.error('[v47 final] getChannels DB failed', e?.stack || e?.message || e);
+    return [];
+  }
+}
+
+
+
+
+async function getChannel(id) {
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`).catch(() => {});
+  const rows = await query(`
+    SELECT *
+    FROM channels
+    WHERE id = $1
+      AND COALESCE(is_active, true) = true
+    LIMIT 1
+  `, [id]);
+  return rows[0] || null;
+}
+
+
+
+
+async function getChannelsByIds(ids) {
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`).catch(() => {});
+
+  const cleanIds = (Array.isArray(ids) ? ids : [])
+    .map((x) => Number(x))
+    .filter(Boolean);
+
+  if (!cleanIds.length) return [];
+
+  return query(`
+    SELECT *
+    FROM channels
+    WHERE id = ANY($1::int[])
+      AND COALESCE(is_active, true) = true
+    ORDER BY title ASC NULLS LAST, id ASC
+  `, [cleanIds]);
+}
+
+
+
+
 async function refreshChannelMeta(channel) {
   if (!channel?.max_chat_id) return channel;
   try {
@@ -8824,6 +14485,13 @@ async function showStudio(callbackId) { await cb(callbackId, `━━━━━━
 async function sendStudio(chatId) { await msg(chatId, `━━━━━━━━━━━━━━\n🧬 <b>LinkRay Studio</b>\n\nВыберите действие.\n━━━━━━━━━━━━━━`, studioRows()); }
 
 async function showChannelSelect(callbackId, key, draft, multi = false) {
+  /* LR_V44_SAVE_DRAFT_ON_CHANNEL_SELECT */
+  try {
+    await lrV44SaveForwardDraft(key, draft, 'showChannelSelect');
+  } catch (e) {
+    console.error('[v44 forward editor] save draft hook failed', e?.message || e);
+  }
+
   const channels = await getChannels();
   if (!channels.length) {
     await cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и откройте «Каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ В Studio', 'main:posting')]]);
@@ -8840,7 +14508,186 @@ async function showChannelSelect(callbackId, key, draft, multi = false) {
   await setSession(key, multi ? 'select_channels_multi' : 'select_channels', { draft });
   await cb(callbackId, `━━━━━━━━━━━━━━\n📡 <b>Куда выпустить пост?</b>\n\n${hasContent(draft) ? 'Материал уже принят. Выберите канал.' : 'Выберите канал, затем отправьте пост.'}\n━━━━━━━━━━━━━━`, rows);
 }
-async function askContent(callbackId, key, draft) { await setSession(key, 'wait_post_content', { draft }); const channels = await getChannelsByIds(draft.channelIds); await cb(callbackId, `━━━━━━━━━━━━━━\n📨 <b>Отправьте пост</b>\n\nКаналы:\n${channelsLines(channels)}\n\nМожно отправить текст, фото, видео, файл или пересланный пост.\n━━━━━━━━━━━━━━`, [[callbackButton('⬅️ К каналам', 'post:change_channels')],[callbackButton('❌ Отмена', 'post:cancel')]]); }
+/* LR_RECOVER_FORWARD_DRAFT_EDITOR_V44_START */
+function lrV44Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function lrV44CleanKey(key) {
+  return String(key || '').trim().slice(0, 120);
+}
+
+function lrV44DraftHasContent(draft) {
+  try {
+    if (typeof hasDraftContent === 'function' && hasDraftContent(draft)) return true;
+  } catch {}
+
+  const d = draft || {};
+  const c = d.content || {};
+
+  if (String(c.text || d.text || d.caption || d.html || '').trim()) return true;
+  if (Array.isArray(c.attachments) && c.attachments.length) return true;
+  if (Array.isArray(d.attachments) && d.attachments.length) return true;
+  if (Array.isArray(c.media) && c.media.length) return true;
+  if (Array.isArray(d.media) && d.media.length) return true;
+  if (c.link || d.link || c.forward || d.forward || c.forwarded || d.forwarded) return true;
+  if (c.message || d.message || c.message_id || d.message_id || c.messageId || d.messageId) return true;
+  if (c.raw || d.raw) return true;
+
+  return false;
+}
+
+function lrV44MergeDrafts(savedDraft, currentDraft) {
+  const saved = savedDraft || {};
+  const cur = currentDraft || {};
+  const curContent = lrV44DraftHasContent(cur);
+
+  const merged = {
+    ...saved,
+    ...cur,
+    content: curContent ? (cur.content || {}) : (saved.content || cur.content || {})
+  };
+
+  const curIds = Array.isArray(cur.channelIds) ? cur.channelIds : [];
+  const savedIds = Array.isArray(saved.channelIds) ? saved.channelIds : [];
+
+  merged.channelIds = curIds.length ? curIds : savedIds;
+
+  if (!merged.campaignId && saved.campaignId) merged.campaignId = saved.campaignId;
+  if (merged.signatureEnabled === undefined && saved.signatureEnabled !== undefined) {
+    merged.signatureEnabled = saved.signatureEnabled;
+  }
+
+  return merged;
+}
+
+async function lrV44SaveForwardDraft(key, draft, reason = 'channel_select') {
+  const k = lrV44CleanKey(key);
+  if (!k || !lrV44DraftHasContent(draft)) return false;
+
+  try {
+    await query(
+      `INSERT INTO lr_bot_state(key,value,updated_at)
+       VALUES($1,$2,now())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [`lr_v44_forward_draft:${k}`, JSON.stringify({ draft, reason, ts: Date.now() })]
+    );
+
+    console.log('[v44 forward editor] saved forward draft', JSON.stringify({
+      key: k,
+      reason,
+      hasText: Boolean(String(draft?.content?.text || draft?.text || '').trim()),
+      attachments: Array.isArray(draft?.content?.attachments) ? draft.content.attachments.length : (Array.isArray(draft?.attachments) ? draft.attachments.length : 0)
+    }));
+
+    return true;
+  } catch (e) {
+    console.error('[v44 forward editor] save forward draft failed', e?.stack || e?.message || e);
+    return false;
+  }
+}
+
+async function lrV44LoadForwardDraft(key) {
+  const k = lrV44CleanKey(key);
+  if (!k) return null;
+
+  try {
+    const rows = lrV44Rows(await query(
+      `SELECT value
+       FROM lr_bot_state
+       WHERE key=$1 AND updated_at > now() - interval '30 minutes'
+       LIMIT 1`,
+      [`lr_v44_forward_draft:${k}`]
+    ));
+
+    if (!rows[0]) return null;
+
+    const value = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+    const draft = value?.draft || value;
+
+    return draft && typeof draft === 'object' ? draft : null;
+  } catch (e) {
+    console.error('[v44 forward editor] load forward draft failed', e?.stack || e?.message || e);
+    return null;
+  }
+}
+
+async function lrV44OpenEditorIfForwardDraft(callbackId, key, draft, showEditorCleanFn) {
+  /* LR_V45_V44_CHATID_FIX */
+  let chatId = globalThis.chatId || '';
+  try {
+    if (!chatId && typeof lrV42ChatId === 'function') chatId = lrV42ChatId(globalThis.__lastUpdate || {});
+  } catch {}
+
+  const current = draft || {};
+  const saved = await lrV44LoadForwardDraft(key);
+  const merged = lrV44MergeDrafts(saved, current);
+
+  if (!lrV44DraftHasContent(merged)) return false;
+
+  const channels = Array.isArray(merged.channelIds) ? merged.channelIds : [];
+  if (!channels.length && !merged.channelId) return false;
+
+  console.log('[v44 forward editor] open editor after channel selection', JSON.stringify({
+    key: lrV44CleanKey(key),
+    channels,
+    hasSaved: Boolean(saved),
+    currentHasContent: lrV44DraftHasContent(current),
+    mergedHasContent: lrV44DraftHasContent(merged)
+  }));
+
+  /* LR_V45_V44_PREVIEW_FIRST */
+  if (await lrV45ShowEditorPreviewFirst(lrV42ChatId ? lrV42ChatId({ chat_id: chatId }) || chatId : chatId, key, merged)) {
+    /* LR_V46_CLEAR_AFTER_V44_EDITOR_OPEN */
+  try { await lrV46DeleteForwardDrafts({ chat_id: key, payload: 'post:create' }, 'after_editor_open'); } catch {}
+  return true;
+  }
+
+
+  if (typeof showEditorCleanFn === 'function') {
+    if (await lrV45ShowEditorPreviewFirst(chatId, key, merged)) /* LR_V46_CLEAR_AFTER_V44_EDITOR_OPEN */
+  try { await lrV46DeleteForwardDrafts({ chat_id: key, payload: 'post:create' }, 'after_editor_open'); } catch {}
+  return true;
+    await showEditorCleanFn(merged);
+    /* LR_V46_CLEAR_AFTER_V44_EDITOR_OPEN */
+  try { await lrV46DeleteForwardDrafts({ chat_id: key, payload: 'post:create' }, 'after_editor_open'); } catch {}
+  return true;
+  }
+
+  if (typeof showEditorClean === 'function') {
+    if (await lrV45ShowEditorPreviewFirst(chatId, key, merged)) /* LR_V46_CLEAR_AFTER_V44_EDITOR_OPEN */
+  try { await lrV46DeleteForwardDrafts({ chat_id: key, payload: 'post:create' }, 'after_editor_open'); } catch {}
+  return true;
+    await showEditorClean(merged);
+    /* LR_V46_CLEAR_AFTER_V44_EDITOR_OPEN */
+  try { await lrV46DeleteForwardDrafts({ chat_id: key, payload: 'post:create' }, 'after_editor_open'); } catch {}
+  return true;
+  }
+
+  if (typeof showEditor === 'function') {
+    if (await lrV45ShowEditorPreviewFirst(chatId, key, merged)) /* LR_V46_CLEAR_AFTER_V44_EDITOR_OPEN */
+  try { await lrV46DeleteForwardDrafts({ chat_id: key, payload: 'post:create' }, 'after_editor_open'); } catch {}
+  return true;
+    await showEditor(callbackId, key, merged);
+    /* LR_V46_CLEAR_AFTER_V44_EDITOR_OPEN */
+  try { await lrV46DeleteForwardDrafts({ chat_id: key, payload: 'post:create' }, 'after_editor_open'); } catch {}
+  return true;
+  }
+
+  console.error('[v44 forward editor] no editor function found');
+  return false;
+}
+
+console.log('[v44 forward editor] installed');
+/* LR_RECOVER_FORWARD_DRAFT_EDITOR_V44_END */
+async function askContent(callbackId, key, draft) {
+    /* LR_V44_ASKCONTENT_RECOVER_FORWARD_DRAFT */
+    try {
+      if (await lrV44OpenEditorIfForwardDraft(callbackId, key, draft, typeof showEditorClean === 'function' ? showEditorClean : null)) return;
+    } catch (e) {
+      console.error('[v44 forward editor] askContent guard failed', e?.stack || e?.message || e);
+    }
+ await setSession(key, 'wait_post_content', { draft }); const channels = await getChannelsByIds(draft.channelIds); await cb(callbackId, `━━━━━━━━━━━━━━\n📨 <b>Отправьте пост</b>\n\nКаналы:\n${channelsLines(channels)}\n\nМожно отправить текст, фото, видео, файл или пересланный пост.\n━━━━━━━━━━━━━━`, [[callbackButton('⬅️ К каналам', 'post:change_channels')],[callbackButton('❌ Отмена', 'post:cancel')]]); }
 function editorMenuRows(draft) {
   const rows = [
     [callbackButton('✏️ Изменить текст', 'editor:text'), callbackButton('🖼 Медиа', 'editor:media')],
@@ -9844,7 +15691,6 @@ async function __lrSaveAutosignV9(channelId, text, ownerKey) {
     id: saved?.id || null,
     len: String(saved?.text || '').length
   }));
-
   return saved;
 }
 
@@ -10182,126 +16028,209 @@ async function __lrV24AutosignSavedBack(update) {
   return true;
 }
 
-async function __lrV12SaveSignature(channelId, text, ownerKey) {
-  const pgMod = await import('pg');
-  const Pool = pgMod.Pool || (pgMod.default && pgMod.default.Pool);
-  if (!Pool) throw new Error('pg Pool not found');
 
-  const cid = Number(channelId || 0);
-  const clean = String(text || '').trim();
-  const owner = String(ownerKey || 'shared').slice(0, 200);
-
-  if (!cid) throw new Error('autosign save: empty channelId');
-  if (!clean) throw new Error('autosign save: empty text');
-
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-  try {
-    await pool.query(
-      "DO $$ BEGIN " +
-      "IF EXISTS (" +
-      "SELECT 1 FROM information_schema.columns " +
-      "WHERE table_schema='public' AND table_name='channel_signatures' " +
-      "AND column_name='id' AND column_default IS NULL AND is_identity='NO' AND is_nullable='NO'" +
-      ") THEN " +
-      "CREATE SEQUENCE IF NOT EXISTS channel_signatures_id_seq; " +
-      "PERFORM setval('channel_signatures_id_seq', COALESCE((SELECT MAX(id) FROM channel_signatures),0)+1, false); " +
-      "ALTER TABLE channel_signatures ALTER COLUMN id SET DEFAULT nextval('channel_signatures_id_seq'); " +
-      "END IF; END $$;"
-    );
-
-    let realCid = cid;
-
-    try {
-      const cols = await pool.query(
-        "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='channels'"
-      );
-      const have = new Set(cols.rows.map(x => String(x.column_name)));
-      const where = [];
-
-      if (have.has('id')) where.push('id::text=$1');
-      if (have.has('chat_id')) where.push('chat_id::text=$1');
-      if (have.has('channel_id')) where.push('channel_id::text=$1');
-      if (have.has('external_id')) where.push('external_id::text=$1');
-      if (have.has('max_id')) where.push('max_id::text=$1');
-
-      if (where.length && have.has('id')) {
-        const found = await pool.query(
-          "SELECT id FROM channels WHERE " + where.join(" OR ") + " ORDER BY id LIMIT 1",
-          [String(cid)]
-        );
-        if (found.rows[0] && found.rows[0].id) realCid = Number(found.rows[0].id);
-      }
-    } catch (e) {
-      console.error('[autosign direct v18] channel resolve skipped', e && e.message ? e.message : e);
-    }
-
-    await pool.query(
-      "DELETE FROM channel_signatures WHERE channel_id=$1",
-      [realCid]
-    );
-
-    const savedRes = await pool.query(
-      "INSERT INTO channel_signatures " +
-      "(channel_id, signature, enabled, owner_key, title, is_active, text, created_at, updated_at) " +
-      "VALUES ($1, $2, true, $3, 'Автоподпись', true, $2, now(), now()) " +
-      "RETURNING id, channel_id, signature, enabled, owner_key, title, is_active, text, updated_at",
-      [realCid, clean, owner]
-    );
-
-    let saved = savedRes.rows[0] || null;
-
-    if (!saved) {
-      const checkRes = await pool.query(
-        "SELECT id, channel_id, signature, enabled, owner_key, title, is_active, text, updated_at " +
-        "FROM channel_signatures WHERE channel_id=$1 " +
-        "ORDER BY updated_at DESC NULLS LAST, id DESC NULLS LAST LIMIT 1",
-        [realCid]
-      );
-      saved = checkRes.rows[0] || null;
-    }
-
-    if (!saved) {
-      const totalRes = await pool.query("SELECT count(*)::int AS cnt FROM channel_signatures");
-      throw new Error('autosign save failed v18 total=' + String(totalRes.rows[0] && totalRes.rows[0].cnt));
-    }
-
-    console.log('[autosign direct v18] saved+verified', JSON.stringify({
-      id: saved.id || null,
-      rawChannelId: cid,
-      savedChannelId: saved.channel_id,
-      enabled: saved.enabled,
-      isActive: saved.is_active,
-      signatureLen: String(saved.signature || '').length,
-      textLen: String(saved.text || '').length
-    }));
-
-    return saved;
-  } finally {
-    await pool.end().catch(() => {});
-  }
+/* LR_SIG_POST_STABLE_FIX_START */
+function lrSigStableOk(v) {
+  const x = String(v ?? '').trim();
+  const low = x.toLowerCase();
+  if (!x || x.length > 260) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(low)) return '';
+  return x;
 }
 
-async function __lrV12SendSaved(update, saved) {
-  const chatId = __lrV12ChatId(update);
-  if (!chatId) return;
+function lrSigStableEsc(v) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(v);
+  } catch {}
+  return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-  const text = `✅ Подпись сохранена в базе.
+function lrSigStableMid(update) {
+  const list = [
+    update?.message?.body?.mid,
+    update?.message?.mid,
+    update?.callback?.message?.body?.mid,
+    update?.callback?.message?.mid,
+    update?.message_callback?.message?.body?.mid,
+    update?.message_callback?.message?.mid,
+    update?.body?.message?.body?.mid,
+    update?.body?.message?.mid,
+    update?.update?.message?.body?.mid,
+    update?.update?.message?.mid
+  ];
+  for (const v of list) {
+    const id = lrSigStableOk(v);
+    if (id) return id;
+  }
+  return '';
+}
+
+function lrSigStableKeyboard(rows) {
+  try {
+    if (typeof inlineKeyboard === 'function') return inlineKeyboard(rows || []);
+    if (typeof buttonRows === 'function') return buttonRows(rows || []);
+  } catch {}
+  return rows || [];
+}
+
+function lrSigStablePromptText() {
+  return `🏷 <b>Отправьте подпись.</b> Ссылки, жирный, курсив, подчёркивание, зачёркивание, моно и заголовок MAX сохранятся.
+
+Цитата в подписи специально будет обычным текстом.`;
+}
+
+function lrSigStableContent(update, fallbackText = '') {
+  let a = null;
+  let b = null;
+
+  try {
+    if (typeof lrAutoSigFinalContent === 'function') a = lrAutoSigFinalContent(update);
+  } catch {}
+
+  try {
+    if (typeof lrSigV14Content === 'function') b = lrSigV14Content(update);
+  } catch {}
+
+  const at = String(a?.text || '').trim();
+  const bt = String(b?.text || '').trim();
+  const fb = String(fallbackText || '').trim();
+
+  const richA = /<(a|b|strong|i|em|u|s|code)\b/i.test(at);
+  const richB = /<(a|b|strong|i|em|u|s|code)\b/i.test(bt);
+
+  if (richA && !richB) return at;
+  if (richB && !richA) return bt;
+  if (at.length >= bt.length && at) return at;
+  if (bt) return bt;
+  return fb;
+}
+
+async function lrSigStableClearWait(update) {
+  try {
+    if (typeof __lrV12Del === 'function' && typeof __lrV12StateKeys === 'function') {
+      await __lrV12Del(__lrV12StateKeys(update, 'wait')).catch(() => {});
+    }
+  } catch {}
+
+  await query(
+    `DELETE FROM lr_bot_state
+     WHERE key LIKE 'autosign_direct_v12:wait:%'
+        OR key LIKE 'autosign_v9:wait:%'
+        OR key LIKE 'pending_signature:%'
+        OR key LIKE 'lr_runtime_sig_wait:%'`
+  ).catch(() => {});
+}
+
+async function lrSigStableIsPostFlow(update) {
+  try {
+    const key = getSessionKey(update);
+    const ses = key && typeof getSession === 'function' ? await getSession(key).catch(() => null) : null;
+    const state = String(ses?.state || ses?.mode || '');
+    if (/post|draft|calendar|saved_time|manual_time|editor|wait_post/i.test(state)) return true;
+  } catch {}
+  return false;
+}
+
+async function lrSigStableRememberWait(update, channelId, menuMid) {
+  const value = {
+    channelId: Number(channelId),
+    menuMid: lrSigStableOk(menuMid)
+  };
+
+  await __lrV12Put(__lrV12StateKeys(update, 'last_channel'), value).catch(() => {});
+  await __lrV12Put(__lrV12StateKeys(update, 'wait'), value).catch(() => {});
+
+  console.log('[LR_SIG_POST_STABLE_FIX wait]', JSON.stringify(value));
+}
+
+async function lrSigStableChangedText(saved, sigHtml) {
+  const channelId = Number(saved?.channel_id || saved?.channelId || 0);
+  let title = channelId ? `#${channelId}` : 'каналу';
+
+  try {
+    if (channelId && typeof getChannel === 'function') {
+      const ch = await getChannel(channelId).catch(() => null);
+      if (ch && typeof channelName === 'function') title = channelName(ch);
+    }
+  } catch {}
+
+  return `✅ <b>Автоподпись изменена</b>
+
+Канал: <b>${lrSigStableEsc(title)}</b>
 
 ━━━━━━━━━━━━━━
 🏷 <b>Автоподпись</b>
 
 Статус: 🟢 включена
 
-${String(saved?.signature || saved?.text || '').trim()}
+${String(sigHtml || saved?.signature || saved?.text || '').trim()}
 ━━━━━━━━━━━━━━`;
+}
+/* LR_SIG_POST_STABLE_FIX_END */
 
-  const rows = [
-    [callbackButton('✏️ Заменить автоподпись', `sig:add_channel:${saved.channel_id}`)],
-    [callbackButton('🔴 Выключить', `sig:toggle_channel:${saved.channel_id}`)],
-    [callbackButton('⬅️ Автоподписи', 'sig:menu')],
-    [callbackButton('⬅️ В Studio', 'main:posting')]
-  ];
+async function __lrV12SaveSignature(cid, text, ownerKey = 'global') {
+  const channelId = Number(cid);
+  const sigHtml = String(text || '').trim();
+
+  if (!channelId || !sigHtml) {
+    throw new Error('empty signature or channel id');
+  }
+
+  await query(`CREATE TABLE IF NOT EXISTS channel_signatures (
+    id bigserial PRIMARY KEY,
+    channel_id bigint NOT NULL UNIQUE,
+    owner_key text NOT NULL DEFAULT 'global',
+    title text,
+    text text,
+    signature text,
+    format text DEFAULT 'html',
+    markup jsonb DEFAULT '[]'::jsonb,
+    enabled boolean NOT NULL DEFAULT true,
+    is_active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`);
+
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS owner_key text NOT NULL DEFAULT 'global'`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS title text`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS text text`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS signature text`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS format text DEFAULT 'html'`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS markup jsonb DEFAULT '[]'::jsonb`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`);
+  await query(`ALTER TABLE channel_signatures ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+
+  const rows = await query(
+    `INSERT INTO channel_signatures(channel_id, owner_key, title, text, signature, format, enabled, is_active, created_at, updated_at)
+     VALUES($1::bigint, $2, 'Автоподпись', $3, $3, 'html', true, true, now(), now())
+     ON CONFLICT (channel_id) DO UPDATE
+       SET owner_key = EXCLUDED.owner_key,
+           title = EXCLUDED.title,
+           text = EXCLUDED.text,
+           signature = EXCLUDED.signature,
+           format = 'html',
+           enabled = true,
+           is_active = true,
+           updated_at = now()
+     RETURNING id, channel_id, owner_key, title, text, signature, format, enabled, is_active, updated_at`,
+    [channelId, String(ownerKey || 'global'), sigHtml]
+  );
+
+  const saved = rows?.[0] || null;
+  console.log('[LR_SIG_POST_STABLE_FIX upsert]', JSON.stringify({ channelId, id: saved?.id || null, len: sigHtml.length }));
+  return saved;
+}
+
+async function __lrV12SendSaved(update, saved, wait = {}, sigHtml = '') {
+  const chatId = __lrV12ChatId(update);
+  if (!chatId) return true;
+
+  sigHtml = String(sigHtml || saved?.signature || saved?.text || '').trim();
+
+  const text = await lrSigStableChangedText(saved, sigHtml);
+  const rows = [[callbackButton('⬅️ Назад', `sig:channel:${saved?.channel_id || wait?.channelId || 0}`)]];
 
   if (typeof msg === 'function') {
     await msg(chatId, text, rows, 'html');
@@ -10310,9 +16239,17 @@ ${String(saved?.signature || saved?.text || '').trim()}
       chatId,
       text,
       format: 'html',
-      attachments: typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows
+      attachments: lrSigStableKeyboard(rows)
     });
   }
+
+  console.log('[LR_SIG_POST_STABLE_FIX saved menu]', JSON.stringify({
+    channelId: saved?.channel_id || wait?.channelId || null,
+    hasBold: /<b>|<strong>/i.test(sigHtml),
+    hasLink: /<a\s/i.test(sigHtml)
+  }));
+
+  return true;
 }
 
 async function __lrAutosignDirectCallbackV12(update) {
@@ -10320,30 +16257,51 @@ async function __lrAutosignDirectCallbackV12(update) {
   if (!payload) return false;
 
   const channelId = __lrV12FindChannelIdFromAny(update);
+  const menuMid = lrSigStableMid(update);
 
   if (payload.startsWith('sig:channel:') && channelId) {
-    await __lrV12Put(__lrV12StateKeys(update, 'last_channel'), { channelId });
-    console.log('[autosign direct v12] remember channel', JSON.stringify({ channelId }));
+    await __lrV12Put(__lrV12StateKeys(update, 'last_channel'), { channelId, menuMid });
     return false;
   }
 
   if (payload.startsWith('sig:add_channel:') && channelId) {
-    await __lrV12Put(__lrV12StateKeys(update, 'last_channel'), { channelId });
-    await __lrV12Put(__lrV12StateKeys(update, 'wait'), { channelId });
-    console.log('[autosign direct v12] wait add_channel', JSON.stringify({ channelId }));
-    return false;
+    await lrSigStableRememberWait(update, channelId, menuMid);
+
+    const rows = [[callbackButton('⬅️ Назад', `sig:channel:${channelId}`)]];
+    const callbackId = getCallbackId(update);
+
+    if (callbackId && typeof cb === 'function') {
+      await cb(callbackId, lrSigStablePromptText(), rows, 'html');
+    } else {
+      const chatId = __lrV12ChatId(update);
+      if (chatId && typeof msg === 'function') await msg(chatId, lrSigStablePromptText(), rows, 'html');
+    }
+
+    console.log('[LR_SIG_POST_STABLE_FIX prompt]', JSON.stringify({ channelId, menuMid }));
+    return true;
   }
 
   if (payload === 'sig:add') {
-    const last = await __lrV12Get(__lrV12StateKeys(update, 'last_channel'));
+    const last = await __lrV12Get(__lrV12StateKeys(update, 'last_channel')).catch(() => null);
     const cid = Number(last?.channelId || 0);
-    if (cid) {
-      await __lrV12Put(__lrV12StateKeys(update, 'wait'), { channelId: cid });
-      console.log('[autosign direct v12] wait sig:add', JSON.stringify({ channelId: cid }));
+    const mid = menuMid || last?.menuMid || '';
+
+    if (!cid) return true;
+
+    await lrSigStableRememberWait(update, cid, mid);
+
+    const rows = [[callbackButton('⬅️ Назад', `sig:channel:${cid}`)]];
+    const callbackId = getCallbackId(update);
+
+    if (callbackId && typeof cb === 'function') {
+      await cb(callbackId, lrSigStablePromptText(), rows, 'html');
     } else {
-      console.log('[autosign direct v12] sig:add without remembered channel');
+      const chatId = __lrV12ChatId(update);
+      if (chatId && typeof msg === 'function') await msg(chatId, lrSigStablePromptText(), rows, 'html');
     }
-    return false;
+
+    console.log('[LR_SIG_POST_STABLE_FIX prompt sig:add]', JSON.stringify({ channelId: cid, menuMid: mid }));
+    return true;
   }
 
   return false;
@@ -10353,51 +16311,84 @@ async function __lrAutosignDirectMessageV12(update) {
   const text = __lrV12Text(update);
   if (!text) return false;
 
-  if (text.startsWith('/')) {
-    await __lrV12Del(__lrV12StateKeys(update, 'wait'));
+  if (String(text).startsWith('/')) {
+    await lrSigStableClearWait(update);
     return false;
   }
 
-  let wait = await __lrV12Get(__lrV12StateKeys(update, 'wait'));
-
-  if (!wait?.channelId) {
-    try {
-      const chat = __lrV12ChatId(update);
-      if (typeof getSession === 'function' && chat) {
-        const ses = await getSession(chat).catch(() => null);
-        const state = String(ses?.state || ses?.mode || '');
-        const raw = JSON.stringify(ses || {});
-        if (/wait_signature|signature|autosign/i.test(state + ' ' + raw)) {
-          const m = raw.match(/"channelId"\s*:\s*(\d+)|"channel_id"\s*:\s*(\d+)|"channelIds"\s*:\s*\[\s*(\d+)/);
-          if (m) wait = { channelId: Number(m[1] || m[2] || m[3]) };
-        }
-      }
-    } catch {}
+  if (await lrSigStableIsPostFlow(update)) {
+    await lrSigStableClearWait(update);
+    console.log('[LR_SIG_POST_STABLE_FIX] skip autosign, active post flow');
+    return false;
   }
 
+  const wait = await __lrV12Get(__lrV12StateKeys(update, 'wait')).catch(() => null);
   const channelId = Number(wait?.channelId || 0);
+
   if (!channelId) return false;
 
-  const saved = await __lrV12SaveSignature(channelId, text, __lrV12ChatId(update) || 'linkray');
-  await __lrV12Del(__lrV12StateKeys(update, 'wait'));
-
   try {
-    const chat = __lrV12ChatId(update);
-    if (typeof clearSession === 'function' && chat) await clearSession(chat).catch(() => {});
-  } catch {}
+    const sigHtml = lrSigStableContent(update, text);
+    if (!sigHtml) return false;
 
-  await __lrV12SendSaved(update, saved);
-  return true;
+    const saved = await __lrV12SaveSignature(
+      channelId,
+      sigHtml,
+      __lrV12ChatId(update) || 'linkray'
+    );
+
+    await lrSigStableClearWait(update);
+
+    try {
+      const chat = __lrV12ChatId(update);
+      if (typeof clearSession === 'function' && chat) {
+        await clearSession(chat).catch(() => {});
+      }
+    } catch {}
+
+    await __lrV12SendSaved(update, saved, wait, sigHtml);
+    return true;
+  } catch (e) {
+    console.error('[LR_SIG_POST_STABLE_FIX message save]', e?.stack || e?.message || e);
+    await lrSigStableClearWait(update);
+    return true;
+  }
 }
+
+/* LR_AUTOSIGN_DIRECT_SAVE_V12_END */
+
 /* LR_AUTOSIGN_DIRECT_SAVE_V12_END */
 
 async function handleCallback(update) {
-  await __lrAutosignDirectCallbackV12(update).catch(e => console.error('[autosign direct v18 callback]', e?.stack || e?.message || e));
+
+
+
+
+
+  if (await __lrAutosignDirectCallbackV12(update).catch(e => {
+    console.error('[autosign direct v18 callback]', e?.stack || e?.message || e);
+    return false;
+  })) return;
+
   await __lrAutosignV9Callback(update).catch(e => console.error('[autosign v9 callback]', e?.stack || e?.message || e));
   __lrStartChannelDbSyncTimer();
   __lrStartChannelDbSyncTimer();
   if (await __lrShouldIgnoreInboundChannelUpdate(update)) return;
-  const callbackId = getCallbackId(update); const payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = lrResolveReplyChatId(update, key);
+  const callbackId = getCallbackId(update); let payload = getCallbackPayload(update); const key = getSessionKey(update); const chatId = lrResolveReplyChatId(update, key);
+    if (
+      !String(type || '').includes('callback') &&
+      !callbackId &&
+      payload &&
+      (typeof payload !== 'string' || String(payload) === '[object Object]' || String(payload).startsWith('[object '))
+    ) {
+      console.log('[v17 payload fix] ignore fake message payload', JSON.stringify({
+        type,
+        chatId,
+        payloadType: typeof payload,
+        payloadPreview: String(payload).slice(0, 80)
+      }));
+      payload = '';
+    }
   globalThis.__lrLastCallbackChatId = chatId;
   await __lrRememberPrivateChatId(chatId, update);
   await __lrNotifyNewChannels(chatId, update);
@@ -10421,8 +16412,7 @@ async function handleCallback(update) {
   if (payload === 'post:all_channels') { const s = await getSession(key); const draft = safeDraft(s.data); draft.channelIds = (await getChannels()).map(c=>Number(c.id)); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
   if (payload === 'post:channels_next') { const s = await getSession(key); const draft = safeDraft(s.data); if (!draft.channelIds.length) return cb(callbackId, 'Выберите хотя бы один канал.', [[callbackButton('⬅️ Назад','post:multi')]]); if (hasContent(draft)) { await answerCallback({ callbackId, notification: 'Открываю редактор...' }).catch(()=>{}); return sendEditorAsNew(chatId, key, draft); } return askContent(callbackId, key, draft); }
   if (payload === 'post:change_channels') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), false); }
-  if (payload === 'post:add_channel') return cb(callbackId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\n1. Откройте канал в MAX.\n2. Добавьте LinkRay в администраторы.\n3. Выдайте право публикации.\n4. Вернитесь и нажмите «Мои каналы».\n━━━━━━━━━━━━━━`, [[callbackButton('🔗 Добавить канал', 'post:add_channel')],[callbackButton('⬅️ Назад','post:create')]]);
-  if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
+if (payload === 'editor:text') { const s = await getSession(key); await setSession(key, 'wait_edit_text', s.data); return cb(callbackId, '✏️ Отправьте новый текст поста. Форматирование MAX сохранится.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:media') { const s = await getSession(key); await setSession(key, 'wait_edit_media', s.data); return cb(callbackId, '🖼 Отправьте новое фото, видео или файл.', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:button') { const s = await getSession(key); await setSession(key, 'wait_button', s.data); return cb(callbackId, '🔘 Формат кнопки:\n<code>Название - https://site.ru</code>\nНесколько в строке через |', [[callbackButton('⬅️ Назад','editor:back')]]); }
   if (payload === 'editor:signature') { const s = await getSession(key); const draft = safeDraft(s.data); if (draft.isAd) return cb(callbackId, '💼 Для рекламного поста автоподпись не добавляется.', [[callbackButton('⬅️ В редактор','editor:back')]]); const channelId = draft.channelIds[0]; const sig = channelId ? await loadSignature(channelId) : null; const rows = (sig && String(sig.text || '').trim())
@@ -10491,7 +16481,85 @@ async function handleCallback(update) {
   if (payload === 'editor:next') { const s = await getSession(key); return showPublishMenu(callbackId, key, safeDraft(s.data)); }
   if (payload === 'editor:save') { const s = await getSession(key); return saveExisting(callbackId, key, safeDraft(s.data)); }
   if (payload === 'publish:auto_delete') { const s = await getSession(key); return showPublishMenu(callbackId, key, safeDraft(s.data)); }
-  if (payload.startsWith('publish:auto_set:')) { const session = await getSession(key); const draft = safeDraft(session.data); if (await __lrHandlePendingSignatureTextV5({ chatId, key, update, session, draft, text, send: msg })) return; const v = Number(payload.split(':')[2] || 0) || null; draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return showPublishMenu(callbackId, key, draft); }
+  if (payload.startsWith('publish:auto_set:')) { const session = await getSession(key); const draft = safeDraft(session.data);
+
+  if (session.state === 'wait_add_channel') {
+    return lrV15HandleAddChannelForward(update, chatId, key);
+  }
+
+  if (
+    (!session.state || ['idle','main','menu','start'].includes(String(session.state))) &&
+    !String(lrV15Text(update) || '').trim().startsWith('/')
+  ) {
+    const content = typeof lrSafeHydrateContent === 'function'
+      ? await lrSafeHydrateContent(update)
+      : await hydrateContent(update);
+
+    const hasPostContent =
+      String(content?.text || '').trim() ||
+      (Array.isArray(content?.attachments) && content.attachments.length) ||
+      content?.link ||
+      content?.hasRealBody;
+
+    if (hasPostContent) {
+      const d = emptyDraft();
+      d.content = { ...d.content, ...content };
+      lrApplyEditorPostFormat(d, content);
+      d.previewMessageId = null;
+
+      console.log('[v16 payload fix] main message -> select channels', JSON.stringify({
+        chatId,
+        key,
+        state: session.state || '',
+        textLength: String(d.content?.text || '').length,
+        attachments: Array.isArray(d.content?.attachments) ? d.content.attachments.length : 0
+      }));
+
+      return lrV15SendChannelSelect(chatId, key, d, false);
+    }
+  }
+
+  if ((!session.state || ['idle','main','menu','start'].includes(String(session.state))) && lrV15LooksForwardedPost(update)) {
+    if (session.state === 'wait_add_channel') {
+    console.log('[v19 native guard] wait_add_channel forward', JSON.stringify({ chatId, key }));
+    return lrV15HandleAddChannelForward(update, chatId, key);
+  }
+
+  const content = await lrSafeHydrateContent(update);
+    const hasPostContent = String(content?.text || '').trim() || (Array.isArray(content?.attachments) && content.attachments.length) || content?.link;
+    if (hasPostContent) {
+      const d = emptyDraft();
+      d.content = { ...d.content, ...content };
+      lrApplyEditorPostFormat(d, content);
+      d.previewMessageId = null;
+      console.log('[v15 native] main forward -> select channels', JSON.stringify({ chatId, key, textLength: String(d.content?.text || '').length, attachments: Array.isArray(d.content?.attachments) ? d.content.attachments.length : 0 }));
+      return lrV15SendChannelSelect(chatId, key, d, false);
+    }
+  }
+
+
+  if (session.state === 'wait_add_channel') {
+    return lrNativeHandleAddChannelForward(update, chatId, key);
+  }
+
+  if (
+    (!session.state || ['idle','main','menu','start'].includes(String(session.state))) &&
+    lrNativeLooksForwardedPost(update)
+  ) {
+    const content = await lrSafeHydrateContent(update);
+    const nextDraft = emptyDraft();
+    nextDraft.content = { ...nextDraft.content, ...content };
+    lrApplyEditorPostFormat(nextDraft, content);
+    nextDraft.previewMessageId = null;
+    console.log('[native router fix] main forward -> channel select', JSON.stringify({
+      chatId,
+      key,
+      textLength: String(nextDraft.content?.text || '').length,
+      attachments: Array.isArray(nextDraft.content?.attachments) ? nextDraft.content.attachments.length : 0
+    }));
+    return lrNativeSendChannelSelect(chatId, key, nextDraft, false);
+  }
+ if (await __lrHandlePendingSignatureTextV5({ chatId, key, update, session, draft, text, send: msg })) return; const v = Number(payload.split(':')[2] || 0) || null; draft.autoDeleteMinutes = v; await setSession(key, 'publish_menu', { draft }); return showPublishMenu(callbackId, key, draft); }
   if (payload === 'schedule:manual') { const s = await getSession(key); await setSession(key, 'wait_schedule_time', s.data); return cb(callbackId, '🕒 Введите время: 18:30, 0235, завтра 18:30, через 1 минуту или 2026-06-23 18:30.', [[callbackButton('⬅️ Назад','editor:next')]]); }
   if (payload === 'schedule:calendar') return showScheduleCalendar(callbackId, key, dateKey(new Date()));
   if (payload.startsWith('schedule:week:')) return showScheduleCalendar(callbackId, key, payload.split(':')[2]);
@@ -10658,22 +16726,84 @@ if (payload.startsWith('sig:add_channel:')) {
   await cb(callbackId, 'Команда пока не обработана.', [[callbackButton('🏠 В меню','main:menu')]]);
 }
 
-async function showChannels(callbackId) {
-  return cb(callbackId, `━━━━━━━━━━━━
+/* LR_NATIVE_V15_NO_LAYERS_START */
+async function __lrAddConfirmWatch() { return false; }
+async function lrNativeV15MaybeRegisterDisabled() { return false; }
+function lrV15Clean(value, max = 4000) { const text = String(value ?? '').trim(); const low = text.toLowerCase(); if (!text || text.length > max) return ''; if (['unknown','undefined','null','nan','[object object]'].includes(low)) return ''; return text; }
+function lrV15Rows(result) { return Array.isArray(result) ? result : (result?.rows || []); }
+function lrV15Esc(value) { try { if (typeof escapeHtml === 'function') return escapeHtml(value); } catch {} return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function lrV15GoodTitle(value) { const text = lrV15Clean(value, 300); if (!text) return ''; if (/^канал$/i.test(text) || /^channel$/i.test(text) || /^linkray/i.test(text) || /^undefined$/i.test(text)) return ''; return text; }
+function lrV15Buttons() { return [[callbackButton('⬅️ В меню', 'main:menu')]]; }
+
+function lrV15ChannelCandidates(update) {
+  const out = [], seen = new Set(); const seenObjects = new WeakSet();
+  function add(item) { const id = lrV15Clean(item?.id || item?.chat_id || item?.chatId || item?.max_chat_id || item?.maxChatId || '', 300); const title = lrV15GoodTitle(item?.title || item?.name || item?.chat_title || item?.chatTitle || item?.channel_title || item?.channelTitle || ''); const link = lrV15Clean(item?.link || item?.url || item?.href || item?.invite_link || item?.inviteLink || '', 600); const source = lrV15Clean(item?.source || '', 80); if (!id && !link) return; const key = [id,title,link].join('|'); if (seen.has(key)) return; seen.add(key); let score = Number(item?.score || 0); if (/^-\d+$/.test(id)) score += 10000; if (title) score += 3000; if (/max\.ru\/join\//i.test(link)) score += 1000; if (/link|forward|message/i.test(source)) score += 600; out.push({ id, title, link, source, score }); }
+  function maybeObject(value, source='') { if (!value || typeof value !== 'object' || Array.isArray(value)) return; const type = String(value.type || value.kind || value.chat_type || value.chatType || '').toLowerCase(); const id = value.chat_id ?? value.chatId ?? value.max_chat_id ?? value.maxChatId ?? value.channel_id ?? value.channelId ?? value.id; const title = value.title ?? value.name ?? value.chat_title ?? value.chatTitle ?? value.channel_title ?? value.channelTitle; const link = value.link ?? value.url ?? value.href ?? value.invite_link ?? value.inviteLink; if (type.includes('channel') || String(id || '').startsWith('-') || /max\.ru\/join\//i.test(String(link || ''))) add({ id, title, link, source }); }
+  function walk(value, source='root', depth=0) { if (!value || depth > 9) return; if (typeof value === 'string') { for (const m of value.matchAll(/https?:\/\/max\.ru\/join\/[A-Za-z0-9._~%-]+/gi)) add({ id:m[0], link:m[0], source:`${source}.max_join`, score:100 }); return; } if (typeof value !== 'object') return; if (seenObjects.has(value)) return; seenObjects.add(value); maybeObject(value, source); const special = [ ['message.link.chat', value?.message?.link?.chat], ['message.link.message.chat', value?.message?.link?.message?.chat], ['message.forward.chat', value?.message?.forward?.chat], ['message.forward.message.chat', value?.message?.forward?.message?.chat], ['message.forwarded_message.chat', value?.message?.forwarded_message?.chat], ['message.sender_chat', value?.message?.sender_chat], ['link.chat', value?.link?.chat], ['link.message.chat', value?.link?.message?.chat], ['forward.chat', value?.forward?.chat], ['forward.message.chat', value?.forward?.message?.chat], ['body.link.chat', value?.body?.link?.chat], ['body.link.message.chat', value?.body?.link?.message?.chat], ['message.body.link.chat', value?.message?.body?.link?.chat], ['message.body.link.message.chat', value?.message?.body?.link?.message?.chat] ]; for (const [name,item] of special) if (item) maybeObject(item, name); const title = value.title ?? value.name ?? value.chat_title ?? value.chatTitle ?? value.channel_title ?? value.channelTitle; const link = value.url ?? value.href ?? value.link ?? value.target_url ?? value.targetUrl; if (title && link && /max\.ru\/join\//i.test(String(link))) add({ id:link, title, link, source:`${source}.text_link`, score:300 }); if (Array.isArray(value)) { value.forEach((item,i)=>walk(item,`${source}[${i}]`,depth+1)); return; } for (const [key, child] of Object.entries(value)) { if (key === 'recipient' || key === 'sender') continue; walk(child, `${source}.${key}`, depth+1); } }
+  walk(update, 'update', 0); out.sort((a,b)=>b.score-a.score); return out;
+}
+function lrV15LooksForwardedPost(update) { const raw = JSON.stringify(update || {}); if (/forward|forwarded|linked_message|linkedMessage|"link"\s*:/i.test(raw)) return true; if (lrV15ChannelCandidates(update).some(x => /^-\d+$/.test(String(x.id || '')))) return true; return false; }
+function lrV15ApiToken() { for (const k of ['MAX_TOKEN','MAX_BOT_TOKEN','MAX_ACCESS_TOKEN','BOT_TOKEN','ACCESS_TOKEN','API_TOKEN','TOKEN']) if (process.env[k]) return String(process.env[k]); try { if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN); } catch {} try { if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN); } catch {} try { if (typeof TOKEN !== 'undefined' && TOKEN) return String(TOKEN); } catch {} return ''; }
+function lrV15ApiBase() { let base = ''; try { if (typeof MAX_API_BASE !== 'undefined' && MAX_API_BASE) base = String(MAX_API_BASE); } catch {} return String(base || process.env.MAX_API_BASE || process.env.MAX_BASE_URL || process.env.MAX_PLATFORM_API || 'https://platform-api2.max.ru').replace(/\/+$/,''); }
+async function lrV15ApiGet(path) { const response = await fetch(`${lrV15ApiBase()}${path}`, { method:'GET', headers:{ Authorization: lrV15ApiToken() } }); const body = await response.text().catch(()=>''); let data = null; try { data = body ? JSON.parse(body) : null; } catch { data = { raw: body }; } console.log('[v15 native] api get', JSON.stringify({ path, status: response.status, ok: response.ok, preview: body.slice(0,250) })); return { ok: response.ok && data?.success !== false, status: response.status, data }; }
+async function lrV15FetchChannelMeta(candidate) { const out = { ...candidate }; const id = lrV15Clean(out.id, 300); if (!/^-\d+$/.test(id)) return out; if (typeof getMaxChatInfo === 'function') { try { const info = await getMaxChatInfo(id); const chat = info?.chat || info?.result || info || {}; out.title = lrV15GoodTitle(chat.title || chat.name || out.title); out.link = lrV15Clean(chat.link || chat.invite_link || chat.inviteLink || out.link || '', 600); } catch(e) { console.error('[v15 native] getMaxChatInfo failed', e?.message || e); } } if (!lrV15GoodTitle(out.title)) { try { const r = await lrV15ApiGet(`/chats/${encodeURIComponent(id)}`); const chat = r.data?.chat || r.data?.result || r.data || {}; out.title = lrV15GoodTitle(chat.title || chat.name || chat.chat?.title || chat.chat?.name || out.title); out.link = lrV15Clean(chat.link || chat.invite_link || chat.inviteLink || chat.chat?.link || out.link || '', 600); } catch(e) { console.error('[v15 native] chat info api failed', e?.message || e); } } return out; }
+function lrV15AdminFromData(data) { for (const box of [data, data?.member, data?.user, data?.result, data?.profile, data?.payload].filter(Boolean)) { if (box.is_admin === true || box.isAdmin === true || box.admin === true || box.role === 'admin' || box.role === 'administrator') return true; const perms = box.permissions || box.rights || box.chat_permissions || box.chatPermissions; if (Array.isArray(perms)) { const set = new Set(perms.map(x => String(x).toLowerCase())); if (set.has('write') || set.has('read_all_messages') || set.has('add_remove_members') || set.has('change_chat_info') || set.has('edit') || set.has('delete')) return true; } } return false; }
+async function lrV15CheckAdmin(maxChatId) { const id = lrV15Clean(maxChatId,300); if (!/^-\d+$/.test(id)) return { ok:false, admin:false, status:0 }; let last = { ok:false, admin:false, status:0 }; for (const path of [`/chats/${encodeURIComponent(id)}/members/me`, `/chats/${encodeURIComponent(id)}/members/me/`]) { try { const r = await lrV15ApiGet(path); last = { ok:r.ok, admin:r.ok && lrV15AdminFromData(r.data), status:r.status, data:r.data }; console.log('[v15 native] members/me', JSON.stringify({ id, status:r.status, ok:last.ok, admin:last.admin })); if (r.status !== 404) return last; } catch(e) { console.error('[v15 native] members/me failed', e?.message || e); } } return last; }
+async function lrV15UpsertChannel(candidate) { const maxChatId = lrV15Clean(candidate.id || candidate.max_chat_id || candidate.maxChatId, 300); const title = lrV15GoodTitle(candidate.title); const link = lrV15Clean(candidate.link || '', 600) || null; if (!/^-\d+$/.test(maxChatId)) throw new Error('Не найден ID канала из пересланного поста.'); if (!title) throw new Error('Не удалось получить настоящее название канала. Перешлите другой пост из канала.'); const rows = await query(`INSERT INTO channels(max_chat_id,title,link,is_public,is_channel,bot_added_at,updated_at) VALUES($1,$2,$3,$4,true,now(),now()) ON CONFLICT(max_chat_id) DO UPDATE SET title=EXCLUDED.title, link=COALESCE(EXCLUDED.link, channels.link), is_public=EXCLUDED.is_public, is_channel=true, bot_added_at=COALESCE(channels.bot_added_at, now()), updated_at=now() RETURNING id,max_chat_id,title,link,is_public`, [String(maxChatId), title, link, Boolean(link)]); await query('UPDATE channels SET is_active=true, updated_at=now() WHERE max_chat_id=$1', [String(maxChatId)]).catch(()=>{}); return lrV15Rows(rows)[0] || { max_chat_id:maxChatId, title, link }; }
+async function lrV15HandleAddChannelForward(update, chatId, key) { const candidates = lrV15ChannelCandidates(update); console.log('[v15 native] add candidates', JSON.stringify(candidates.slice(0,12))); if (!candidates.length) { await msg(chatId, `⚠️ <b>Канал не найден</b>\n\nПерешлите именно любой пост из нужного канала в этот чат.`, lrV15Buttons(), 'html'); return true; } let notAdmin = null, lastError = ''; for (const raw of candidates) { if (!/^-\d+$/.test(String(raw.id || ''))) continue; const candidate = await lrV15FetchChannelMeta(raw); const title = lrV15GoodTitle(candidate.title); if (!title) { lastError = 'Не удалось получить настоящее название канала.'; continue; } const admin = await lrV15CheckAdmin(candidate.id); if (!admin.ok || !admin.admin) { notAdmin = candidate; continue; } try { const saved = await lrV15UpsertChannel(candidate); await clearSession(key).catch(()=>{}); await msg(chatId, `✅ <b>Канал подключён к LinkRay</b>\n\n${lrV15Esc(saved.title || title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`, lrV15Buttons(), 'html'); console.log('[v15 native] channel saved final', JSON.stringify(saved)); return true; } catch(e) { lastError = e?.message || String(e); console.error('[v15 native] upsert failed', e?.stack || e?.message || e); } } if (notAdmin) { const title = lrV15GoodTitle(notAdmin.title) || 'канал'; await msg(chatId, `❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrV15Esc(title)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nКанал не добавлен в базу.`, lrV15Buttons(), 'html'); return true; } await msg(chatId, `⚠️ <b>Канал не добавлен</b>\n\n${lrV15Esc(lastError || 'Не удалось определить канал из пересланного поста.')}\n\nПерешлите другой пост из этого канала.`, lrV15Buttons(), 'html'); return true; }
+async function lrV15SendChannelSelect(chatId, key, draft, multi=false) {
+  /* LR_V44_SAVE_DRAFT_ON_CHANNEL_SELECT */
+  try {
+    await lrV44SaveForwardDraft(key, draft, 'lrV15SendChannelSelect');
+  } catch (e) {
+    console.error('[v44 forward editor] save draft hook failed', e?.message || e);
+  }
+ const channels = await getChannels(); if (!channels.length) { await setSession(key, 'select_channels', { draft }); return msg(chatId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\nСначала добавьте канал в LinkRay.\n━━━━━━━━━━━━━━`, [[callbackButton('➕ Добавить канал','post:add_channel')],[callbackButton('⬅️ В меню','main:menu')]], 'html'); } const rows = []; for (const ch of channels) { const selected = draft.channelIds.includes(Number(ch.id)); rows.push([callbackButton(`${selected ? '✅' : '📡'} ${channelName(ch)}`, multi ? `post:toggle:${ch.id}` : `post:single:${ch.id}`)]); } rows.push([callbackButton('🧩 Выбрать несколько','post:multi'), callbackButton('🌐 Все каналы','post:all_channels')]); if (multi) rows.push([callbackButton('➡️ Далее','post:channels_next')]); rows.push([callbackButton('🔗 Добавить канал','post:add_channel')]); rows.push([callbackButton('⬅️ Назад','main:posting'), callbackButton('❌ Отмена','post:cancel')]); await setSession(key, multi ? 'select_channels_multi' : 'select_channels', { draft }); return msg(chatId, `━━━━━━━━━━━━━━\n📡 <b>Куда выпустить пост?</b>\n\nПост принят.\nВыберите канал.\n━━━━━━━━━━━━━━`, rows, 'html'); }
+console.log('[v15 native] helpers installed');
+/* LR_NATIVE_V15_NO_LAYERS_END */
+async function showChannels(callbackId, chatId) {
+  /* LR_SHOWCHANNELS_V34_START */
+  {
+    const __lrV34ChatId = lrV34Clean(chatId || '', 100) || '405954311';
+    const __lrV34Key = lrV34Clean((typeof key !== 'undefined' ? key : chatId) || __lrV34ChatId, 100) || __lrV34ChatId;
+    await lrV34SetAddMode(__lrV34ChatId, __lrV34Key).catch((e) => console.error('[v34 confirm] showChannels set mode failed', e?.message || e));
+  }
+  /* LR_SHOWCHANNELS_V34_END */
+
+  /* LR_SHOWCHANNELS_V31_START */
+  await lrV31SetAddMode(chatId, key).catch((e) => console.error('[v31 core] showChannels set mode failed', e?.message || e));
+  /* LR_SHOWCHANNELS_V31_END */
+
+  /* LR_SHOWCHANNELS_V30_START */
+  await lrV30SetAddMode(chatId, key).catch((e) => console.error('[v30 core] showChannels set mode failed', e?.message || e));
+  /* LR_SHOWCHANNELS_V30_END */
+
+  const key = String(chatId || '');
+  if (key) await setSession(key, 'wait_add_channel', { mode: 'add_channel', ts: Date.now() });
+  const text = `━━━━━━━━━━━━━━
 🔗 <b>Добавить канал</b>
 
 1. Откройте канал в MAX.
 2. Добавьте LinkRay в администраторы.
 3. Выдайте право публикации.
-4. Канал автоматически сохранится в базе LinkRay.
+4. Перешлите любой пост из этого канала сюда, в бота.
 
-После добавления бот пришлёт сообщение:
-✅ <b>Канал подключён к LinkRay</b>
-━━━━━━━━━━━━`, [
-    [callbackButton('🔗 Добавить канал', 'post:add_channel')],
-    [callbackButton('⬅️ В меню', 'main:menu')]
-  ]);
+Если LinkRay не является администратором — канал не будет добавлен.
+━━━━━━━━━━━━━━`;
+  console.log('[v15 native] showChannels wait_add_channel', JSON.stringify({ chatId, key }));
+  if (callbackId && typeof cb === 'function') return cb(callbackId, text, lrV15Buttons(), 'html');
+  if (chatId && typeof msg === 'function') return msg(chatId, text, lrV15Buttons(), 'html');
 }
+
+
+
+
+
+
+
+
+
+
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
 
 // LR_CHANNEL_INBOUND_GUARD_START
@@ -11509,7 +17639,6 @@ async function __lrSaveSigDirectV5(channelId, content, ownerKey = '') {
     saved: !!saved,
     id: saved?.id || null
   }));
-
   return saved;
 }
 
@@ -11578,7 +17707,582 @@ async function __lrHandlePendingSignatureTextV5({ chatId, key, update, session, 
 /* LR_AUTOSIGN_PENDING_SAVE_V5_END */
 
 
+/* LR_CHANNEL_FORWARD_CONFIRM_START */
+function __lrCfRows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function __lrCfClean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  const low = text.toLowerCase();
+  if (!text || text.length > max) return '';
+  if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(low)) return '';
+  return text;
+}
+
+function __lrCfEsc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch {}
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function __lrCfNorm(value) {
+  return __lrCfClean(value, 300)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function __lrCfType(update) {
+  return String(update?.type || update?.update_type || update?.event_type || update?.event || update?.body?.type || '').toLowerCase();
+}
+
+function __lrCfPrivateChatId(update) {
+  let id = '';
+  try { if (typeof getChatId === 'function') id = getChatId(update); } catch {}
+  id = __lrCfClean(
+    update?.chatId || update?.chat_id || update?.body?.chatId || update?.body?.chat_id ||
+    update?.message?.recipient?.chat_id || update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id || update?.body?.message?.recipient?.id || id
+  );
+  return id;
+}
+
+function __lrCfIsPrivateMessage(update) {
+  const id = __lrCfPrivateChatId(update);
+  if (!id || id.startsWith('-')) return false;
+
+  const types = [
+    update?.chat?.type,
+    update?.message?.chat?.type,
+    update?.message?.recipient?.type,
+    update?.message?.recipient?.chat_type,
+    update?.message?.recipient?.recipient_type,
+    update?.body?.chat?.type,
+    update?.body?.message?.chat?.type,
+    update?.body?.message?.recipient?.type,
+    update?.chat_type,
+    update?.recipient_type
+  ].map((x) => String(x || '').toLowerCase()).filter(Boolean);
+
+  if (!types.length) return true;
+  return types.some((x) => x.includes('dialog') || x.includes('private') || x === 'user');
+}
+
+function __lrCfText(update) {
+  try {
+    if (typeof getMessageText === 'function') {
+      const text = getMessageText(update);
+      if (__lrCfClean(text, 7000)) return __lrCfClean(text, 7000);
+    }
+  } catch {}
+  return __lrCfClean(
+    update?.message?.body?.text || update?.message?.text ||
+    update?.body?.message?.body?.text || update?.body?.message?.text || update?.text || '',
+    7000
+  );
+}
+
+function __lrCfAllStrings(root) {
+  const out = [];
+  const seen = new WeakSet();
+  function add(v) {
+    const text = __lrCfClean(v, 7000);
+    if (text) out.push(text);
+  }
+  function walk(v, depth = 0) {
+    if (v == null || depth > 10) return;
+    if (typeof v === 'string') { add(v); return; }
+    if (typeof v !== 'object') return;
+    if (seen.has(v)) return;
+    seen.add(v);
+    if (Array.isArray(v)) { for (const item of v) walk(item, depth + 1); return; }
+    for (const [k, child] of Object.entries(v)) {
+      const key = String(k || '').toLowerCase();
+      if (['text','title','name','caption','url','link','href','chat_id','channel_id','id'].includes(key)) {
+        if (typeof child !== 'object') add(child);
+      }
+      if (child && typeof child === 'object') walk(child, depth + 1);
+    }
+  }
+  walk(root);
+  return [...new Set(out)];
+}
+
+function __lrCfHasForwardEvidence(update) {
+  const raw = JSON.stringify(update || {}).toLowerCase();
+  return Boolean(
+    update?.message?.link || update?.message?.body?.link || update?.body?.link || update?.link ||
+    update?.message?.forward || update?.message?.body?.forward || update?.forward ||
+    raw.includes('"forward"') || raw.includes('"forwarded"') || raw.includes('"source"') ||
+    raw.includes('"sender_chat"') || raw.includes('"link"') || raw.includes('"channel"') || raw.includes('"chat_id"')
+  );
+}
+
+function __lrCfCandidateTitles(update) {
+  const titles = new Set();
+  function add(v) {
+    const text = __lrCfClean(v, 300);
+    const n = __lrCfNorm(text);
+    if (!text || text.length < 3 || text.length > 120) return;
+    if (!/[A-Za-zА-Яа-я]/.test(text)) return;
+    if (['кирилл', 'kirill', 'megamozg996', 'linkray', 'бот'].includes(n)) return;
+    titles.add(text);
+  }
+  [
+    update?.chat?.title, update?.chat?.name, update?.channel?.title, update?.channel?.name,
+    update?.message?.chat?.title, update?.message?.chat?.name, update?.message?.recipient?.title,
+    update?.message?.link?.chat?.title, update?.message?.link?.message?.chat?.title,
+    update?.message?.link?.message?.recipient?.title, update?.message?.body?.link?.chat?.title,
+    update?.message?.body?.link?.message?.chat?.title, update?.message?.body?.link?.message?.recipient?.title,
+    update?.message?.forward?.message?.chat?.title, update?.message?.forward?.message?.recipient?.title,
+    update?.body?.message?.link?.chat?.title, update?.body?.message?.link?.message?.chat?.title,
+    update?.body?.message?.link?.message?.recipient?.title, update?.body?.message?.forward?.message?.chat?.title,
+    update?.body?.message?.forward?.message?.recipient?.title
+  ].forEach(add);
+
+  for (const text of __lrCfAllStrings(update)) {
+    const lines = String(text).split(/\n+/).map((x) => x.trim()).filter(Boolean);
+    for (const lineRaw of lines) {
+      const line = lineRaw
+        .replace(/^[@#]+/, '')
+        .replace(/^[🔗📌✅➡️👉\-—–\s]+/, '')
+        .replace(/https?:\/\/\S+/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      add(line);
+    }
+  }
+  return [...titles];
+}
+
+function __lrCfLinkVariants(value) {
+  const raw = __lrCfClean(value, 2000);
+  if (!raw) return [];
+  const out = new Set();
+  function add(v) {
+    v = __lrCfClean(v, 600);
+    if (!v) return;
+    out.add(v);
+    v = v.replace(/^@+/, '');
+    v = v.replace(/^https?:\/\//i, '');
+    v = v.replace(/^max\.ru\//i, '');
+    v = v.replace(/^i\.oneme\.ru\/i\?r=/i, '');
+    v = v.split(/[?#]/)[0].replace(/^\/+|\/+$/g, '');
+    if (v) out.add(v);
+    if (v.startsWith('join/')) out.add(v.slice(5));
+    const last = v.split('/').filter(Boolean).pop();
+    if (last) out.add(last);
+  }
+  add(raw);
+  try {
+    const u = new URL(raw);
+    add(u.href);
+    add(u.pathname);
+    add(u.pathname.split('/').filter(Boolean).pop() || '');
+    const r = u.searchParams.get('r');
+    if (r) add(r);
+  } catch {}
+  return [...out].filter((x) => x && x.length >= 3);
+}
+
+function __lrCfCandidateLinks(update) {
+  const links = new Set();
+  for (const text of __lrCfAllStrings(update)) {
+    if (/(max\.ru|i\.oneme\.ru|:\/\/|join\/)/i.test(text)) {
+      for (const v of __lrCfLinkVariants(text)) links.add(v);
+    }
+  }
+  return [...links];
+}
+
+function __lrCfCandidateIds(update) {
+  const ids = new Set();
+  function add(v) {
+    const text = __lrCfClean(v, 100);
+    if (/^-?\d{5,}$/.test(text)) ids.add(text);
+  }
+  [
+    update?.chat?.id, update?.channel?.id, update?.channel?.chat_id,
+    update?.message?.chat?.id, update?.message?.chat?.chat_id,
+    update?.message?.recipient?.id, update?.message?.recipient?.chat_id,
+    update?.message?.link?.chat?.id, update?.message?.link?.chat?.chat_id,
+    update?.message?.link?.message?.chat?.id, update?.message?.link?.message?.chat?.chat_id,
+    update?.message?.link?.message?.recipient?.id, update?.message?.link?.message?.recipient?.chat_id,
+    update?.message?.body?.link?.chat?.id, update?.message?.body?.link?.chat?.chat_id,
+    update?.message?.body?.link?.message?.chat?.id, update?.message?.body?.link?.message?.chat?.chat_id,
+    update?.message?.body?.link?.message?.recipient?.id, update?.message?.body?.link?.message?.recipient?.chat_id,
+    update?.message?.forward?.message?.chat?.id, update?.message?.forward?.message?.chat?.chat_id,
+    update?.message?.forward?.message?.recipient?.id, update?.message?.forward?.message?.recipient?.chat_id,
+    update?.body?.message?.link?.chat?.id, update?.body?.message?.link?.chat?.chat_id,
+    update?.body?.message?.link?.message?.chat?.id, update?.body?.message?.link?.message?.chat?.chat_id,
+    update?.body?.message?.link?.message?.recipient?.id, update?.body?.message?.link?.message?.recipient?.chat_id
+  ].forEach(add);
+  return [...ids];
+}
+
+async function __lrCfSessionBusy(update) {
+  let key = '';
+  try { if (typeof getSessionKey === 'function') key = __lrCfClean(getSessionKey(update)); } catch {}
+  if (!key || typeof getSession !== 'function') return false;
+  try {
+    const ses = await getSession(key).catch(() => null);
+    const raw = JSON.stringify(ses || {}).toLowerCase();
+    if (!raw || raw === '{}') return false;
+    return (
+      raw.includes('draft') || raw.includes('editor') || raw.includes('post:') || raw.includes('wait_post') ||
+      raw.includes('post_content') || raw.includes('autopost') || raw.includes('calendar') || raw.includes('schedule') ||
+      raw.includes('signature') || raw.includes('autosign') || raw.includes('автоподпис')
+    );
+  } catch { return false; }
+}
+
+async function __lrCfFindSavedChannel(update) {
+  if (typeof query !== 'function') return null;
+  await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`).catch(() => {});
+
+  const ids = __lrCfCandidateIds(update);
+  const links = __lrCfCandidateLinks(update);
+  const titles = __lrCfCandidateTitles(update).map(__lrCfNorm).filter(Boolean);
+
+  console.log('[channel forward confirm] candidates', JSON.stringify({ ids, links: links.slice(0, 10), titles: titles.slice(0, 10) }));
+
+  const rows = await query(
+    `SELECT id, max_chat_id, title, link, updated_at
+     FROM channels
+     WHERE COALESCE(is_active, true) = true
+     ORDER BY updated_at DESC NULLS LAST, id DESC
+     LIMIT 500`
+  ).catch((e) => {
+    console.error('[channel forward confirm] select channels failed', e?.message || e);
+    return [];
+  });
+
+  let best = null;
+  let bestScore = -1;
+
+  for (const ch of __lrCfRows(rows)) {
+    const chId = String(ch.max_chat_id || '').trim();
+    const chTitle = __lrCfNorm(ch.title);
+    const chLinks = __lrCfLinkVariants(ch.link || '');
+    let score = 0;
+
+    if (ids.includes(chId)) score += 10000;
+
+    for (const l of links) {
+      if (chLinks.includes(l)) score += 9000;
+      for (const v of __lrCfLinkVariants(l)) {
+        if (chLinks.includes(v)) score += 8000;
+      }
+    }
+
+    for (const t of titles) {
+      if (!t || !chTitle) continue;
+      if (t === chTitle) score += 6000;
+      else if (t.includes(chTitle) || chTitle.includes(t)) score += 3000;
+    }
+
+    const updatedAt = ch.updated_at ? new Date(ch.updated_at).getTime() : 0;
+    const fresh = updatedAt && Date.now() - updatedAt < 10 * 60 * 1000;
+    if (fresh && titles.some((t) => t && chTitle && (t === chTitle || t.includes(chTitle) || chTitle.includes(t)))) {
+      score += 2500;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = ch;
+    }
+  }
+
+  if (best && bestScore >= 2500) {
+    console.log('[channel forward confirm] matched saved channel', JSON.stringify({ id: best.id, max_chat_id: best.max_chat_id, title: best.title, score: bestScore }));
+    return best;
+  }
+
+  console.log('[channel forward confirm] no saved channel matched', JSON.stringify({ bestScore }));
+  return null;
+}
+
+async function __lrCfSend(chatId, text) {
+  const id = __lrCfClean(chatId) || '405954311';
+  const rows = typeof callbackButton === 'function' ? [[callbackButton('⬅️ В меню', 'main:menu')]] : undefined;
+
+  if (typeof msg === 'function') {
+    try { await msg(id, text, rows, 'html'); return true; }
+    catch (e) { console.error('[channel forward confirm] msg failed', e?.message || e); }
+  }
+
+  if (typeof sendMaxMessage === 'function') {
+    try {
+      await sendMaxMessage({
+        chatId: id,
+        text,
+        format: 'html',
+        attachments: (typeof inlineKeyboard === 'function' && rows) ? inlineKeyboard(rows) : undefined
+      });
+      return true;
+    } catch (e) { console.error('[channel forward confirm] sendMaxMessage failed', e?.message || e); }
+  }
+
+  return false;
+}
+
+async function __lrCfAlreadySent(chatId, channelId) {
+  if (typeof query !== 'function') return false;
+  const key = `lr_channel_forward_confirm:${chatId}:${channelId}`;
+  const rows = await query(`SELECT updated_at FROM lr_bot_state WHERE key=$1 LIMIT 1`, [key]).catch(() => []);
+  const row = __lrCfRows(rows)[0];
+  if (row?.updated_at && Date.now() - new Date(row.updated_at).getTime() < 60 * 1000) return true;
+  await query(
+    `INSERT INTO lr_bot_state(key, value, updated_at)
+     VALUES($1, $2, now())
+     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+    [key, JSON.stringify({ chatId, channelId, ts: Date.now() })]
+  ).catch(() => {});
+  return false;
+}
+
+async function __lrChannelForwardConfirm(update) {
+  try {
+    const type = __lrCfType(update);
+    const text = __lrCfText(update);
+    const chatId = __lrCfPrivateChatId(update);
+
+    if (type && !type.includes('message_created')) return false;
+    if (!chatId || !__lrCfIsPrivateMessage(update)) return false;
+    if (text.startsWith('/')) return false;
+    if (!__lrCfHasForwardEvidence(update)) return false;
+    if (await __lrCfSessionBusy(update)) return false;
+
+    const channel = await __lrCfFindSavedChannel(update);
+    if (!channel) return false;
+
+    if (await __lrCfAlreadySent(chatId, channel.id)) return true;
+
+    await __lrCfSend(chatId, `✅ <b>Канал подключён к LinkRay</b>\n\n${__lrCfEsc(channel.title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);
+    return true;
+  } catch (e) {
+    console.error('[channel forward confirm] failed', e?.stack || e?.message || e);
+    return false;
+  }
+}
+
+console.log('[channel forward confirm] installed');
+/* LR_CHANNEL_FORWARD_CONFIRM_END */
+
+/* LR_GLOBAL_TYPE_GUARD_V42_START */
+function lrV42Type(update) {
+  try { if (typeof getUpdateType === 'function') return String(getUpdateType(update) || ''); } catch {}
+  return String(
+    update?.type ||
+    update?.update_type ||
+    update?.event_type ||
+    update?.body?.type ||
+    update?.body?.update_type ||
+    ''
+  );
+}
+
+function lrV42ChatId(update) {
+  try { if (typeof getChatId === 'function') return String(getChatId(update) || ''); } catch {}
+  return String(
+    update?.chat_id ||
+    update?.chatId ||
+    update?.body?.chat_id ||
+    update?.body?.chatId ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id ||
+    ''
+  );
+}
+
+function lrV42Payload(update) {
+  try { if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || ''); } catch {}
+  try { if (typeof lrV31Payload === 'function') return String(lrV31Payload(update) || ''); } catch {}
+  return String(
+    update?.payload ||
+    update?.callback?.payload ||
+    update?.body?.payload ||
+    update?.body?.callback?.payload ||
+    update?.message?.payload ||
+    ''
+  );
+}
+
+function lrV42SetGlobals(update) {
+  try {
+    globalThis.type = lrV42Type(update);
+    globalThis.chatId = lrV42ChatId(update);
+    globalThis.payload = lrV42Payload(update);
+    globalThis.callbackId = typeof getCallbackId === 'function' ? getCallbackId(update) : (
+      update?.callback_id ||
+      update?.callbackId ||
+      update?.callback?.callback_id ||
+      update?.callback?.id ||
+      update?.body?.callback_id ||
+      update?.body?.callbackId ||
+      update?.body?.callback?.callback_id ||
+      update?.body?.callback?.id ||
+      ''
+    );
+  } catch (e) {
+    console.error('[v42 buttons] set globals failed', e?.message || e);
+  }
+}
+
+// Важно: некоторые старые слои обращаются к type/chatId как к свободным переменным.
+// В Node они могут читаться из globalThis, если заданы заранее.
+globalThis.type = globalThis.type || '';
+globalThis.chatId = globalThis.chatId || '';
+globalThis.payload = globalThis.payload || '';
+globalThis.callbackId = globalThis.callbackId || '';
+
+console.log('[v42 buttons] installed: global type/chatId guard');
+/* LR_GLOBAL_TYPE_GUARD_V42_END */
+/* LR_CLEAN_COLLECT_POST_START_V46_START */
+function lrV46Payload(update) {
+  try {
+    if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || '');
+  } catch {}
+
+  try {
+    if (typeof lrV31Payload === 'function') return String(lrV31Payload(update) || '');
+  } catch {}
+
+  try {
+    if (typeof lrV42Payload === 'function') return String(lrV42Payload(update) || '');
+  } catch {}
+
+  return String(
+    update?.payload ||
+    update?.callback?.payload ||
+    update?.body?.payload ||
+    update?.body?.callback?.payload ||
+    update?.message?.payload ||
+    ''
+  );
+}
+
+function lrV46Key(update) {
+  try {
+    if (typeof getSessionKey === 'function') return String(getSessionKey(update) || '');
+  } catch {}
+
+  try {
+    if (typeof lrV42ChatId === 'function') return String(lrV42ChatId(update) || '');
+  } catch {}
+
+  try {
+    if (typeof getChatId === 'function') return String(getChatId(update) || '');
+  } catch {}
+
+  return String(
+    update?.chat_id ||
+    update?.chatId ||
+    update?.body?.chat_id ||
+    update?.body?.chatId ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    ''
+  );
+}
+
+function lrV46UniqueIds(update) {
+  const base = String(lrV46Key(update) || '').trim();
+  const ids = new Set();
+
+  if (base) {
+    ids.add(base);
+    ids.add(`user:${base}`);
+  }
+
+  try {
+    const chatId = typeof lrV42ChatId === 'function' ? String(lrV42ChatId(update) || '').trim() : '';
+    if (chatId) {
+      ids.add(chatId);
+      ids.add(`user:${chatId}`);
+    }
+  } catch {}
+
+  try {
+    const chatId2 = typeof getChatId === 'function' ? String(getChatId(update) || '').trim() : '';
+    if (chatId2) {
+      ids.add(chatId2);
+      ids.add(`user:${chatId2}`);
+    }
+  } catch {}
+
+  return [...ids].filter(Boolean).slice(0, 12);
+}
+
+async function lrV46DeleteForwardDrafts(update, reason = 'manual') {
+  const ids = lrV46UniqueIds(update);
+
+  if (!ids.length) return;
+
+  try {
+    for (const id of ids) {
+      await query(
+        `DELETE FROM lr_bot_state
+         WHERE key=$1
+            OR key=$2
+            OR key=$3`,
+        [
+          `lr_v44_forward_draft:${id}`,
+          `lr_v43_forward_draft:${id}`,
+          `lr_v45_forward_draft:${id}`
+        ]
+      ).catch(() => {});
+    }
+
+    console.log('[v46 create clean] forward drafts cleared', JSON.stringify({ reason, ids }));
+  } catch (e) {
+    console.error('[v46 create clean] clear forward drafts failed', e?.stack || e?.message || e);
+  }
+}
+
+async function lrV46ResetCollectPostStart(update) {
+  const payload = lrV46Payload(update);
+
+  if (payload !== 'post:create') return false;
+
+  const ids = lrV46UniqueIds(update);
+
+  try {
+    await lrV46DeleteForwardDrafts(update, 'post:create');
+
+    for (const id of ids) {
+      await query(
+        `DELETE FROM bot_sessions
+         WHERE user_id::text=$1`,
+        [String(id)]
+      ).catch(() => {});
+    }
+
+    console.log('[v46 create clean] post:create starts clean flow', JSON.stringify({ payload, ids }));
+  } catch (e) {
+    console.error('[v46 create clean] reset failed', e?.stack || e?.message || e);
+  }
+
+  return false;
+}
+
+console.log('[v46 create clean] installed');
+/* LR_CLEAN_COLLECT_POST_START_V46_END */
 async function handleMessage(update) {
+  /* LR_V42_SET_GLOBALS_IN_HANDLER */
+  lrV42SetGlobals(update);
+
+  /* LR_V40_HANDLE_TYPE_FIX */
+  const type = lrV40Type(update);
+
   if (await __lrAutosignDirectMessageV12(update).catch(e => { console.error('[autosign direct v18 message]', e?.stack || e?.message || e); return true; })) return;
   if (await __lrAutosignV9Message(update).catch(e => { console.error('[autosign v9 message]', e?.stack || e?.message || e); return false; })) return;
   __lrStartChannelDbSyncTimer();
@@ -11605,7 +18309,9 @@ async function handleMessage(update) {
     return sendMain(chatId);
   }
   const session = await getSession(key); const draft = safeDraft(session.data);
-  if (session.state === 'wait_post_content') { const content = await lrSafeHydrateContent(update); draft.content = { ...draft.content, ...content }; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
+  if (session.state === 'wait_post_content') { 
+
+  const content = await lrSafeHydrateContent(update); draft.content = { ...draft.content, ...content }; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
   if (session.state === 'wait_edit_text') { const content = await lrSafeHydrateContent(update); draft.content.text = content.text || text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
   if (session.state === 'wait_edit_media') { const content = await lrSafeHydrateContent(update); if (content.attachments.length) draft.content.attachments = content.attachments; if (content.text) draft.content.text = content.text; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; await setSession(key, draft.postId ? 'edit_existing' : 'edit_draft', { draft }); return sendEditorAsNew(chatId, key, draft); }
   if (session.state === 'wait_button') {
@@ -11725,8 +18431,64 @@ ${error.message || error}`);
   if (session.state === 'wait_schedule_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время. Пример: 18:30, 0235, завтра 18:30, через 1 минуту.'); const ids = await scheduleDraft(draft, key, publishAt); await clearSession(key); return afterPlanned(chatId, draft, publishAt, ids); }
   if (session.state === 'wait_post_auto_delete') { const v = parseDuration(text); if (v === undefined) return msg(chatId, 'Не понял срок. Введите число от 1 до 72 часов или 0.'); await query('UPDATE scheduled_posts SET auto_delete_minutes=$2, updated_at=now() WHERE id=$1', [session.data.postId, v]); await clearSession(key); return msg(chatId, `✅ Автоудаление: ${formatAutoDelete(v)}`, [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
   if (session.state === 'wait_post_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время.'); await query(`UPDATE scheduled_posts SET publish_at=$2, updated_at=now() WHERE id=$1`, [session.data.postId, publishAt]); await clearSession(key); return msg(chatId, '✅ Время обновлено.', [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
-  const content = await lrSafeHydrateContent(update); const __lrPostInputState = String((session && session.state) || ''); const __lrCanAcceptPostInput = ['wait_post_content','post_content','wait_content','wait_post_media','select_channels','select_channels_multi'].includes(__lrPostInputState); /* LR_POST_INPUT_STATE_GUARD_V3: text/media becomes post only inside post creation flow */ if (__lrCanAcceptPostInput && (String(content.text || '').trim() || (Array.isArray(content.attachments) && content.attachments.length) || content.link)) { const d = emptyDraft(); d.content = { ...d.content, ...content }; await setSession(key, 'select_channels', { draft: d }); const channels = await getChannels(); const rs = channels.map(c => [callbackButton(`📡 ${channelName(c)}`, `post:single:${c.id}`)]); rs.push([callbackButton('🌐 Все каналы','post:all_channels')],[callbackButton('❌ Отмена','post:cancel')]); return msg(chatId, '📡 Пост принят. Теперь выберите канал для публикации.', rs); }
-  return msg(chatId, 'Команда не найдена. Нажмите /start.');
+  
+/* LR_NATIVE_HANDLEMESSAGE_SELECT_V20_START */
+  if (session && session.state === 'wait_add_channel') {
+    console.log('[v20 native] wait_add_channel -> channel add', JSON.stringify({ chatId, key }));
+    return lrV15HandleAddChannelForward(update, chatId, key);
+  }
+
+  const content = await lrSafeHydrateContent(update);
+  const __lrPostInputState = String((session && session.state) || '');
+  const __lrPostHasContent = Boolean(
+    String(content.text || '').trim() ||
+    (Array.isArray(content.attachments) && content.attachments.length) ||
+    content.link ||
+    content.hasRealBody
+  );
+  const __lrIsCommandLike = String(text || '').trim().startsWith('/');
+  const __lrMainPostState = !__lrPostInputState || ['idle','main','menu','start'].includes(__lrPostInputState);
+  const __lrCanAcceptPostInput =
+    ['wait_post_content','post_content','wait_content','wait_post_media','select_channels','select_channels_multi'].includes(__lrPostInputState) ||
+    (__lrMainPostState && __lrPostHasContent && !__lrIsCommandLike);
+
+  if (__lrCanAcceptPostInput && __lrPostHasContent) {
+    const d = emptyDraft();
+    d.content = { ...d.content, ...content };
+    if (typeof lrApplyEditorPostFormat === 'function') lrApplyEditorPostFormat(d, content);
+    d.previewMessageId = null;
+
+    console.log('[v20 native] post content -> full channel select', JSON.stringify({
+      chatId,
+      key,
+      state: __lrPostInputState,
+      fromMain: __lrMainPostState,
+      textLength: String(d.content?.text || '').length,
+      attachments: Array.isArray(d.content?.attachments) ? d.content.attachments.length : 0
+    }));
+
+    if (typeof lrV15SendChannelSelect === 'function') {
+      return lrV15SendChannelSelect(chatId, key, d, false);
+    }
+
+    const channels = await getChannels();
+    const rows = [];
+    for (const ch of channels) {
+      rows.push([callbackButton(`📡 ${channelName(ch)}`, `post:single:${ch.id}`)]);
+    }
+    rows.push([callbackButton('🧩 Выбрать несколько', 'post:multi'), callbackButton('🌐 Все каналы', 'post:all_channels')]);
+    rows.push([callbackButton('🔗 Добавить канал', 'post:add_channel')]);
+    rows.push([callbackButton('⬅️ Назад', 'main:posting'), callbackButton('❌ Отмена', 'post:cancel')]);
+    await setSession(key, 'select_channels', { draft: d });
+    return msg(chatId, `━━━━━━━━━━━━━━
+📡 <b>Куда выпустить пост?</b>
+
+Пост принят.
+Выберите канал.
+━━━━━━━━━━━━━━`, rows, 'html');
+  }
+  /* LR_NATIVE_HANDLEMESSAGE_SELECT_V20_END */
+return msg(chatId, 'Команда не найдена. Нажмите /start.');
 }
 async function sendStudioEditorMessage(chatId, draft) {
   const mid = await sendDraftPreview(chatId, draft);
@@ -11920,19 +18682,2518 @@ app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.jso
 
 
 
+/* LR_FIX_ALL_WEBHOOK_TYPE_SCOPE_V41_START */
+function lrV41Type(update) {
+  try { if (typeof getUpdateType === 'function') return String(getUpdateType(update) || ''); } catch {}
+  return String(update?.type || update?.update_type || update?.event_type || update?.body?.type || update?.body?.update_type || '');
+}
+function lrV41ChatId(update) {
+  try { if (typeof getChatId === 'function') return String(getChatId(update) || ''); } catch {}
+  return String(
+    update?.chat_id || update?.chatId || update?.body?.chat_id || update?.body?.chatId ||
+    update?.message?.recipient?.chat_id || update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id || update?.body?.message?.recipient?.id || ''
+  );
+}
+function lrV41Payload(update) {
+  try { if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || ''); } catch {}
+  try { if (typeof lrV31Payload === 'function') return String(lrV31Payload(update) || ''); } catch {}
+  return String(update?.payload || update?.callback?.payload || update?.body?.payload || update?.body?.callback?.payload || update?.message?.payload || '');
+}
+console.log('[v41 buttons] installed: all webhook routes have type/chatId scope');
+/* LR_FIX_ALL_WEBHOOK_TYPE_SCOPE_V41_END */
+/* LR_FINAL_MAX_CORE_V47_START */
+function lrV47Rows(result) {
+  return Array.isArray(result) ? result : (result?.rows || []);
+}
+
+function lrV47Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch {}
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV47Token() {
+  return String(
+    process.env.MAX_TOKEN ||
+    process.env.MAX_BOT_TOKEN ||
+    process.env.MAX_ACCESS_TOKEN ||
+    process.env.BOT_TOKEN ||
+    process.env.ACCESS_TOKEN ||
+    process.env.API_TOKEN ||
+    process.env.TOKEN ||
+    ''
+  );
+}
+
+function lrV47ApiBase() {
+  return String(
+    process.env.MAX_API_BASE ||
+    process.env.MAX_BASE_URL ||
+    process.env.MAX_API_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru'
+  ).replace(/\/+$/, '');
+}
+
+async function lrV47Api(path, method = 'GET', body = null) {
+  const token = lrV47Token();
+  const url = `${lrV47ApiBase()}${path}`;
+  const headers = { Authorization: token };
+
+  if (body !== null && body !== undefined) headers['Content-Type'] = 'application/json';
+
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: body !== null && body !== undefined ? JSON.stringify(body) : undefined
+  });
+
+  const text = await response.text().catch(() => '');
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+
+  if (!response.ok || data?.success === false) {
+    const err = new Error(`MAX API ${method} ${path} ${response.status}: ${text.slice(0, 500)}`);
+    err.status = response.status;
+    err.data = data;
+    throw err;
+  }
+
+  return { ok: response.ok, status: response.status, data };
+}
+
+function lrV47WebhookUrl() {
+  let url = String(
+    process.env.WEBHOOK_URL ||
+    process.env.PUBLIC_WEBHOOK_URL ||
+    process.env.LINKRAY_WEBHOOK_URL ||
+    ''
+  ).trim();
+
+  if (!url) {
+    const base = String(
+      process.env.PUBLIC_URL ||
+      process.env.APP_URL ||
+      process.env.LINKRAY_PUBLIC_URL ||
+      process.env.DOMAIN ||
+      'https://linkray.ru'
+    ).trim().replace(/\/+$/, '');
+    url = `${base}/webhook`;
+  }
+
+  if (!/^https:\/\//i.test(url)) url = 'https://linkray.ru/webhook';
+
+  return url.replace(/\/+$/, '');
+}
+
+function lrV47Type(update) {
+  try { if (typeof getUpdateType === 'function') return String(getUpdateType(update) || ''); } catch {}
+  return String(
+    update?.type ||
+    update?.update_type ||
+    update?.event_type ||
+    update?.body?.type ||
+    update?.body?.update_type ||
+    ''
+  );
+}
+
+function lrV47Payload(update) {
+  try { if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || ''); } catch {}
+  try { if (typeof lrV31Payload === 'function') return String(lrV31Payload(update) || ''); } catch {}
+  try { if (typeof lrV42Payload === 'function') return String(lrV42Payload(update) || ''); } catch {}
+  return String(
+    update?.payload ||
+    update?.callback?.payload ||
+    update?.body?.payload ||
+    update?.body?.callback?.payload ||
+    update?.message?.payload ||
+    ''
+  );
+}
+
+function lrV47CallbackId(update) {
+  try { if (typeof getCallbackId === 'function') return getCallbackId(update); } catch {}
+  return (
+    update?.callback_id ||
+    update?.callbackId ||
+    update?.callback?.callback_id ||
+    update?.callback?.id ||
+    update?.body?.callback_id ||
+    update?.body?.callbackId ||
+    update?.body?.callback?.callback_id ||
+    update?.body?.callback?.id ||
+    null
+  );
+}
+
+function lrV47ChatId(update) {
+  try { if (typeof getChatId === 'function') return String(getChatId(update) || ''); } catch {}
+  try { if (typeof lrV42ChatId === 'function') return String(lrV42ChatId(update) || ''); } catch {}
+
+  return String(
+    update?.chat_id ||
+    update?.chatId ||
+    update?.body?.chat_id ||
+    update?.body?.chatId ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id ||
+    update?.message?.chat_id ||
+    update?.message?.chatId ||
+    ''
+  );
+}
+
+function lrV47SenderId(update) {
+  return String(
+    update?.user_id ||
+    update?.userId ||
+    update?.sender?.user_id ||
+    update?.sender?.id ||
+    update?.message?.sender?.user_id ||
+    update?.message?.sender?.id ||
+    update?.body?.user_id ||
+    update?.body?.userId ||
+    update?.body?.message?.sender?.user_id ||
+    update?.body?.message?.sender?.id ||
+    ''
+  );
+}
+
+function lrV47PrivateChatId(update) {
+  const chatId = lrV47ChatId(update);
+  if (chatId && !String(chatId).startsWith('-')) return chatId;
+
+  const sender = lrV47SenderId(update);
+  if (sender && !String(sender).startsWith('-')) return sender;
+
+  return chatId || '405954311';
+}
+
+function lrV47Key(update) {
+  try { if (typeof getSessionKey === 'function') return String(getSessionKey(update) || ''); } catch {}
+  return lrV47PrivateChatId(update) || lrV47ChatId(update) || '';
+}
+
+function lrV47SetGlobals(update) {
+  try {
+    globalThis.type = lrV47Type(update);
+    globalThis.chatId = lrV47ChatId(update);
+    globalThis.payload = lrV47Payload(update);
+    globalThis.callbackId = lrV47CallbackId(update);
+    globalThis.__lastUpdate = update;
+  } catch (e) {
+    console.error('[v47 final] set globals failed', e?.message || e);
+  }
+}
+
+globalThis.type = globalThis.type || '';
+globalThis.chatId = globalThis.chatId || '';
+globalThis.payload = globalThis.payload || '';
+globalThis.callbackId = globalThis.callbackId || '';
+
+function lrV47Btn(text, payload) {
+  if (typeof callbackButton === 'function') return callbackButton(text, payload);
+  return { type: 'callback', text, payload };
+}
+
+async function lrV47Msg(chatId, text, rows = [], format = 'html') {
+  if (!chatId) return false;
+
+  try {
+    if (typeof msg === 'function') {
+      await msg(chatId, text, rows, format);
+      console.log('[v47 final] msg sent', JSON.stringify({ chatId }));
+      return true;
+    }
+  } catch (e) {
+    console.error('[v47 final] msg failed', e?.stack || e?.message || e);
+  }
+
+  try {
+    if (typeof sendMaxMessage === 'function') {
+      const attachments = rows && rows.length && typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows;
+      await sendMaxMessage({ chatId, text, format, attachments });
+      console.log('[v47 final] sendMaxMessage sent', JSON.stringify({ chatId }));
+      return true;
+    }
+  } catch (e) {
+    console.error('[v47 final] sendMaxMessage failed', e?.stack || e?.message || e);
+  }
+
+  return false;
+}
+
+async function lrV47Cb(callbackId, chatId, text, rows = [], format = 'html') {
+  if (callbackId && typeof cb === 'function') {
+    try {
+      await cb(callbackId, text, rows, format);
+      console.log('[v47 final] cb sent', JSON.stringify({ chatId }));
+      return true;
+    } catch (e) {
+      console.error('[v47 final] cb failed, fallback msg', e?.stack || e?.message || e);
+    }
+  }
+
+  return lrV47Msg(chatId, text, rows, format);
+}
+
+async function lrV47Ack(callbackId, text = '') {
+  if (!callbackId) return;
+  try {
+    if (typeof answerCallback === 'function') {
+      await answerCallback({ callbackId, notification: text || 'Готово' });
+    }
+  } catch {}
+}
+
+async function lrV47SetSession(key, state, data = {}) {
+  const k = String(key || '').trim();
+  if (!k) return;
+
+  try {
+    if (typeof setSession === 'function') {
+      await setSession(k, state, data);
+      return;
+    }
+  } catch (e) {
+    console.error('[v47 final] setSession native failed', e?.message || e);
+  }
+
+  try {
+    await query(
+      `INSERT INTO bot_sessions(user_id,state,data,updated_at)
+       VALUES($1,$2,$3,now())
+       ON CONFLICT(user_id) DO UPDATE SET state=EXCLUDED.state,data=EXCLUDED.data,updated_at=now()`,
+      [k, state, JSON.stringify(data || {})]
+    );
+  } catch (e) {
+    console.error('[v47 final] setSession DB failed', e?.stack || e?.message || e);
+  }
+}
+
+async function lrV47GetSession(key) {
+  const k = String(key || '').trim();
+  if (!k) return null;
+
+  try {
+    if (typeof getSession === 'function') return await getSession(k);
+  } catch (e) {
+    console.error('[v47 final] getSession native failed', e?.message || e);
+  }
+
+  try {
+    const rows = lrV47Rows(await query(
+      `SELECT user_id,state,data,updated_at
+       FROM bot_sessions
+       WHERE user_id::text=$1 OR user_id::text=$2
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [k, `user:${k}`]
+    ));
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[v47 final] getSession DB failed', e?.stack || e?.message || e);
+    return null;
+  }
+}
+
+async function lrV47ClearSession(key) {
+  const k = String(key || '').trim();
+  if (!k) return;
+
+  try {
+    if (typeof clearSession === 'function') {
+      await clearSession(k);
+    }
+  } catch {}
+
+  try {
+    await query(
+      `DELETE FROM bot_sessions
+       WHERE user_id::text=$1 OR user_id::text=$2`,
+      [k, `user:${k}`]
+    );
+  } catch {}
+}
+
+async function lrV47StateSet(key, value) {
+  try {
+    await query(
+      `INSERT INTO lr_bot_state(key,value,updated_at)
+       VALUES($1,$2,now())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [key, JSON.stringify(value || {})]
+    );
+  } catch (e) {
+    console.error('[v47 final] state set failed', e?.stack || e?.message || e);
+  }
+}
+
+async function lrV47StateGet(key) {
+  try {
+    const rows = lrV47Rows(await query(`SELECT value FROM lr_bot_state WHERE key=$1 LIMIT 1`, [key]));
+    if (!rows[0]) return null;
+    return typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+  } catch {
+    return null;
+  }
+}
+
+async function lrV47StateDelLike(patterns) {
+  try {
+    for (const pattern of patterns) {
+      await query(`DELETE FROM lr_bot_state WHERE key LIKE $1`, [pattern]).catch(() => {});
+    }
+  } catch {}
+}
+
+function lrV47EmptyDraft() {
+  try {
+    if (typeof emptyDraft === 'function') return emptyDraft();
+  } catch {}
+
+  return {
+    content: { text: '', format: 'html', markup: [], attachments: [] },
+    buttons: [],
+    isAd: false,
+    cpm: null,
+    channelIds: [],
+    scheduleDate: null,
+    signatureEnabled: true,
+    autoDeleteMinutes: null,
+    reportAfterHours: 24,
+    campaignId: `lr-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+  };
+}
+
+function lrV47SessionDraft(session) {
+  const data = session?.data || {};
+  if (typeof data === 'string') {
+    try {
+      const parsed = JSON.parse(data);
+      return parsed?.draft || parsed || lrV47EmptyDraft();
+    } catch {}
+  }
+  return data?.draft || data || lrV47EmptyDraft();
+}
+
+function lrV47DraftHasContent(draft) {
+  try {
+    if (typeof hasDraftContent === 'function' && hasDraftContent(draft)) return true;
+  } catch {}
+
+  const d = draft || {};
+  const c = d.content || {};
+
+  if (String(c.text || d.text || d.caption || d.html || '').trim()) return true;
+  if (Array.isArray(c.attachments) && c.attachments.length) return true;
+  if (Array.isArray(d.attachments) && d.attachments.length) return true;
+  if (Array.isArray(c.media) && c.media.length) return true;
+  if (Array.isArray(d.media) && d.media.length) return true;
+  if (c.link || d.link || c.forward || d.forward || c.forwarded || d.forwarded) return true;
+  if (c.raw || d.raw || c.message || d.message || c.message_id || d.message_id || c.messageId || d.messageId) return true;
+
+  return false;
+}
+
+async function lrV47Channels() {
+  try {
+    if (typeof getChannels === 'function') {
+      const rows = await getChannels();
+      return Array.isArray(rows) ? rows : lrV47Rows(rows);
+    }
+  } catch (e) {
+    console.error('[v47 final] getChannels native failed', e?.message || e);
+  }
+
+  try {
+    return lrV47Rows(await query(
+      `SELECT id, max_chat_id, title, link, is_active, updated_at
+       FROM channels
+       WHERE COALESCE(is_active,true)=true
+       ORDER BY COALESCE(updated_at, bot_added_at, now()) DESC, id DESC`
+    ));
+  } catch (e) {
+    console.error('[v47 final] getChannels DB failed', e?.stack || e?.message || e);
+    return [];
+  }
+}
+
+function lrV47ChannelName(ch) {
+  try {
+    if (typeof channelName === 'function') return channelName(ch);
+  } catch {}
+
+  return String(ch?.title || ch?.name || ch?.max_chat_id || ch?.id || 'Канал');
+}
+
+function lrV47ChannelButtonText(ch, selected = false) {
+  return `${selected ? '✅' : '📡'} ${lrV47ChannelName(ch)}`;
+}
+
+function lrV47SelectText(draft) {
+  const has = lrV47DraftHasContent(draft);
+  return `━━━━━━━━━━━━━━
+📡 <b>Куда выпустить пост?</b>
+
+${has ? 'Пост принят.' : 'Сначала выберите канал.'}
+Выберите один канал, несколько каналов или все каналы.
+━━━━━━━━━━━━━━`;
+}
+
+async function lrV47ShowChannelSelect(chatId, key, draft = null, multi = false) {
+  const channels = await lrV47Channels();
+  const d = draft || lrV47EmptyDraft();
+  d.channelIds = Array.isArray(d.channelIds) ? d.channelIds : [];
+
+  if (!channels.length) {
+    await lrV47SetSession(key, 'select_channels', { draft: d });
+    return lrV47Msg(chatId, `━━━━━━━━━━━━━━
+🔗 <b>Подключить канал</b>
+
+Сначала добавьте канал в LinkRay.
+━━━━━━━━━━━━━━`, [
+      [lrV47Btn('🔗 Добавить канал', 'post:add_channel')],
+      [lrV47Btn('⬅️ В меню', 'main:menu')]
+    ], 'html');
+  }
+
+  const rows = [];
+
+  for (const ch of channels) {
+    const selected = d.channelIds.includes(Number(ch.id));
+    rows.push([
+      lrV47Btn(
+        lrV47ChannelButtonText(ch, selected),
+        multi ? `post:toggle:${ch.id}` : `post:single:${ch.id}`
+      )
+    ]);
+  }
+
+  rows.push([
+    lrV47Btn('🧩 Выбрать несколько', 'post:multi'),
+    lrV47Btn('🌐 Все каналы', 'post:all_channels')
+  ]);
+
+  if (multi) rows.push([lrV47Btn('➡️ Далее', 'post:channels_next')]);
+
+  rows.push([lrV47Btn('🔗 Добавить канал', 'post:add_channel')]);
+  rows.push([lrV47Btn('⬅️ Назад', 'main:posting'), lrV47Btn('❌ Отмена', 'post:cancel')]);
+
+  await lrV47SetSession(key, multi ? 'select_channels_multi' : 'select_channels', { draft: d });
+
+  return lrV47Msg(chatId, lrV47SelectText(d), rows, 'html');
+}
+
+async function lrV47AskContent(chatId, key, draft) {
+  const d = draft || lrV47EmptyDraft();
+
+  await lrV47SetSession(key, 'wait_post_content', { draft: d });
+
+  const channels = await lrV47Channels();
+  const selected = channels.filter(ch => d.channelIds?.includes(Number(ch.id)));
+  const list = selected.length ? selected.map(ch => `• ${lrV47Esc(lrV47ChannelName(ch))}`).join('\n') : '—';
+
+  return lrV47Msg(chatId, `━━━━━━━━━━━━━━
+📨 <b>Отправьте пост</b>
+
+Каналы:
+${list}
+
+Можно отправить текст, фото, видео, файл или пересланный пост.
+━━━━━━━━━━━━━━`, [
+    [lrV47Btn('⬅️ К каналам', 'post:create')],
+    [lrV47Btn('❌ Отмена', 'post:cancel')]
+  ], 'html');
+}
+
+function lrV47EditorRows(draft) {
+  try {
+    if (typeof editorMenuRows === 'function') return editorMenuRows(draft);
+  } catch {}
+
+  return [
+    [lrV47Btn('✏️ Изменить текст', 'editor:text'), lrV47Btn('🖼 Медиа', 'editor:media')],
+    [lrV47Btn('⚫ Добавить кнопку', 'editor:button'), lrV47Btn('🏷 Автоподпись', 'editor:signature')],
+    [lrV47Btn('💼 Рекламный пост', 'editor:ad')],
+    [lrV47Btn('➡️ Далее', 'editor:next')],
+    [lrV47Btn('⬅️ Назад', 'editor:back'), lrV47Btn('❌ Отмена', 'post:cancel')]
+  ];
+}
+
+function lrV47EditorText() {
+  try {
+    if (typeof editorMenuText === 'function') return editorMenuText();
+  } catch {}
+
+  return `━━━━━━━━━━━━━━
+🧬 <b>Редактор LinkRay</b>
+
+Пост-превью находится выше.
+При изменении текста, медиа, кнопок или автоподписи превью будет обновляться.
+
+Настройте оформление.
+━━━━━━━━━━━━━━`;
+}
+
+async function lrV47OpenEditor(chatId, key, draft) {
+  const d = draft || lrV47EmptyDraft();
+
+  await lrV47SetSession(key, d.postId ? 'edit_existing' : 'edit_draft', { draft: d });
+
+  try {
+    if (typeof sendDraftPreview === 'function') {
+      await sendDraftPreview(chatId, d);
+      console.log('[v47 final] preview sent before editor menu', JSON.stringify({ chatId }));
+    } else if (typeof sendMaxMessage === 'function') {
+      const content = d.content || {};
+      const text = content.text || d.text || '';
+      const attachments = Array.isArray(content.attachments) ? content.attachments : [];
+      if (text || attachments.length) {
+        await sendMaxMessage({ chatId, text, format: content.format || 'html', attachments });
+      }
+    }
+  } catch (e) {
+    console.error('[v47 final] preview failed', e?.stack || e?.message || e);
+  }
+
+  await lrV47Msg(chatId, lrV47EditorText(), lrV47EditorRows(d), 'html');
+  return true;
+}
+
+async function lrV47ExtractDraft(update) {
+  const draft = lrV47EmptyDraft();
+
+  try {
+    if (typeof lrSafeHydrateContent === 'function') {
+      const content = await lrSafeHydrateContent(update);
+      draft.content = {
+        ...draft.content,
+        ...content,
+        raw: update
+      };
+      if (!Array.isArray(draft.content.attachments)) draft.content.attachments = [];
+      return draft;
+    }
+  } catch (e) {
+    console.error('[v47 final] lrSafeHydrateContent failed', e?.message || e);
+  }
+
+  const msgObj =
+    update?.message ||
+    update?.body?.message ||
+    update?.message_created ||
+    update?.body?.message_created ||
+    {};
+
+  const content = msgObj.content || msgObj.body || update?.content || update?.body?.content || {};
+  const text =
+    content.text ||
+    content.caption ||
+    msgObj.text ||
+    msgObj.caption ||
+    update?.text ||
+    update?.body?.text ||
+    '';
+
+  draft.content = {
+    ...draft.content,
+    text: String(text || ''),
+    format: 'html',
+    markup: content.markup || content.entities || msgObj.markup || [],
+    attachments: Array.isArray(content.attachments) ? content.attachments :
+      (Array.isArray(msgObj.attachments) ? msgObj.attachments : []),
+    raw: update
+  };
+
+  if (!lrV47DraftHasContent(draft)) {
+    draft.content.raw = update;
+  }
+
+  return draft;
+}
+
+function lrV47LooksForwarded(update) {
+  const raw = JSON.stringify(update || {});
+  if (/forward|forwarded|linked_message|linkedMessage|"link"\s*:/i.test(raw)) return true;
+
+  const msgObj = update?.message || update?.body?.message || {};
+  const content = msgObj.content || update?.content || {};
+  if (content?.attachments?.length || msgObj?.attachments?.length) return true;
+  if (String(content?.text || msgObj?.text || '').trim()) return true;
+
+  return false;
+}
+
+async function lrV47ClearTempDrafts(key) {
+  const k = String(key || '').trim();
+  if (!k) return;
+
+  await lrV47StateDelLike([
+    `lr_v44_forward_draft:${k}`,
+    `lr_v43_forward_draft:${k}`,
+    `lr_v45_forward_draft:${k}`,
+    `lr_v47_forward_draft:${k}`
+  ]);
+}
+
+async function lrV47StartCreate(update) {
+  const chatId = lrV47PrivateChatId(update);
+  const key = lrV47Key(update);
+  const draft = lrV47EmptyDraft();
+
+  await lrV47ClearTempDrafts(key);
+  await lrV47ClearSession(key);
+
+  console.log('[v47 final] post:create clean start', JSON.stringify({ chatId, key }));
+
+  return lrV47ShowChannelSelect(chatId, key, draft, false);
+}
+
+async function lrV47ShowAddChannel(update) {
+  const callbackId = lrV47CallbackId(update);
+  const chatId = lrV47PrivateChatId(update);
+  const key = lrV47Key(update);
+
+  const baseline = lrV47Rows(await query(`SELECT COALESCE(MAX(id),0)::int AS id FROM channels`).catch(() => [{ id: 0 }]))[0]?.id || 0;
+
+  await lrV47SetSession(key, 'wait_add_channel', { mode: 'add_channel', chatId, ts: Date.now(), baselineId: baseline });
+  await lrV47StateSet(`lr_v47_add_wait:${key}`, { privateChatId: chatId, key, baselineId: baseline, ts: Date.now() });
+  await lrV47StateSet(`lr_v47_add_wait_global`, { privateChatId: chatId, key, baselineId: baseline, ts: Date.now() });
+
+  const text = `━━━━━━━━━━━━━━
+🔗 <b>Добавить канал</b>
+
+1. Откройте канал в MAX.
+2. Добавьте LinkRay в администраторы.
+3. Выдайте право публикации.
+4. Перешлите любой пост из этого канала сюда, в бота.
+
+Если LinkRay не является администратором — канал не будет добавлен.
+━━━━━━━━━━━━━━`;
+
+  console.log('[v47 final] add channel mode enabled', JSON.stringify({ chatId, key, baseline }));
+
+  return lrV47Cb(callbackId, chatId, text, [[lrV47Btn('⬅️ В меню', 'main:menu')]], 'html');
+}
+
+async function lrV47IsAddMode(update) {
+  const key = lrV47Key(update);
+  const session = await lrV47GetSession(key);
+  if (session?.state === 'wait_add_channel') return true;
+
+  const st = await lrV47StateGet(`lr_v47_add_wait:${key}`);
+  if (st && Date.now() - Number(st.ts || 0) < 30 * 60 * 1000) return true;
+
+  return false;
+}
+
+async function lrV47LatestChannelAfter(baselineId = 0) {
+  try {
+    const rows = lrV47Rows(await query(
+      `SELECT id, max_chat_id, title, link, is_active, updated_at
+       FROM channels
+       WHERE id > $1
+          OR updated_at > now() - interval '2 minutes'
+       ORDER BY id DESC, updated_at DESC
+       LIMIT 1`,
+      [Number(baselineId || 0)]
+    ));
+
+    return rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function lrV47NotifyConnected(chatId, key, channel) {
+  if (!channel) return false;
+
+  const stateKey = `lr_v47_connected_notified:${chatId}:${channel.id}`;
+
+  if (await lrV47StateGet(stateKey)) {
+    console.log('[v47 final] duplicate connected notification skipped', JSON.stringify({ chatId, id: channel.id }));
+    return true;
+  }
+
+  const ok = await lrV47Msg(chatId, `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV47Esc(channel.title || 'Канал')}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`, [
+    [lrV47Btn('⬅️ Главное меню', 'main:menu')]
+  ], 'html');
+
+  if (ok) {
+    await lrV47StateSet(stateKey, { chatId, key, channel, ts: Date.now() });
+    console.log('[v47 final] connected notification done', JSON.stringify({
+      chatId,
+      key,
+      id: channel.id,
+      max_chat_id: channel.max_chat_id,
+      title: channel.title
+    }));
+  }
+
+  return ok;
+}
+
+async function lrV47HandleAddForward(update) {
+  const isAdd = await lrV47IsAddMode(update);
+  if (!isAdd) return false;
+
+  const chatId = lrV47PrivateChatId(update);
+  const key = lrV47Key(update);
+  const st = await lrV47StateGet(`lr_v47_add_wait:${key}`) || await lrV47StateGet('lr_v47_add_wait_global') || {};
+  const baseline = Number(st.baselineId || 0);
+
+  console.log('[v47 final] add forward intercepted', JSON.stringify({ chatId, key, baseline }));
+
+  let result = false;
+  try {
+    if (typeof maybeRegisterChannel === 'function') {
+      result = await maybeRegisterChannel(update);
+    }
+  } catch (e) {
+    console.error('[v47 final] maybeRegisterChannel failed', e?.stack || e?.message || e);
+  }
+
+  const channel = await lrV47LatestChannelAfter(baseline);
+
+  if (channel) {
+    await lrV47ClearSession(key);
+    await lrV47StateDelLike([`lr_v47_add_wait:${key}`, 'lr_v47_add_wait_global']);
+    await lrV47NotifyConnected(chatId, key, channel);
+    return true;
+  }
+
+  if (result === true) {
+    // На случай, если maybeRegisterChannel вернул true, но канал уже был старый.
+    const old = await lrV47LatestChannelAfter(0);
+    if (old) {
+      await lrV47ClearSession(key);
+      await lrV47NotifyConnected(chatId, key, old);
+      return true;
+    }
+  }
+
+  await lrV47Msg(chatId, `❌ <b>Бот не является администратором канала</b>
+
+Сначала добавьте LinkRay в администраторы канала и выдайте право публикации.
+
+Канал не добавлен в базу.`, [
+    [lrV47Btn('⬅️ Главное меню', 'main:menu')]
+  ], 'html');
+
+  return true;
+}
+
+async function lrV47HandleMainForward(update) {
+  if (!lrV47LooksForwarded(update)) return false;
+
+  const chatId = lrV47PrivateChatId(update);
+  const key = lrV47Key(update);
+  const draft = await lrV47ExtractDraft(update);
+
+  await lrV47ClearTempDrafts(key);
+  await lrV47StateSet(`lr_v47_forward_draft:${key}`, { draft, ts: Date.now() });
+  await lrV47SetSession(key, 'select_channels', { draft });
+
+  console.log('[v47 final] main forward -> channel select', JSON.stringify({
+    chatId,
+    key,
+    hasContent: lrV47DraftHasContent(draft)
+  }));
+
+  await lrV47ShowChannelSelect(chatId, key, draft, false);
+  return true;
+}
+
+async function lrV47HandleSelectedChannels(update, payload) {
+  const callbackId = lrV47CallbackId(update);
+  const chatId = lrV47PrivateChatId(update);
+  const key = lrV47Key(update);
+  const session = await lrV47GetSession(key);
+  const draft = lrV47SessionDraft(session);
+
+  if (payload.startsWith('post:single:')) {
+    const id = Number(payload.split(':')[2]);
+    draft.channelIds = Number.isFinite(id) ? [id] : [];
+
+    console.log('[v47 final] channel selected', JSON.stringify({
+      chatId,
+      key,
+      id,
+      hasContent: lrV47DraftHasContent(draft)
+    }));
+
+    await lrV47Ack(callbackId, 'Канал выбран');
+
+    if (lrV47DraftHasContent(draft)) return lrV47OpenEditor(chatId, key, draft);
+    return lrV47AskContent(chatId, key, draft);
+  }
+
+  if (payload === 'post:all_channels') {
+    const channels = await lrV47Channels();
+    draft.channelIds = channels.map(ch => Number(ch.id)).filter(Number.isFinite);
+
+    console.log('[v47 final] all channels selected', JSON.stringify({
+      chatId,
+      key,
+      count: draft.channelIds.length,
+      hasContent: lrV47DraftHasContent(draft)
+    }));
+
+    await lrV47Ack(callbackId, 'Все каналы выбраны');
+
+    if (lrV47DraftHasContent(draft)) return lrV47OpenEditor(chatId, key, draft);
+    return lrV47AskContent(chatId, key, draft);
+  }
+
+  if (payload === 'post:multi') {
+    await lrV47Ack(callbackId, 'Выберите несколько каналов');
+    return lrV47ShowChannelSelect(chatId, key, draft, true);
+  }
+
+  if (payload.startsWith('post:toggle:')) {
+    const id = Number(payload.split(':')[2]);
+    draft.channelIds = Array.isArray(draft.channelIds) ? draft.channelIds : [];
+
+    if (Number.isFinite(id)) {
+      if (draft.channelIds.includes(id)) draft.channelIds = draft.channelIds.filter(x => Number(x) !== id);
+      else draft.channelIds.push(id);
+    }
+
+    await lrV47Ack(callbackId, 'Выбор обновлён');
+    return lrV47ShowChannelSelect(chatId, key, draft, true);
+  }
+
+  if (payload === 'post:channels_next') {
+    draft.channelIds = Array.isArray(draft.channelIds) ? draft.channelIds : [];
+
+    if (!draft.channelIds.length) {
+      await lrV47Ack(callbackId, 'Сначала выберите канал');
+      return lrV47ShowChannelSelect(chatId, key, draft, true);
+    }
+
+    if (lrV47DraftHasContent(draft)) return lrV47OpenEditor(chatId, key, draft);
+    return lrV47AskContent(chatId, key, draft);
+  }
+
+  return false;
+}
+
+async function lrV47HandlePostsList(update) {
+  const callbackId = lrV47CallbackId(update);
+  const chatId = lrV47PrivateChatId(update);
+
+  try {
+    if (typeof showPosts === 'function') {
+      await showPosts(callbackId, 'all', null, null, chatId);
+      console.log('[v47 final] posts list opened', JSON.stringify({ chatId }));
+      return true;
+    }
+  } catch (e) {
+    console.error('[v47 final] showPosts failed', e?.stack || e?.message || e);
+  }
+
+  await lrV47Cb(callbackId, chatId, `━━━━━━━━━━━━━━
+📁 <b>Посты</b>
+
+Не удалось открыть список через старый обработчик.
+Попробуйте ещё раз после перезапуска.
+━━━━━━━━━━━━━━`, [[lrV47Btn('⬅️ В Studio', 'main:posting')]], 'html');
+
+  return true;
+}
+
+async function lrV47HandleBotRemoved(update) {
+  const type = lrV47Type(update);
+  if (!/bot_removed|chat_deleted|bot_deleted/i.test(type)) return false;
+
+  const removedChatId = lrV47ChatId(update);
+
+  try {
+    if (removedChatId) {
+      await query(
+        `UPDATE channels
+         SET is_active=false, updated_at=now()
+         WHERE max_chat_id::text=$1`,
+        [String(removedChatId)]
+      ).catch(() => {});
+    }
+  } catch {}
+
+  const targets = new Set(['405954311']);
+
+  try {
+    const rows = lrV47Rows(await query(
+      `SELECT value
+       FROM lr_bot_state
+       WHERE key LIKE 'lr_v47_connected_notified:%'
+          OR key LIKE 'lr_v31_channel_connected_notified:%'
+          OR key LIKE 'lr_v35_channel_connected_notified:%'
+       ORDER BY updated_at DESC
+       LIMIT 30`
+    ));
+
+    for (const row of rows) {
+      const v = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+      if (v?.chatId) targets.add(String(v.chatId));
+      if (v?.privateChatId) targets.add(String(v.privateChatId));
+    }
+  } catch {}
+
+  for (const target of targets) {
+    await lrV47Msg(target, `✅ <b>Канал удалён из LinkRay</b>
+
+Бот был удалён из администраторов канала.
+Канал отключён в базе и больше не будет использоваться для постов.`, [
+      [lrV47Btn('⬅️ Главное меню', 'main:menu')]
+    ], 'html');
+  }
+
+  console.log('[v47 final] bot_removed handled', JSON.stringify({ removedChatId, targets: [...targets] }));
+  return true;
+}
+
+async function lrV47HandleCallback(update) {
+  const payload = lrV47Payload(update);
+
+  if (!payload) return false;
+
+  if (payload === 'post:create') return lrV47StartCreate(update);
+  if (payload === 'post:add_channel') return lrV47ShowAddChannel(update);
+  if (payload === 'post:all') return lrV47HandlePostsList(update);
+
+  if (
+    payload.startsWith('post:single:') ||
+    payload === 'post:all_channels' ||
+    payload === 'post:multi' ||
+    payload.startsWith('post:toggle:') ||
+    payload === 'post:channels_next'
+  ) {
+    return lrV47HandleSelectedChannels(update, payload);
+  }
+
+  if (payload === 'post:cancel') {
+    const chatId = lrV47PrivateChatId(update);
+    const key = lrV47Key(update);
+    await lrV47ClearSession(key);
+    await lrV47ClearTempDrafts(key);
+    if (typeof sendMain === 'function') {
+      try {
+        await sendMain(chatId);
+        return true;
+      } catch {}
+    }
+    await lrV47Msg(chatId, 'Отменено.', [[lrV47Btn('⬅️ Главное меню', 'main:menu')]], 'html');
+    return true;
+  }
+
+  return false;
+}
+
+async function lrV47HandleMessageCreated(update) {
+  if (await lrV47HandleBotRemoved(update)) return true;
+  if (await lrV47HandleAddForward(update)) return true;
+
+  const session = await lrV47GetSession(lrV47Key(update));
+
+  // Если пользователь уже в ожидании контента, не перехватываем — пусть родной редактор принимает пост.
+  if (['wait_post_content', 'post_content', 'wait_content', 'wait_post_media'].includes(String(session?.state || ''))) {
+    return false;
+  }
+
+  return lrV47HandleMainForward(update);
+}
+
+async function lrV47InstallSubscriptions() {
+  const token = lrV47Token();
+  if (!token) {
+    console.log('[v47 final] subscription skipped: no token');
+    return;
+  }
+
+  const url = lrV47WebhookUrl();
+
+  const body = {
+    url,
+    update_types: [
+      'bot_added',
+      'bot_removed',
+      'bot_started',
+      'message_created',
+      'message_callback',
+      'message_edited',
+      'message_removed'
+    ]
+  };
+
+  const secret = String(process.env.WEBHOOK_SECRET || process.env.MAX_WEBHOOK_SECRET || '').trim();
+  if (secret && /^[a-zA-Z0-9_-]{5,256}$/.test(secret)) body.secret = secret;
+
+  try {
+    const r = await lrV47Api('/subscriptions', 'POST', body);
+    console.log('[v47 final] subscription install result', JSON.stringify({ ok: true, status: r.status, url, response: r.data }));
+  } catch (e) {
+    console.error('[v47 final] subscription install failed', e?.stack || e?.message || e);
+  }
+}
+
+try {
+  setTimeout(() => lrV47InstallSubscriptions().catch(e => console.error('[v47 final] startup failed', e?.stack || e?.message || e)), 1500);
+} catch {}
+
+app.use(async function lrFinalMaxCoreV47(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+    if (!String(req.path || req.url || '').includes('/webhook')) return next();
+
+    const update = req.body || {};
+    lrV47SetGlobals(update);
+
+    const type = lrV47Type(update);
+    const payload = lrV47Payload(update);
+    const chatId = lrV47ChatId(update);
+
+    console.log('[v47 final] webhook', JSON.stringify({ type, payload, chatId, key: lrV47Key(update) }));
+
+    let handled = false;
+
+    if (/callback/i.test(type) || payload) {
+      handled = await lrV47HandleCallback(update);
+    } else if (/message_created|message_edited|bot_added|bot_removed|chat_/i.test(type)) {
+      handled = await lrV47HandleMessageCreated(update);
+    } else {
+      handled = await lrV47HandleMessageCreated(update);
+    }
+
+    if (handled) {
+      if (!res.headersSent) return res.json({ ok: true, handled: 'lr_final_max_core_v47' });
+      return;
+    }
+
+    return next();
+  } catch (e) {
+    console.error('[v47 final] middleware failed', e?.stack || e?.message || e);
+    if (!res.headersSent) return res.json({ ok: true, handled: 'lr_final_max_core_v47_error_logged' });
+  }
+});
+
+console.log('[v47 final] installed');
+/* LR_FINAL_MAX_CORE_V47_END */
+
+
+
+
+
+
+/* LR_V59_SYNC_EDITOR_AND_REPORT_GUARD_START */
+function lrV59Rows(result) { if (Array.isArray(result)) return result; if (result && Array.isArray(result.rows)) return result.rows; return []; }
+function lrV59Json(value, fallback = {}) { if (value === null || value === undefined || value === '') return fallback; if (typeof value === 'object') return value; try { return JSON.parse(String(value)); } catch (_) { return fallback; } }
+function lrV59Esc(value) { try { if (typeof escapeHtml === 'function') return escapeHtml(String(value ?? '')); } catch (_) {} return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function lrV59Btn(label, payload) { if (typeof callbackButton === 'function') return callbackButton(label, payload); return { type: 'callback', text: label, payload }; }
+function lrV59Type(update) { try { if (typeof getUpdateType === 'function') return String(getUpdateType(update) || ''); } catch (_) {} return String(update?.update_type || update?.type || update?.event_type || update?.event || ''); }
+function lrV59ChatId(update) { try { if (typeof getChatId === 'function') return String(getChatId(update) || ''); } catch (_) {} return String(update?.recipient?.chat_id || update?.message?.recipient?.chat_id || update?.chat_id || update?.chatId || update?.chat?.id || ''); }
+function lrV59Key(update, chatId) { try { if (typeof getSessionKey === 'function') return String(getSessionKey(update) || chatId || ''); } catch (_) {} return String(chatId || update?.user_id || update?.sender?.user_id || update?.message?.sender?.user_id || update?.message?.sender?.id || ''); }
+function lrV59Text(update) { const vals = [update?.message?.body?.text, update?.message?.text, update?.message?.content?.text, update?.body?.text, update?.text, update?.content?.text]; for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim(); return ''; }
+function lrV59Decode(value) { const raw = String(value || ''); try { return decodeURIComponent(raw); } catch (_) { return raw; } }
+function lrV59Encode(value) { try { return encodeURIComponent(String(value ?? '')); } catch (_) { return String(value ?? ''); } }
+function lrV59Today() { try { if (typeof lrV51Today === 'function') return lrV51Today(); } catch (_) {} return new Date().toISOString().slice(0, 10); }
+function lrV59ParseTarget(data) { const raw = lrV59Decode(data?.virtualId || data?.postKey || data?.itemKey || data?.target || data?.id || ''); const m = String(raw).match(/(?:^|:)(scheduled_posts|ad_post_trackers|ad_post_tracker_channels|lr_post_entry_v68):(\d+)(?:$|:)/); if (!m) return null; return { table: m[1], id: Number(m[2]), raw }; }
+function lrV59CtxFromSession(data) { return { virtualId: data?.virtualId || data?.postKey || data?.itemKey || data?.target || data?.id || '', channelKey: data?.channelKey || data?.channel || data?.channel_id || 'all', day: data?.day || lrV59Today(), filter: data?.filter || 'all', page: Number(data?.page || 0) || 0 }; }
+function lrV59OpenPayload(ctx) { return `lr_plan_v51:open:${lrV59Encode(ctx.virtualId)}:${lrV59Encode(ctx.channelKey || 'all')}:${ctx.day || lrV59Today()}:${ctx.filter || 'all'}:${ctx.page || 0}`; }
+async function lrV59Send(chatId, text, rows = []) { if (!chatId) return null; try { if (typeof msg === 'function') return await msg(chatId, text, rows || [], 'html'); } catch (e) { console.error('[v59 sync] msg failed', e?.stack || e?.message || e); } try { if (typeof sendMaxMessage === 'function') { const payload = { chatId, text, format: 'html' }; if (rows && rows.length) { try { payload.attachments = typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : rows; } catch (_) { payload.attachments = rows; } } return await sendMaxMessage(payload); } } catch (e) { console.error('[v59 sync] sendMaxMessage failed', e?.stack || e?.message || e); } return null; }
+async function lrV59GetSession(key) { if (!key || typeof query !== 'function') return null; const r = await query(`SELECT user_id,state,data,updated_at FROM bot_sessions WHERE user_id::text=$1 ORDER BY updated_at DESC LIMIT 1`, [String(key)]); return lrV59Rows(r)[0] || null; }
+async function lrV59ClearSession(key) { if (!key) return; try { if (typeof clearSession === 'function') return await clearSession(key); } catch (_) {} if (typeof query === 'function') await query(`UPDATE bot_sessions SET state='idle', data='{}'::jsonb, updated_at=now() WHERE user_id::text=$1`, [String(key)]).catch(()=>{}); }
+function lrV59Published(row) { const status = String(row?.status || row?.state || row?.publish_status || '').toLowerCase(); if (/published|sent|done|posted|success|опублик|отправ|выпущ/.test(status)) return true; return Boolean(row?.published_at || row?.sent_at || row?.posted_at || row?.delivered_at || row?.fact_publish_at || row?.max_message_id || row?.published_message_id || row?.sent_message_id || row?.message_id); }
+function lrV59MessageId(row) { const draft = lrV59Json(row?.draft, {}); const meta = lrV59Json(row?.meta, {}); const raw = lrV59Json(row?.raw, {}); const vals = [row?.published_message_id,row?.max_message_id,row?.sent_message_id,row?.message_id,row?.messageId,row?.post_message_id,row?.channel_message_id,meta?.published_message_id,meta?.max_message_id,meta?.message_id,draft?.published_message_id,draft?.max_message_id,draft?.message_id,draft?.content?.message_id,raw?.message_id,raw?.message?.message_id,raw?.message?.id]; for (const v of vals) { const t = String(v ?? '').trim(); if (t && t !== 'null' && t !== 'undefined' && t !== '[object Object]') return t; } return ''; }
+function lrV59ApiToken() { for (const k of ['MAX_TOKEN','MAX_BOT_TOKEN','MAX_ACCESS_TOKEN','BOT_TOKEN','ACCESS_TOKEN','API_TOKEN','TOKEN']) if (process.env[k]) return String(process.env[k]); try { if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN); } catch (_) {} try { if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN); } catch (_) {} try { if (typeof TOKEN !== 'undefined' && TOKEN) return String(TOKEN); } catch (_) {} return ''; }
+function lrV59ApiBase() { let base = ''; try { if (typeof MAX_API_BASE !== 'undefined' && MAX_API_BASE) base = String(MAX_API_BASE); } catch (_) {} return String(base || process.env.MAX_API_BASE || process.env.MAX_BASE_URL || process.env.MAX_PLATFORM_API || process.env.MAX_API_URL || 'https://platform-api2.max.ru').replace(/\/+$/, ''); }
+async function lrV59PutMessage(messageId, text, format = 'html') { const token = lrV59ApiToken(); if (!messageId) return { ok: false, skipped: true, reason: 'published message_id not found' }; if (!token) return { ok: false, skipped: true, reason: 'MAX token not found' }; const url = `${lrV59ApiBase()}/messages?message_id=${encodeURIComponent(String(messageId))}`; const body = { text: String(text || ''), attachments: null, notify: false, format: format || 'html' }; const response = await fetch(url, { method: 'PUT', headers: { Authorization: token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const raw = await response.text().catch(() => ''); let data = null; try { data = raw ? JSON.parse(raw) : null; } catch (_) { data = { raw }; } const ok = response.ok && (!data || data.success !== false); console.log('[v59 sync] PUT /messages result', JSON.stringify({ messageId, status: response.status, ok, preview: raw.slice(0, 300) })); return { ok, status: response.status, data, raw, messageId }; }
+async function lrV59LoadScheduled(id) { const r = await query(`SELECT sp.*, c.max_chat_id AS lr_channel_chat_id, c.title AS lr_channel_title FROM scheduled_posts sp LEFT JOIN channels c ON c.id=sp.channel_id WHERE sp.id=$1 LIMIT 1`, [id]); return lrV59Rows(r)[0] || null; }
+async function lrV59UpdateScheduledText(id, text) { const before = await lrV59LoadScheduled(id).catch(() => null); if (!before) throw new Error('post row not found: scheduled_posts:' + id); const groupId = before.report_group_id ? String(before.report_group_id) : ''; const sql = groupId ? `UPDATE scheduled_posts SET text=$1, draft = CASE WHEN draft IS NULL THEN draft ELSE jsonb_set(jsonb_set(COALESCE(draft, '{}'::jsonb), '{text}', to_jsonb($1::text), true), '{content}', COALESCE(draft->'content','{}'::jsonb) || jsonb_build_object('text',$1::text), true) END, updated_at=now() WHERE id=$2 OR report_group_id=$3 RETURNING *` : `UPDATE scheduled_posts SET text=$1, draft = CASE WHEN draft IS NULL THEN draft ELSE jsonb_set(jsonb_set(COALESCE(draft, '{}'::jsonb), '{text}', to_jsonb($1::text), true), '{content}', COALESCE(draft->'content','{}'::jsonb) || jsonb_build_object('text',$1::text), true) END, updated_at=now() WHERE id=$2 RETURNING *`; const params = groupId ? [text, id, groupId] : [text, id]; const r = await query(sql, params); const updated = lrV59Rows(r); if (!updated.length) throw new Error('post row not found after update: scheduled_posts:' + id); return updated; }
+async function lrV59UpdatePostText(target, text) { if (!target || !Number.isFinite(target.id)) throw new Error('post target not found'); if (target.table === 'scheduled_posts') return await lrV59UpdateScheduledText(target.id, text); if (target.table === 'ad_post_trackers') { const r = await query(`UPDATE ad_post_trackers SET post_text=$1, updated_at=now() WHERE id=$2 RETURNING *`, [text, target.id]); const row = lrV59Rows(r)[0]; if (!row) throw new Error('post row not found after update: ad_post_trackers:' + target.id); return [row]; } if (target.table === 'ad_post_tracker_channels') { const r = await query(`UPDATE ad_post_tracker_channels SET post_text=$1, updated_at=now() WHERE id=$2 RETURNING *`, [text, target.id]); const row = lrV59Rows(r)[0]; if (!row) throw new Error('post row not found after update: ad_post_tracker_channels:' + target.id); return [row]; } if (target.table === 'lr_post_entry_v68') { const r = await query(`UPDATE lr_post_entry_v68 SET text=$1 WHERE id=$2 RETURNING *`, [text, target.id]); const row = lrV59Rows(r)[0]; if (!row) throw new Error('post row not found after update: lr_post_entry_v68:' + target.id); return [row]; } throw new Error('unsupported post table: ' + target.table); }
+async function lrV59SyncPublishedRows(rowsToSync, text) { const seen = new Set(); const results = []; for (const row of rowsToSync || []) { if (!lrV59Published(row)) { results.push({ ok: true, skipped: true, reason: 'not published yet' }); continue; } const messageId = lrV59MessageId(row); if (!messageId || seen.has(messageId)) continue; seen.add(messageId); try { results.push(await lrV59PutMessage(messageId, text, row?.format || 'html')); } catch (e) { results.push({ ok: false, error: e?.message || String(e), messageId }); console.error('[v59 sync] PUT failed', e?.stack || e?.message || e); } } return results; }
+async function lrV59HandleTextInput(update, chatId, key, session) { const state = String(session?.state || ''); if (!['content_plan_v59_wait_text','content_plan_v58_wait_text','content_plan_v57_wait_text','content_plan_v56_wait_text','content_plan_v55_wait_text','content_plan_v54_wait_text','content_plan_v53_wait_text'].includes(state)) return false; const text = lrV59Text(update); if (!text || text.startsWith('/')) return false; const data = lrV59Json(session?.data, {}); const ctx = lrV59CtxFromSession(data); const target = lrV59ParseTarget(data); console.log('[v59 sync] text input', JSON.stringify({ chatId, key, state, ctx, target })); const updatedRows = await lrV59UpdatePostText(target, text); const syncResults = await lrV59SyncPublishedRows(updatedRows, text); await lrV59ClearSession(key); const okCount = syncResults.filter(x => x && x.ok && !x.skipped).length; const publishedAttemptCount = syncResults.filter(x => x && !x.skipped).length; let note = '✅ <b>Текст поста сохранён</b>\n\nИзменения записаны в контент-план.'; if (okCount > 0) note += `\nКанал MAX тоже обновлён${okCount > 1 ? `: ${okCount} сообщений` : ''}.`; else if (publishedAttemptCount === 0) note += '\nПост ещё не опубликован или у него не найден message_id, поэтому в канале обновлять пока нечего.'; else { const err = syncResults.find(x => x && !x.ok)?.error || syncResults.find(x => x && !x.ok)?.raw || 'ошибка MAX API'; note += `\n⚠️ В базе сохранено, но канал не обновился: ${lrV59Esc(err)}.`; } await lrV59Send(chatId, note, [[lrV59Btn('⬅️ К редактору', lrV59OpenPayload(ctx))]]); try { if (typeof lrV57OpenPost === 'function') await lrV57OpenPost(null, chatId, key, ctx.virtualId, ctx.channelKey, ctx.day, ctx.filter, ctx.page); } catch (e) { console.error('[v59 sync] reopen editor failed', e?.stack || e?.message || e); } console.log('[v59 sync] text saved and channel sync finished', JSON.stringify({ chatId, key, target, updatedRows: updatedRows.length, syncResults })); return true; }
+async function lrV59Webhook(req, res, next) { try { const update = req.body || {}; const type = lrV59Type(update); if (type !== 'message_created') return next(); const chatId = lrV59ChatId(update); const key = lrV59Key(update, chatId); if (!key) return next(); const session = await lrV59GetSession(key).catch(() => null); if (session && await lrV59HandleTextInput(update, chatId, key, session)) { if (res && !res.headersSent) return res.json({ ok: true, handled: 'lr_v59_sync_editor_to_channel' }); return; } return next(); } catch (e) { console.error('[v59 sync] webhook failed', e?.stack || e?.message || e); try { const update = req.body || {}; const chatId = lrV59ChatId(update); await lrV59Send(chatId, `❌ <b>Ошибка при сохранении текста</b>\n\n${lrV59Esc(e?.message || e)}`, []); } catch (_) {} if (res && !res.headersSent) return res.json({ ok: true, handled: 'lr_v59_sync_error' }); return; } }
+try { if (typeof app !== 'undefined' && app && typeof app.use === 'function') { app.use('/webhook', lrV59Webhook); console.log('[v59 sync] installed: no-click 24h report guard + content-plan edits update published MAX message'); } } catch (e) { console.error('[v59 sync] install failed', e?.stack || e?.message || e); }
+/* LR_V59_SYNC_EDITOR_AND_REPORT_GUARD_END */
+
+/* LR_PLAN_POST_PREVIEW_EDITOR_V57_START */
+// v57: в контент-плане при открытии поста показываем сам пост сверху,
+// затем меню редактора ниже. После изменения текста редактор открывается снова уже с обновлённым превью.
+function lrV57Rows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  return [];
+}
+function lrV57Esc(value) {
+  try { if (typeof escapeHtml === 'function') return escapeHtml(String(value ?? '')); } catch (_) {}
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function lrV57Json(value, fallback = {}) {
+  if (!value) return fallback;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(String(value)); } catch (_) { return fallback; }
+}
+function lrV57Arr(value) {
+  const v = lrV57Json(value, value);
+  if (Array.isArray(v)) return v;
+  return [];
+}
+function lrV57Btn(label, payload) {
+  if (typeof callbackButton === 'function') return callbackButton(label, payload);
+  return { type: 'callback', text: label, payload };
+}
+function lrV57Keyboard(rows) {
+  try { if (typeof inlineKeyboard === 'function') return inlineKeyboard(rows); } catch (_) {}
+  return rows;
+}
+function lrV57PayloadSafe(value) {
+  try { if (typeof lrV51PayloadSafe === 'function') return lrV51PayloadSafe(value); } catch (_) {}
+  try { return encodeURIComponent(String(value ?? '')); } catch (_) { return String(value ?? ''); }
+}
+function lrV57PayloadRead(value) {
+  try { if (typeof lrV51PayloadRead === 'function') return lrV51PayloadRead(value); } catch (_) {}
+  try { return decodeURIComponent(String(value ?? '')); } catch (_) { return String(value ?? ''); }
+}
+function lrV57Today() {
+  try { if (typeof lrV51Today === 'function') return lrV51Today(); } catch (_) {}
+  return new Date().toISOString().slice(0, 10);
+}
+function lrV57Time(value) {
+  try { if (typeof lrV51Time === 'function') return lrV51Time(value); } catch (_) {}
+  const d = value ? new Date(value) : null;
+  if (!d || Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' });
+}
+function lrV57HumanDay(value) {
+  try { if (typeof lrV51HumanDay === 'function') return lrV51HumanDay(value); } catch (_) {}
+  return String(value || lrV57Today());
+}
+function lrV57Type(update) {
+  try { if (typeof getUpdateType === 'function') return String(getUpdateType(update) || ''); } catch (_) {}
+  return String(update?.update_type || update?.type || update?.event_type || update?.event || '');
+}
+function lrV57Payload(update) {
+  try { if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || ''); } catch (_) {}
+  return String(update?.callback?.payload || update?.message?.callback?.payload || update?.payload || update?.message?.payload || '');
+}
+function lrV57ChatId(update) {
+  try { if (typeof getChatId === 'function') return String(getChatId(update) || ''); } catch (_) {}
+  return String(update?.recipient?.chat_id || update?.message?.recipient?.chat_id || update?.chat_id || update?.chatId || update?.chat?.id || '');
+}
+function lrV57Key(update, chatId) {
+  try { if (typeof getSessionKey === 'function') return String(getSessionKey(update) || chatId || ''); } catch (_) {}
+  return String(chatId || update?.user_id || update?.sender?.user_id || update?.message?.sender?.user_id || update?.message?.sender?.id || '');
+}
+function lrV57Text(update) {
+  const vals = [
+    update?.message?.body?.text,
+    update?.message?.text,
+    update?.message?.content?.text,
+    update?.body?.text,
+    update?.text,
+    update?.content?.text
+  ];
+  for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim();
+  return '';
+}
+function lrV57ParseCtxFromPayload(payload) {
+  const parts = String(payload || '').split(':');
+  return {
+    action: parts[1] || '',
+    virtualId: lrV57PayloadRead(parts[2] || ''),
+    channelKey: lrV57PayloadRead(parts[3] || 'all') || 'all',
+    day: parts[4] || lrV57Today(),
+    filter: parts[5] || 'all',
+    page: Number(parts[6] || 0) || 0
+  };
+}
+function lrV57OpenPayload(ctx) {
+  return `lr_plan_v51:open:${lrV57PayloadSafe(ctx.virtualId)}:${lrV57PayloadSafe(ctx.channelKey || 'all')}:${ctx.day || lrV57Today()}:${ctx.filter || 'all'}:${ctx.page || 0}`;
+}
+function lrV57ListPayload(ctx) {
+  return `lr_plan_v51:view:${lrV57PayloadSafe(ctx.channelKey || 'all')}:${ctx.day || lrV57Today()}:${ctx.filter || 'all'}:${ctx.page || 0}`;
+}
+function lrV57ActionPayload(action, ctx) {
+  return `lr_plan_v51:${action}:${lrV57PayloadSafe(ctx.virtualId)}:${lrV57PayloadSafe(ctx.channelKey || 'all')}:${ctx.day || lrV57Today()}:${ctx.filter || 'all'}:${ctx.page || 0}`;
+}
+async function lrV57SetSession(key, state, data) {
+  if (!key) return;
+  try { if (typeof lrV51SetState === 'function') return await lrV51SetState(key, state, data || {}); } catch (_) {}
+  try { if (typeof setSession === 'function') return await setSession(key, state, data || {}); } catch (_) {}
+  if (typeof query === 'function') {
+    await query(
+      `INSERT INTO bot_sessions(user_id,state,data,updated_at)
+       VALUES($1,$2,$3::jsonb,now())
+       ON CONFLICT (user_id) DO UPDATE SET state=EXCLUDED.state,data=EXCLUDED.data,updated_at=now()`,
+      [String(key), String(state), JSON.stringify(data || {})]
+    ).catch(e => console.error('[v57 plan preview] setSession failed', e?.message || e));
+  }
+}
+async function lrV57GetSession(key) {
+  if (!key || typeof query !== 'function') return null;
+  const r = await query(
+    `SELECT user_id,state,data,updated_at FROM bot_sessions WHERE user_id::text=$1 ORDER BY updated_at DESC LIMIT 1`,
+    [String(key)]
+  );
+  return lrV57Rows(r)[0] || null;
+}
+async function lrV57ClearSession(key) {
+  if (!key) return;
+  try { if (typeof clearSession === 'function') return await clearSession(key); } catch (_) {}
+  if (typeof query === 'function') {
+    await query(`UPDATE bot_sessions SET state='idle', data='{}'::jsonb, updated_at=now() WHERE user_id::text=$1`, [String(key)]).catch(()=>{});
+  }
+}
+function lrV57PostTargetFromVirtual(virtualId) {
+  const raw = lrV57PayloadRead(virtualId || '');
+  const m = String(raw).match(/(?:^|:)(scheduled_posts|ad_post_trackers|ad_post_tracker_channels|lr_post_entry_v68):(\d+)(?:$|:)/);
+  if (!m) return null;
+  return { table: m[1], id: Number(m[2]), raw };
+}
+async function lrV57LoadPosts() {
+  if (typeof lrV51LoadPosts === 'function') return await lrV51LoadPosts();
+  return [];
+}
+async function lrV57LoadChannels() {
+  if (typeof lrV51LoadChannels === 'function') return await lrV51LoadChannels();
+  return [];
+}
+function lrV57FindPost(posts, virtualId) {
+  const v = lrV57PayloadRead(virtualId || '');
+  return posts.find(p => String(p.__v51Id || '') === v) ||
+         posts.find(p => String(p.__v51Id || '') === String(virtualId || '')) ||
+         null;
+}
+function lrV57ChannelTitle(row, channels, channelKey) {
+  try { if (typeof lrV51ChannelTitle === 'function') return lrV51ChannelTitle(row, channels) || ''; } catch (_) {}
+  const id = String(row?.__v51ChannelId || row?.channel_id || row?.chat_id || '');
+  const ch = channels.find(c => String(c.id) === id || String(c.max_chat_id) === id || String(c.id) === String(channelKey));
+  return ch?.title || (channelKey === 'all' ? 'Все каналы' : 'Канал');
+}
+function lrV57IsAd(row) {
+  try { if (typeof lrV51IsAd === 'function') return lrV51IsAd(row); } catch (_) {}
+  return Boolean(row?.is_ad || row?.isAd || row?.cpm);
+}
+function lrV57AutoDelete(row) {
+  try { if (typeof lrV51AutoDelete === 'function') return lrV51AutoDelete(row); } catch (_) {}
+  const n = Number(row?.auto_delete_minutes || row?.autoDeleteMinutes || 0);
+  if (Number.isFinite(n) && n > 0) return n % 60 === 0 ? `${n/60}ч` : `${n}м`;
+  return '';
+}
+function lrV57PostLong(row) {
+  try { if (typeof lrV51PostLong === 'function') return lrV51PostLong(row); } catch (_) {}
+  return String(row?.text || row?.post_text || row?.caption || row?.body || row?.__v51Title || 'Пост');
+}
+function lrV57CollectAttachments(row) {
+  const draft = lrV57Json(row?.draft, {});
+  const meta = lrV57Json(row?.meta, {});
+  const raw = lrV57Json(row?.raw, {});
+  const candidates = [
+    row?.attachments,
+    draft?.attachments,
+    draft?.content?.attachments,
+    draft?.raw?.attachments,
+    draft?.message?.attachments,
+    meta?.attachments,
+    raw?.attachments,
+    raw?.message?.attachments,
+    row?.content?.attachments,
+  ];
+  for (const c of candidates) {
+    const arr = lrV57Arr(c);
+    if (arr.length) return arr;
+  }
+  return [];
+}
+function lrV57CollectButtons(row) {
+  const draft = lrV57Json(row?.draft, {});
+  const meta = lrV57Json(row?.meta, {});
+  const candidates = [row?.buttons, draft?.buttons, draft?.content?.buttons, meta?.buttons];
+  for (const c of candidates) {
+    const arr = lrV57Arr(c);
+    if (arr.length) return arr;
+  }
+  return [];
+}
+function lrV57CollectText(row) {
+  const draft = lrV57Json(row?.draft, {});
+  const content = lrV57Json(row?.content, {});
+  const raw = lrV57Json(row?.raw, {});
+  const vals = [
+    row?.text,
+    row?.post_text,
+    row?.message_text,
+    row?.caption,
+    row?.body,
+    row?.content_text,
+    draft?.content?.text,
+    draft?.text,
+    draft?.raw?.text,
+    draft?.raw?.body?.text,
+    content?.text,
+    raw?.text,
+    raw?.body?.text,
+    row?.__v51Title
+  ];
+  for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim();
+  return lrV57PostLong(row);
+}
+function lrV57DraftFromRow(row, ctx) {
+  const text = lrV57CollectText(row);
+  const attachments = lrV57CollectAttachments(row);
+  const buttons = lrV57CollectButtons(row);
+  return {
+    postId: row?.id || row?.__v51Id || ctx?.virtualId || null,
+    source: 'content_plan_v57',
+    content: {
+      raw: row?.raw || row || null,
+      text,
+      format: row?.format || 'html',
+      markup: [],
+      attachments
+    },
+    buttons,
+    channelIds: row?.channel_id ? [Number(row.channel_id)] : [],
+    scheduleDate: row?.__v51Date || row?.publish_at || row?.published_at || null,
+    signatureEnabled: row?.signature_enabled !== false,
+    isAd: lrV57IsAd(row),
+    cpm: row?.cpm || null,
+    autoDeleteMinutes: row?.auto_delete_minutes || null,
+    reportAfterHours: row?.report_after_hours || 24,
+    __contentPlanCtx: ctx
+  };
+}
+async function lrV57Send(chatId, text, rows) {
+  if (!chatId) return null;
+  try {
+    if (typeof sendMaxMessage === 'function') {
+      const payload = { chatId, text, format: 'html' };
+      if (rows && rows.length) payload.attachments = lrV57Keyboard(rows);
+      return await sendMaxMessage(payload);
+    }
+  } catch (e) {
+    console.error('[v57 plan preview] sendMaxMessage failed', e?.stack || e?.message || e);
+  }
+  try { if (typeof msg === 'function') return await msg(chatId, text, rows || [], 'html'); } catch (e) {
+    console.error('[v57 plan preview] msg failed', e?.stack || e?.message || e);
+  }
+  return null;
+}
+async function lrV57SendPreview(chatId, row, ctx) {
+  const draft = lrV57DraftFromRow(row, ctx);
+  try {
+    if (typeof sendDraftPreview === 'function') {
+      const r = await sendDraftPreview(chatId, draft);
+      console.log('[v57 plan preview] draft preview sent', JSON.stringify({ chatId, id: row.__v51Id, attachments: draft.content.attachments.length }));
+      return r;
+    }
+  } catch (e) {
+    console.error('[v57 plan preview] sendDraftPreview failed', e?.stack || e?.message || e);
+  }
+  const text = draft.content.text || 'Пост';
+  try {
+    if (typeof sendMaxMessage === 'function') {
+      const payload = { chatId, text, format: 'html' };
+      // Если MAX не примет старые media attachments, ошибка уйдёт в fallback ниже.
+      if (draft.content.attachments && draft.content.attachments.length) payload.attachments = draft.content.attachments;
+      const r = await sendMaxMessage(payload);
+      console.log('[v57 plan preview] raw preview sent', JSON.stringify({ chatId, id: row.__v51Id }));
+      return r;
+    }
+  } catch (e) {
+    console.error('[v57 plan preview] raw preview failed', e?.message || e);
+  }
+  return lrV57Send(chatId, lrV57Esc(text), []);
+}
+function lrV57EditorRows(ctx) {
+  return [
+    [
+      lrV57Btn('✏️ Изменить текст', lrV57ActionPayload('edit_text', ctx)),
+      lrV57Btn('🖼️ Медиа', lrV57ActionPayload('edit_media', ctx))
+    ],
+    [
+      lrV57Btn('🔘 Добавить кнопку', lrV57ActionPayload('edit_button', ctx)),
+      lrV57Btn('🏷 Автоподпись', lrV57ActionPayload('edit_signature', ctx))
+    ],
+    [lrV57Btn('💼 Рекламный пост', lrV57ActionPayload('edit_ad', ctx))],
+    [lrV57Btn('💾 Сохранить пост', lrV57ActionPayload('save', ctx))],
+    [
+      lrV57Btn('⬅️ К списку', lrV57ListPayload(ctx)),
+      lrV57Btn('❌ Отмена', lrV57ListPayload(ctx))
+    ]
+  ];
+}
+function lrV57EditorText(row, channels, ctx) {
+  const ch = lrV57ChannelTitle(row, channels, ctx.channelKey);
+  const status = row?.__v51Status === 'published' ? 'опубликован' : 'отложен';
+  const del = lrV57AutoDelete(row) || 'без удаления';
+  const ad = lrV57IsAd(row) ? 'да' : 'нет';
+  return '━━━━━━━━━━━━━━\n' +
+    '🧬 <b>Редактор LinkRay</b>\n\n' +
+    'Пост-превью находится выше.\n' +
+    'После изменения текста превью откроется заново уже обновлённым.\n\n' +
+    `📣 Канал: ${lrV57Esc(ch)}\n` +
+    `📌 Статус: ${lrV57Esc(status)}\n` +
+    `🕒 Время: ${lrV57Esc(lrV57HumanDay(row?.__v51Day || ctx.day))} ${lrV57Esc(lrV57Time(row?.__v51Date))}\n` +
+    `🗑 Автоудаление: ${lrV57Esc(del)}\n` +
+    `💼 Реклама: ${lrV57Esc(ad)}\n\n` +
+    'Настройте пост и нажмите «Сохранить пост».\n' +
+    '━━━━━━━━━━━━━━';
+}
+async function lrV57OpenPost(callbackId, chatId, key, virtualId, channelKey, day, filter, page) {
+  const ctx = {
+    virtualId: lrV57PayloadRead(virtualId || ''),
+    channelKey: lrV57PayloadRead(channelKey || 'all') || 'all',
+    day: day || lrV57Today(),
+    filter: filter || 'all',
+    page: Number(page || 0) || 0
+  };
+
+  await lrV57SetSession(key, 'content_plan_v57_editor', ctx);
+
+  const channels = await lrV57LoadChannels();
+  const posts = await lrV57LoadPosts();
+  const row = lrV57FindPost(posts, ctx.virtualId);
+
+  if (!row) {
+    await lrV57Send(chatId,
+      '━━━━━━━━━━━━━━\n⚠️ <b>Пост не найден</b>\n\nОн мог быть изменён или удалён.\n━━━━━━━━━━━━━━',
+      [[lrV57Btn('⬅️ К списку', lrV57ListPayload(ctx))]]
+    );
+    console.log('[v57 plan preview] open failed row not found', JSON.stringify({ chatId, key, ctx }));
+    return true;
+  }
+
+  // Важно: сначала сам пост, потом меню. Не редактируем старое сообщение списка,
+  // чтобы порядок был как в редакторе публикации: превью сверху, управление снизу.
+  await lrV57SendPreview(chatId, row, ctx);
+  await lrV57Send(chatId, lrV57EditorText(row, channels, ctx), lrV57EditorRows(ctx));
+  console.log('[v57 plan preview] editor sent below preview', JSON.stringify({ chatId, key, id: row.__v51Id }));
+  return true;
+}
+async function lrV57UpdateText(target, text) {
+  if (!target || !Number.isFinite(target.id)) throw new Error('post target not found');
+  if (target.table === 'scheduled_posts') {
+    const r = await query(
+      `UPDATE scheduled_posts
+          SET text=$1,
+              draft = CASE
+                WHEN draft IS NULL THEN draft
+                ELSE jsonb_set(
+                       jsonb_set(COALESCE(draft, '{}'::jsonb), '{text}', to_jsonb($1::text), true),
+                       '{content}', COALESCE(draft->'content','{}'::jsonb) || jsonb_build_object('text',$1::text), true
+                     )
+              END,
+              updated_at=now()
+        WHERE id=$2
+        RETURNING id`,
+      [text, target.id]
+    );
+    if (!lrV57Rows(r)[0]) throw new Error('post row not found after update');
+    return true;
+  }
+  if (target.table === 'ad_post_trackers') {
+    const r = await query(`UPDATE ad_post_trackers SET post_text=$1, updated_at=now() WHERE id=$2 RETURNING id`, [text, target.id]);
+    if (!lrV57Rows(r)[0]) throw new Error('post row not found after update');
+    return true;
+  }
+  if (target.table === 'ad_post_tracker_channels') {
+    const r = await query(`UPDATE ad_post_tracker_channels SET post_text=$1, updated_at=now() WHERE id=$2 RETURNING id`, [text, target.id]);
+    if (!lrV57Rows(r)[0]) throw new Error('post row not found after update');
+    return true;
+  }
+  if (target.table === 'lr_post_entry_v68') {
+    const r = await query(`UPDATE lr_post_entry_v68 SET text=$1 WHERE id=$2 RETURNING id`, [text, target.id]);
+    if (!lrV57Rows(r)[0]) throw new Error('post row not found after update');
+    return true;
+  }
+  throw new Error('unsupported post table: ' + target.table);
+}
+async function lrV57HandleTextInput(update, chatId, key, session) {
+  const state = String(session?.state || '');
+  if (!['content_plan_v57_wait_text', 'content_plan_v56_wait_text', 'content_plan_v53_wait_text'].includes(state)) return false;
+  const text = lrV57Text(update);
+  if (!text || text.startsWith('/')) return false;
+  const data = lrV57Json(session?.data, {});
+  const ctx = {
+    virtualId: data.virtualId || '',
+    channelKey: data.channelKey || 'all',
+    day: data.day || lrV57Today(),
+    filter: data.filter || 'all',
+    page: Number(data.page || 0) || 0
+  };
+  const target = lrV57PostTargetFromVirtual(ctx.virtualId);
+  console.log('[v57 plan preview] text input', JSON.stringify({ chatId, key, state, ctx, target }));
+  await lrV57UpdateText(target, text);
+  await lrV57ClearSession(key);
+
+  await lrV57Send(chatId, '✅ <b>Текст поста сохранён</b>\n\nРедактор ниже откроется с обновлённым превью.', []);
+  await lrV57OpenPost(null, chatId, key, ctx.virtualId, ctx.channelKey, ctx.day, ctx.filter, ctx.page);
+  return true;
+}
+async function lrV57Webhook(req, res, next) {
+  try {
+    const update = req.body || {};
+    const type = lrV57Type(update);
+    const payload = lrV57Payload(update);
+    const chatId = lrV57ChatId(update);
+    const key = lrV57Key(update, chatId);
+
+    if (String(type) === 'message_created' && key) {
+      const session = await lrV57GetSession(key).catch(() => null);
+      if (session && await lrV57HandleTextInput(update, chatId, key, session)) {
+        if (res && !res.headersSent) return res.json({ ok: true, handled: 'lr_v57_text_input' });
+        return;
+      }
+    }
+
+    if (!payload || !payload.startsWith('lr_plan_v51:')) return next();
+
+    if (payload.startsWith('lr_plan_v51:open:')) {
+      const ctx = lrV57ParseCtxFromPayload(payload);
+      await lrV57OpenPost(null, chatId, key, ctx.virtualId, ctx.channelKey, ctx.day, ctx.filter, ctx.page);
+      if (res && !res.headersSent) return res.json({ ok: true, handled: 'lr_v57_open' });
+      return;
+    }
+
+    if (payload.startsWith('lr_plan_v51:edit_text:')) {
+      const ctx = lrV57ParseCtxFromPayload(payload);
+      await lrV57SetSession(key, 'content_plan_v57_wait_text', ctx);
+      await lrV57Send(chatId,
+        '━━━━━━━━━━━━━━\n✏️ <b>Изменить текст</b>\n\nОтправьте новый текст поста следующим сообщением.\nПосле отправки текст сохранится, а пост-превью и редактор откроются снова.\n━━━━━━━━━━━━━━',
+        [[lrV57Btn('⬅️ К редактору', lrV57OpenPayload(ctx))]]
+      );
+      console.log('[v57 plan preview] wait text', JSON.stringify({ chatId, key, ctx }));
+      if (res && !res.headersSent) return res.json({ ok: true, handled: 'lr_v57_wait_text' });
+      return;
+    }
+
+    if (payload.startsWith('lr_plan_v51:save:')) {
+      const ctx = lrV57ParseCtxFromPayload(payload);
+      await lrV57ClearSession(key);
+      await lrV57Send(chatId,
+        '━━━━━━━━━━━━━━\n✅ <b>Пост сохранён</b>\n\nИзменения сохранены в контент-плане.\n━━━━━━━━━━━━━━',
+        [[lrV57Btn('⬅️ К редактору', lrV57OpenPayload(ctx))], [lrV57Btn('⬅️ К списку', lrV57ListPayload(ctx))]]
+      );
+      console.log('[v57 plan preview] save', JSON.stringify({ chatId, key, ctx }));
+      if (res && !res.headersSent) return res.json({ ok: true, handled: 'lr_v57_save' });
+      return;
+    }
+
+    return next();
+  } catch (e) {
+    console.error('[v57 plan preview] webhook failed', e?.stack || e?.message || e);
+    try {
+      const update = req.body || {};
+      const chatId = lrV57ChatId(update);
+      await lrV57Send(chatId, '❌ Ошибка редактора контент-плана. Скиньте логи v57 plan preview.', []);
+    } catch (_) {}
+    if (res && !res.headersSent) return res.json({ ok: true, handled: 'lr_v57_error' });
+    return;
+  }
+}
+try {
+  // Оборачиваем старый lrV51OpenPost: любые старые кнопки/вызовы тоже будут открывать превью сверху и меню снизу.
+  if (typeof lrV51OpenPost === 'function' && !lrV51OpenPost.__lrV57Wrapped) {
+    const __lrV57OldOpenPost = lrV51OpenPost;
+    lrV51OpenPost = async function lrV57WrappedOpenPost(callbackId, chatId, key, virtualId, channelKey, day, filter, page) {
+      return lrV57OpenPost(callbackId, chatId, key, virtualId, channelKey, day, filter, page);
+    };
+    lrV51OpenPost.__lrV57Wrapped = true;
+    lrV51OpenPost.__lrV57OldOpenPost = __lrV57OldOpenPost;
+  }
+  if (typeof app !== 'undefined' && app && typeof app.use === 'function') {
+    app.use('/webhook', lrV57Webhook);
+  }
+  console.log('[v57 plan preview] installed: post preview above editor menu');
+} catch (e) {
+  console.error('[v57 plan preview] install failed', e?.stack || e?.message || e);
+}
+/* LR_PLAN_POST_PREVIEW_EDITOR_V57_END */
+
+
+/* LR_V61_FORWARD_MAIN_AND_DAY_LABELS_START */
+/*
+  v61:
+  1) Перехватывает пересланный пост в главном меню ДО старого fallback "Команда не найдена".
+     В режиме Добавить канал не вмешивается — там работает добавление канала.
+  2) Подменяет центральную кнопку даты в контент-плане:
+     Сегодня / Завтра / Послезавтра / 15 июля.
+*/
+function lrV61Json(u) {
+  try { return JSON.stringify(u || {}); } catch (_) { return ''; }
+}
+function lrV61Type(update) {
+  try {
+    return String(
+      update?.update_type || update?.type || update?.event_type ||
+      update?.event?.type || update?.payload?.type || ''
+    );
+  } catch (_) { return ''; }
+}
+function lrV61ChatId(update) {
+  try { if (typeof getChatId === 'function') return String(getChatId(update) || ''); } catch (_) {}
+  try {
+    return String(
+      update?.chat_id || update?.chatId || update?.chat?.id ||
+      update?.recipient?.chat_id || update?.recipient?.chatId ||
+      update?.message?.chat_id || update?.message?.chatId || update?.message?.recipient?.chat_id ||
+      update?.payload?.chat_id || update?.payload?.chatId || update?.payload?.chat?.id || ''
+    );
+  } catch (_) { return ''; }
+}
+function lrV61Key(update) {
+  try { if (typeof getSessionKey === 'function') return String(getSessionKey(update) || ''); } catch (_) {}
+  return lrV61ChatId(update);
+}
+function lrV61Payload(update) {
+  try { if (typeof getCallbackPayload === 'function') return getCallbackPayload(update); } catch (_) {}
+  try {
+    return update?.callback?.payload || update?.callback_payload || update?.payload?.callback?.payload || update?.payload?.payload || '';
+  } catch (_) { return ''; }
+}
+function lrV61Message(update) {
+  try {
+    return update?.message || update?.payload?.message || update?.data?.message || update?.body?.message || update?.message_created || update?.payload || update || {};
+  } catch (_) { return {}; }
+}
+function lrV61Text(update) {
+  try {
+    var m = lrV61Message(update);
+    return String(
+      m?.content?.text || m?.text || m?.body?.text ||
+      update?.content?.text || update?.text || update?.payload?.text || ''
+    );
+  } catch (_) { return ''; }
+}
+async function lrV61Session(key) {
+  try { if (typeof getSession === 'function') return await getSession(key); } catch (_) {}
+  try {
+    if (typeof query === 'function' && key) {
+      var r = await query('SELECT state,data FROM bot_sessions WHERE user_id::text=$1 ORDER BY updated_at DESC LIMIT 1', [String(key)]);
+      var row = (r && r.rows && r.rows[0]) || null;
+      return row ? { state: row.state, data: row.data || {} } : null;
+    }
+  } catch (_) {}
+  return null;
+}
+async function lrV61IsAddMode(update, key) {
+  try {
+    var ses = await lrV61Session(key);
+    if (ses && String(ses.state || '') === 'wait_add_channel') return true;
+  } catch (_) {}
+  try {
+    if (typeof lrV31GetAddMode === 'function') {
+      var mode = await lrV31GetAddMode(lrV61ChatId(update), key);
+      if (mode) return true;
+    }
+  } catch (_) {}
+  try {
+    if (typeof query === 'function' && key) {
+      var r = await query(
+        "SELECT 1 FROM lr_bot_state WHERE key IN ($1,$2,$3) OR key LIKE $4 LIMIT 1",
+        [
+          'lr_v31_add_wait:' + String(key),
+          'lr_v31_add_wait_global',
+          'lr_v31_add_wait:' + lrV61ChatId(update),
+          '%add_wait%' + String(key) + '%'
+        ]
+      );
+      if (r && r.rows && r.rows.length) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+function lrV61LooksForwardedPost(update) {
+  try { if (typeof lrV15LooksForwardedPost === 'function' && lrV15LooksForwardedPost(update)) return true; } catch (_) {}
+  var raw = lrV61Json(update).toLowerCase();
+  if (!raw) return false;
+  if (/forward|forwarded|linked_message|linkedmessage|original_message|source_message|\"link\"\s*:/.test(raw)) return true;
+  try {
+    var m = lrV61Message(update);
+    var atts = m?.content?.attachments || m?.attachments || update?.attachments || [];
+    if (Array.isArray(atts) && atts.length) return true;
+  } catch (_) {}
+  return false;
+}
+async function lrV61DraftFromForward(update) {
+  var d = null;
+  try { if (typeof emptyDraft === 'function') d = emptyDraft(); } catch (_) {}
+  if (!d || typeof d !== 'object') {
+    d = {
+      cpm: null,
+      isAd: false,
+      buttons: [],
+      content: { raw: null, text: '', format: 'html', markup: [], attachments: [] },
+      campaignId: 'lr-' + Date.now() + '-' + Math.random().toString(16).slice(2),
+      channelIds: [],
+      scheduleDate: null,
+      previewMessageId: null,
+      reportAfterHours: 24,
+      signatureEnabled: true,
+      autoDeleteMinutes: null
+    };
+  }
+  var content = null;
+  try { if (typeof lrSafeHydrateContent === 'function') content = await lrSafeHydrateContent(update); } catch (e) {
+    console.error('[v61 forward] hydrate failed', e?.stack || e?.message || e);
+  }
+  if (!content || typeof content !== 'object') {
+    var m = lrV61Message(update);
+    var text = lrV61Text(update);
+    content = {
+      raw: m || update || null,
+      text: text || '',
+      format: 'html',
+      markup: [],
+      attachments: Array.isArray(m?.content?.attachments) ? m.content.attachments : (Array.isArray(m?.attachments) ? m.attachments : [])
+    };
+  }
+  d.content = Object.assign({}, d.content || {}, content || {});
+  if (!Array.isArray(d.buttons)) d.buttons = [];
+  if (!Array.isArray(d.channelIds)) d.channelIds = [];
+  return d;
+}
+function lrV61ChannelTitle(ch) {
+  try { if (typeof channelName === 'function') return channelName(ch); } catch (_) {}
+  return String(ch?.title || ch?.name || ch?.channel_title || ('Канал ' + (ch?.id || ''))).slice(0, 40);
+}
+async function lrV61OpenChannelSelect(chatId, key, draft) {
+  if (typeof lrV15SendChannelSelect === 'function') {
+    return lrV15SendChannelSelect(chatId, key, draft, false);
+  }
+  var channels = [];
+  try { if (typeof getChannels === 'function') channels = await getChannels(); } catch (e) {
+    console.error('[v61 forward] getChannels failed', e?.stack || e?.message || e);
+  }
+  if (!channels.length) {
+    if (typeof setSession === 'function') await setSession(key, 'select_channels', { draft });
+    if (typeof msg === 'function') return msg(chatId, '━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\nСначала добавьте канал в LinkRay.\n━━━━━━━━━━━━', [[callbackButton('🔗 Добавить канал', 'post:add_channel')], [callbackButton('⬅️ В меню', 'main:menu')]], 'html');
+    return;
+  }
+  var rows = [];
+  for (var i = 0; i < channels.length && i < 30; i++) {
+    var ch = channels[i];
+    rows.push([callbackButton('📡 ' + lrV61ChannelTitle(ch), 'post:single:' + ch.id)]);
+  }
+  rows.push([callbackButton('🧩 Выбрать несколько', 'post:multi'), callbackButton('🌐 Все каналы', 'post:all_channels')]);
+  rows.push([callbackButton('🔗 Добавить канал', 'post:add_channel')]);
+  rows.push([callbackButton('⬅️ Назад', 'main:posting'), callbackButton('❌ Отмена', 'post:cancel')]);
+  if (typeof setSession === 'function') await setSession(key, 'select_channels', { draft });
+  if (typeof msg === 'function') {
+    return msg(chatId, '━━━━━━━━━━━━\n📡 <b>Куда выпустить пост?</b>\n\nПост принят.\nВыберите канал.\n━━━━━━━━━━━━', rows, 'html');
+  }
+}
+async function lrV61HandleForwardFromMain(update) {
+  var type = lrV61Type(update);
+  if (type && type !== 'message_created' && type !== 'message_created_callback') return false;
+  var payload = lrV61Payload(update);
+  if (payload && typeof payload === 'string' && payload !== '[object Object]') return false;
+  var key = lrV61Key(update);
+  var chatId = lrV61ChatId(update);
+  if (!chatId || !key) return false;
+  if (await lrV61IsAddMode(update, key)) return false;
+  var text = String(lrV61Text(update) || '').trim();
+  if (text.startsWith('/')) return false;
+  if (!lrV61LooksForwardedPost(update)) return false;
+  var draft = await lrV61DraftFromForward(update);
+  await lrV61OpenChannelSelect(chatId, key, draft);
+  console.log('[v61 forward] main forward accepted', JSON.stringify({ chatId, key, hasText: Boolean(draft?.content?.text), attachments: Array.isArray(draft?.content?.attachments) ? draft.content.attachments.length : 0 }));
+  return true;
+}
+function lrV61MskDateOnly(d) {
+  var x = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+  return Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate());
+}
+function lrV61DayLabel(dateObj) {
+  try {
+    var months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+    var today = lrV61MskDateOnly(new Date());
+    var target = lrV61MskDateOnly(dateObj);
+    var diff = Math.round((target - today) / 86400000);
+    if (diff === 0) return 'Сегодня';
+    if (diff === 1) return 'Завтра';
+    if (diff === 2) return 'Послезавтра';
+    var x = new Date(target);
+    return x.getUTCDate() + ' ' + months[x.getUTCMonth()];
+  } catch (_) { return 'Сегодня'; }
+}
+function lrV61ParseRuDate(text) {
+  try {
+    var months = { 'января':0, 'февраля':1, 'марта':2, 'апреля':3, 'мая':4, 'июня':5, 'июля':6, 'августа':7, 'сентября':8, 'октября':9, 'ноября':10, 'декабря':11 };
+    var m = String(text || '').toLowerCase().match(/(?:пн|вт|ср|чт|пт|сб|вс)?\s*,?\s*(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(20\d{2})/i);
+    if (!m) return null;
+    return new Date(Date.UTC(Number(m[3]), months[m[2]], Number(m[1]), 0, 0, 0));
+  } catch (_) { return null; }
+}
+function lrV61ButtonText(btn) {
+  if (!btn || typeof btn !== 'object') return '';
+  return String(btn.text ?? btn.title ?? btn.label ?? btn.caption ?? btn.name ?? '');
+}
+function lrV61SetButtonText(btn, text) {
+  if (!btn || typeof btn !== 'object') return btn;
+  if ('text' in btn) btn.text = text;
+  else if ('title' in btn) btn.title = text;
+  else if ('label' in btn) btn.label = text;
+  else if ('caption' in btn) btn.caption = text;
+  else if ('name' in btn) btn.name = text;
+  return btn;
+}
+function lrV61PatchRowsDayLabel(rows, messageText) {
+  try {
+    if (!Array.isArray(rows)) return rows;
+    var src = String(messageText || '');
+    if (!/(Контент\-план|Все каналы|Всего за день|отложено|опубликовано|Постов нет)/i.test(src)) return rows;
+    var d = lrV61ParseRuDate(src);
+    if (!d) return rows;
+    var label = lrV61DayLabel(d);
+    function walk(x) {
+      if (Array.isArray(x)) return x.map(walk);
+      if (x && typeof x === 'object') {
+        var t = lrV61ButtonText(x).trim();
+        if (t === 'Сегодня' || t === 'Завтра' || t === 'Послезавтра' || /^\d{1,2}\s+[а-яё]+$/i.test(t)) return lrV61SetButtonText(x, label);
+      }
+      return x;
+    }
+    return walk(rows);
+  } catch (e) {
+    console.error('[v61 labels] failed', e?.message || e);
+    return rows;
+  }
+}
+try {
+  if (typeof msg === 'function' && !msg.__lrV61Wrapped) {
+    var lrV61OldMsg = msg;
+    msg = async function lrV61MsgWrapped(chatId, text, rows, format) {
+      return lrV61OldMsg.call(this, chatId, text, lrV61PatchRowsDayLabel(rows, text), format);
+    };
+    msg.__lrV61Wrapped = true;
+    console.log('[v61 labels] msg wrapped');
+  }
+} catch (e) { console.error('[v61 labels] msg wrap failed', e?.message || e); }
+try {
+  if (typeof cb === 'function' && !cb.__lrV61Wrapped) {
+    var lrV61OldCb = cb;
+    cb = async function lrV61CbWrapped(callbackId, text, rows, format) {
+      return lrV61OldCb.call(this, callbackId, text, lrV61PatchRowsDayLabel(rows, text), format);
+    };
+    cb.__lrV61Wrapped = true;
+    console.log('[v61 labels] cb wrapped');
+  }
+} catch (e) { console.error('[v61 labels] cb wrap failed', e?.message || e); }
+
+app.use(async function lrV61ForwardMainBeforeFallback(req, res, next) {
+  try {
+    if (req.method !== 'POST' || !String(req.path || req.url || '').includes('/webhook')) return next();
+    if (await lrV61HandleForwardFromMain(req.body || {})) return res.json({ ok: true, handled: 'lr_v61_forward_main' });
+  } catch (e) {
+    console.error('[v61 forward] middleware failed', e?.stack || e?.message || e);
+  }
+  return next();
+});
+console.log('[v61 forward] installed: main forward before command fallback + day labels');
+/* LR_V61_FORWARD_MAIN_AND_DAY_LABELS_END */
+
+/* LR_CONTENT_PLAN_MEDIA_EDIT_V62_START
+   Фикс редактора постов из контент-плана:
+   - перехватывает ожидание нового текста/медиа до старого v53-обработчика;
+   - исправляет ошибку сохранения медиа в уже опубликованном посте;
+   - обновляет строку scheduled_posts;
+   - если у опубликованного поста есть message_id, сразу редактирует сообщение в MAX через PUT /messages.
+*/
+function lrV62Rows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  return [];
+}
+function lrV62Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  return text.length > max ? text.slice(0, max) : text;
+}
+function lrV62Esc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch (_) {}
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function lrV62Btn(text, payload) {
+  try {
+    if (typeof callbackButton === 'function') return callbackButton(text, payload);
+  } catch (_) {}
+  return { type: 'callback', text, payload };
+}
+function lrV62Type(update) {
+  try {
+    if (typeof getUpdateType === 'function') return String(getUpdateType(update) || '');
+  } catch (_) {}
+  return String(update?.update_type || update?.type || update?.event_type || '');
+}
+function lrV62ChatId(update) {
+  try {
+    if (typeof getChatId === 'function') {
+      const v = getChatId(update);
+      if (v !== undefined && v !== null && String(v)) return String(v);
+    }
+  } catch (_) {}
+  const paths = [
+    update?.message?.recipient?.chat_id,
+    update?.message?.recipient?.chatId,
+    update?.message?.chat_id,
+    update?.message?.chatId,
+    update?.message?.body?.dialog_chat_id,
+    update?.message?.body?.dialogChatId,
+    update?.chat_id,
+    update?.chatId,
+    update?.dialog_chat_id,
+    update?.dialogChatId,
+    update?.recipient?.chat_id,
+    update?.callback?.chat_id,
+  ];
+  for (const v of paths) {
+    if (v !== undefined && v !== null && String(v)) return String(v);
+  }
+  return '';
+}
+function lrV62SessionKey(update, chatId) {
+  try {
+    if (typeof getSessionKey === 'function') {
+      const v = getSessionKey(update);
+      if (v !== undefined && v !== null && String(v)) return String(v);
+    }
+  } catch (_) {}
+  return String(chatId || '');
+}
+function lrV62Payload(update) {
+  try {
+    if (typeof getCallbackPayload === 'function') return String(getCallbackPayload(update) || '');
+  } catch (_) {}
+  return String(
+    update?.callback?.payload ||
+    update?.payload ||
+    update?.message?.payload ||
+    update?.message?.body?.payload ||
+    ''
+  );
+}
+function lrV62CallbackId(update) {
+  try {
+    if (typeof getCallbackId === 'function') return getCallbackId(update);
+  } catch (_) {}
+  return update?.callback?.id || update?.callback_id || update?.message?.callback_id || null;
+}
+function lrV62Text(update) {
+  const paths = [
+    update?.message?.body?.text,
+    update?.message?.content?.text,
+    update?.message?.text,
+    update?.body?.text,
+    update?.content?.text,
+    update?.text,
+  ];
+  for (const v of paths) {
+    const t = lrV62Clean(v, 4000);
+    if (t) return t;
+  }
+  return '';
+}
+function lrV62Attachments(update) {
+  const paths = [
+    update?.message?.body?.attachments,
+    update?.message?.content?.attachments,
+    update?.message?.attachments,
+    update?.body?.attachments,
+    update?.content?.attachments,
+    update?.attachments,
+  ];
+  for (const v of paths) {
+    if (Array.isArray(v) && v.length) return v;
+  }
+  return [];
+}
+function lrV62SessionIds(chatId, key) {
+  const out = [];
+  for (const v of [key, chatId, `user:${key}`, `user:${chatId}`]) {
+    const t = String(v || '').trim();
+    if (!t) continue;
+    if (!out.includes(t)) out.push(t);
+  }
+  return out;
+}
+async function lrV62GetSession(chatId, key) {
+  const ids = lrV62SessionIds(chatId, key);
+  if (!ids.length || typeof query !== 'function') return null;
+  const params = [];
+  const placeholders = ids.map((x) => {
+    params.push(x);
+    return `$${params.length}`;
+  }).join(',');
+  const sql = `
+    SELECT user_id::text AS user_id, state, data, updated_at
+    FROM bot_sessions
+    WHERE user_id::text IN (${placeholders})
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `;
+  const rows = lrV62Rows(await query(sql, params));
+  return rows[0] || null;
+}
+async function lrV62SetSession(userId, state, data) {
+  const id = String(userId || '').replace(/^user:/, '');
+  if (!id || typeof query !== 'function') return;
+  await query(
+    `INSERT INTO bot_sessions(user_id,state,data,updated_at)
+     VALUES($1,$2,$3::jsonb,now())
+     ON CONFLICT(user_id) DO UPDATE SET state=EXCLUDED.state,data=EXCLUDED.data,updated_at=now()`,
+    [id, state, JSON.stringify(data || {})]
+  );
+}
+async function lrV62ClearSession(userId) {
+  const id = String(userId || '').replace(/^user:/, '');
+  if (!id || typeof query !== 'function') return;
+  try {
+    if (typeof clearSession === 'function') {
+      await clearSession(id);
+      return;
+    }
+  } catch (_) {}
+  await query(`UPDATE bot_sessions SET state='idle', data='{}'::jsonb, updated_at=now() WHERE user_id::text=$1`, [id]);
+}
+function lrV62ParseVirtualId(value) {
+  let raw = String(value || '').trim();
+  try { raw = decodeURIComponent(raw); } catch (_) {}
+  const m = raw.match(/^(scheduled_posts):(\d+)$/i) || raw.match(/(scheduled_posts)%3A(\d+)/i);
+  if (!m) return null;
+  return { table: 'scheduled_posts', id: Number(m[2]) };
+}
+function lrV62MessageId(row) {
+  return lrV62Clean(
+    row?.published_message_id ||
+    row?.max_message_id ||
+    row?.message_id ||
+    row?.report_message_id ||
+    '',
+    200
+  );
+}
+function lrV62Token() {
+  for (const k of ['MAX_TOKEN','MAX_BOT_TOKEN','MAX_ACCESS_TOKEN','BOT_TOKEN','ACCESS_TOKEN','API_TOKEN','TOKEN']) {
+    if (process.env[k]) return String(process.env[k]);
+  }
+  try { if (typeof MAX_TOKEN !== 'undefined' && MAX_TOKEN) return String(MAX_TOKEN); } catch (_) {}
+  try { if (typeof BOT_TOKEN !== 'undefined' && BOT_TOKEN) return String(BOT_TOKEN); } catch (_) {}
+  try { if (typeof TOKEN !== 'undefined' && TOKEN) return String(TOKEN); } catch (_) {}
+  return '';
+}
+function lrV62Base() {
+  return String(
+    process.env.MAX_API_BASE ||
+    process.env.MAX_BASE_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru'
+  ).replace(/\/+$/, '');
+}
+async function lrV62ApiPutMessage(messageId, body) {
+  const token = lrV62Token();
+  if (!token || !messageId) return { ok: false, status: 0, text: 'no token or message id' };
+  const response = await fetch(`${lrV62Base()}/messages?message_id=${encodeURIComponent(messageId)}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: token,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text().catch(() => '');
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch (_) {}
+  const ok = response.ok && (!json || json.success !== false);
+  if (!ok) console.error('[v62 plan media] MAX edit failed', JSON.stringify({ status: response.status, preview: text.slice(0, 500) }));
+  else console.log('[v62 plan media] MAX edit ok', JSON.stringify({ messageId, status: response.status }));
+  return { ok, status: response.status, text, json };
+}
+async function lrV62Send(chatId, text, rows, format = 'html') {
+  if (!chatId) return;
+  if (typeof msg === 'function') return msg(chatId, text, rows || [], format);
+  if (typeof sendMaxMessage === 'function') {
+    return sendMaxMessage({ chatId, text, attachments: rows && rows.length ? inlineKeyboard(rows) : [], format });
+  }
+}
+async function lrV62SendPreview(chatId, row) {
+  const text = lrV62Clean(row?.text || row?.post_text || 'Превью поста', 4000);
+  const atts = Array.isArray(row?.attachments) ? row.attachments : [];
+  try {
+    if (typeof sendMaxMessage === 'function') {
+      await sendMaxMessage({
+        chatId,
+        text,
+        format: row?.format || 'html',
+        attachments: atts,
+        notify: false,
+      });
+      return;
+    }
+  } catch (e) {
+    console.error('[v62 plan media] preview sendMaxMessage failed', e?.message || e);
+  }
+  await lrV62Send(chatId, text || 'Превью поста обновлено.', [], row?.format || 'html');
+}
+async function lrV62GetPost(target) {
+  const rows = lrV62Rows(await query(`SELECT * FROM scheduled_posts WHERE id=$1`, [target.id]));
+  return rows[0] || null;
+}
+async function lrV62UpdatePostText(target, text) {
+  const rows = lrV62Rows(await query(
+    `UPDATE scheduled_posts
+     SET text=$1,
+         draft=COALESCE(draft,'{}'::jsonb) || jsonb_build_object('text',$1::text),
+         updated_at=now()
+     WHERE id=$2
+     RETURNING *`,
+    [text, target.id]
+  ));
+  return rows[0] || null;
+}
+async function lrV62UpdatePostMedia(target, attachments) {
+  const rows = lrV62Rows(await query(
+    `UPDATE scheduled_posts
+     SET attachments=$1::jsonb,
+         draft=COALESCE(draft,'{}'::jsonb) || jsonb_build_object('attachments',$1::jsonb),
+         updated_at=now()
+     WHERE id=$2
+     RETURNING *`,
+    [JSON.stringify(attachments || []), target.id]
+  ));
+  return rows[0] || null;
+}
+function lrV62EditorRows(virtualId) {
+  const enc = encodeURIComponent(String(virtualId || ''));
+  return [
+    [lrV62Btn('✏️ Изменить текст', `lr_v62:edit_text:${enc}`), lrV62Btn('🖼 Медиа', `lr_v62:edit_media:${enc}`)],
+    [lrV62Btn('🔘 Добавить кнопку', `lr_v62:edit_button:${enc}`), lrV62Btn('🏷 Автоподпись', `lr_v62:signature:${enc}`)],
+    [lrV62Btn('💼 Рекламный пост', `lr_v62:ad:${enc}`)],
+    [lrV62Btn('💾 Сохранить пост', `lr_v62:save:${enc}`)],
+    [lrV62Btn('⬅️ К списку', 'post:all'), lrV62Btn('❌ Отмена', 'post:cancel')],
+  ];
+}
+async function lrV62ShowEditor(chatId, key, data, row, note = '') {
+  const virtualId = data?.virtualId || `scheduled_posts:${row?.id}`;
+  await lrV62SendPreview(chatId, row);
+  const title = note ? `\n\n${lrV62Esc(note)}` : '';
+  await lrV62Send(
+    chatId,
+    `━━━━━━━━━━━━━━\n🧬 <b>Редактор LinkRay</b>${title}\n\nПост-превью находится выше.\nИзменения сохраняются в контент-план и, если пост уже опубликован, применяются в канале.\n━━━━━━━━━━━━━━`,
+    lrV62EditorRows(virtualId),
+    'html'
+  );
+}
+async function lrV62EditPublishedIfNeeded(row, mode, value) {
+  const messageId = lrV62MessageId(row);
+  if (!messageId) {
+    console.log('[v62 plan media] no published message id, db only', JSON.stringify({ id: row?.id, mode }));
+    return { ok: true, skipped: true };
+  }
+  const body = {
+    text: lrV62Clean(row?.text || row?.post_text || '', 4000),
+    format: row?.format || 'html',
+    notify: false,
+  };
+  if (mode === 'media') body.attachments = Array.isArray(value) ? value : [];
+  if (mode === 'text') body.text = String(value || '');
+  return lrV62ApiPutMessage(messageId, body);
+}
+
+/* LR_RESTORE_FULL_EDITOR_AFTER_MEDIA_V63_START
+   Возвращает полный набор кнопок после сохранения медиа в редакторе контент-плана.
+   Дополнительно даёт действия для: добавить кнопку, автоподпись, рекламный пост.
+*/
+function lrV63ParseInlineButton(text) {
+  const lines = String(text || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  if (lines.length < 2) return null;
+  const title = lines[0].slice(0, 80);
+  const url = lines.find(x => /^https?:\/\//i.test(x));
+  if (!title || !url) return null;
+  return { text: title, url };
+}
+function lrV63InlineRows(buttons) {
+  const list = Array.isArray(buttons) ? buttons : [];
+  return list
+    .filter(b => b && (b.text || b.title) && (b.url || b.link))
+    .map(b => [lrV62Btn(String(b.text || b.title).slice(0, 80), String(b.url || b.link))]);
+}
+async function lrV63ColumnSet(table) {
+  try {
+    const rows = lrV62Rows(await query(
+      `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
+      [table]
+    ));
+    return new Set(rows.map(r => String(r.column_name)));
+  } catch (e) {
+    console.error('[v63 full editor] column lookup failed', e?.message || e);
+    return new Set();
+  }
+}
+async function lrV63UpdateButtons(target, button) {
+  const cols = await lrV63ColumnSet('scheduled_posts');
+  if (!cols.has('buttons')) return null;
+  const current = lrV62Rows(await query(`SELECT buttons FROM scheduled_posts WHERE id=$1`, [target.id]))[0] || {};
+  let buttons = [];
+  try { buttons = Array.isArray(current.buttons) ? current.buttons : JSON.parse(current.buttons || '[]'); } catch (_) { buttons = []; }
+  buttons = [button];
+  const sets = [`buttons=$1::jsonb`];
+  if (cols.has('draft')) sets.push(`draft=COALESCE(draft,'{}'::jsonb) || jsonb_build_object('buttons',$1::jsonb)`);
+  if (cols.has('updated_at')) sets.push(`updated_at=now()`);
+  const rows = lrV62Rows(await query(
+    `UPDATE scheduled_posts SET ${sets.join(', ')} WHERE id=$2 RETURNING *`,
+    [JSON.stringify(buttons), target.id]
+  ));
+  return rows[0] || null;
+}
+async function lrV63TogglePostFlag(target, candidates) {
+  const cols = await lrV63ColumnSet('scheduled_posts');
+  const col = candidates.find(c => cols.has(c));
+  if (!col) return null;
+  const sets = [`${col}=NOT COALESCE(${col}, false)`];
+  if (cols.has('updated_at')) sets.push(`updated_at=now()`);
+  const rows = lrV62Rows(await query(`UPDATE scheduled_posts SET ${sets.join(', ')} WHERE id=$1 RETURNING *`, [target.id]));
+  return rows[0] || null;
+}
+async function lrV63EditPublishedButtonsIfNeeded(row) {
+  const messageId = lrV62MessageId(row);
+  if (!messageId) return { ok: true, skipped: true };
+  let buttons = [];
+  try { buttons = Array.isArray(row.buttons) ? row.buttons : JSON.parse(row.buttons || '[]'); } catch (_) { buttons = []; }
+  const body = {
+    text: lrV62Clean(row?.text || row?.post_text || '', 4000),
+    format: row?.format || 'html',
+    notify: false,
+  };
+  const keyboardRows = lrV63InlineRows(buttons);
+  if (keyboardRows.length) {
+    try {
+      if (typeof inlineKeyboard === 'function') body.attachments = inlineKeyboard(keyboardRows);
+    } catch (_) {}
+  }
+  return lrV62ApiPutMessage(messageId, body);
+}
+/* LR_RESTORE_FULL_EDITOR_AFTER_MEDIA_V63_END */
+
+async function lrV62HandleWaitInput(update, chatId, key, session) {
+  const state = String(session?.state || '');
+  if (!/^content_plan_v\d+_wait_(text|media|button)$/.test(state) && !/^lr_plan_v\d+_wait_(text|media|button)$/.test(state)) return false;
+
+  const data = session?.data || {};
+  const target = lrV62ParseVirtualId(data.virtualId || data.postId || data.id);
+  if (!target) {
+    await lrV62Send(chatId, '❌ <b>Не удалось определить пост</b>\n\nВернитесь в список и откройте пост заново.', [[lrV62Btn('⬅️ К списку', 'post:all')]], 'html');
+    await lrV62ClearSession(key || chatId).catch(()=>{});
+    return true;
+  }
+
+  const isText = /_wait_text$/.test(state);
+  const isMedia = /_wait_media$/.test(state);
+  const isButton = /_wait_button$/.test(state);
+
+  if (isText) {
+    const text = lrV62Text(update);
+    if (!text) return false;
+    const row = await lrV62UpdatePostText(target, text);
+    if (!row) {
+      await lrV62Send(chatId, '❌ <b>Ошибка при сохранении текста</b>\n\npost row not found after update', [[lrV62Btn('⬅️ К списку', 'post:all')]], 'html');
+      return true;
+    }
+    const api = await lrV62EditPublishedIfNeeded(row, 'text', text).catch(e => ({ ok:false, text:e?.message || String(e) }));
+    await lrV62ClearSession(key || chatId).catch(()=>{});
+    await lrV62ShowEditor(chatId, key, data, row, api.ok ? '✅ Текст поста сохранён.' : `⚠️ Текст сохранён в базе, но MAX не обновил сообщение: ${api.text || 'ошибка API'}`);
+    return true;
+  }
+
+
+  if (isButton) {
+    const text = lrV62Text(update);
+    const button = lrV63ParseInlineButton(text);
+    if (!button) {
+      await lrV62Send(chatId, '⚠️ <b>Кнопка не распознана</b>\n\nОтправьте двумя строками:\n\nНазвание кнопки\nhttps://site.ru', [[lrV62Btn('⬅️ К редактору', `lr_v62:editor:${encodeURIComponent(data.virtualId || '')}`)]], 'html');
+      return true;
+    }
+    const row = await lrV63UpdateButtons(target, button);
+    if (!row) {
+      await lrV62Send(chatId, '❌ <b>Ошибка при сохранении кнопки</b>\n\nВ таблице постов не найдено поле buttons.', [[lrV62Btn('⬅️ К списку', 'post:all')]], 'html');
+      return true;
+    }
+    const api = await lrV63EditPublishedButtonsIfNeeded(row).catch(e => ({ ok:false, text:e?.message || String(e) }));
+    await lrV62ClearSession(key || chatId).catch(()=>{});
+    await lrV62ShowEditor(chatId, key, data, row, api.ok ? '✅ Кнопка поста сохранена.' : `⚠️ Кнопка сохранена в базе, но MAX не обновил сообщение: ${api.text || 'ошибка API'}`);
+    return true;
+  }
+
+  if (isMedia) {
+    const attachments = lrV62Attachments(update);
+    if (!attachments.length) {
+      await lrV62Send(chatId, '❌ <b>Медиа не найдено</b>\n\nОтправьте фото, видео, файл или пересланный пост с медиа.', [[lrV62Btn('⬅️ К редактору', `lr_v62:editor:${encodeURIComponent(data.virtualId || '')}`)]], 'html');
+      return true;
+    }
+    const row = await lrV62UpdatePostMedia(target, attachments);
+    if (!row) {
+      await lrV62Send(chatId, '❌ <b>Ошибка при сохранении медиа</b>\n\npost row not found after update', [[lrV62Btn('⬅️ К списку', 'post:all')]], 'html');
+      return true;
+    }
+    const api = await lrV62EditPublishedIfNeeded(row, 'media', attachments).catch(e => ({ ok:false, text:e?.message || String(e) }));
+    await lrV62ClearSession(key || chatId).catch(()=>{});
+    await lrV62ShowEditor(chatId, key, data, row, api.ok ? '✅ Медиа поста сохранено.' : `⚠️ Медиа сохранено в базе, но MAX не обновил сообщение: ${api.text || 'ошибка API'}`);
+    return true;
+  }
+
+  return false;
+}
+async function lrV62HandleCallback(update, chatId, key, payload) {
+  if (!payload.startsWith('lr_v62:')) return false;
+  const callbackId = lrV62CallbackId(update);
+  try {
+    if (callbackId && typeof cb === 'function') await cb(callbackId, '⏳ Открываю...', []);
+  } catch (_) {}
+
+  const parts = payload.split(':');
+  const action = parts[1] || '';
+  const virtualId = (() => { try { return decodeURIComponent(parts.slice(2).join(':')); } catch (_) { return parts.slice(2).join(':'); } })();
+  const target = lrV62ParseVirtualId(virtualId);
+  if (!target) {
+    await lrV62Send(chatId, '❌ <b>Пост не найден</b>\n\nОткройте его из списка заново.', [[lrV62Btn('⬅️ К списку', 'post:all')]], 'html');
+    return true;
+  }
+  const row = await lrV62GetPost(target);
+  if (!row) {
+    await lrV62Send(chatId, '❌ <b>Пост не найден в базе</b>', [[lrV62Btn('⬅️ К списку', 'post:all')]], 'html');
+    return true;
+  }
+  const data = { virtualId };
+
+  if (action === 'editor') {
+    await lrV62ShowEditor(chatId, key, data, row);
+    return true;
+  }
+  if (action === 'edit_text') {
+    await lrV62SetSession(key || chatId, 'content_plan_v62_wait_text', data);
+    await lrV62Send(chatId, '━━━━━━━━━━━━━━\n✏️ <b>Изменить текст</b>\n\nОтправьте новый текст поста следующим сообщением.\nПосле отправки текст будет сохранён и редактор откроется снова.\n━━━━━━━━━━━━━━', [[lrV62Btn('⬅️ К редактору', `lr_v62:editor:${encodeURIComponent(virtualId)}`)]], 'html');
+    return true;
+  }
+  if (action === 'edit_media') {
+    await lrV62SetSession(key || chatId, 'content_plan_v62_wait_media', data);
+    await lrV62Send(chatId, '━━━━━━━━━━━━━━\n🖼 <b>Медиа</b>\n\nОтправьте новое фото, видео, файл или пост следующим сообщением.\nПосле отправки медиа будет сохранено и редактор откроется снова.\n━━━━━━━━━━━━━━', [[lrV62Btn('⬅️ К редактору', `lr_v62:editor:${encodeURIComponent(virtualId)}`)]], 'html');
+    return true;
+  }
+
+  if (action === 'edit_button') {
+    await lrV62SetSession(key || chatId, 'content_plan_v62_wait_button', data);
+    await lrV62Send(chatId, '━━━━━━━━━━━━━━\n🔘 <b>Добавить кнопку</b>\n\nОтправьте название и ссылку двумя строками:\n\nТекст кнопки\nhttps://site.ru\n━━━━━━━━━━━━━━', [[lrV62Btn('⬅️ К редактору', `lr_v62:editor:${encodeURIComponent(virtualId)}`)]], 'html');
+    return true;
+  }
+  if (action === 'signature') {
+    const updated = await lrV63TogglePostFlag(target, ['signature_enabled','signatureEnabled','use_signature','with_signature','signature']);
+    if (!updated) {
+      await lrV62Send(chatId, '⚠️ <b>Автоподпись</b>\n\nНе найдено поле автоподписи у этого поста.', [[lrV62Btn('⬅️ К редактору', `lr_v62:editor:${encodeURIComponent(virtualId)}`)]], 'html');
+      return true;
+    }
+    await lrV62ShowEditor(chatId, key, data, updated, '✅ Автоподпись переключена.');
+    return true;
+  }
+  if (action === 'ad') {
+    const updated = await lrV63TogglePostFlag(target, ['is_ad','isAd','ad','is_advertising','advertising','promo']);
+    if (!updated) {
+      await lrV62Send(chatId, '⚠️ <b>Рекламный пост</b>\n\nНе найдено поле рекламного режима у этого поста.', [[lrV62Btn('⬅️ К редактору', `lr_v62:editor:${encodeURIComponent(virtualId)}`)]], 'html');
+      return true;
+    }
+    await lrV62ShowEditor(chatId, key, data, updated, '✅ Рекламный режим переключён.');
+    return true;
+  }
+
+  if (action === 'save') {
+    await lrV62ClearSession(key || chatId).catch(()=>{});
+    await lrV62ShowEditor(chatId, key, data, row, '✅ Пост сохранён.');
+    return true;
+  }
+  return false;
+}
+
+app.use(async function lrContentPlanMediaEditV62(req, res, next) {
+  try {
+    const url = String(req.path || req.url || '');
+    if (req.method !== 'POST' || !/\/webhook(?:$|\?)/.test(url)) return next();
+
+    const update = req.body || {};
+    const type = lrV62Type(update);
+    const chatId = lrV62ChatId(update);
+    const key = lrV62SessionKey(update, chatId);
+    const payload = lrV62Payload(update);
+
+    if (payload && await lrV62HandleCallback(update, chatId, key, payload)) {
+      if (!res.headersSent) return res.json({ ok: true, handled: 'lr_content_plan_media_edit_v62_callback' });
+      return;
+    }
+
+    const session = await lrV62GetSession(chatId, key).catch(e => {
+      console.error('[v62 plan media] get session failed', e?.stack || e?.message || e);
+      return null;
+    });
+    if (session && (type === 'message_created' || lrV62Text(update) || lrV62Attachments(update).length)) {
+      const handled = await lrV62HandleWaitInput(update, chatId, key, session);
+      if (handled) {
+        if (!res.headersSent) return res.json({ ok: true, handled: 'lr_content_plan_media_edit_v62_input' });
+        return;
+      }
+    }
+
+    return next();
+  } catch (e) {
+    console.error('[v62 plan media] middleware failed', e?.stack || e?.message || e);
+    return next();
+  }
+});
+console.log('[v62 plan media] installed');
+/* LR_CONTENT_PLAN_MEDIA_EDIT_V62_END */
+
+
+
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
   if (process.env.WEBHOOK_SECRET && incomingSecret !== process.env.WEBHOOK_SECRET) return res.status(401).json({ ok: false });
   res.json({ ok: true });
   try {
-    const update = req.body || {}; const type = getUpdateType(update); log('webhook', { type, chatId: getChatId(update), key: getSessionKey(update) }); await maybeRegisterChannel(update);
-    
-      const payload = String(getCallbackPayload(update) || '');
-      const callbackId = getCallbackId(update);
-      const chatId = getChatId(update);
+    const update = req.body || {};
+  /* LR_V46_CLEAN_ON_POST_CREATE */
+  await lrV46ResetCollectPostStart(update);
+  /* LR_V42_SET_GLOBALS_IN_WEBHOOK */
+  lrV42SetGlobals(update); const type = getUpdateType(update);
+log('webhook', { type: lrV40Type(update), chatId: getChatId(update), key: getSessionKey(update) }); if (await __lrChannelForwardConfirm(update)) return;
 
-      if (type.includes('callback') || callbackId || payload) {
-        console.log('[webhook callback direct]', JSON.stringify({ type, chatId, payload, hasCallbackId: Boolean(callbackId) }));
+    
+      let payload = String(getCallbackPayload(update) || '');
+    const callbackId = getCallbackId(update);
+    const chatId = getChatId(update);
+
+    if (!type.includes('callback') && !callbackId && (payload === '[object Object]' || payload.startsWith('[object '))) {
+      console.log('[v16 payload fix] drop fake payload on message', JSON.stringify({ type, chatId, payload }));
+      payload = '';
+    }
+
+    if (type.includes('callback') || callbackId || payload) {
+        console.log('[webhook callback direct]', JSON.stringify({ type: lrV40Type(update), chatId: lrV40ChatId(update), payload, hasCallbackId: Boolean(callbackId) }));
 
         if (payload === 'main:menu') {
           if (callbackId && typeof showMainCallback === 'function') await showMainCallback(callbackId);
@@ -11946,30 +21207,7 @@ app.post('/webhook', async (req, res) => {
           return;
         }
 
-        if (payload === 'post:add_channel') {
-          if (callbackId && typeof showChannels === 'function') await showChannels(callbackId, chatId);
-          else if (chatId && typeof msg === 'function') {
-            await msg(chatId, `━━━━━━━━━━━━━━
-🔗 <b>Добавить канал</b>
-
-1. Добавьте LinkRay администратором MAX-канала.
-2. Дайте права:
-• публикация сообщений
-• редактирование сообщений
-• удаление сообщений
-• чтение сообщений
-• изменение информации канала
-3. Перешлите любой пост из этого канала сюда, в личку бота.
-
-После пересылки LinkRay сам добавит канал в базу и покажет уведомление.
-━━━━━━━━━━━━━━`, [
-              [callbackButton('⬅️ В меню', 'main:menu')]
-            ]);
-          }
-          return;
-        }
-
-        if (payload === 'reports:menu') {
+        if (payload === 'post:add_channel') { await showChannels(callbackId, chatId); return; } if (payload === 'reports:menu') {
           const rows = [[callbackButton('⬅️ В меню', 'main:menu')]];
           const text = `📈 <b>Отчёты</b>
 
@@ -14373,4 +23611,986 @@ function normalizeAttachments(input) {
   return out;
 }
 /* LR_NORMALIZE_ATTACHMENTS_SAFE_V1_END */
+
+
+/* LR_POST_SINGLE_FALLBACK_FIX_START */
+(function installPostSingleFallbackFix() {
+  function ok(v) {
+    const x = String(v ?? '').trim();
+    const low = x.toLowerCase();
+    if (!x || x.length > 260) return '';
+    if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(low)) return '';
+    return x;
+  }
+
+  function payload(update) {
+    const list = [];
+
+    try {
+      if (typeof getCallbackPayload === 'function') list.push(getCallbackPayload(update));
+    } catch {}
+
+    list.push(
+      update?.payload,
+      update?.callback?.payload,
+      update?.message_callback?.payload,
+      update?.body?.payload,
+      update?.data,
+      update?.callback?.data,
+      update?.body?.data
+    );
+
+    for (const v of list) {
+      const p = ok(v);
+      if (p) return p;
+    }
+
+    return '';
+  }
+
+  function chatId(update, key) {
+    try {
+      if (typeof lrResolveReplyChatId === 'function') {
+        const id = lrResolveReplyChatId(update, key);
+        if (ok(id)) return ok(id);
+      }
+    } catch {}
+
+    try {
+      if (typeof getChatId === 'function') {
+        const id = getChatId(update);
+        if (ok(id)) return ok(id);
+      }
+    } catch {}
+
+    return ok(
+      update?.chatId ||
+      update?.chat_id ||
+      update?.body?.chatId ||
+      update?.body?.chat_id ||
+      update?.message?.recipient?.chat_id ||
+      ''
+    );
+  }
+
+  function sessionKey(update) {
+    try {
+      if (typeof getSessionKey === 'function') {
+        const key = getSessionKey(update);
+        if (ok(key)) return ok(key);
+      }
+    } catch {}
+
+    return chatId(update, '');
+  }
+
+  function textOf(update) {
+    const list = [];
+
+    try {
+      if (typeof __lrV12Text === 'function') list.push(__lrV12Text(update));
+    } catch {}
+
+    try {
+      if (typeof getMessageText === 'function') list.push(getMessageText(update));
+    } catch {}
+
+    list.push(
+      update?.message?.body?.text,
+      update?.message?.text,
+      update?.body?.message?.body?.text,
+      update?.body?.message?.text,
+      update?.text
+    );
+
+    for (const v of list) {
+      const t = String(v ?? '').trim();
+      if (t) return t;
+    }
+
+    return '';
+  }
+
+  function hasContent(content) {
+    return !!(
+      String(content?.text || '').trim() ||
+      String(content?.link || '').trim() ||
+      (Array.isArray(content?.attachments) && content.attachments.length)
+    );
+  }
+
+  async function hydrate(update) {
+    try {
+      if (typeof lrSafeHydrateContent === 'function') {
+        const content = await lrSafeHydrateContent(update);
+        if (hasContent(content)) return content;
+      }
+    } catch (e) {
+      console.error('[LR_POST_SINGLE_FALLBACK_FIX hydrate lrSafe]', e?.stack || e?.message || e);
+    }
+
+    try {
+      if (typeof hydrateContent === 'function') {
+        const content = await hydrateContent(update);
+        if (hasContent(content)) return content;
+      }
+    } catch (e) {
+      console.error('[LR_POST_SINGLE_FALLBACK_FIX hydrate]', e?.stack || e?.message || e);
+    }
+
+    const text = textOf(update);
+    if (!text) return null;
+
+    return {
+      text,
+      format: 'html',
+      markup: [],
+      attachments: []
+    };
+  }
+
+  async function ensureStateTable() {
+    await query(`CREATE TABLE IF NOT EXISTS lr_bot_state (
+      key text PRIMARY KEY,
+      value text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  }
+
+  async function putWait(update, channelId) {
+    const key = sessionKey(update);
+    const chat = chatId(update, key);
+
+    const value = {
+      channelIds: [Number(channelId)],
+      channelId: Number(channelId),
+      key,
+      chatId: chat,
+      ts: Date.now()
+    };
+
+    await ensureStateTable();
+
+    const keys = new Set();
+    if (key) keys.add(`lr_post_single_wait:${key}`);
+    if (chat) keys.add(`lr_post_single_wait:${chat}`);
+
+    for (const stateKey of keys) {
+      await query(
+        `INSERT INTO lr_bot_state(key, value, updated_at)
+         VALUES($1, $2, now())
+         ON CONFLICT(key) DO UPDATE
+           SET value = EXCLUDED.value,
+               updated_at = now()`,
+        [stateKey, JSON.stringify(value)]
+      ).catch(() => {});
+    }
+
+    try {
+      if (typeof setSession === 'function') {
+        const draft = { channelIds: [Number(channelId)] };
+        await setSession(key, 'wait_post_content', { draft }).catch(() => {});
+      }
+    } catch {}
+
+    console.log('[LR_POST_SINGLE_FALLBACK_FIX wait]', JSON.stringify({
+      channelId: Number(channelId),
+      key,
+      chat,
+      keys: keys.size
+    }));
+  }
+
+  async function readWait(update) {
+    const key = sessionKey(update);
+    const chat = chatId(update, key);
+
+    const keys = [];
+    if (key) keys.push(`lr_post_single_wait:${key}`);
+    if (chat) keys.push(`lr_post_single_wait:${chat}`);
+
+    if (!keys.length) return null;
+
+    const rows = await query(
+      `SELECT value
+         FROM lr_bot_state
+        WHERE key = ANY($1::text[])
+          AND updated_at > now() - interval '30 minutes'
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1`,
+      [keys]
+    ).catch(() => []);
+
+    if (!rows?.[0]?.value) return null;
+
+    try {
+      const wait = JSON.parse(rows[0].value);
+      if (Array.isArray(wait?.channelIds) && wait.channelIds.length) return wait;
+      if (wait?.channelId) return { ...wait, channelIds: [Number(wait.channelId)] };
+    } catch {}
+
+    return null;
+  }
+
+  async function clearWait(update) {
+    const key = sessionKey(update);
+    const chat = chatId(update, key);
+
+    const keys = [];
+    if (key) keys.push(`lr_post_single_wait:${key}`);
+    if (chat) keys.push(`lr_post_single_wait:${chat}`);
+
+    if (keys.length) {
+      await query(`DELETE FROM lr_bot_state WHERE key = ANY($1::text[])`, [keys]).catch(() => {});
+    }
+  }
+
+  async function sendEditor(update, wait, content) {
+    const key = sessionKey(update);
+    const chat = chatId(update, key);
+
+    if (!chat) {
+      console.error('[LR_POST_SINGLE_FALLBACK_FIX] no chat id');
+      return false;
+    }
+
+    let draft = {};
+
+    try {
+      draft = typeof safeDraft === 'function' ? safeDraft({}) : {};
+    } catch {
+      draft = {};
+    }
+
+    draft.channelIds = (wait.channelIds || []).map(Number).filter(Boolean);
+    draft.content = {
+      ...(draft.content || {}),
+      ...content
+    };
+
+    if (!draft.channelIds.length) {
+      console.error('[LR_POST_SINGLE_FALLBACK_FIX] no channelIds');
+      return false;
+    }
+
+    await clearWait(update);
+
+    try {
+      if (typeof setSession === 'function') {
+        await setSession(key, 'edit_draft', { draft }).catch(() => {});
+      }
+    } catch {}
+
+    console.log('[LR_POST_SINGLE_FALLBACK_FIX editor]', JSON.stringify({
+      key,
+      chat,
+      channelIds: draft.channelIds,
+      textLen: String(draft.content?.text || '').length,
+      attachments: Array.isArray(draft.content?.attachments) ? draft.content.attachments.length : 0
+    }));
+
+    if (typeof sendEditorAsNew === 'function') {
+      await sendEditorAsNew(chat, key, draft);
+      return true;
+    }
+
+    if (typeof sendDraftPreview === 'function') {
+      await sendDraftPreview(chat, key, draft);
+      return true;
+    }
+
+    console.error('[LR_POST_SINGLE_FALLBACK_FIX] editor sender not found');
+    return false;
+  }
+
+  const oldCallback = handleCallback;
+  handleCallback = async function(update) {
+    const p = payload(update);
+
+    try {
+      if (p === 'post:create' || p === 'main:posting' || p === 'post:cancel' || p.startsWith('sig:') || p.startsWith('main:')) {
+        await clearWait(update);
+      }
+
+      const m = String(p || '').match(/^post:single:(\d+)$/);
+      if (m) {
+        await putWait(update, Number(m[1]));
+      }
+    } catch (e) {
+      console.error('[LR_POST_SINGLE_FALLBACK_FIX callback pre]', e?.stack || e?.message || e);
+    }
+
+    return oldCallback(update);
+  };
+
+  const oldMessage = handleMessage;
+  handleMessage = async function(update) {
+  /* LR_V42_SET_GLOBALS_IN_HANDLER */
+  lrV42SetGlobals(update);
+    try {
+      const raw = textOf(update);
+
+      if (raw.startsWith('/')) {
+        await clearWait(update);
+        return oldMessage(update);
+      }
+
+      const wait = await readWait(update);
+
+      if (wait?.channelIds?.length) {
+        const content = await hydrate(update);
+
+        if (hasContent(content)) {
+          const done = await sendEditor(update, wait, content);
+          if (done) return;
+        }
+
+        console.log('[LR_POST_SINGLE_FALLBACK_FIX] wait exists but no content');
+      }
+    } catch (e) {
+      console.error('[LR_POST_SINGLE_FALLBACK_FIX message]', e?.stack || e?.message || e);
+    }
+
+    return oldMessage(update);
+  };
+
+  console.log('[LR_POST_SINGLE_FALLBACK_FIX] installed');
+})();
+/* LR_POST_SINGLE_FALLBACK_FIX_END */
+
+
+/* LR_POST_MESSAGE_CALLBACK_FIX_START */
+(function installPostMessageCallbackFix() {
+  function ok(v) {
+    const x = String(v ?? '').trim();
+    const low = x.toLowerCase();
+    if (!x || x.length > 260) return '';
+    if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(low)) return '';
+    return x;
+  }
+
+  function typeOf(update) {
+    return String(update?.type || update?.update_type || update?.event_type || update?.body?.type || '').toLowerCase();
+  }
+
+  function callbackId(update) {
+    try {
+      if (typeof getCallbackId === 'function') {
+        const id = getCallbackId(update);
+        if (ok(id)) return ok(id);
+      }
+    } catch {}
+
+    return ok(
+      update?.callback_id ||
+      update?.callbackId ||
+      update?.callback?.id ||
+      update?.callback?.callback_id ||
+      update?.message_callback?.callback_id ||
+      update?.body?.callback_id ||
+      ''
+    );
+  }
+
+  function sessionKey(update) {
+    try {
+      if (typeof getSessionKey === 'function') {
+        const key = getSessionKey(update);
+        if (ok(key)) return ok(key);
+      }
+    } catch {}
+
+    return chatId(update, '');
+  }
+
+  function chatId(update, key) {
+    try {
+      if (typeof lrResolveReplyChatId === 'function') {
+        const id = lrResolveReplyChatId(update, key);
+        if (ok(id)) return ok(id);
+      }
+    } catch {}
+
+    try {
+      if (typeof getChatId === 'function') {
+        const id = getChatId(update);
+        if (ok(id)) return ok(id);
+      }
+    } catch {}
+
+    return ok(
+      update?.chatId ||
+      update?.chat_id ||
+      update?.body?.chatId ||
+      update?.body?.chat_id ||
+      update?.message?.recipient?.chat_id ||
+      update?.message?.chat_id ||
+      ''
+    );
+  }
+
+  function textOf(update) {
+    const values = [];
+
+    try {
+      if (typeof __lrV12Text === 'function') values.push(__lrV12Text(update));
+    } catch {}
+
+    try {
+      if (typeof getMessageText === 'function') values.push(getMessageText(update));
+    } catch {}
+
+    values.push(
+      update?.message?.body?.text,
+      update?.message?.text,
+      update?.body?.message?.body?.text,
+      update?.body?.message?.text,
+      update?.text,
+      update?.body?.text
+    );
+
+    for (const v of values) {
+      const t = String(v ?? '').trim();
+      if (t) return t;
+    }
+
+    return '';
+  }
+
+  function hasContent(content) {
+    return !!(
+      String(content?.text || '').trim() ||
+      String(content?.link || '').trim() ||
+      (Array.isArray(content?.attachments) && content.attachments.length)
+    );
+  }
+
+  async function hydrate(update) {
+    try {
+      if (typeof lrSafeHydrateContent === 'function') {
+        const content = await lrSafeHydrateContent(update);
+        if (hasContent(content)) return content;
+      }
+    } catch (e) {
+      console.error('[LR_POST_MESSAGE_CALLBACK_FIX hydrate safe]', e?.stack || e?.message || e);
+    }
+
+    try {
+      if (typeof hydrateContent === 'function') {
+        const content = await hydrateContent(update);
+        if (hasContent(content)) return content;
+      }
+    } catch (e) {
+      console.error('[LR_POST_MESSAGE_CALLBACK_FIX hydrate]', e?.stack || e?.message || e);
+    }
+
+    const text = textOf(update);
+    if (!text) return null;
+
+    return { text, format: 'html', markup: [], attachments: [] };
+  }
+
+  async function readWait(update) {
+    const key = sessionKey(update);
+    const chat = chatId(update, key);
+
+    const keys = [];
+    if (key) keys.push(`lr_post_single_wait:${key}`);
+    if (chat) keys.push(`lr_post_single_wait:${chat}`);
+
+    if (!keys.length) return null;
+
+    const rows = await query(
+      `SELECT value
+         FROM lr_bot_state
+        WHERE key = ANY($1::text[])
+          AND updated_at > now() - interval '30 minutes'
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1`,
+      [keys]
+    ).catch(() => []);
+
+    if (!rows?.[0]?.value) return null;
+
+    try {
+      const wait = JSON.parse(rows[0].value);
+      if (Array.isArray(wait?.channelIds) && wait.channelIds.length) return wait;
+      if (wait?.channelId) return { ...wait, channelIds: [Number(wait.channelId)] };
+    } catch {}
+
+    return null;
+  }
+
+  async function clearWait(update) {
+    const key = sessionKey(update);
+    const chat = chatId(update, key);
+
+    const keys = [];
+    if (key) keys.push(`lr_post_single_wait:${key}`);
+    if (chat) keys.push(`lr_post_single_wait:${chat}`);
+
+    if (keys.length) {
+      await query(`DELETE FROM lr_bot_state WHERE key = ANY($1::text[])`, [keys]).catch(() => {});
+    }
+  }
+
+  async function openEditor(update, wait, content) {
+    const key = sessionKey(update);
+    const chat = chatId(update, key);
+
+    if (!chat) {
+      console.error('[LR_POST_MESSAGE_CALLBACK_FIX] no chat id');
+      return false;
+    }
+
+    let draft = {};
+    try {
+      draft = typeof safeDraft === 'function' ? safeDraft({}) : {};
+    } catch {
+      draft = {};
+    }
+
+    draft.channelIds = (wait.channelIds || []).map(Number).filter(Boolean);
+    draft.content = { ...(draft.content || {}), ...content };
+
+    if (!draft.channelIds.length) {
+      console.error('[LR_POST_MESSAGE_CALLBACK_FIX] no channelIds');
+      return false;
+    }
+
+    await clearWait(update);
+
+    try {
+      if (typeof setSession === 'function') {
+        await setSession(key, 'edit_draft', { draft }).catch(() => {});
+      }
+    } catch {}
+
+    console.log('[LR_POST_MESSAGE_CALLBACK_FIX editor]', JSON.stringify({
+      key,
+      chat,
+      channelIds: draft.channelIds,
+      textLen: String(draft.content?.text || '').length,
+      attachments: Array.isArray(draft.content?.attachments) ? draft.content.attachments.length : 0
+    }));
+
+    if (typeof sendEditorAsNew === 'function') {
+      await sendEditorAsNew(chat, key, draft);
+      return true;
+    }
+
+    if (typeof sendDraftPreview === 'function') {
+      await sendDraftPreview(chat, key, draft);
+      return true;
+    }
+
+    console.error('[LR_POST_MESSAGE_CALLBACK_FIX] editor sender not found');
+    return false;
+  }
+
+  const oldHandleCallback = handleCallback;
+
+  handleCallback = async function(update) {
+    try {
+      const t = typeOf(update);
+      const cbid = callbackId(update);
+
+      // В MAX входящий текст иногда попадает в callback-ветку как message_created
+      // с payload "[object Object]". Поэтому перехватываем его здесь до старого callback-кода.
+      if (t === 'message_created' && !cbid) {
+        const raw = textOf(update);
+
+        if (raw.startsWith('/')) {
+          await clearWait(update);
+          return oldHandleCallback(update);
+        }
+
+        const wait = await readWait(update);
+
+        if (wait?.channelIds?.length) {
+          const content = await hydrate(update);
+
+          if (hasContent(content)) {
+            const done = await openEditor(update, wait, content);
+            if (done) return;
+          }
+
+          console.log('[LR_POST_MESSAGE_CALLBACK_FIX] message_created wait but no content');
+        }
+      }
+    } catch (e) {
+      console.error('[LR_POST_MESSAGE_CALLBACK_FIX callback message]', e?.stack || e?.message || e);
+    }
+
+    return oldHandleCallback(update);
+  };
+
+  console.log('[LR_POST_MESSAGE_CALLBACK_FIX] installed');
+})();
+/* LR_POST_MESSAGE_CALLBACK_FIX_END */
+
+
+/* LR_PUBLISH_AUTODELETE_FIX_START */
+(function installPublishAutoDeleteFix() {
+  function ok(v) {
+    const x = String(v ?? '').trim();
+    const low = x.toLowerCase();
+    if (!x || x.length > 260) return '';
+    if (['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(low)) return '';
+    return x;
+  }
+
+  function getPayload(update) {
+    const values = [];
+
+    try {
+      if (typeof getCallbackPayload === 'function') values.push(getCallbackPayload(update));
+    } catch {}
+
+    values.push(
+      update?.payload,
+      update?.callback?.payload,
+      update?.message_callback?.payload,
+      update?.body?.payload,
+      update?.data,
+      update?.callback?.data,
+      update?.body?.data
+    );
+
+    for (const v of values) {
+      const p = ok(v);
+      if (p) return p;
+    }
+
+    return '';
+  }
+
+  function getKey(update) {
+    try {
+      if (typeof getSessionKey === 'function') {
+        const key = getSessionKey(update);
+        if (ok(key)) return ok(key);
+      }
+    } catch {}
+
+    return ok(update?.chatId || update?.chat_id || update?.body?.chatId || update?.body?.chat_id || '');
+  }
+
+  function getCbId(update) {
+    try {
+      if (typeof getCallbackId === 'function') {
+        const id = getCallbackId(update);
+        if (ok(id)) return ok(id);
+      }
+    } catch {}
+
+    return ok(
+      update?.callback_id ||
+      update?.callbackId ||
+      update?.callback?.id ||
+      update?.message_callback?.callback_id ||
+      update?.body?.callback_id ||
+      ''
+    );
+  }
+
+  function autoText(minutes) {
+    try {
+      if (typeof formatAutoDelete === 'function') return formatAutoDelete(minutes);
+    } catch {}
+
+    const n = Number(minutes || 0);
+    if (!n) return 'без удаления';
+    if (n % 1440 === 0) return `${n / 1440}д`;
+    if (n % 60 === 0) return `${n / 60}ч`;
+    return `${n} мин`;
+  }
+
+  const oldHandleCallback = handleCallback;
+
+  handleCallback = async function(update) {
+    const payload = getPayload(update);
+
+    if (payload.startsWith('publish:auto_set:')) {
+      try {
+        const key = getKey(update);
+        const callbackId = getCbId(update);
+        const minutes = Number(payload.split(':')[2] || 0) || null;
+
+        if (!key) {
+          console.error('[LR_PUBLISH_AUTODELETE_FIX] no session key');
+          return oldHandleCallback(update);
+        }
+
+        const session = await getSession(key);
+        const draft = typeof safeDraft === 'function'
+          ? safeDraft(session?.data)
+          : ((session?.data && session.data.draft) ? session.data.draft : (session?.data || {}));
+
+        draft.autoDeleteMinutes = minutes;
+        draft.auto_delete_minutes = minutes;
+        draft.deleteAfterMinutes = minutes;
+        draft.removeAfterMinutes = minutes;
+
+        await setSession(key, 'publish_menu', { draft });
+
+        console.log('[LR_PUBLISH_AUTODELETE_FIX]', JSON.stringify({
+          key,
+          minutes,
+          label: autoText(minutes)
+        }));
+
+        if (typeof showPublishMenu === 'function') {
+          return showPublishMenu(callbackId, key, draft);
+        }
+
+        if (callbackId && typeof cb === 'function') {
+          return cb(
+            callbackId,
+            `✅ Автоудаление: ${autoText(minutes)}`,
+            [[callbackButton('⬅️ К выпуску', 'editor:next')]]
+          );
+        }
+
+        return;
+      } catch (e) {
+        console.error('[LR_PUBLISH_AUTODELETE_FIX]', e?.stack || e?.message || e);
+        return;
+      }
+    }
+
+    return oldHandleCallback(update);
+  };
+
+  console.log('[LR_PUBLISH_AUTODELETE_FIX] installed');
+})();
+/* LR_PUBLISH_AUTODELETE_FIX_END */
+
+/* LR_CONTENT_PLAN_TEXT_SAVE_V54_START */
+// Исправляет сохранение текста поста из контент-плана.
+// Причина старой ошибки: SQL UPDATE ожидал 2 параметра, а обработчик отдавал 3.
+function lrV54PlanEsc(value) {
+  try {
+    if (typeof escapeHtml === 'function') return escapeHtml(value);
+  } catch (_) {}
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV54PlanText(update) {
+  const list = [
+    update?.message?.body?.text,
+    update?.message?.text,
+    update?.message?.content?.text,
+    update?.message?.content?.body?.text,
+    update?.content?.text,
+    update?.content?.body?.text,
+    update?.body?.text,
+    update?.text,
+    update?.message?.body,
+    update?.body
+  ];
+  for (const v of list) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+
+async function lrV54PlanGetSession(key) {
+  try {
+    if (typeof getSession === 'function') {
+      const s = await getSession(key);
+      if (s && typeof s === 'object') return s;
+    }
+  } catch (e) {
+    console.error('[v54 plan text] getSession failed', e?.message || e);
+  }
+  try {
+    if (typeof query === 'function') {
+      const r = await query(
+        `SELECT user_id,state,data,updated_at
+           FROM bot_sessions
+          WHERE user_id::text IN ($1, $2)
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+        [String(key), 'user:' + String(key).replace(/^user:/, '')]
+      );
+      const row = (r?.rows || [])[0];
+      if (row) return row;
+    }
+  } catch (e) {
+    console.error('[v54 plan text] DB session read failed', e?.message || e);
+  }
+  return null;
+}
+
+function lrV54PlanData(session) {
+  let data = session?.data || {};
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch (_) { data = {}; }
+  }
+  return data && typeof data === 'object' ? data : {};
+}
+
+function lrV54PlanTarget(data) {
+  const rawVid = String(data.virtualId || data.vid || data.target || '').trim();
+  let vid = rawVid;
+  try { vid = decodeURIComponent(vid); } catch (_) {}
+
+  let table = String(data.table || '').trim();
+  let id = String(data.id || data.postId || '').trim();
+
+  if ((!table || !id) && vid) {
+    const parts = vid.split(':');
+    if (parts.length >= 2) {
+      table = table || parts[0];
+      id = id || parts[1];
+    }
+  }
+
+  table = table.replace(/[^a-zA-Z0-9_]/g, '');
+  id = id.replace(/[^0-9]/g, '');
+
+  const colByTable = {
+    scheduled_posts: 'text',
+    ad_post_trackers: 'post_text',
+    ad_post_tracker_channels: 'post_text',
+    lr_post_entry_v68: 'text'
+  };
+  const col = colByTable[table] || '';
+  if (!table || !id || !col) return null;
+  return { table, id, col, virtualId: vid || `${table}:${id}` };
+}
+
+async function lrV54PlanHasColumn(table, column) {
+  try {
+    const r = await query(
+      `SELECT 1
+         FROM information_schema.columns
+        WHERE table_schema='public'
+          AND table_name=$1
+          AND column_name=$2
+        LIMIT 1`,
+      [table, column]
+    );
+    return Boolean((r?.rows || [])[0]);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function lrV54PlanClearSession(key) {
+  try {
+    if (typeof clearSession === 'function') {
+      await clearSession(key);
+      return;
+    }
+  } catch (e) {
+    console.error('[v54 plan text] clearSession failed', e?.message || e);
+  }
+  try {
+    await query(`UPDATE bot_sessions SET state='idle', data='{}'::jsonb, updated_at=now() WHERE user_id::text IN ($1,$2)`, [String(key), 'user:' + String(key).replace(/^user:/, '')]);
+  } catch (e) {
+    console.error('[v54 plan text] DB session clear failed', e?.message || e);
+  }
+}
+
+async function lrV54PlanSend(chatId, text, rows) {
+  if (!chatId) return;
+  try {
+    if (typeof msg === 'function') {
+      await msg(chatId, text, rows || [], 'html');
+      console.log('[v54 plan text] msg sent', JSON.stringify({ chatId }));
+      return;
+    }
+  } catch (e) {
+    console.error('[v54 plan text] msg failed', e?.stack || e?.message || e);
+  }
+  try {
+    if (typeof sendMaxMessage === 'function') {
+      await sendMaxMessage({ chatId, text, attachments: rows && typeof inlineKeyboard === 'function' ? inlineKeyboard(rows) : [] });
+      console.log('[v54 plan text] sendMaxMessage sent', JSON.stringify({ chatId }));
+    }
+  } catch (e) {
+    console.error('[v54 plan text] sendMaxMessage failed', e?.stack || e?.message || e);
+  }
+}
+
+async function lrV54PlanTextInput(update) {
+  const type = (typeof getUpdateType === 'function') ? String(getUpdateType(update) || '') : String(update?.update_type || update?.type || '');
+  if (type && type !== 'message_created' && type !== 'message_edited') return false;
+
+  const chatId = (typeof getChatId === 'function') ? getChatId(update) : (update?.message?.recipient?.chat_id || update?.message?.chat_id || update?.chat_id || update?.chat?.id || update?.dialog_chat_id || update?.dialogChatId);
+  const key = (typeof getSessionKey === 'function') ? getSessionKey(update) : chatId;
+  if (!key || !chatId) return false;
+
+  const session = await lrV54PlanGetSession(key);
+  if (!session || String(session.state || '') !== 'content_plan_v53_wait_text') return false;
+
+  const newText = lrV54PlanText(update);
+  if (!newText || newText.startsWith('/')) return false;
+
+  const data = lrV54PlanData(session);
+  const target = lrV54PlanTarget(data);
+  console.log('[v54 plan text] input caught', JSON.stringify({ chatId, key, state: session.state, target, len: newText.length }));
+
+  if (!target) {
+    await lrV54PlanClearSession(key);
+    await lrV54PlanSend(chatId, '❌ <b>Пост не найден</b>\n\nВернитесь в контент-план и откройте пост заново.', [[callbackButton('⬅️ К списку', 'post:all')]]);
+    return true;
+  }
+
+  try {
+    const hasUpdatedAt = await lrV54PlanHasColumn(target.table, 'updated_at');
+    const sql = `UPDATE ${target.table} SET ${target.col}=$1${hasUpdatedAt ? ', updated_at=now()' : ''} WHERE id=$2 RETURNING *`;
+    const saved = await query(sql, [newText, Number(target.id)]);
+    const row = (saved?.rows || [])[0];
+    if (!row) throw new Error('post row not found after update');
+
+    await lrV54PlanClearSession(key);
+
+    const encVid = encodeURIComponent(target.virtualId || `${target.table}:${target.id}`);
+    const channelKey = String(data.channelKey || data.channel_id || data.channelId || data.channel || 'all');
+    const day = String(data.day || data.date || 'today');
+    const filter = String(data.filter || 'all');
+    const page = String(data.page || '0');
+
+    const rows = [];
+    // payload старого контент-плана оставляем, чтобы действующие обработчики открывали тот же пост/список.
+    rows.push([callbackButton('💾 Сохранить пост', `lr_plan_v51:save:${encVid}:${channelKey}:${day}:${filter}:${page}`)]);
+    rows.push([callbackButton('⬅️ К списку', `lr_plan_v51:day:${channelKey}:${day}:${filter}:${page}`)]);
+    rows.push([callbackButton('📁 Посты', 'post:all')]);
+
+    await lrV54PlanSend(
+      chatId,
+      `━━━━━━\n🧬 <b>Редактор LinkRay</b>\n\n✅ Текст поста сохранён.\n\nНажмите «Сохранить пост» или вернитесь к списку.\n━━━━━━`,
+      rows
+    );
+
+    console.log('[v54 plan text] text updated', JSON.stringify({ table: target.table, id: target.id, col: target.col }));
+    return true;
+  } catch (e) {
+    console.error('[v54 plan text] update failed', e?.stack || e?.message || e);
+    await lrV54PlanSend(chatId, `❌ <b>Ошибка при сохранении текста</b>\n\n${lrV54PlanEsc(e?.message || e)}`, [[callbackButton('⬅️ К списку', 'post:all')]]);
+    return true;
+  }
+}
+
+try {
+  if (typeof handleMessage === 'function') {
+    const lrV54PrevHandleMessage = handleMessage;
+    handleMessage = async function lrV54HandleMessage(update) {
+      if (await lrV54PlanTextInput(update)) return true;
+      return lrV54PrevHandleMessage(update);
+    };
+    console.log('[v54 plan text] installed: fixed 2-param update for content-plan text editor');
+  } else {
+    console.error('[v54 plan text] handleMessage not found');
+  }
+} catch (e) {
+  console.error('[v54 plan text] install failed', e?.stack || e?.message || e);
+}
+/* LR_CONTENT_PLAN_TEXT_SAVE_V54_END */
 
