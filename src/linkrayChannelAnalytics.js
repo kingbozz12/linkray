@@ -4556,7 +4556,7 @@ async function showAnalyticsMainMenu(chatId, keys, update = null) {
     '📆 <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.\n' +
     '━━━━━━━━━━━━━━',
     [
-      [lrCb('🖼 🖼 Аналитика каналов', 'lrchan:links')],
+      [lrCb('🖼 Аналитика каналов', 'lrchan:links')],
       [lrCb('📆📅 Ежедневный отчёт ПДП', 'lrchan:daily')],
       [lrCb('⬅️ Главное меню', 'main:menu')],
     ]
@@ -4598,7 +4598,6 @@ async function showDailyPdpMenu(chatId, keys, update = null) {
     '━━━━━━━━━━━━━━',
     [
       [lrCb('✅ Включить отчёт', 'lrchan:on'), lrCb('⛔ Отключить отчёт', 'lrchan:off')],
-      [lrCb('🖼 Изменить каналы', 'lrchan:links')],
       [lrCb('⬅️ В аналитику', 'lrchan:menu')],
     ]
   );
@@ -6221,7 +6220,7 @@ export async function sendTestChannelAnalytics(chatId) {
 // 1) нажатия «🖼 Аналитика каналов»;
 // 2) отправки одной или нескольких MAX-ссылок.
 //
-// Ежедневный отчёт ПДП управляется отдельной кнопкой
+//📅 Ежедневный отчёт ПДП управляется отдельной кнопкой
 // и отправляется существующим worker один раз в день.
 
 export {
@@ -6234,3 +6233,10 @@ console.log(
 );
 
 /* LR_CHANNEL_ANALYTICS_V70_END */
+
+
+/* LR_CHANNEL_ANALYTICS_V71_START */
+console.log(
+  '[v71 channel analytics] single emojis; change-channels button removed'
+);
+/* LR_CHANNEL_ANALYTICS_V71_END */
