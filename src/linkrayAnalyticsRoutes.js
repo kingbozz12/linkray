@@ -1375,298 +1375,657 @@ function fallbackData(id) {
   };
 }
 
-async function trackerFallbackData(id) {
-  const base = fallbackData(id);
 
+/* LR_REPORT_SOURCE_RESOLVER_V67_START */
+
+function lrV67UniqueStrings(values) {
+  const out = [];
+  const walk = (value) => {
+    if (value === null || value === undefined || value === '') return;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const item of Object.values(value)) walk(item);
+      return;
+    }
+    const text = String(value).trim();
+    if (!text || out.includes(text)) return;
+    out.push(text);
+  };
+  walk(values);
+  return out;
+}
+
+function lrV67FirstText(values, fallback = '') {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return fallback;
+}
+
+function lrV67FirstPositiveNumber(values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const numberValue = Number(value);
+    if (Number.isFinite(numberValue) && numberValue > 0) return numberValue;
+  }
+  return 0;
+}
+
+function lrV67DraftKeys(value) {
+  const draft = safeJson(value, {});
+  return lrV67UniqueStrings([
+    draft?.campaignId,
+    draft?.campaign_id,
+    draft?.reportGroupId,
+    draft?.report_group_id,
+    draft?.reportId,
+    draft?.report_id,
+    draft?.reportToken,
+    draft?.report_token,
+    draft?.token,
+    draft?.postId,
+    draft?.post_id,
+    draft?.scheduleRef,
+    draft?.schedule_ref,
+    draft?.content?.campaignId,
+    draft?.content?.campaign_id,
+    draft?.content?.reportGroupId,
+    draft?.content?.report_group_id,
+    draft?.content?.reportToken,
+    draft?.content?.report_token,
+  ]);
+}
+
+async function lrV67Query(sql, params, label) {
   try {
-    const tracker = rows(await query(
-      `SELECT *
-       FROM ad_post_trackers
-       WHERE id::text = $1
-          OR COALESCE(token, '') = $1
-          OR COALESCE(post_id, '') = $1
-          OR COALESCE(schedule_ref, '') = $1
-       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-       LIMIT 1`,
-      [String(id || '')]
-    ).catch((error) => {
-      console.error('[v66 report status] tracker query failed', error?.message || error);
-      return [];
-    }))[0];
-
-    if (!tracker) return base;
-
-    const token = String(tracker.token || id || '');
-    const draft = safeJson(tracker.draft_json, {});
-
-    const trackerChannels = rows(await query(
-      `SELECT *
-       FROM ad_post_tracker_channels
-       WHERE COALESCE(token, '') = $1
-       ORDER BY created_at ASC NULLS LAST`,
-      [token]
-    ).catch((error) => {
-      console.error('[v66 report status] tracker channels query failed', error?.message || error);
-      return [];
-    }));
-
-    let channelIds = safeJson(tracker.channel_ids, []);
-    if (!Array.isArray(channelIds)) {
-      if (channelIds && typeof channelIds === 'object') {
-        channelIds = Object.values(channelIds).filter(Boolean);
-      } else if (channelIds) {
-        channelIds = [channelIds];
-      } else {
-        channelIds = [];
-      }
-    }
-
-    const rawChannels = trackerChannels.length
-      ? trackerChannels
-      : channelIds.map((channelId) => ({
-          channel_id: channelId,
-          channel_title: 'Канал',
-          views: 0,
-          published_at: tracker.published_at,
-          deleted_at: tracker.deleted_at,
-          status: tracker.status,
-        }));
-
-    const cpm = Math.max(0, Number(tracker.cpm || draft?.cpm || 0));
-
-    const channels = rawChannels.map((channel, index) => {
-      const views = Math.max(0, Number(channel.views || 0));
-      const title = String(channel.channel_title || channel.title || 'Канал');
-
-      return {
-        id: channel.channel_id || index + 1,
-        title,
-        link: channel.message_url || '',
-        avatar: '',
-        letter: title.trim().slice(0, 1).toUpperCase() || 'К',
-        time: ruShortDate(
-          channel.published_at ||
-          tracker.published_at ||
-          tracker.publish_at
-        ),
-        views,
-        cost: (views * cpm) / 1000,
-        share: 0,
-        originalIndex: index,
-      };
-    });
-
-    const trackerViews = Math.max(0, Number(tracker.views || 0));
-    const summedViews = channels.reduce(
-      (sum, channel) => sum + Math.max(0, Number(channel.views || 0)),
-      0
-    );
-    const totalViews = Math.max(trackerViews, summedViews);
-
-    const channelsFinal = channels.map((channel) => ({
-      ...channel,
-      share: totalViews
-        ? Math.round((Number(channel.views || 0) / totalViews) * 100)
-        : 0,
-    }));
-
-    const text =
-      tracker.post_text ||
-      trackerChannels[0]?.post_text ||
-      draft?.content?.text ||
-      draft?.text ||
-      draft?.caption ||
-      '';
-
-    const image =
-      tracker.post_image_url ||
-      trackerChannels[0]?.post_image_url ||
-      draft?.post_image_url ||
-      draft?.image_url ||
-      draft?.imageUrl ||
-      '';
-
-    const autoDeleteMinutes = Number(
-      tracker.auto_delete_minutes ??
-      draft?.autoDeleteMinutes ??
-      draft?.auto_delete_minutes ??
-      draft?.deleteAfterMinutes ??
-      0
-    );
-
-    const syntheticPost = {
-      id: tracker.id,
-      status: tracker.status,
-      publish_at: tracker.publish_at,
-      published_at:
-        tracker.published_at ||
-        trackerChannels.find((row) => row.published_at)?.published_at ||
-        null,
-      deleted_at:
-        tracker.deleted_at ||
-        trackerChannels.find((row) => row.deleted_at)?.deleted_at ||
-        null,
-      created_at: tracker.created_at,
-      updated_at: tracker.updated_at,
-      auto_delete_minutes: autoDeleteMinutes,
-    };
-
-    const lifeHours = livedHours(syntheticPost);
-    const ranges = {};
-
-    for (const range of availableRanges(lifeHours)) {
-      ranges[String(range)] = await timelineFor(
-        token || tracker.id || id,
-        range,
-        totalViews,
-        syntheticPost
-      );
-    }
-
-    console.log('[v66 report status] tracker fallback used', JSON.stringify({
-      id,
-      trackerId: tracker.id || null,
-      token: tracker.token || null,
-      status: syntheticPost.status || null,
-      publishAt: syntheticPost.publish_at || null,
-      publishedAt: syntheticPost.published_at || null,
-      deletedAt: syntheticPost.deleted_at || null,
-      channels: channelsFinal.length,
-    }));
-
-    return {
-      ...base,
-      postTitle: postTitle(text),
-      postHtml: sanitizePostHtml(text, 'html'),
-      media: image ? { url: image, kind: 'image' } : null,
-      status: statusInfo(syntheticPost),
-      publishedAt:
-        syntheticPost.deleted_at ||
-        syntheticPost.published_at ||
-        syntheticPost.publish_at ||
-        syntheticPost.created_at ||
-        null,
-      autoDeleteText: autoDeleteText(autoDeleteMinutes),
-      metrics: {
-        views: totalViews,
-        cpm,
-        cost: (totalViews * cpm) / 1000,
-        channelsCount: channelsFinal.length || channelIds.length,
-        lifeHours,
-      },
-      ranges,
-      channels: channelsFinal,
-    };
+    return rows(await query(sql, params));
   } catch (error) {
     console.error(
-      '[v66 report status] fallback failed',
+      '[v67 report source] ' + label + ' failed',
       error?.stack || error?.message || error
     );
-    return base;
+    return [];
   }
+}
+
+async function lrV67FindScheduledPostsById(id) {
+  let posts = await lrV67Query(
+    `SELECT *
+       FROM scheduled_posts sp
+      WHERE sp.id::text = $1
+         OR COALESCE(sp.report_group_id, '') = $1
+         OR COALESCE(sp.draft->>'campaignId', '') = $1
+         OR COALESCE(sp.draft->>'campaign_id', '') = $1
+         OR COALESCE(sp.draft->>'reportGroupId', '') = $1
+         OR COALESCE(sp.draft->>'report_group_id', '') = $1
+         OR COALESCE(sp.draft->>'reportToken', '') = $1
+         OR COALESCE(sp.draft->>'report_token', '') = $1
+         OR COALESCE(sp.meta->>'campaignId', '') = $1
+         OR COALESCE(sp.meta->>'campaign_id', '') = $1
+         OR COALESCE(sp.meta->>'reportGroupId', '') = $1
+         OR COALESCE(sp.meta->>'report_group_id', '') = $1
+         OR COALESCE(sp.meta->>'reportToken', '') = $1
+         OR COALESCE(sp.meta->>'report_token', '') = $1
+         OR COALESCE(sp.report_snapshot->>'campaignId', '') = $1
+         OR COALESCE(sp.report_snapshot->>'campaign_id', '') = $1
+         OR COALESCE(sp.report_snapshot->>'reportGroupId', '') = $1
+         OR COALESCE(sp.report_snapshot->>'report_group_id', '') = $1
+      ORDER BY sp.id ASC`,
+    [id],
+    'scheduled exact'
+  );
+
+  if (posts.length) return posts;
+
+  return lrV67Query(
+    `SELECT *
+       FROM scheduled_posts sp
+      WHERE to_jsonb(sp)::text ILIKE '%' || $1 || '%'
+      ORDER BY sp.updated_at DESC NULLS LAST, sp.id ASC
+      LIMIT 100`,
+    [id],
+    'scheduled broad'
+  );
+}
+
+async function lrV67FindTracker(id) {
+  let tracker = (await lrV67Query(
+    `SELECT *
+       FROM ad_post_trackers t
+      WHERE t.id::text = $1
+         OR COALESCE(t.token, '') = $1
+         OR COALESCE(t.post_id, '') = $1
+         OR COALESCE(t.schedule_ref, '') = $1
+      ORDER BY t.updated_at DESC NULLS LAST,
+               t.created_at DESC NULLS LAST,
+               t.id DESC
+      LIMIT 1`,
+    [id],
+    'tracker exact'
+  ))[0] || null;
+
+  if (tracker) return tracker;
+
+  return (await lrV67Query(
+    `SELECT *
+       FROM ad_post_trackers t
+      WHERE to_jsonb(t)::text ILIKE '%' || $1 || '%'
+      ORDER BY t.updated_at DESC NULLS LAST,
+               t.created_at DESC NULLS LAST,
+               t.id DESC
+      LIMIT 1`,
+    [id],
+    'tracker broad'
+  ))[0] || null;
+}
+
+async function lrV67FindTrackerChannels(keys) {
+  const list = lrV67UniqueStrings(keys);
+  if (!list.length) return [];
+
+  let channels = await lrV67Query(
+    `SELECT *
+       FROM ad_post_tracker_channels tc
+      WHERE COALESCE(tc.token, '') = ANY($1::text[])
+         OR tc.id::text = ANY($1::text[])
+         OR tc.message_id::text = ANY($1::text[])
+      ORDER BY tc.created_at ASC NULLS LAST, tc.id ASC`,
+    [list],
+    'tracker channels exact'
+  );
+
+  if (channels.length) return channels;
+
+  for (const key of list.slice(0, 8)) {
+    channels = await lrV67Query(
+      `SELECT *
+         FROM ad_post_tracker_channels tc
+        WHERE to_jsonb(tc)::text ILIKE '%' || $1 || '%'
+        ORDER BY tc.created_at ASC NULLS LAST, tc.id ASC
+        LIMIT 100`,
+      [key],
+      'tracker channels broad'
+    );
+    if (channels.length) return channels;
+  }
+
+  return [];
+}
+
+async function lrV67FindPostsByKeys(keys) {
+  const list = lrV67UniqueStrings(keys);
+  if (!list.length) return [];
+
+  return lrV67Query(
+    `SELECT *
+       FROM scheduled_posts sp
+      WHERE sp.id::text = ANY($1::text[])
+         OR COALESCE(sp.report_group_id, '') = ANY($1::text[])
+         OR COALESCE(sp.draft->>'campaignId', '') = ANY($1::text[])
+         OR COALESCE(sp.draft->>'campaign_id', '') = ANY($1::text[])
+         OR COALESCE(sp.draft->>'reportGroupId', '') = ANY($1::text[])
+         OR COALESCE(sp.draft->>'report_group_id', '') = ANY($1::text[])
+         OR COALESCE(sp.draft->>'reportToken', '') = ANY($1::text[])
+         OR COALESCE(sp.draft->>'report_token', '') = ANY($1::text[])
+         OR COALESCE(sp.meta->>'campaignId', '') = ANY($1::text[])
+         OR COALESCE(sp.meta->>'campaign_id', '') = ANY($1::text[])
+         OR COALESCE(sp.meta->>'reportGroupId', '') = ANY($1::text[])
+         OR COALESCE(sp.meta->>'report_group_id', '') = ANY($1::text[])
+         OR COALESCE(sp.report_snapshot->>'campaignId', '') = ANY($1::text[])
+         OR COALESCE(sp.report_snapshot->>'campaign_id', '') = ANY($1::text[])
+      ORDER BY sp.id ASC`,
+    [list],
+    'scheduled by tracker keys'
+  );
+}
+
+async function lrV67ResolveSource(id) {
+  let posts = await lrV67FindScheduledPostsById(id);
+  let tracker = await lrV67FindTracker(id);
+
+  const trackerKeys = lrV67UniqueStrings([
+    id,
+    tracker?.id,
+    tracker?.token,
+    tracker?.post_id,
+    tracker?.schedule_ref,
+    lrV67DraftKeys(tracker?.draft_json),
+  ]);
+
+  let trackerChannels = await lrV67FindTrackerChannels(trackerKeys);
+
+  if (!tracker && trackerChannels.length) {
+    tracker = await lrV67FindTracker(
+      lrV67FirstText([
+        trackerChannels[0]?.token,
+        trackerChannels[0]?.message_id,
+        trackerChannels[0]?.id,
+      ], id)
+    );
+  }
+
+  const allKeys = lrV67UniqueStrings([
+    id,
+    tracker?.id,
+    tracker?.token,
+    tracker?.post_id,
+    tracker?.schedule_ref,
+    lrV67DraftKeys(tracker?.draft_json),
+    trackerChannels.map((row) => [
+      row?.token,
+      row?.message_id,
+      row?.channel_id,
+    ]),
+  ]);
+
+  if (!posts.length) {
+    posts = await lrV67FindPostsByKeys(allKeys);
+  }
+
+  if (!trackerChannels.length) {
+    trackerChannels = await lrV67FindTrackerChannels(allKeys);
+  }
+
+  console.log('[v67 report source] resolved', JSON.stringify({
+    id,
+    scheduledPosts: posts.length,
+    trackerId: tracker?.id || null,
+    trackerToken: tracker?.token || null,
+    trackerPostId: tracker?.post_id || null,
+    trackerScheduleRef: tracker?.schedule_ref || null,
+    trackerChannels: trackerChannels.length,
+    cpmCandidates: {
+      scheduled: posts[0]?.cpm ?? null,
+      tracker: tracker?.cpm ?? null,
+      scheduledDraft: safeJson(posts[0]?.draft, {})?.cpm ?? null,
+      trackerDraft: safeJson(tracker?.draft_json, {})?.cpm ?? null,
+    },
+    dateCandidates: {
+      scheduledPublishAt: posts[0]?.publish_at || null,
+      scheduledPublishedAt: posts[0]?.published_at || null,
+      trackerPublishAt: tracker?.publish_at || null,
+      trackerPublishedAt: tracker?.published_at || null,
+      trackerDeletedAt: tracker?.deleted_at || null,
+    },
+  }));
+
+  return { posts, tracker, trackerChannels, keys: allKeys };
+}
+
+function lrV67AutoDeleteMinutes(post, tracker, draft, trackerDraft) {
+  return lrV67FirstPositiveNumber([
+    post?.auto_delete_minutes,
+    tracker?.auto_delete_minutes,
+    draft?.autoDeleteMinutes,
+    draft?.auto_delete_minutes,
+    draft?.deleteAfterMinutes,
+    trackerDraft?.autoDeleteMinutes,
+    trackerDraft?.auto_delete_minutes,
+    trackerDraft?.deleteAfterMinutes,
+  ]);
+}
+
+function lrV67ExplicitMedia(post, tracker, trackerChannels, draft, trackerDraft) {
+  const explicit = lrV67FirstText([
+    tracker?.post_image_url,
+    trackerChannels?.find((row) => row?.post_image_url)?.post_image_url,
+    trackerDraft?.post_image_url,
+    trackerDraft?.image_url,
+    trackerDraft?.imageUrl,
+    draft?.post_image_url,
+    draft?.image_url,
+    draft?.imageUrl,
+  ]);
+
+  if (explicit && /^https?:\/\//i.test(explicit)) {
+    return {
+      url: explicit,
+      kind: /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(explicit)
+        ? 'video'
+        : 'image',
+    };
+  }
+
+  return getMedia(post || {}, draft || trackerDraft || {});
 }
 
 async function collect(groupId) {
   await ensureAnalyticsTables();
 
   const id = String(groupId || '').trim();
+  const resolved = await lrV67ResolveSource(id);
 
-  let posts = rows(await query(
-    `SELECT *
-       FROM scheduled_posts
-      WHERE id::text = $1
-         OR COALESCE(report_group_id, '') = $1
-         OR COALESCE(draft->>'campaignId', '') = $1
-      ORDER BY id ASC`,
-    [id]
-  ));
+  let posts = resolved.posts || [];
+  const tracker = resolved.tracker || null;
+  const trackerChannels = resolved.trackerChannels || [];
 
-  if (!posts.length) return await trackerFallbackData(id);
-
-  posts = await Promise.all(posts.map(lrV64SyncMaxViews));
+  if (posts.length) {
+    posts = await Promise.all(posts.map(trySyncMaxViews));
+  }
 
   const first = posts[0] || {};
   const draft = safeJson(first.draft, {});
-  const campaignId = first.report_group_id || draft.campaignId || first.id || id;
+  const trackerDraft = safeJson(tracker?.draft_json, {});
 
-  const channelMap = await loadChannels(posts);
-
-  const text =
-    first.text ||
-    draft?.content?.text ||
-    draft?.text ||
-    draft?.caption ||
-    '';
-
-  const format =
-    first.format ||
-    draft?.content?.format ||
-    draft?.format ||
-    'html';
-
-  const cpm = Number(first.cpm || safeJson(first.report_snapshot, {}).cpm || draft.cpm || 0);
-
-  const channels = posts.map((post, idx) => {
-    const snapshot = safeJson(post.report_snapshot, {});
-    const views = getViews(snapshot);
-    const ch = channelMap.get(String(post.channel_id)) || {};
-    const cost = (views * cpm) / 1000;
-
-    return {
-      id: post.channel_id || post.id || idx + 1,
-      title: ch.title || 'Канал',
-      link: ch.link || '',
-      avatar: ch.avatar || '',
-      letter: String(ch.title || 'К').trim().slice(0, 1).toUpperCase(),
-      time: ruShortDate(post.published_at || post.publish_at),
-      views,
-      cost,
-      originalIndex: idx,
-    };
-  });
-
-  const totalViews = channels.reduce((sum, c) => sum + Number(c.views || 0), 0) || getViews(safeJson(first.report_snapshot, {}));
-  const cost = (totalViews * cpm) / 1000;
-
-  const channelsFinal = channels.map((ch) => {
-    const share = totalViews ? Math.round((ch.views / totalViews) * 100) : 0;
-    return {
-      ...ch,
-      share,
-    };
-  });
-
-  await lrV64SavePoint(campaignId, first.id, '__total__', totalViews, 'total');
-
-  const lifeHours = livedHours(first);
-  const ranges = {};
-
-  for (const r of availableRanges(lifeHours)) {
-    ranges[String(r)] = await lrV64TimelineFor(campaignId, r, totalViews, first);
+  if (!posts.length && !tracker && !trackerChannels.length) {
+    console.error('[v67 report source] no related rows for report', id);
+    return fallbackData(id);
   }
 
-  return {
+  const campaignId = lrV67FirstText([
+    first.report_group_id,
+    draft?.campaignId,
+    draft?.campaign_id,
+    draft?.reportGroupId,
+    draft?.report_group_id,
+    tracker?.token,
+    tracker?.schedule_ref,
+    tracker?.post_id,
+    tracker?.id,
+    id,
+  ], id);
+
+  const cpm = lrV67FirstPositiveNumber([
+    first.cpm,
+    safeJson(first.report_snapshot, {})?.cpm,
+    draft?.cpm,
+    draft?.priceCpm,
+    draft?.price_cpm,
+    tracker?.cpm,
+    trackerDraft?.cpm,
+    trackerDraft?.priceCpm,
+    trackerDraft?.price_cpm,
+  ]);
+
+  const publishAt = lrV67FirstText([
+    first.publish_at,
+    first.scheduled_at,
+    tracker?.publish_at,
+    trackerDraft?.publishAt,
+    trackerDraft?.publish_at,
+    draft?.publishAt,
+    draft?.publish_at,
+    draft?.scheduledDate,
+    draft?.scheduled_at,
+  ]);
+
+  const publishedAt = lrV67FirstText([
+    first.published_at,
+    tracker?.published_at,
+    trackerChannels.find((row) => row?.published_at)?.published_at,
+  ]);
+
+  const deletedAt = lrV67FirstText([
+    first.auto_deleted_at,
+    first.deleted_at,
+    tracker?.deleted_at,
+    trackerChannels.find((row) => row?.deleted_at)?.deleted_at,
+  ]);
+
+  const autoDeleteMinutes = lrV67AutoDeleteMinutes(
+    first,
+    tracker,
+    draft,
+    trackerDraft
+  );
+
+  const statusSource = {
+    ...tracker,
+    ...first,
+    status: lrV67FirstText([
+      first.status,
+      tracker?.status,
+      trackerChannels[0]?.status,
+      publishAt ? 'scheduled' : '',
+    ]),
+    publish_at: publishAt || null,
+    published_at: publishedAt || null,
+    deleted_at: deletedAt || null,
+    auto_deleted_at: first.auto_deleted_at || null,
+    auto_delete_minutes: autoDeleteMinutes,
+    created_at: lrV67FirstText([
+      first.created_at,
+      tracker?.created_at,
+      trackerChannels[0]?.created_at,
+    ]),
+    updated_at: lrV67FirstText([
+      first.updated_at,
+      tracker?.updated_at,
+      trackerChannels[0]?.updated_at,
+    ]),
+  };
+
+  const text = lrV67FirstText([
+    first.text,
+    draft?.content?.text,
+    draft?.text,
+    draft?.caption,
+    tracker?.post_text,
+    trackerChannels.find((row) => row?.post_text)?.post_text,
+    trackerDraft?.content?.text,
+    trackerDraft?.text,
+    trackerDraft?.caption,
+  ]);
+
+  const format = lrV67FirstText([
+    first.format,
+    draft?.content?.format,
+    draft?.format,
+    trackerDraft?.content?.format,
+    trackerDraft?.format,
+  ], 'html');
+
+  let channelIds = safeJson(tracker?.channel_ids, []);
+  if (!Array.isArray(channelIds)) {
+    channelIds = channelIds && typeof channelIds === 'object'
+      ? Object.values(channelIds)
+      : channelIds
+        ? [channelIds]
+        : [];
+  }
+
+  const pseudoPosts = posts.length
+    ? posts
+    : trackerChannels.length
+      ? trackerChannels.map((row) => ({
+          channel_id: row.channel_id,
+          chat_id: row.channel_id,
+        }))
+      : channelIds.map((channelId) => ({
+          channel_id: channelId,
+          chat_id: channelId,
+        }));
+
+  const channelMap = await loadChannels(pseudoPosts);
+  const trackerByChannel = new Map();
+
+  for (const row of trackerChannels) {
+    const key = String(row.channel_id || '');
+    if (key) trackerByChannel.set(key, row);
+  }
+
+  let channels;
+
+  if (posts.length) {
+    channels = posts.map((post, index) => {
+      const snapshot = safeJson(post.report_snapshot, {});
+      const trackerChannel = trackerByChannel.get(String(post.channel_id)) || {};
+      const channelInfo = channelMap.get(String(post.channel_id)) || {};
+
+      const views = Math.max(
+        getViews(snapshot),
+        getViews(trackerChannel?.last_stat),
+        Number(trackerChannel?.views || 0)
+      );
+
+      const title = lrV67FirstText([
+        channelInfo.title,
+        trackerChannel.channel_title,
+        trackerChannel.title,
+        'Канал',
+      ], 'Канал');
+
+      return {
+        id: post.channel_id || trackerChannel.channel_id || post.id || index + 1,
+        title,
+        link: lrV67FirstText([
+          channelInfo.link,
+          trackerChannel.message_url,
+        ]),
+        avatar: channelInfo.avatar || '',
+        letter: title.trim().slice(0, 1).toUpperCase() || 'К',
+        time: ruShortDate(
+          post.published_at ||
+          trackerChannel.published_at ||
+          post.publish_at ||
+          publishAt
+        ),
+        views,
+        cost: (views * cpm) / 1000,
+        originalIndex: index,
+      };
+    });
+  } else {
+    const rawChannels = trackerChannels.length
+      ? trackerChannels
+      : channelIds.map((channelId) => ({ channel_id: channelId }));
+
+    channels = rawChannels.map((row, index) => {
+      const channelId = row.channel_id || channelIds[index] || index + 1;
+      const channelInfo = channelMap.get(String(channelId)) || {};
+
+      const title = lrV67FirstText([
+        row.channel_title,
+        row.title,
+        channelInfo.title,
+        'Канал',
+      ], 'Канал');
+
+      let views = Math.max(
+        Number(row.views || 0),
+        getViews(row.last_stat)
+      );
+
+      if (
+        index === 0 &&
+        rawChannels.length === 1 &&
+        Number(tracker?.views || 0) > views
+      ) {
+        views = Number(tracker.views || 0);
+      }
+
+      return {
+        id: channelId,
+        title,
+        link: lrV67FirstText([
+          row.message_url,
+          channelInfo.link,
+        ]),
+        avatar: channelInfo.avatar || '',
+        letter: title.trim().slice(0, 1).toUpperCase() || 'К',
+        time: ruShortDate(
+          row.published_at ||
+          publishedAt ||
+          publishAt
+        ),
+        views,
+        cost: (views * cpm) / 1000,
+        originalIndex: index,
+      };
+    });
+  }
+
+  const summedViews = channels.reduce(
+    (sum, channel) => sum + Math.max(0, Number(channel.views || 0)),
+    0
+  );
+
+  const totalViews = Math.max(
+    summedViews,
+    getViews(safeJson(first.report_snapshot, {})),
+    Number(tracker?.views || 0)
+  );
+
+  const channelsFinal = channels.map((channel) => ({
+    ...channel,
+    share: totalViews
+      ? Math.round((Number(channel.views || 0) / totalViews) * 100)
+      : 0,
+  }));
+
+  await savePoint(
+    campaignId,
+    first.id || tracker?.post_id || tracker?.id || id,
+    first.channel_id || channelsFinal[0]?.id || '',
+    totalViews
+  );
+
+  const lifeHours = livedHours(statusSource);
+  const ranges = {};
+
+  for (const range of availableRanges(lifeHours)) {
+    ranges[String(range)] = await timelineFor(
+      campaignId,
+      range,
+      totalViews,
+      statusSource
+    );
+  }
+
+  const result = {
     id,
     botLink: BOT_LINK,
     reportLink: '/analytics/stats/' + encodeURIComponent(id),
     title: 'Отчёт по рекламному посту',
     postTitle: postTitle(text),
     postHtml: sanitizePostHtml(text, format),
-    media: getMedia(first, draft),
-    status: statusInfo(first),
-    publishedAt: first.published_at || first.publish_at || first.created_at,
-    autoDeleteText: autoDeleteText(first.auto_delete_minutes),
+    media: lrV67ExplicitMedia(
+      first,
+      tracker,
+      trackerChannels,
+      draft,
+      trackerDraft
+    ),
+    status: statusInfo(statusSource),
+    publishedAt:
+      deletedAt ||
+      publishedAt ||
+      publishAt ||
+      statusSource.created_at ||
+      null,
+    autoDeleteText: autoDeleteText(autoDeleteMinutes),
     metrics: {
       views: totalViews,
       cpm,
-      cost,
-      channelsCount: channelsFinal.length,
+      cost: (totalViews * cpm) / 1000,
+      channelsCount:
+        channelsFinal.length ||
+        channelIds.length ||
+        Number(tracker?.channels_count || 0),
       lifeHours,
     },
     ranges,
     channels: channelsFinal,
   };
+
+  console.log('[v67 report source] output', JSON.stringify({
+    id,
+    status: result.status,
+    cpm: result.metrics.cpm,
+    channelsCount: result.metrics.channelsCount,
+    views: result.metrics.views,
+    publishedAt: result.publishedAt,
+  }));
+
+  return result;
 }
+
+/* LR_REPORT_SOURCE_RESOLVER_V67_END */
 
 function mediaHtml(data) {
   if (data.media?.url && data.media.kind === 'video') {
@@ -2161,4 +2520,6 @@ export function mountLinkRayAnalyticsRoutes(app) {
 
 /* LR_REPORT_STATUS_V65_END */
 
-/* LR_REPORT_STATUS_V66 */
+
+
+/* LR_REPORT_DATA_BINDING_V67 */
