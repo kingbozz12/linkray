@@ -6240,3 +6240,8 @@ console.log(
   '[v71 channel analytics] single emojis; change-channels button removed'
 );
 /* LR_CHANNEL_ANALYTICS_V71_END */
+
+
+/* LR_CHANNEL_ANALYTICS_V72_START */
+console.log('[v72 channel analytics] all duplicate menu emojis collapsed');
+/* LR_CHANNEL_ANALYTICS_V72_END */
