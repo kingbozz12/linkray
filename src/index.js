@@ -2358,68 +2358,89 @@ function lrProfileCallbackId(update) {
   );
 }
 
-function lrProfileMaxUserId(update) {
-  try {
-    if (typeof getUserId === 'function') {
-      const value = lrProfileClean(
-        getUserId(update),
-        100
-      );
+/* LR_PROFILE_HUMAN_USER_V2 */
 
-      if (/^\d+$/.test(value)) return value;
-    }
-  } catch {}
-
-  const value = lrProfileClean(
-    update?.user?.user_id ||
-    update?.user?.id ||
-    update?.user_id ||
-    update?.userId ||
-    update?.sender?.user_id ||
-    update?.sender?.id ||
-    update?.message?.sender?.user_id ||
-    update?.message?.sender?.id ||
-    update?.callback?.user?.user_id ||
-    update?.callback?.user?.id ||
-    update?.body?.user?.user_id ||
-    update?.body?.user?.id ||
-    '',
-    100
-  );
-
-  return /^\d+$/.test(value) ? value : '';
-}
-
-function lrProfileUserBox(update, maxUserId) {
-  const candidates = [
-    update?.user,
-    update?.sender,
-    update?.message?.sender,
+function lrProfileHumanCandidates(update) {
+  return [
     update?.callback?.user,
     update?.message_callback?.user,
+    update?.user,
+    update?.message?.sender,
+    update?.sender,
     update?.body?.user,
     update?.message?.body?.user,
+    update?.callback?.message?.sender,
   ].filter(
     (value) =>
       value &&
       typeof value === 'object'
   );
+}
 
-  for (const candidate of candidates) {
-    const id = lrProfileClean(
-      candidate?.user_id ||
-      candidate?.userId ||
-      candidate?.id ||
-      '',
-      100
-    );
+function lrProfileCandidateId(candidate) {
+  return lrProfileClean(
+    candidate?.user_id ||
+    candidate?.userId ||
+    candidate?.id ||
+    '',
+    100
+  );
+}
 
-    if (!id || id === maxUserId) {
+function lrProfileIsHuman(candidate) {
+  const id = lrProfileCandidateId(candidate);
+
+  if (!/^\d+$/.test(id)) {
+    return false;
+  }
+
+  if (
+    candidate?.is_bot === true ||
+    candidate?.isBot === true
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function lrProfileMaxUserId(update) {
+  for (
+    const candidate
+    of lrProfileHumanCandidates(update)
+  ) {
+    if (!lrProfileIsHuman(candidate)) {
+      continue;
+    }
+
+    return lrProfileCandidateId(candidate);
+  }
+
+  return '';
+}
+
+function lrProfileUserBox(update, maxUserId) {
+  const expectedId = lrProfileClean(
+    maxUserId,
+    100
+  );
+
+  for (
+    const candidate
+    of lrProfileHumanCandidates(update)
+  ) {
+    if (!lrProfileIsHuman(candidate)) {
+      continue;
+    }
+
+    if (
+      lrProfileCandidateId(candidate) === expectedId
+    ) {
       return candidate;
     }
   }
 
-  return candidates[0] || {};
+  return {};
 }
 
 function lrProfilePrivateChatId(update, maxUserId) {
@@ -2862,6 +2883,150 @@ function lrProfileMskDate(value) {
   });
 }
 
+/* LR_PROFILE_CHANNEL_OWNER_SYNC_V2 */
+
+async function lrProfileSyncChannels(user) {
+  const userId = Number(user?.id);
+
+  const maxUserId = lrProfileClean(
+    user?.max_user_id,
+    100
+  );
+
+  const privateChatId = lrProfileClean(
+    user?.private_chat_id,
+    100
+  );
+
+  if (
+    !Number.isInteger(userId) ||
+    userId <= 0 ||
+    !/^\d+$/.test(maxUserId)
+  ) {
+    return;
+  }
+
+  await lrProfileEnsureSchema();
+
+  const ownerIds = [
+    maxUserId,
+    privateChatId,
+  ].filter(Boolean);
+
+  /*
+   * Каналы, которым уже был установлен владелец.
+   */
+  await query(`
+    INSERT INTO public.lr_user_channels (
+      user_id,
+      channel_id,
+      linked_at
+    )
+    SELECT
+      $1,
+      c.id,
+      now()
+    FROM public.channels c
+    WHERE COALESCE(c.is_active, true)=true
+      AND c.owner_max_user_id=$2
+    ON CONFLICT (user_id, channel_id)
+    DO NOTHING
+  `, [
+    userId,
+    maxUserId,
+  ]);
+
+  /*
+   * Каналы пользователя из индивидуальных
+   * настроек ежедневной аналитики.
+   */
+  if (ownerIds.length) {
+    await query(`
+      INSERT INTO public.lr_user_channels (
+        user_id,
+        channel_id,
+        linked_at
+      )
+      SELECT DISTINCT
+        $1,
+        c.id,
+        now()
+      FROM public.channels c
+      JOIN public.lr_channel_analytics_daily_channels d
+        ON d.channel_id=c.id
+      WHERE COALESCE(c.is_active, true)=true
+        AND d.owner_chat_id::text=ANY($2::text[])
+      ON CONFLICT (user_id, channel_id)
+      DO NOTHING
+    `, [
+      userId,
+      ownerIds,
+    ]).catch((error) => {
+      console.error(
+        '[LR profile analytics channel sync]',
+        error?.message || error
+      );
+    });
+
+    await query(`
+      UPDATE public.channels c
+      SET
+        owner_max_user_id=$1,
+        updated_at=now()
+      WHERE COALESCE(c.is_active, true)=true
+        AND (
+          c.owner_max_user_id IS NULL
+          OR c.owner_max_user_id=''
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM public.lr_channel_analytics_daily_channels d
+          WHERE d.channel_id=c.id
+            AND d.owner_chat_id::text=ANY($2::text[])
+        )
+    `, [
+      maxUserId,
+      ownerIds,
+    ]).catch((error) => {
+      console.error(
+        '[LR profile analytics channel owner]',
+        error?.message || error
+      );
+    });
+  }
+
+  /*
+   * Дополнительное восстановление владельца
+   * по созданным пользователем публикациям.
+   */
+  await query(`
+    INSERT INTO public.lr_user_channels (
+      user_id,
+      channel_id,
+      linked_at
+    )
+    SELECT DISTINCT
+      $1,
+      c.id,
+      now()
+    FROM public.channels c
+    JOIN public.scheduled_posts p
+      ON p.channel_id=c.id
+    WHERE COALESCE(c.is_active, true)=true
+      AND p.created_by_max_user_id=$2
+    ON CONFLICT (user_id, channel_id)
+    DO NOTHING
+  `, [
+    userId,
+    maxUserId,
+  ]).catch((error) => {
+    console.error(
+      '[LR profile scheduled channel sync]',
+      error?.message || error
+    );
+  });
+}
+
 async function lrProfileRead(maxUserId) {
   await lrProfileEnsureSchema();
 
@@ -2929,11 +3094,9 @@ function lrProfileFormatText(profile) {
     profile.id
   ).padStart(6, '0')}`;
 
-  const username = profile.username
-    ? `\n🔗 Username: <b>@${lrProfileEsc(
-        profile.username
-      )}</b>`
-    : '';
+  const maxUsername = profile.username
+    ? `@${lrProfileEsc(profile.username)}`
+    : 'не указан';
 
   const access = profile.subscription_expires_at
     ? `до ${lrProfileMskDate(
@@ -2948,7 +3111,8 @@ function lrProfileFormatText(profile) {
     `👤 Имя: <b>${lrProfileEsc(
       profile.display_name ||
       'Пользователь MAX'
-    )}</b>${username}`,
+    )}</b>`,
+    `🔗 Имя пользователя MAX: <b>${maxUsername}</b>`,
     '',
     `💎 Тариф: <b>${lrProfileEsc(
       profile.tariff_title ||
@@ -2981,7 +3145,7 @@ async function lrProfileShow(
     );
   }
 
-  await lrProfileSingleUserBackfill(user);
+  await lrProfileSyncChannels(user);
 
   const profile = await lrProfileRead(
     user.max_user_id
@@ -11570,7 +11734,7 @@ async function lrChV2Send(u,text,rows=[[callbackButton('⬅️ В меню','mai
 async function lrChV2Delete(ids,reason='unknown'){ids=[...new Set((Array.isArray(ids)?ids:[]).map(Number).filter(Boolean))];if(!ids.length)return 0;await lrChV2Ensure();console.log('[channel v2 deleting]',JSON.stringify({ids,reason}));await query(`UPDATE channels SET is_active=false,updated_at=now() WHERE id=ANY($1::int[])`,[ids]).catch(()=>{});const refs=await query(`SELECT table_schema,table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='channel_id' AND table_name<>'channels' ORDER BY table_name`).catch(()=>[]);for(const r of lrChV2Rows(refs)){const schema=String(r.table_schema||'public').replace(/"/g,'""'),table=String(r.table_name||'').replace(/"/g,'""');if(!table)continue;await query(`DELETE FROM "${schema}"."${table}" WHERE channel_id=ANY($1::int[])`,[ids]).catch(e=>console.error('[channel v2 child delete]',schema,table,e?.message||e))}const del=await query(`DELETE FROM channels WHERE id=ANY($1::int[]) RETURNING id,max_chat_id,title`,[ids]).catch(()=>[]);console.log('[channel v2 deleted]',JSON.stringify(lrChV2Rows(del)));return lrChV2Rows(del).length}
 async function lrChV2HandleRemoved(u){if(!lrChV2Removed(u))return false;await lrChV2Ensure();const id=lrChV2ChatId(u),title=lrChV2Title(u),link=lrChV2Link(u),wanted=lrChV2Norm(title);let ids=[];if(id||link){const exact=await query(`SELECT id FROM channels WHERE ($1::text<>'' AND max_chat_id::text=$1) OR ($2::text<>'' AND link=$2)`,[id||'',link||'']).catch(()=>[]);ids=lrChV2Rows(exact).map(r=>Number(r.id)).filter(Boolean)}if(!ids.length&&wanted){const all=await query(`SELECT id,title FROM channels ORDER BY updated_at DESC NULLS LAST,id DESC LIMIT 1000`).catch(()=>[]);for(const r of lrChV2Rows(all)){const rt=lrChV2Norm(r.title);if(rt&&(rt===wanted||rt.includes(wanted)||wanted.includes(rt)))ids.push(Number(r.id))}}await lrChV2Delete(ids,'bot_removed');return true}
 async function lrChV2HandleAdded(u){if(!lrChV2Added(u)&&!lrChV2ChannelEvent(u))return false;const privateId=lrChV2Private(u),chatId=lrChV2ChatId(u),title=lrChV2Title(u),link=lrChV2Link(u);if(!chatId||!title||lrChV2BadTitle(title))return false;if(privateId&&String(privateId)===String(chatId))return false;await lrChV2Upsert(chatId,title,link);return false}
-async function lrChV2HandleForward(u){const text=lrChV2Text(u);if(text.startsWith('/'))return false;if(!lrChV2HasForward(u))return false;if(await lrChV2Busy(u)){console.log('[channel v2 skip forward: busy session]');return false}const cands=lrChV2Candidates(u);console.log('[channel v2 candidates]',JSON.stringify(cands.map(c=>({id:c.id,title:c.title,link:c.link,src:c.source,score:c.score})).slice(0,10)));if(!cands.length)return false;let last=cands[0]?.title||'Канал';for(const c of cands){last=c.title||last;const r=await lrChV2Resolve(c);if(!r?.max_chat_id)continue;const admin=await lrChV2BotAdmin(r.max_chat_id);if(admin===true){const saved=await lrChV2Upsert(r.max_chat_id,r.title||c.title,r.link||c.link||null);/* LR_PROFILE_V2_CHANNEL_LINK_V1 */await lrProfileLinkChannel(getUserId(u),saved?.id).catch((e)=>console.error('[LR profile channel V2]',e?.message||e));if(saved){await query(`DELETE FROM lr_bot_state WHERE key LIKE 'lr_add_channel_wait:%' OR key LIKE 'lr_admin_channel%' OR key LIKE 'pending_channel_add%'`).catch(()=>{});await lrChV2Send(u,`✅ <b>Канал подключён к LinkRay</b>\n\n${lrChV2Html(saved.title||r.title||c.title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);return true}}if(admin===null){await lrChV2Send(u,`⚠️ <b>Не удалось проверить права LinkRay</b>\n\nКанал: <b>${lrChV2Html(r.title||c.title)}</b>\n\nПроверьте, что бот добавлен в администраторы и выдано право публикации, затем перешлите пост ещё раз.`);return true}}const old=await lrChV2Find(cands);if(old?.max_chat_id){const admin=await lrChV2BotAdmin(old.max_chat_id);if(admin===true){const saved=await lrChV2Upsert(old.max_chat_id,old.title||last,old.link||cands[0]?.link||null);await lrChV2Send(u,`✅ <b>Канал подключён к LinkRay</b>\n\n${lrChV2Html(saved.title||old.title||last)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);return true}}await lrChV2Send(u,`❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrChV2Html(last)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nПосле этого снова перешлите любой пост из этого канала сюда, в бота.\n\nКанал не добавлен в базу.`);return true}
+async function lrChV2HandleForward(u){const text=lrChV2Text(u);if(text.startsWith('/'))return false;if(!lrChV2HasForward(u))return false;if(await lrChV2Busy(u)){console.log('[channel v2 skip forward: busy session]');return false}const cands=lrChV2Candidates(u);console.log('[channel v2 candidates]',JSON.stringify(cands.map(c=>({id:c.id,title:c.title,link:c.link,src:c.source,score:c.score})).slice(0,10)));if(!cands.length)return false;let last=cands[0]?.title||'Канал';for(const c of cands){last=c.title||last;const r=await lrChV2Resolve(c);if(!r?.max_chat_id)continue;const admin=await lrChV2BotAdmin(r.max_chat_id);if(admin===true){const saved=await lrChV2Upsert(r.max_chat_id,r.title||c.title,r.link||c.link||null);/* LR_PROFILE_V2_CHANNEL_LINK_V1 */await lrProfileLinkChannel(lrProfileMaxUserId(u), saved?.id).catch((e)=>console.error('[LR profile channel V2]',e?.message||e));if(saved){await query(`DELETE FROM lr_bot_state WHERE key LIKE 'lr_add_channel_wait:%' OR key LIKE 'lr_admin_channel%' OR key LIKE 'pending_channel_add%'`).catch(()=>{});await lrChV2Send(u,`✅ <b>Канал подключён к LinkRay</b>\n\n${lrChV2Html(saved.title||r.title||c.title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);return true}}if(admin===null){await lrChV2Send(u,`⚠️ <b>Не удалось проверить права LinkRay</b>\n\nКанал: <b>${lrChV2Html(r.title||c.title)}</b>\n\nПроверьте, что бот добавлен в администраторы и выдано право публикации, затем перешлите пост ещё раз.`);return true}}const old=await lrChV2Find(cands);if(old?.max_chat_id){const admin=await lrChV2BotAdmin(old.max_chat_id);if(admin===true){const saved=await lrChV2Upsert(old.max_chat_id,old.title||last,old.link||cands[0]?.link||null);await lrChV2Send(u,`✅ <b>Канал подключён к LinkRay</b>\n\n${lrChV2Html(saved.title||old.title||last)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`);return true}}await lrChV2Send(u,`❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrChV2Html(last)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nПосле этого снова перешлите любой пост из этого канала сюда, в бота.\n\nКанал не добавлен в базу.`);return true}
 async function lrChV2Sweep(){await lrChV2Ensure();const key='lr_channel_v2_sweep_last';const last=await query(`SELECT updated_at FROM lr_bot_state WHERE key=$1 LIMIT 1`,[key]).catch(()=>[]);const row=lrChV2Rows(last)[0];if(row?.updated_at&&Date.now()-new Date(row.updated_at).getTime()<60000)return;await query(`INSERT INTO lr_bot_state(key,value,updated_at) VALUES($1,$2,now()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[key,JSON.stringify({ts:Date.now()})]).catch(()=>{});const ch=await query(`SELECT id,max_chat_id,title FROM channels WHERE COALESCE(is_active,true)=true ORDER BY updated_at DESC NULLS LAST,id DESC LIMIT 300`).catch(()=>[]);const remove=[];for(const c of lrChV2Rows(ch)){const admin=await lrChV2BotAdmin(c.max_chat_id);if(admin===false)remove.push(Number(c.id))}if(remove.length)await lrChV2Delete(remove,'members_me_sweep')}
 async function lrChV2Handle(u){await lrChV2Ensure();if(await lrChV2HandleRemoved(u))return true;await lrChV2HandleAdded(u).catch(e=>console.error('[channel v2 added]',e?.message||e));await lrChV2Sweep().catch(e=>console.error('[channel v2 sweep]',e?.message||e));if(await lrChV2HandleForward(u))return true;return false}
 /* LR_CHANNEL_V2_STABLE_MIN_END */
@@ -17599,7 +17763,7 @@ async function lrV15FetchChannelMeta(candidate) { const out = { ...candidate }; 
 function lrV15AdminFromData(data) { for (const box of [data, data?.member, data?.user, data?.result, data?.profile, data?.payload].filter(Boolean)) { if (box.is_admin === true || box.isAdmin === true || box.admin === true || box.role === 'admin' || box.role === 'administrator') return true; const perms = box.permissions || box.rights || box.chat_permissions || box.chatPermissions; if (Array.isArray(perms)) { const set = new Set(perms.map(x => String(x).toLowerCase())); if (set.has('write') || set.has('read_all_messages') || set.has('add_remove_members') || set.has('change_chat_info') || set.has('edit') || set.has('delete')) return true; } } return false; }
 async function lrV15CheckAdmin(maxChatId) { const id = lrV15Clean(maxChatId,300); if (!/^-\d+$/.test(id)) return { ok:false, admin:false, status:0 }; let last = { ok:false, admin:false, status:0 }; for (const path of [`/chats/${encodeURIComponent(id)}/members/me`, `/chats/${encodeURIComponent(id)}/members/me/`]) { try { const r = await lrV15ApiGet(path); last = { ok:r.ok, admin:r.ok && lrV15AdminFromData(r.data), status:r.status, data:r.data }; console.log('[v15 native] members/me', JSON.stringify({ id, status:r.status, ok:last.ok, admin:last.admin })); if (r.status !== 404) return last; } catch(e) { console.error('[v15 native] members/me failed', e?.message || e); } } return last; }
 async function lrV15UpsertChannel(candidate) { const maxChatId = lrV15Clean(candidate.id || candidate.max_chat_id || candidate.maxChatId, 300); const title = lrV15GoodTitle(candidate.title); const link = lrV15Clean(candidate.link || '', 600) || null; if (!/^-\d+$/.test(maxChatId)) throw new Error('Не найден ID канала из пересланного поста.'); if (!title) throw new Error('Не удалось получить настоящее название канала. Перешлите другой пост из канала.'); const rows = await query(`INSERT INTO channels(max_chat_id,title,link,is_public,is_channel,bot_added_at,updated_at) VALUES($1,$2,$3,$4,true,now(),now()) ON CONFLICT(max_chat_id) DO UPDATE SET title=EXCLUDED.title, link=COALESCE(EXCLUDED.link, channels.link), is_public=EXCLUDED.is_public, is_channel=true, bot_added_at=COALESCE(channels.bot_added_at, now()), updated_at=now() RETURNING id,max_chat_id,title,link,is_public`, [String(maxChatId), title, link, Boolean(link)]); await query('UPDATE channels SET is_active=true, updated_at=now() WHERE max_chat_id=$1', [String(maxChatId)]).catch(()=>{}); return lrV15Rows(rows)[0] || { max_chat_id:maxChatId, title, link }; }
-async function lrV15HandleAddChannelForward(update, chatId, key) { const candidates = lrV15ChannelCandidates(update); console.log('[v15 native] add candidates', JSON.stringify(candidates.slice(0,12))); if (!candidates.length) { await msg(chatId, `⚠️ <b>Канал не найден</b>\n\nПерешлите именно любой пост из нужного канала в этот чат.`, lrV15Buttons(), 'html'); return true; } let notAdmin = null, lastError = ''; for (const raw of candidates) { if (!/^-\d+$/.test(String(raw.id || ''))) continue; const candidate = await lrV15FetchChannelMeta(raw); const title = lrV15GoodTitle(candidate.title); if (!title) { lastError = 'Не удалось получить настоящее название канала.'; continue; } const admin = await lrV15CheckAdmin(candidate.id); if (!admin.ok || !admin.admin) { notAdmin = candidate; continue; } try { const saved = await lrV15UpsertChannel(candidate); /* LR_PROFILE_V15_CHANNEL_LINK_V1 */ await lrProfileLinkChannel(getUserId(update), saved?.id).catch((e)=>console.error('[LR profile channel V15]',e?.message||e)); await clearSession(key).catch(()=>{}); await msg(chatId, `✅ <b>Канал подключён к LinkRay</b>\n\n${lrV15Esc(saved.title || title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`, lrV15Buttons(), 'html'); console.log('[v15 native] channel saved final', JSON.stringify(saved)); return true; } catch(e) { lastError = e?.message || String(e); console.error('[v15 native] upsert failed', e?.stack || e?.message || e); } } if (notAdmin) { const title = lrV15GoodTitle(notAdmin.title) || 'канал'; await msg(chatId, `❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrV15Esc(title)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nКанал не добавлен в базу.`, lrV15Buttons(), 'html'); return true; } await msg(chatId, `⚠️ <b>Канал не добавлен</b>\n\n${lrV15Esc(lastError || 'Не удалось определить канал из пересланного поста.')}\n\nПерешлите другой пост из этого канала.`, lrV15Buttons(), 'html'); return true; }
+async function lrV15HandleAddChannelForward(update, chatId, key) { const candidates = lrV15ChannelCandidates(update); console.log('[v15 native] add candidates', JSON.stringify(candidates.slice(0,12))); if (!candidates.length) { await msg(chatId, `⚠️ <b>Канал не найден</b>\n\nПерешлите именно любой пост из нужного канала в этот чат.`, lrV15Buttons(), 'html'); return true; } let notAdmin = null, lastError = ''; for (const raw of candidates) { if (!/^-\d+$/.test(String(raw.id || ''))) continue; const candidate = await lrV15FetchChannelMeta(raw); const title = lrV15GoodTitle(candidate.title); if (!title) { lastError = 'Не удалось получить настоящее название канала.'; continue; } const admin = await lrV15CheckAdmin(candidate.id); if (!admin.ok || !admin.admin) { notAdmin = candidate; continue; } try { const saved = await lrV15UpsertChannel(candidate); /* LR_PROFILE_V15_CHANNEL_LINK_V1 */ await lrProfileLinkChannel(lrProfileMaxUserId(update), saved?.id).catch((e)=>console.error('[LR profile channel V15]',e?.message||e)); await clearSession(key).catch(()=>{}); await msg(chatId, `✅ <b>Канал подключён к LinkRay</b>\n\n${lrV15Esc(saved.title || title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`, lrV15Buttons(), 'html'); console.log('[v15 native] channel saved final', JSON.stringify(saved)); return true; } catch(e) { lastError = e?.message || String(e); console.error('[v15 native] upsert failed', e?.stack || e?.message || e); } } if (notAdmin) { const title = lrV15GoodTitle(notAdmin.title) || 'канал'; await msg(chatId, `❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrV15Esc(title)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nКанал не добавлен в базу.`, lrV15Buttons(), 'html'); return true; } await msg(chatId, `⚠️ <b>Канал не добавлен</b>\n\n${lrV15Esc(lastError || 'Не удалось определить канал из пересланного поста.')}\n\nПерешлите другой пост из этого канала.`, lrV15Buttons(), 'html'); return true; }
 async function lrV15SendChannelSelect(chatId, key, draft, multi=false) {
   /* LR_V44_SAVE_DRAFT_ON_CHANNEL_SELECT */
   try {
