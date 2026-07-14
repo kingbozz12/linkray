@@ -4608,7 +4608,7 @@ async function showDailyPdpMenu(chatId, keys, update = null) {
 
   keyboard.push([lrCb('⬅️ В аналитику', 'lrchan:menu')]);
 
-  await lrEditorSendV3(
+  await lrEditOrSendV3(
     update,
     chatId,
     '━━━━━━━━━━━━━━\n' +
@@ -6413,3 +6413,7 @@ console.log(
 /* LR_CHANNEL_ANALYTICS_V72_START */
 console.log('[v72 channel analytics] all duplicate menu emojis collapsed');
 /* LR_CHANNEL_ANALYTICS_V72_END */
+
+
+/* LR_CHANNEL_ANALYTICS_V74_FIX_UNDEFINED_EDITOR */
+console.log('[v74 channel analytics] undefined editor call fixed; duplicate emojis collapsed');
