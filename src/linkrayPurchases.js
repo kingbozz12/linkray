@@ -1,3 +1,4 @@
+/* LR_PURCHASES_PRIVATE_LINK_FIX_V1 */
 import crypto from 'node:crypto';
 
 import { query } from './db.js';
@@ -606,19 +607,53 @@ function newToken() {
 }
 
 function parseChannelLink(value) {
-  const text = clean(value, 2000);
+  const text = clean(value, 4000)
+    .replace(/\u00a0/g, ' ')
+    .trim();
 
   const match = text.match(
-    /(?:https?:\/\/)?(?:www\.)?max\.ru\/([A-Za-z0-9_.\-]+)/i
+    /(?:https?:\/\/)?(?:www\.)?max\.ru\/((?:join\/)?[A-Za-z0-9_.~-]+)/i
   );
 
   if (!match) {
     return null;
   }
 
+  const path = String(match[1] || '')
+    .replace(/^\/+|\/+$/g, '');
+
+  if (!path) {
+    return null;
+  }
+
+  const privateMatch =
+    path.match(
+      /^join\/([A-Za-z0-9_.~-]+)$/i
+    );
+
+  if (privateMatch) {
+    const token =
+      privateMatch[1];
+
+    return {
+      link:
+        `https://max.ru/join/${token}`,
+      alias: null,
+      accessMode: 'private_invite',
+    };
+  }
+
+  if (
+    path.toLowerCase() === 'join'
+  ) {
+    return null;
+  }
+
   return {
-    link: `https://max.ru/${match[1]}`,
-    alias: match[1],
+    link:
+      `https://max.ru/${path}`,
+    alias: path,
+    accessMode: 'public',
   };
 }
 
@@ -2355,9 +2390,9 @@ async function chooseTarget(
       '',
       `Продвигаем: <b>${esc(channel.title || 'Канал')}</b>`,
       '',
-      'Отправьте публичную ссылку на канал, в котором покупаете рекламу.',
+      'Отправьте ссылку на канал, в котором покупаете рекламу. Поддерживаются публичная ссылка и приватное приглашение.',
       '',
-      'Пример: https://max.ru/channel_name',
+      'Примеры:\nhttps://max.ru/channel_name\nhttps://max.ru/join/КОД_ПРИГЛАШЕНИЯ',
     ].join('\n'),
     [[
       callbackButton(
@@ -2383,8 +2418,9 @@ async function saveSourceLink(
       [
         '⚠️ Ссылка не распознана.',
         '',
-        'Отправьте публичную ссылку вида:',
+        'Отправьте ссылку одного из видов:',
         'https://max.ru/channel_name',
+        'https://max.ru/join/КОД_ПРИГЛАШЕНИЯ',
       ].join('\n'),
       [[
         callbackButton(
@@ -2404,6 +2440,8 @@ async function saveSourceLink(
       ...session.data,
       source_link: parsed.link,
       source_alias: parsed.alias,
+      source_access_mode:
+        parsed.accessMode,
     }
   );
 

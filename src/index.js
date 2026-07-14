@@ -853,6 +853,9 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 // LINKRAY_PREEMPT_ANALYTICS_END
 
 app.use(express.json({ limit: '50mb' }));
+/* LR_PURCHASES_WEBHOOK_PRIORITY_V1 */
+installLinkRayPurchases(app);
+
 /* LR_CONTENT_PLAN_V51_START */
 const lrV51ContentPlanCache = {
   tablesAt: 0,
@@ -23151,7 +23154,7 @@ console.log('[v62 plan media] installed');
 
 /* LR_LINKRAY_PROOF_REPORTS_INSTALL_V1 */
 /* LR_LINKRAY_PURCHASES_INSTALL_V1: old Proof runtime disabled */
-installLinkRayPurchases(app);
+
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
   if (process.env.WEBHOOK_SECRET && incomingSecret !== process.env.WEBHOOK_SECRET) return res.status(401).json({ ok: false });
