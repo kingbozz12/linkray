@@ -1510,6 +1510,9 @@ function lrGetCallbackIdV3(update) {
 }
 
 async function lrEditOrSendV3(update, chatId, text, buttons = []) {
+/* LR_ANALYTICS_V75_EDITOR_ALIAS */
+const lrEditorSendV3 = (...args) => lrEditOrSendV3(...args);
+
   const callbackId = lrGetCallbackIdV3(update);
   const attachments = lrMenuButtons(buttons);
 
@@ -6417,3 +6420,7 @@ console.log('[v72 channel analytics] all duplicate menu emojis collapsed');
 
 /* LR_CHANNEL_ANALYTICS_V74_FIX_UNDEFINED_EDITOR */
 console.log('[v74 channel analytics] undefined editor call fixed; duplicate emojis collapsed');
+
+
+/* LR_CHANNEL_ANALYTICS_V75_FULL_READY */
+console.log('[v75 channel analytics] menu, cards, per-channel daily settings and worker connected');
