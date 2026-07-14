@@ -2638,7 +2638,6 @@ async function lrProfileTouch(update) {
     [firstName, lastName]
       .filter(Boolean)
       .join(' ') ||
-    (username ? `@${username}` : '') ||
     'Пользователь MAX';
 
   const languageCode = lrProfileClean(
