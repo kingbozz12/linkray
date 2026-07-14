@@ -3392,6 +3392,8 @@ function lrProfileFormatText(profile) {
 
 /* LR_TEAM_PROFILE_FORMAT_V1 */
 
+/* LR_TEAM_PROFILE_ACCESS_LINE_V2 */
+
 function lrProfileFormatTextWithTeam(
   profile,
   team = {}
@@ -3400,6 +3402,11 @@ function lrProfileFormatTextWithTeam(
     profile.profile_number ||
     profile.id
   ).padStart(6, '0')}`;
+
+  const sharedChannels =
+    Array.isArray(team.sharedChannels)
+      ? team.sharedChannels
+      : [];
 
   const lines = [
     '👤 <b>Профиль LinkRay</b>',
@@ -3412,15 +3419,20 @@ function lrProfileFormatTextWithTeam(
     '',
   ];
 
+  /*
+   * Собственная платная подписка.
+   */
   if (team.ownPaid) {
     lines.push(
       `💎 Личная подписка: <b>${lrProfileEsc(
-        team.ownPaid.tariffTitle
+        team.ownPaid.tariffTitle ||
+        'Платный тариф'
       )}</b>`
     );
 
-    const limit =
-      team.ownPaid.channelLimit === null
+    const channelLimit =
+      team.ownPaid.channelLimit === null ||
+      team.ownPaid.channelLimit === undefined
         ? ''
         : ` из ${Number(
             team.ownPaid.channelLimit
@@ -3430,21 +3442,18 @@ function lrProfileFormatTextWithTeam(
       `📢 Оплачено каналов: <b>${Number(
         team.ownPaid.assignedChannels ||
         0
-      )}${limit}</b>`
+      )}${channelLimit}</b>`
     );
 
     lines.push(
-      '👥 Доступ другим администраторам: <b>включён</b>'
+      '👥 Доступ другим администраторам: ' +
+      '<b>включён</b>'
     );
-
-    if (team.ownPaid.expiresAt) {
-      lines.push(
-        `📅 Подписка до: <b>${lrProfileMskDate(
-          team.ownPaid.expiresAt
-        )}</b>`
-      );
-    }
   } else {
+    /*
+     * Бесплатный личный тариф остаётся
+     * у пользователя даже при командном доступе.
+     */
     lines.push(
       `💎 Личная подписка: <b>${lrProfileEsc(
         profile.tariff_title ||
@@ -3453,22 +3462,24 @@ function lrProfileFormatTextWithTeam(
     );
   }
 
-  if (
-    Array.isArray(team.sharedChannels) &&
-    team.sharedChannels.length
-  ) {
+  /*
+   * Каналы, оплаченные другим администратором.
+   */
+  if (sharedChannels.length) {
     lines.push('');
+
     lines.push(
       `🤝 Доступ по подписке команды: <b>${
-        team.sharedChannels.length
+        sharedChannels.length
       }</b>`
     );
 
     for (
       const channel
-      of team.sharedChannels.slice(0, 10)
+      of sharedChannels.slice(0, 10)
     ) {
       lines.push('');
+
       lines.push(
         `• <b>${lrProfileEsc(
           channel.channelTitle ||
@@ -3489,10 +3500,47 @@ function lrProfileFormatTextWithTeam(
           'другой администратор'
         )}`
       );
+
+      if (channel.expiresAt) {
+        lines.push(
+          `  Действует до: ${lrProfileMskDate(
+            channel.expiresAt
+          )}`
+        );
+      }
     }
   }
 
   lines.push('');
+
+  /*
+   * Общая строка доступа.
+   */
+  if (team.freeMode) {
+    lines.push(
+      '📅 Доступ: <b>без ограничений</b>'
+    );
+  } else if (team.ownPaid) {
+    if (team.ownPaid.expiresAt) {
+      lines.push(
+        `📅 Доступ до: <b>${lrProfileMskDate(
+          team.ownPaid.expiresAt
+        )}</b>`
+      );
+    } else {
+      lines.push(
+        '📅 Доступ: <b>без ограничений</b>'
+      );
+    }
+  } else if (sharedChannels.length) {
+    lines.push(
+      '📅 Доступ: <b>по подписке команды</b>'
+    );
+  } else {
+    lines.push(
+      '📅 Доступ: <b>требуется подписка</b>'
+    );
+  }
 
   lines.push(
     `📢 Подключено каналов: <b>${Number(
@@ -3515,10 +3563,10 @@ function lrProfileFormatTextWithTeam(
     );
   } else if (
     !team.ownPaid &&
-    !team.sharedChannels?.length
+    !sharedChannels.length
   ) {
     lines.push(
-      'Для работы требуется активная подписка.'
+      'Для использования LinkRay требуется подписка.'
     );
   } else {
     lines.push(
