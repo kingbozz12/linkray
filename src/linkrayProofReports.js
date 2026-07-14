@@ -1,3 +1,4 @@
+/* LR_PROOF_REPORT_ACCESS_PLACEHOLDER_FIX_V1 */
 import crypto from 'node:crypto';
 import sharp from 'sharp';
 
@@ -2332,8 +2333,17 @@ async function loadAccessibleReport(
   const context =
     await accessContext(update);
 
-  const access =
-    accessSql(context);
+  const ownerUserId =
+    context.user?.id
+      ? Number(context.user.id)
+      : null;
+
+  const channelIds =
+    Array.isArray(context.channelIds)
+      ? context.channelIds
+          .map(Number)
+          .filter(Number.isFinite)
+      : [];
 
   return (
     await safeQuery(`
@@ -2342,12 +2352,21 @@ async function loadAccessibleReport(
       FROM public.lr_proof_reports report
 
       WHERE report.id=$1
-        AND ${access.where}
+        AND (
+          (
+            $2::bigint IS NOT NULL
+            AND report.owner_user_id=$2
+          )
+          OR report.channel_id=ANY(
+            $3::bigint[]
+          )
+        )
 
       LIMIT 1
     `, [
       Number(reportId),
-      ...access.params,
+      ownerUserId,
+      channelIds,
     ])
   )[0] || null;
 }
