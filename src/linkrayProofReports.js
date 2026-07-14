@@ -1,3 +1,4 @@
+/* LR_PROOF_TERMS_INPUT_FIX_V1 */
 /* LR_PROOF_REPORT_ACCESS_PLACEHOLDER_FIX_V1 */
 import crypto from 'node:crypto';
 import sharp from 'sharp';
@@ -3147,6 +3148,23 @@ async function termsPrompt(
   );
 }
 
+function parseProofTermsInput(value) {
+  const text = String(value ?? '')
+    .replace(/\u00a0/g, ' ')
+    .trim();
+
+  const tokens =
+    text.match(/-?\d+(?:[.,]\d+)?/g) || [];
+
+  return tokens
+    .slice(0, 3)
+    .map((item) =>
+      Number(
+        item.replace(',', '.')
+      )
+    );
+}
+
 async function saveTerms(
   update,
   session
@@ -3170,34 +3188,58 @@ async function saveTerms(
     return false;
   }
 
-  const values = updateText(update)
-    .split(/\r?\n/)
-    .map(
-      (item) =>
-        item
-          .replace(/\s+/g, '')
-          .replace(',', '.')
-    )
-    .filter(Boolean)
-    .map(Number);
+  const values =
+    parseProofTermsInput(
+      updateText(update)
+    );
 
-  if (
-    values.length < 3 ||
-    !values
-      .slice(0, 3)
-      .every(
-        (value) =>
-          Number.isFinite(value) &&
-          value >= 0
-      )
-  ) {
+  const [
+    durationHours,
+    expectedMinViews,
+    agreedCost,
+  ] = values;
+
+  const valid =
+    values.length === 3 &&
+    Number.isFinite(durationHours) &&
+    Number.isFinite(expectedMinViews) &&
+    Number.isFinite(agreedCost) &&
+    durationHours >= 1 &&
+    durationHours <= 720 &&
+    expectedMinViews >= 0 &&
+    expectedMinViews <= 1_000_000_000 &&
+    agreedCost >= 0 &&
+    agreedCost <= 1_000_000_000;
+
+  if (!valid) {
+    /*
+     * Явно восстанавливаем режим ожидания.
+     * Это не даёт общему обработчику сбросить
+     * ввод после ошибочной попытки.
+     */
+    await setSession(
+      maxUserId,
+      'proof_terms_wait',
+      {
+        report_id: Number(report.id),
+      }
+    );
+
     await respond(
       update,
       [
         '⚠️ Не удалось распознать условия.',
         '',
-        'Отправьте три числа отдельными строками:',
-        '<code>24\n5000\n4000</code>',
+        'Можно отправить одной строкой:',
+        `48 2000 2000`,
+        '',
+        'Или тремя строками:',
+        `48\n2000\n2000`,
+        '',
+        'Порядок:',
+        '1. срок размещения в часах;',
+        '2. минимум просмотров;',
+        '3. стоимость в рублях.',
       ].join('\n'),
       [[
         callbackButton(
@@ -3210,11 +3252,23 @@ async function saveTerms(
     return true;
   }
 
-  const [
-    durationHours,
-    expectedMinViews,
-    agreedCost,
-  ] = values;
+  const duration =
+    Math.max(
+      1,
+      int(durationHours)
+    );
+
+  const minViews =
+    Math.max(
+      0,
+      int(expectedMinViews)
+    );
+
+  const cost =
+    Math.max(
+      0,
+      num(agreedCost)
+    );
 
   const published =
     report.published_at
@@ -3224,8 +3278,7 @@ async function saveTerms(
   const finish =
     new Date(
       published.getTime() +
-      Math.max(1, durationHours) *
-      3600_000
+      duration * 3600_000
     );
 
   await query(`
@@ -3236,7 +3289,6 @@ async function saveTerms(
       expected_min_views=NULLIF($3, 0),
       agreed_cost=NULLIF($4, 0),
       expected_finish_at=$5,
-
       conditions=
         COALESCE(
           conditions,
@@ -3252,24 +3304,14 @@ async function saveTerms(
           'updated_at',
           now()
         ),
-
       updated_at=now()
 
     WHERE id=$1
   `, [
     Number(report.id),
-    Math.max(
-      1,
-      int(durationHours)
-    ),
-    Math.max(
-      0,
-      int(expectedMinViews)
-    ),
-    Math.max(
-      0,
-      num(agreedCost)
-    ),
+    duration,
+    minViews,
+    cost,
     finish.toISOString(),
   ]);
 
