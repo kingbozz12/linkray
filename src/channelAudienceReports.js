@@ -1,3 +1,4 @@
+/* LR_AUDIENCE_PROFILE_LINK_FAVICON_V3 */
 import crypto from 'node:crypto';
 
 import { query } from './db.js';
@@ -332,27 +333,18 @@ function profileUrl(
 ) {
   const publicName =
     clean(username, 200)
-      .replace(/^@/, '');
+      .replace(/^@/, '')
+      .trim();
 
-  if (publicName) {
-    return (
-      `https://max.ru/` +
-      encodeURIComponent(publicName)
-    );
+  if (!publicName) {
+    return '';
   }
 
-  if (userId) {
-    return (
-      `max://user/` +
-      encodeURIComponent(
-        String(userId)
-      )
-    );
-  }
-
-  return '';
+  return (
+    'https://max.ru/' +
+    encodeURIComponent(publicName)
+  );
 }
-
 async function ensureSchema() {
   if (schemaPromise) {
     return schemaPromise;
@@ -2874,6 +2866,19 @@ function renderReportPage({
     name="robots"
     content="noindex,nofollow,noarchive"
   >
+  <link
+    rel="icon"
+    type="image/png"
+    href="/brand/favicon.png?v=20260715"
+  >
+  <link
+    rel="apple-touch-icon"
+    href="/brand/apple-touch-icon.png?v=20260715"
+  >
+  <meta
+    name="theme-color"
+    content="#07101d"
+  >
   <title>${title} — аудитория LinkRay</title>
   <style>
     :root {
@@ -3091,6 +3096,17 @@ function renderReportPage({
 
     .person-name:hover {
       color: var(--accent);
+    }
+
+    .person-name[aria-disabled="true"] {
+      pointer-events: none;
+      cursor: default;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .person-name[aria-disabled="true"]:hover {
+      color: var(--text);
     }
 
     .details {
@@ -3494,7 +3510,7 @@ function renderReportPage({
                 : '';
 
           const profile =
-            item.profile_url || '#';
+            item.profile_url || '';
 
           const stay =
             item.stay_seconds === null
@@ -3512,9 +3528,11 @@ function renderReportPage({
             <div>
               <a
                 class="person-name"
-                href="\${html(profile)}"
-                target="_blank"
-                rel="noreferrer"
+                href="\${html(profile || '#')}"
+                \${profile
+                  ? 'rel="noreferrer"'
+                  : 'aria-disabled="true"'
+                }
               >\${html(name)}</a>
               <div class="details">
                 <span>
