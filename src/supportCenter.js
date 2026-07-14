@@ -1,3 +1,4 @@
+/* LR_SUPPORT_ADMIN_CLEAR_DATABASE_V1 */
 import { query } from './db.js';
 import {
   sendMaxMessage,
@@ -838,6 +839,164 @@ async function adminStats() {
   `))[0] || {};
 }
 
+async function supportDeleteStats(mode = 'all') {
+  const closedOnly = mode === 'closed';
+  const result = rows(await query(`
+    SELECT
+      COUNT(DISTINCT t.id)::integer AS tickets,
+      COUNT(m.id)::integer AS messages
+    FROM public.lr_support_tickets t
+    LEFT JOIN public.lr_support_messages m
+      ON m.ticket_id=t.id
+    ${closedOnly ? "WHERE t.status='closed'" : ''}
+  `))[0] || {};
+  return {
+    tickets: Number(result.tickets || 0),
+    messages: Number(result.messages || 0),
+  };
+}
+
+async function showSupportClearConfirm(
+  update,
+  adminId,
+  mode,
+  finalStep = false,
+) {
+  const closedOnly = mode === 'closed';
+  const stats = await supportDeleteStats(mode);
+  const title = closedOnly
+    ? 'Очистить закрытые обращения'
+    : 'Очистить всю базу поддержки';
+  const warning = closedOnly
+    ? 'Будут удалены только обращения со статусом «закрыто» и вся их переписка.'
+    : 'Будут удалены вопросы, предложения, вся переписка и активные сессии поддержки. Восстановить данные нельзя.';
+  const buttons = [];
+  if (closedOnly) {
+    buttons.push([
+      callbackButton(
+        '✅ Удалить закрытые',
+        'support:admin:clear:closed:run',
+      ),
+    ]);
+  } else if (!finalStep) {
+    buttons.push([
+      callbackButton(
+        '⚠️ Продолжить',
+        'support:admin:clear:all:confirm2',
+      ),
+    ]);
+  } else {
+    buttons.push([
+      callbackButton(
+        '🗑 Удалить без восстановления',
+        'support:admin:clear:all:run',
+      ),
+    ]);
+  }
+  buttons.push([
+    callbackButton('❌ Отмена', 'support:admin:list:new'),
+  ]);
+  await respond(
+    update,
+    adminId,
+    [
+      `🗑 <b>${title}</b>`,
+      '',
+      `Обращений: <b>${stats.tickets}</b>`,
+      `Сообщений: <b>${stats.messages}</b>`,
+      '',
+      warning,
+      !closedOnly && !finalStep
+        ? 'Для полной очистки потребуется ещё одно подтверждение.'
+        : '<b>Подтвердите удаление.</b>',
+    ].join('\n'),
+    buttons,
+  );
+}
+
+async function clearSupportDatabase(
+  update,
+  adminId,
+  mode = 'all',
+) {
+  const closedOnly = mode === 'closed';
+  const deleted = rows(await query(`
+    WITH doomed AS MATERIALIZED (
+      SELECT id
+      FROM public.lr_support_tickets
+      ${closedOnly ? "WHERE status='closed'" : ''}
+    ),
+    stats AS MATERIALIZED (
+      SELECT
+        (SELECT COUNT(*) FROM doomed)::integer AS tickets,
+        (
+          SELECT COUNT(*)
+          FROM public.lr_support_messages
+          WHERE ticket_id IN (SELECT id FROM doomed)
+        )::integer AS messages
+    ),
+    deleted_sessions AS (
+      DELETE FROM public.lr_support_sessions
+      ${closedOnly
+        ? 'WHERE ticket_id IN (SELECT id FROM doomed)'
+        : ''}
+      RETURNING 1
+    ),
+    deleted_tickets AS (
+      DELETE FROM public.lr_support_tickets
+      WHERE id IN (SELECT id FROM doomed)
+      RETURNING id
+    )
+    SELECT
+      stats.tickets,
+      stats.messages,
+      (SELECT COUNT(*) FROM deleted_sessions)::integer AS sessions
+    FROM stats
+  `))[0] || {};
+  const tickets = Number(deleted.tickets || 0);
+  const messages = Number(deleted.messages || 0);
+  const sessions = Number(deleted.sessions || 0);
+  const action = closedOnly
+    ? 'Закрытые обращения поддержки удалены'
+    : 'База вопросов и предложений очищена';
+  if (tickets > 0 || sessions > 0) {
+    await query(`
+      INSERT INTO public.lr_admin_audit(
+        admin_user_id,action,target_id,details
+      ) VALUES($1,$2,$3,$4::jsonb)
+    `, [
+      String(adminId),
+      action,
+      'Поддержка',
+      JSON.stringify({
+        mode: closedOnly ? 'closed' : 'all',
+        deleted_tickets: tickets,
+        deleted_messages: messages,
+        deleted_sessions: sessions,
+      }),
+    ]).catch(() => {});
+  }
+  await respond(
+    update,
+    adminId,
+    [
+      '✅ <b>База поддержки очищена</b>',
+      '',
+      `Удалено обращений: <b>${tickets}</b>`,
+      `Удалено сообщений: <b>${messages}</b>`,
+      `Сброшено сессий: <b>${sessions}</b>`,
+      '',
+      closedOnly
+        ? 'Новые обращения и обращения в работе сохранены.'
+        : 'Вопросы и предложения удалены полностью.',
+    ].join('\n'),
+    [
+      [callbackButton('🎫 К поддержке', 'support:admin:list:new')],
+      [callbackButton('⬅️ В админ-панель', 'admin:menu')],
+    ],
+  );
+}
+
 async function showAdminList(
   update,
   adminId,
@@ -850,10 +1009,7 @@ async function showAdminList(
     'all',
   ]);
   const mode = allowed.has(filter) ? filter : 'new';
-  const where =
-    mode === 'all'
-      ? ''
-      : 'WHERE t.status=$1';
+  const where = mode === 'all' ? '' : 'WHERE t.status=$1';
   const params = mode === 'all' ? [] : [mode];
   const tickets = rows(await query(`
     SELECT
@@ -895,6 +1051,16 @@ async function showAdminList(
     callbackButton('📋 Все', 'support:admin:list:all'),
   ]);
   buttons.push([
+    callbackButton(
+      '🧹 Очистить закрытые',
+      'support:admin:clear:closed:confirm',
+    ),
+    callbackButton(
+      '🗑 Очистить всё',
+      'support:admin:clear:all:confirm',
+    ),
+  ]);
+  buttons.push([
     callbackButton('⬅️ В админ-панель', 'admin:menu'),
   ]);
   await respond(
@@ -907,6 +1073,7 @@ async function showAdminList(
       `В работе: <b>${Number(stats.progress_count || 0)}</b>`,
       `Непрочитанных: <b>${Number(stats.unread_count || 0)}</b>`,
       `Закрыто сегодня: <b>${Number(stats.closed_today || 0)}</b>`,
+      `Всего в базе: <b>${Number(stats.total || 0)}</b>`,
       '',
       tickets.length
         ? 'Выберите обращение.'
@@ -1232,7 +1399,6 @@ async function handleAction(update, maxUserId, action) {
     }
     return showUserHome(update, maxUserId);
   }
-
   let match = action.match(/^support:user:ticket:(\d+)$/);
   if (match) {
     return showUserTicket(update, maxUserId, Number(match[1]));
@@ -1251,18 +1417,27 @@ async function handleAction(update, maxUserId, action) {
   if (match) {
     return closeUserTicket(update, maxUserId, Number(match[1]));
   }
-
   if (!action.startsWith('support:admin:')) return false;
   if (!(await isAdmin(maxUserId))) return false;
-
+  if (action === 'support:admin:clear:closed:confirm') {
+    return showSupportClearConfirm(update, maxUserId, 'closed', true);
+  }
+  if (action === 'support:admin:clear:closed:run') {
+    return clearSupportDatabase(update, maxUserId, 'closed');
+  }
+  if (action === 'support:admin:clear:all:confirm') {
+    return showSupportClearConfirm(update, maxUserId, 'all', false);
+  }
+  if (action === 'support:admin:clear:all:confirm2') {
+    return showSupportClearConfirm(update, maxUserId, 'all', true);
+  }
+  if (action === 'support:admin:clear:all:run') {
+    return clearSupportDatabase(update, maxUserId, 'all');
+  }
   match = action.match(/^support:admin:list(?::(new|in_progress|closed|all))?$/);
   if (match) {
     await clearSession(maxUserId);
-    return showAdminList(
-      update,
-      maxUserId,
-      match[1] || 'new',
-    );
+    return showAdminList(update, maxUserId, match[1] || 'new');
   }
   match = action.match(/^support:admin:ticket:(\d+)$/);
   if (match) {
