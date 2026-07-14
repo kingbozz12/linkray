@@ -1318,10 +1318,289 @@ function lrV51NormalizePosts(raw) {
   return out;
 }
 
+/* LR_REAL_SCHEDULED_POSTS_ONLY_V2 */
 async function lrV51LoadPosts() {
-  const raw = await lrV51LoadPostsRaw();
-  return lrV51NormalizePosts(raw);
+  /*
+   * Контент-план использует только scheduled_posts.
+   *
+   * Таблицы рекламной аналитики, трекеры просмотров
+   * и служебные записи не являются отложенными постами.
+   */
+  const result = await query(`
+    SELECT
+      post.*,
+
+      channel.title
+        AS lr_channel_title,
+
+      channel.max_chat_id::text
+        AS lr_channel_chat_id,
+
+      channel.link
+        AS lr_channel_link
+
+    FROM public.scheduled_posts post
+
+    LEFT JOIN public.channels channel
+      ON channel.id=post.channel_id
+
+    WHERE
+      channel.id IS NULL
+
+      OR COALESCE(
+        channel.is_active,
+        true
+      )=true
+
+    ORDER BY
+      COALESCE(
+        post.publish_at,
+        post.published_at,
+        post.created_at,
+        post.updated_at
+      ) DESC NULLS LAST,
+
+      post.id DESC
+  `);
+
+  const sourceRows = Array.isArray(result)
+    ? result
+    : (
+        Array.isArray(result?.rows)
+          ? result.rows
+          : []
+      );
+
+  const parseJson = (
+    value,
+    fallback
+  ) => {
+    if (
+      value !== null &&
+      typeof value === 'object'
+    ) {
+      return value;
+    }
+
+    try {
+      return JSON.parse(
+        String(value || '')
+      );
+    } catch {
+      return fallback;
+    }
+  };
+
+  const moscowDay = (value) => {
+    if (!value) {
+      return '';
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+
+    const parts =
+      new Intl.DateTimeFormat(
+        'ru-RU',
+        {
+          timeZone: 'Europe/Moscow',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }
+      ).formatToParts(date);
+
+    const values = {};
+
+    for (const part of parts) {
+      if (part.type !== 'literal') {
+        values[part.type] =
+          part.value;
+      }
+    }
+
+    return [
+      values.year,
+      values.month,
+      values.day,
+    ].join('-');
+  };
+
+  const normalized = [];
+
+  for (const row of sourceRows) {
+    const status = String(
+      row?.status ?? ''
+    )
+      .trim()
+      .toLowerCase();
+
+    /*
+     * Служебные и отменённые задания
+     * не должны отображаться как посты.
+     */
+    if (
+      /draft|чернов|cancel|отмен|delete|удал|failed|ошиб/.test(
+        status
+      )
+    ) {
+      continue;
+    }
+
+    const published = Boolean(
+      row?.published_at ||
+      row?.published_message_id ||
+
+      /published|sent|done|posted|success|опублик|отправ/.test(
+        status
+      )
+    );
+
+    const scheduled = Boolean(
+      !published &&
+      row?.publish_at
+    );
+
+    /*
+     * Строка без даты публикации не является
+     * элементом контент-плана.
+     */
+    if (!published && !scheduled) {
+      continue;
+    }
+
+    const draft = parseJson(
+      row?.draft,
+      {}
+    );
+
+    const content = parseJson(
+      draft?.content,
+      {}
+    );
+
+    const text = String(
+      row?.text ||
+      row?.post_text ||
+      content?.text ||
+      draft?.text ||
+      ''
+    ).trim();
+
+    const eventDate = published
+      ? (
+          row?.published_at ||
+          row?.publish_at ||
+          row?.created_at
+        )
+      : row?.publish_at;
+
+    const channelTitle = String(
+      row?.channel_title ||
+      row?.lr_channel_title ||
+      'Канал'
+    ).trim();
+
+    const channelChatId = String(
+      row?.max_chat_id ||
+      row?.lr_channel_chat_id ||
+      ''
+    ).trim();
+
+    normalized.push({
+      ...row,
+
+      channel_title:
+        channelTitle,
+
+      max_chat_id:
+        channelChatId,
+
+      channel_link:
+        row?.channel_link ||
+        row?.lr_channel_link ||
+        '',
+
+      __v51Id:
+        `scheduled_posts:${row.id}`,
+
+      __v51RecordId:
+        String(row.id),
+
+      __v51Table:
+        'scheduled_posts',
+
+      __v51Source:
+        'scheduled_posts',
+
+      __v51ChannelId:
+        String(
+          row?.channel_id ||
+          ''
+        ),
+
+      __v51ChannelTitle:
+        channelTitle,
+
+      __v51ChatId:
+        channelChatId,
+
+      __v51Date:
+        eventDate,
+
+      __v51Day:
+        moscowDay(eventDate),
+
+      __v51Status:
+        published
+          ? 'published'
+          : 'scheduled',
+
+      __v51Published:
+        published,
+
+      __v51Scheduled:
+        scheduled,
+
+      __v51Text:
+        text,
+
+      __v51Title:
+        text || 'пост',
+    });
+  }
+
+  console.log(
+    '[real scheduled posts only]',
+    JSON.stringify({
+      databaseRows:
+        sourceRows.length,
+
+      visibleRows:
+        normalized.length,
+
+      scheduled:
+        normalized.filter(
+          (row) =>
+            row.__v51Status ===
+            'scheduled'
+        ).length,
+
+      published:
+        normalized.filter(
+          (row) =>
+            row.__v51Status ===
+            'published'
+        ).length,
+    })
+  );
+
+  return normalized;
 }
+
 
 function lrV51MatchesChannel(row, channelKey, channels) {
   if (!channelKey || channelKey === 'all') return true;
