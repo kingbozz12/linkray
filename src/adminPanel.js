@@ -268,6 +268,7 @@ async function users(u, id) {
   const list = R(await query(`
     SELECT
       u.id,
+      u.profile_number,
       u.max_user_id,
       u.display_name,
       u.registered_at,
@@ -288,13 +289,14 @@ async function users(u, id) {
 
     GROUP BY
       u.id,
+      u.profile_number,
       u.max_user_id,
       u.display_name,
       u.registered_at,
       u.last_seen_at,
       u.is_blocked
 
-    ORDER BY u.id DESC
+    ORDER BY COALESCE(u.profile_number, u.id) DESC
     LIMIT 15
   `));
 
@@ -324,7 +326,10 @@ async function users(u, id) {
       : '🟢';
 
     const profileId =
-      `LR-${String(x.id).padStart(6, '0')}`;
+      `LR-${String(
+        x.profile_number ||
+        x.id
+      ).padStart(6, '0')}`;
 
     lines.push(
       `${status} <b>${profileId}</b> — ` +

@@ -2565,6 +2565,217 @@ async function lrProfileEnsureSchema() {
       ON public.lr_users(last_seen_at DESC)
     `);
 
+    /* LR_PUBLIC_PROFILE_NUMBER_V1 */
+
+    await query(`
+      ALTER TABLE public.lr_users
+      ADD COLUMN IF NOT EXISTS profile_number bigint
+    `);
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS
+        public.lr_profile_migrations (
+          key text PRIMARY KEY,
+          completed_by_user_id bigint,
+          completed_at timestamptz
+            NOT NULL DEFAULT now()
+        )
+    `);
+
+    /*
+     * Один раз перенумеровываем только настоящих
+     * пользователей по порядку регистрации.
+     */
+    await query(`
+      DO $lr_public_numbers$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM public.lr_profile_migrations
+          WHERE key='public_profile_numbers_v1'
+        ) THEN
+
+          UPDATE public.lr_users
+          SET profile_number=NULL
+          WHERE max_user_id ~ '^[0-9]+$'
+            AND COALESCE(
+              raw_profile->>'is_bot',
+              'false'
+            )<>'true'
+            AND RIGHT(
+              LOWER(COALESCE(username, '')),
+              4
+            )<>'_bot'
+            AND LOWER(
+              COALESCE(display_name, '')
+            ) NOT LIKE 'linkray%';
+
+          WITH numbered AS (
+            SELECT
+              id,
+              ROW_NUMBER() OVER (
+                ORDER BY
+                  registered_at ASC,
+                  id ASC
+              )::bigint AS public_number
+            FROM public.lr_users
+            WHERE max_user_id ~ '^[0-9]+$'
+              AND COALESCE(
+                raw_profile->>'is_bot',
+                'false'
+              )<>'true'
+              AND RIGHT(
+                LOWER(COALESCE(username, '')),
+                4
+              )<>'_bot'
+              AND LOWER(
+                COALESCE(display_name, '')
+              ) NOT LIKE 'linkray%'
+          )
+          UPDATE public.lr_users users
+          SET profile_number=numbered.public_number
+          FROM numbered
+          WHERE users.id=numbered.id;
+
+          INSERT INTO public.lr_profile_migrations (
+            key,
+            completed_at
+          )
+          VALUES (
+            'public_profile_numbers_v1',
+            now()
+          )
+          ON CONFLICT (key) DO NOTHING;
+        END IF;
+      END
+      $lr_public_numbers$;
+    `);
+
+    await query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS
+        lr_users_profile_number_unique_idx
+      ON public.lr_users(profile_number)
+      WHERE profile_number IS NOT NULL
+    `);
+
+    /*
+     * Транзакционный счётчик не расходует номер,
+     * когда пользователь уже существует.
+     */
+    await query(`
+      CREATE TABLE IF NOT EXISTS
+        public.lr_profile_number_counter (
+          id smallint PRIMARY KEY
+            CHECK (id=1),
+          last_value bigint NOT NULL DEFAULT 0,
+          updated_at timestamptz
+            NOT NULL DEFAULT now()
+        )
+    `);
+
+    await query(`
+      INSERT INTO public.lr_profile_number_counter (
+        id,
+        last_value,
+        updated_at
+      )
+      VALUES (
+        1,
+        COALESCE(
+          (
+            SELECT MAX(profile_number)
+            FROM public.lr_users
+          ),
+          0
+        ),
+        now()
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        last_value=GREATEST(
+          public.lr_profile_number_counter.last_value,
+          EXCLUDED.last_value
+        ),
+        updated_at=now()
+    `);
+
+    await query(`
+      CREATE OR REPLACE FUNCTION
+        public.lr_assign_public_profile_number()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $lr_function$
+      DECLARE
+        next_number bigint;
+      BEGIN
+        IF NEW.profile_number IS NOT NULL THEN
+          RETURN NEW;
+        END IF;
+
+        IF COALESCE(
+          NEW.raw_profile->>'is_bot',
+          'false'
+        )='true' THEN
+          RETURN NEW;
+        END IF;
+
+        IF RIGHT(
+          LOWER(COALESCE(NEW.username, '')),
+          4
+        )='_bot' THEN
+          RETURN NEW;
+        END IF;
+
+        IF LOWER(
+          COALESCE(NEW.display_name, '')
+        ) LIKE 'linkray%' THEN
+          RETURN NEW;
+        END IF;
+
+        INSERT INTO public.lr_profile_number_counter (
+          id,
+          last_value,
+          updated_at
+        )
+        VALUES (1, 0, now())
+        ON CONFLICT (id) DO NOTHING;
+
+        UPDATE public.lr_profile_number_counter
+        SET
+          last_value=last_value + 1,
+          updated_at=now()
+        WHERE id=1
+        RETURNING last_value
+        INTO next_number;
+
+        UPDATE public.lr_users
+        SET
+          profile_number=next_number,
+          updated_at=now()
+        WHERE id=NEW.id
+          AND profile_number IS NULL;
+
+        RETURN NEW;
+      END;
+      $lr_function$
+    `);
+
+    await query(`
+      DROP TRIGGER IF EXISTS
+        lr_users_assign_public_number_trigger
+      ON public.lr_users
+    `);
+
+    await query(`
+      CREATE TRIGGER
+        lr_users_assign_public_number_trigger
+      AFTER INSERT
+      ON public.lr_users
+      FOR EACH ROW
+      EXECUTE FUNCTION
+        public.lr_assign_public_profile_number()
+    `);
+
+
     await query(`
       CREATE TABLE IF NOT EXISTS
         public.lr_user_subscriptions (
@@ -3075,6 +3286,7 @@ async function lrProfileRead(maxUserId) {
   const result = lrProfileRows(await query(`
     SELECT
       u.id,
+      u.profile_number,
       u.max_user_id,
       u.private_chat_id,
       u.first_name,
@@ -3140,6 +3352,7 @@ async function lrProfileRead(maxUserId) {
 
 function lrProfileFormatText(profile) {
   const localId = `LR-${String(
+    profile.profile_number ||
     profile.id
   ).padStart(6, '0')}`;
 
