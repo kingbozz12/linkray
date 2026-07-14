@@ -2834,17 +2834,47 @@ async function lrProfileEnsureSchema() {
 }
 
 async function lrProfileTouch(update) {
-  const maxUserId = lrProfileMaxUserId(update);
+  /* LR_VERIFIED_USER_REGISTRATION_V1 */
 
-  if (!maxUserId) {
+  const maxUserId = lrProfileClean(
+    lrProfileMaxUserId(update),
+    100
+  );
+
+  if (!/^\d+$/.test(maxUserId)) {
     return null;
   }
 
   await lrProfileEnsureSchema();
 
+  /*
+   * Сначала проверяем, существует ли пользователь.
+   * Уже зарегистрированный профиль можно использовать
+   * даже при неполном callback без имени.
+   */
+  const existingUser = lrProfileRows(await query(`
+    SELECT *
+    FROM public.lr_users
+    WHERE max_user_id=$1
+    LIMIT 1
+  `, [maxUserId]))[0] || null;
+
   const userBox = lrProfileUserBox(
     update,
     maxUserId
+  );
+
+  const boxUserId = lrProfileClean(
+    userBox?.user_id ||
+    userBox?.userId ||
+    userBox?.id ||
+    '',
+    100
+  );
+
+  const isBot = Boolean(
+    userBox?.is_bot === true ||
+    userBox?.isBot === true
   );
 
   const firstName = lrProfileClean(
@@ -2873,8 +2903,55 @@ async function lrProfileTouch(update) {
     explicitName ||
     [firstName, lastName]
       .filter(Boolean)
-      .join(' ') ||
-    'Пользователь MAX';
+      .join(' ');
+
+  const normalizedName = displayName
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const hasRealName = Boolean(
+    displayName &&
+    normalizedName !== 'пользователь max' &&
+    !normalizedName.startsWith('linkray')
+  );
+
+  const verifiedUserObject =
+    boxUserId === maxUserId &&
+    !isBot &&
+    hasRealName;
+
+  /*
+   * Главное исправление:
+   * неполное событие больше не создаёт новый профиль.
+   */
+  if (!verifiedUserObject) {
+    if (!existingUser) {
+      console.log(
+        '[LR profile] skipped incomplete user',
+        JSON.stringify({
+          maxUserId,
+          hasUserObject:
+            Boolean(
+              userBox &&
+              Object.keys(userBox).length
+            ),
+          boxUserId,
+          hasRealName,
+          isBot,
+        })
+      );
+    }
+
+    return existingUser;
+  }
+
+  const username = lrProfileClean(
+    userBox?.username ||
+    userBox?.login ||
+    '',
+    200
+  ).replace(/^@+/, '');
 
   const languageCode = lrProfileClean(
     userBox?.language_code ||
@@ -2883,9 +2960,12 @@ async function lrProfileTouch(update) {
     30
   );
 
-  const privateChatId = lrProfilePrivateChatId(
-    update,
-    maxUserId
+  const privateChatId = lrProfileClean(
+    lrProfilePrivateChatId(
+      update,
+      maxUserId
+    ),
+    100
   );
 
   const safeRaw = {
@@ -2893,8 +2973,10 @@ async function lrProfileTouch(update) {
     first_name: firstName || null,
     last_name: lastName || null,
     display_name: displayName,
+    username: username || null,
     language_code: languageCode || null,
     is_bot: false,
+    verified: true,
   };
 
   const users = lrProfileRows(await query(`
@@ -2904,6 +2986,7 @@ async function lrProfileTouch(update) {
       first_name,
       last_name,
       display_name,
+      username,
       language_code,
       last_seen_at,
       updates_count,
@@ -2917,46 +3000,63 @@ async function lrProfileTouch(update) {
       $4,
       $5,
       $6,
+      $7,
       now(),
       1,
-      $7::jsonb,
+      $8::jsonb,
       now()
     )
+
     ON CONFLICT (max_user_id) DO UPDATE SET
       private_chat_id=COALESCE(
         NULLIF(EXCLUDED.private_chat_id, ''),
         public.lr_users.private_chat_id
       ),
+
       first_name=COALESCE(
         NULLIF(EXCLUDED.first_name, ''),
         public.lr_users.first_name
       ),
+
       last_name=COALESCE(
         NULLIF(EXCLUDED.last_name, ''),
         public.lr_users.last_name
       ),
+
       display_name=COALESCE(
         NULLIF(EXCLUDED.display_name, ''),
         public.lr_users.display_name
       ),
+
+      username=COALESCE(
+        NULLIF(EXCLUDED.username, ''),
+        public.lr_users.username
+      ),
+
       language_code=COALESCE(
         NULLIF(EXCLUDED.language_code, ''),
         public.lr_users.language_code
       ),
+
       last_seen_at=now(),
+
       updates_count=
         public.lr_users.updates_count + 1,
+
       raw_profile=
         public.lr_users.raw_profile ||
         EXCLUDED.raw_profile,
+
       updated_at=now()
+
     RETURNING *
   `, [
     maxUserId,
-    privateChatId,
+    privateChatId || null,
     firstName || null,
     lastName || null,
     displayName,
+    username || null,
     languageCode || null,
     JSON.stringify(safeRaw),
   ]));
@@ -2964,7 +3064,7 @@ async function lrProfileTouch(update) {
   const user = users[0];
 
   if (!user) {
-    return null;
+    return existingUser;
   }
 
   await query(`

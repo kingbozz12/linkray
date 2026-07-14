@@ -119,20 +119,179 @@ async function audit(adminId, action, targetId = null, details = {}) {
     VALUES($1,$2,$3,$4::jsonb)`, [adminId, action, targetId ? String(targetId) : null, JSON.stringify(details)]).catch(() => {});
 }
 async function touchUser(u, id) {
-  const x = userBox(u, id);
-  const first = S(x?.first_name || x?.firstName || '', 200);
-  const last = S(x?.last_name || x?.lastName || '', 200);
-  const name = S(x?.display_name || x?.displayName || x?.name || [first, last].filter(Boolean).join(' ') || 'Пользователь MAX', 300);
-  const out = R(await query(`INSERT INTO public.lr_users(
-      max_user_id,private_chat_id,first_name,last_name,display_name,last_seen_at,updates_count,raw_profile,updated_at)
-    VALUES($1,$1,$2,$3,$4,now(),1,$5::jsonb,now())
-    ON CONFLICT(max_user_id) DO UPDATE SET
-      first_name=COALESCE(NULLIF(EXCLUDED.first_name,''),lr_users.first_name),
-      last_name=COALESCE(NULLIF(EXCLUDED.last_name,''),lr_users.last_name),
-      display_name=CASE WHEN EXCLUDED.display_name<>'Пользователь MAX' THEN EXCLUDED.display_name ELSE lr_users.display_name END,
-      last_seen_at=now(),updates_count=lr_users.updates_count+1,updated_at=now()
-    RETURNING *`, [id, first || null, last || null, name, JSON.stringify({ user_id: id, is_bot: false })]));
-  return out[0] || null;
+  /* LR_ADMIN_VERIFIED_USER_REGISTRATION_V1 */
+
+  const safeUserId = S(id, 100);
+
+  if (!/^\d+$/.test(safeUserId)) {
+    return null;
+  }
+
+  const existingUser = R(await query(`
+    SELECT *
+    FROM public.lr_users
+    WHERE max_user_id=$1
+    LIMIT 1
+  `, [safeUserId]))[0] || null;
+
+  const user = userBox(
+    u,
+    safeUserId
+  );
+
+  const objectUserId = humanId(user);
+
+  const firstName = S(
+    user?.first_name ||
+    user?.firstName ||
+    '',
+    200
+  );
+
+  const lastName = S(
+    user?.last_name ||
+    user?.lastName ||
+    '',
+    200
+  );
+
+  const explicitName = S(
+    user?.display_name ||
+    user?.displayName ||
+    user?.name ||
+    '',
+    300
+  );
+
+  const displayName =
+    explicitName ||
+    [firstName, lastName]
+      .filter(Boolean)
+      .join(' ');
+
+  const normalizedName = displayName
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const verifiedUserObject =
+    objectUserId === safeUserId &&
+    Boolean(displayName) &&
+    normalizedName !== 'пользователь max' &&
+    !normalizedName.startsWith('linkray');
+
+  /*
+   * Неполный callback может использовать уже
+   * существующего администратора, но никогда
+   * не создаёт нового пользователя.
+   */
+  if (!verifiedUserObject) {
+    if (!existingUser) {
+      console.log(
+        '[LR admin] skipped incomplete user',
+        JSON.stringify({
+          userId: safeUserId,
+          objectUserId,
+          hasRealName:
+            Boolean(displayName),
+        })
+      );
+    }
+
+    return existingUser;
+  }
+
+  const username = S(
+    user?.username ||
+    user?.login ||
+    '',
+    200
+  ).replace(/^@+/, '');
+
+  const rawProfile = {
+    user_id: safeUserId,
+    first_name: firstName || null,
+    last_name: lastName || null,
+    display_name: displayName,
+    username: username || null,
+    is_bot: false,
+    verified: true,
+  };
+
+  const result = R(await query(`
+    INSERT INTO public.lr_users (
+      max_user_id,
+      private_chat_id,
+      first_name,
+      last_name,
+      display_name,
+      username,
+      last_seen_at,
+      updates_count,
+      raw_profile,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      now(),
+      1,
+      $6::jsonb,
+      now()
+    )
+
+    ON CONFLICT (max_user_id) DO UPDATE SET
+      private_chat_id=COALESCE(
+        public.lr_users.private_chat_id,
+        EXCLUDED.private_chat_id
+      ),
+
+      first_name=COALESCE(
+        NULLIF(EXCLUDED.first_name, ''),
+        public.lr_users.first_name
+      ),
+
+      last_name=COALESCE(
+        NULLIF(EXCLUDED.last_name, ''),
+        public.lr_users.last_name
+      ),
+
+      display_name=COALESCE(
+        NULLIF(EXCLUDED.display_name, ''),
+        public.lr_users.display_name
+      ),
+
+      username=COALESCE(
+        NULLIF(EXCLUDED.username, ''),
+        public.lr_users.username
+      ),
+
+      last_seen_at=now(),
+
+      updates_count=
+        public.lr_users.updates_count + 1,
+
+      raw_profile=
+        public.lr_users.raw_profile ||
+        EXCLUDED.raw_profile,
+
+      updated_at=now()
+
+    RETURNING *
+  `, [
+    safeUserId,
+    firstName || null,
+    lastName || null,
+    displayName,
+    username || null,
+    JSON.stringify(rawProfile),
+  ]));
+
+  return result[0] || existingUser;
 }
 async function bootstrap(u, id) {
   await schema();
