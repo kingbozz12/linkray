@@ -1,3 +1,4 @@
+/* LR_ADMIN_BROADCAST_CANCEL_FULL_MENU_V1 */
 /* LR_ADMIN_SEARCH_WAIT_GATE_FIX_V1 */
 import { adminOperationsMainRows, handleAdminOperationsAction, handleAdminOperationsMessage } from './adminOperationsCenter.js';
 /* LR_ADMIN_CHANNEL_LOG_TITLE_V5 */
@@ -1105,6 +1106,7 @@ function isToolsAction(action) {
     action === 'admin:channels' ||
     action === 'admin:system' ||
     action === 'admin:subscriptions' ||
+    action === 'admin:session:cancel' ||
     action.startsWith('admin:tool:')
   );
 }
@@ -1128,7 +1130,10 @@ async function handleAction(update, adminId, action) {
   if (action === 'admin:system') return showSystem(update, adminId);
   if (action === 'admin:subscriptions') return showSubscriptions(update, adminId);
 
-  if (action === 'admin:tool:cancel') {
+  if (
+    action === 'admin:tool:cancel' ||
+    action === 'admin:session:cancel'
+  ) {
     await setSession(adminId, 'idle', {});
     return showMenu(update, adminId);
   }
