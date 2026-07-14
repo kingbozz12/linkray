@@ -1,3 +1,4 @@
+/* LR_ADMIN_CHANNEL_LOG_TITLE_V5 */
 /* LR_ADMIN_IDENTITY_AND_AUDIT_FIX_V4 */
 import { query } from './db.js';
 import {
@@ -913,19 +914,46 @@ async function showChannelAnalytics(update, adminId, channelDbId) {
 }
 
 async function syncRights(update, adminId, channelDbId) {
+  const channel = await loadChannel(channelDbId);
+
+  if (!channel) {
+    return showChannels(update, adminId);
+  }
+
   await respond(
     update,
     adminId,
-    '🔄 Проверяю владельцев и администраторов каналов в MAX…',
-    [[callbackButton('⬅️ Назад', `admin:tool:channel:${channelDbId}`)]],
+    '🔄 Проверяю владельцев и администраторов канала в MAX…',
+    [[
+      callbackButton(
+        '⬅️ Назад',
+        `admin:tool:channel:${channel.id}`
+      ),
+    ]],
   );
 
-  const result = await syncChannelTeams('admin_manual');
-  await audit(adminId, 'channel_rights_checked', channelDbId, {
-    successful: result?.successful,
-    failed: result?.failed,
-  });
-  await showChannelCard(update, adminId, channelDbId);
+  const result =
+    await syncChannelTeams('admin_manual');
+
+  await audit(
+    adminId,
+    'Проверены права администраторов канала',
+    channel.title || `Канал №${channel.id}`,
+    {
+      channel_id: channel.id,
+      max_chat_id: channel.max_chat_id,
+      title: channel.title || null,
+      link: channel.link || null,
+      successful: result?.successful,
+      failed: result?.failed,
+    },
+  );
+
+  await showChannelCard(
+    update,
+    adminId,
+    channel.id,
+  );
 }
 
 async function askDisableChannel(update, adminId, channelDbId) {
