@@ -1,3 +1,4 @@
+/* LR_AUDIENCE_PROFILE_BOT_FALLBACK_V1 */
 /* LR_AUDIENCE_PROFILE_LINK_FAVICON_V3 */
 import crypto from 'node:crypto';
 
@@ -327,6 +328,111 @@ function displayName(user = {}) {
   );
 }
 
+function audienceBotUsername() {
+  return clean(
+    process.env.MAX_BOT_USERNAME ||
+    process.env.BOT_USERNAME ||
+    process.env.MAX_BOT_NAME ||
+    'se13353901_bot',
+    200
+  )
+    .replace(/^@/, '')
+    .trim();
+}
+
+function buildAudienceUserPayload(
+  userId
+) {
+  const id =
+    clean(userId, 80);
+
+  if (
+    !id ||
+    !/^-?\d+$/.test(id)
+  ) {
+    return '';
+  }
+
+  const expires =
+    Math.floor(
+      Date.now() / 1_000
+    ) +
+    7 * 24 * 60 * 60;
+
+  const expires36 =
+    expires.toString(36);
+
+  const body =
+    `${id}_${expires36}`;
+
+  const signature =
+    signPayload(
+      `audience-user:${body}`
+    ).slice(0, 20);
+
+  return (
+    `audusr_${body}_${signature}`
+  );
+}
+
+function parseAudienceUserPayload(
+  value
+) {
+  const match =
+    clean(value, 300).match(
+      /^audusr_(-?\d+)_([0-9a-z]+)_([A-Za-z0-9_-]{20})$/
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const [
+    ,
+    userId,
+    expires36,
+    signature,
+  ] = match;
+
+  const expires =
+    Number.parseInt(
+      expires36,
+      36
+    );
+
+  if (
+    !Number.isFinite(expires) ||
+    expires <
+      Math.floor(
+        Date.now() / 1_000
+      )
+  ) {
+    return null;
+  }
+
+  const body =
+    `${userId}_${expires36}`;
+
+  const expected =
+    signPayload(
+      `audience-user:${body}`
+    ).slice(0, 20);
+
+  if (
+    !safeEqual(
+      expected,
+      signature
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    userId,
+    expires,
+  };
+}
+
 function profileUrl(
   userId,
   username
@@ -336,15 +442,141 @@ function profileUrl(
       .replace(/^@/, '')
       .trim();
 
-  if (!publicName) {
-    return '';
+  if (publicName) {
+    return (
+      `https://max.ru/` +
+      encodeURIComponent(
+        publicName
+      )
+    );
   }
 
-  return (
-    'https://max.ru/' +
-    encodeURIComponent(publicName)
-  );
+  const payload =
+    buildAudienceUserPayload(
+      userId
+    );
+
+  const botUsername =
+    audienceBotUsername();
+
+  if (
+    payload &&
+    botUsername
+  ) {
+    return (
+      `https://max.ru/` +
+      encodeURIComponent(
+        botUsername
+      ) +
+      `?start=` +
+      encodeURIComponent(
+        payload
+      )
+    );
+  }
+
+  return '';
 }
+
+async function handleAudienceUserStart(
+  update
+) {
+  const type =
+    clean(
+      update?.update_type ||
+      update?.type,
+      100
+    );
+
+  if (type !== 'bot_started') {
+    return false;
+  }
+
+  const parsed =
+    parseAudienceUserPayload(
+      update?.payload ||
+      update?.start_param ||
+      update?.startParam
+    );
+
+  if (!parsed) {
+    return false;
+  }
+
+  const chatId =
+    getChatId(update);
+
+  if (!chatId) {
+    return false;
+  }
+
+  const result =
+    await query(`
+      SELECT
+        display_name,
+        first_name,
+        last_name,
+        username
+
+      FROM
+        public.lr_channel_member_profiles
+
+      WHERE max_user_id=$1
+
+      ORDER BY
+        last_seen_at DESC,
+        id DESC
+
+      LIMIT 1
+    `, [
+      String(
+        parsed.userId
+      ),
+    ]).catch(() => []);
+
+  const profile =
+    rows(result)[0] || {};
+
+  const name =
+    clean(
+      profile.display_name,
+      300
+    ) ||
+    [
+      clean(
+        profile.first_name,
+        150
+      ),
+      clean(
+        profile.last_name,
+        150
+      ),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .trim() ||
+    'Пользователь MAX';
+
+  const mention =
+    `<a href="max://user/${escapeHtml(
+      parsed.userId
+    )}">${escapeHtml(name)}</a>`;
+
+  await sendMaxMessage({
+    chatId,
+    format: 'html',
+    text: [
+      '👤 <b>Профиль участника MAX</b>',
+      '',
+      mention,
+      '',
+      'Нажмите на имя выше — профиль откроется внутри MAX.',
+    ].join('\n'),
+  });
+
+  return true;
+}
+
 async function ensureSchema() {
   if (schemaPromise) {
     return schemaPromise;
@@ -4379,9 +4611,29 @@ export function installChannelAudienceReports(
           return next();
         }
 
+        const update =
+          req.body || {};
+
+        const profileHandled =
+          await handleAudienceUserStart(
+            update
+          );
+
+        if (profileHandled) {
+          if (!res.headersSent) {
+            return res.json({
+              ok: true,
+              handled:
+                'lr_audience_user_profile',
+            });
+          }
+
+          return;
+        }
+
         const handled =
           await handleAudienceCallback(
-            req.body || {}
+            update
           );
 
         if (handled) {
