@@ -1,3 +1,5 @@
+/* LR_ADMIN_TOOLS_SEPARATE_MIDDLEWARE_V1 */
+import { installAdminPanelTools } from './adminPanelTools.js';
 import { query } from './db.js';
 import { sendMaxMessage, answerCallback, callbackButton, inlineKeyboard } from './maxClient.js';
 
@@ -1478,7 +1480,7 @@ export function installLinkRayAdminPanel(app) {
   if (installed) return;
   installed = true;
   if (!app?.use) throw new Error('Express app is required');
-  void schema().then(startWorker).catch((e) => console.error('[LR admin schema]', e?.message || e));
+  installAdminPanelTools(app); void schema().then(startWorker).catch((e) => console.error('[LR admin schema]', e?.message || e));
   app.use(async function linkRayAdminPanel(req, res, next) {
     try {
       if (req.method !== 'POST') return next();
