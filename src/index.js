@@ -2364,6 +2364,7 @@ function lrProfileHumanCandidates(update) {
   return [
     update?.callback?.user,
     update?.message_callback?.user,
+    update?.message_callback?.callback?.user,
     update?.user,
     update?.message?.sender,
     update?.sender,
@@ -2401,6 +2402,17 @@ function lrProfileIsHuman(candidate) {
     return false;
   }
 
+  const username = lrProfileClean(
+    candidate?.username ||
+    candidate?.login ||
+    '',
+    200
+  ).toLowerCase();
+
+  if (username.endsWith('_bot')) {
+    return false;
+  }
+
   return true;
 }
 
@@ -2409,11 +2421,28 @@ function lrProfileMaxUserId(update) {
     const candidate
     of lrProfileHumanCandidates(update)
   ) {
-    if (!lrProfileIsHuman(candidate)) {
-      continue;
+    if (lrProfileIsHuman(candidate)) {
+      return lrProfileCandidateId(candidate);
     }
+  }
 
-    return lrProfileCandidateId(candidate);
+  const scalarCandidates = [
+    update?.callback?.user_id,
+    update?.callback?.userId,
+    update?.message_callback?.user_id,
+    update?.message_callback?.userId,
+    update?.user_id,
+    update?.userId,
+    update?.body?.user_id,
+    update?.body?.userId,
+  ];
+
+  for (const value of scalarCandidates) {
+    const id = lrProfileClean(value, 100);
+
+    if (/^\d+$/.test(id)) {
+      return id;
+    }
   }
 
   return '';
@@ -2429,11 +2458,8 @@ function lrProfileUserBox(update, maxUserId) {
     const candidate
     of lrProfileHumanCandidates(update)
   ) {
-    if (!lrProfileIsHuman(candidate)) {
-      continue;
-    }
-
     if (
+      lrProfileIsHuman(candidate) &&
       lrProfileCandidateId(candidate) === expectedId
     ) {
       return candidate;
@@ -2595,7 +2621,10 @@ async function lrProfileEnsureSchema() {
 
 async function lrProfileTouch(update) {
   const maxUserId = lrProfileMaxUserId(update);
-  if (!maxUserId) return null;
+
+  if (!maxUserId) {
+    return null;
+  }
 
   await lrProfileEnsureSchema();
 
@@ -2617,13 +2646,6 @@ async function lrProfileTouch(update) {
     '',
     200
   );
-
-  const username = lrProfileClean(
-    userBox?.username ||
-    userBox?.login ||
-    '',
-    200
-  ).replace(/^@+/, '');
 
   const explicitName = lrProfileClean(
     userBox?.display_name ||
@@ -2657,8 +2679,8 @@ async function lrProfileTouch(update) {
     first_name: firstName || null,
     last_name: lastName || null,
     display_name: displayName,
-    username: username || null,
     language_code: languageCode || null,
+    is_bot: false,
   };
 
   const users = lrProfileRows(await query(`
@@ -2668,7 +2690,6 @@ async function lrProfileTouch(update) {
       first_name,
       last_name,
       display_name,
-      username,
       language_code,
       last_seen_at,
       updates_count,
@@ -2682,10 +2703,9 @@ async function lrProfileTouch(update) {
       $4,
       $5,
       $6,
-      $7,
       now(),
       1,
-      $8::jsonb,
+      $7::jsonb,
       now()
     )
     ON CONFLICT (max_user_id) DO UPDATE SET
@@ -2705,16 +2725,13 @@ async function lrProfileTouch(update) {
         NULLIF(EXCLUDED.display_name, ''),
         public.lr_users.display_name
       ),
-      username=COALESCE(
-        NULLIF(EXCLUDED.username, ''),
-        public.lr_users.username
-      ),
       language_code=COALESCE(
         NULLIF(EXCLUDED.language_code, ''),
         public.lr_users.language_code
       ),
       last_seen_at=now(),
-      updates_count=public.lr_users.updates_count + 1,
+      updates_count=
+        public.lr_users.updates_count + 1,
       raw_profile=
         public.lr_users.raw_profile ||
         EXCLUDED.raw_profile,
@@ -2726,13 +2743,15 @@ async function lrProfileTouch(update) {
     firstName || null,
     lastName || null,
     displayName,
-    username || null,
     languageCode || null,
     JSON.stringify(safeRaw),
   ]));
 
   const user = users[0];
-  if (!user) return null;
+
+  if (!user) {
+    return null;
+  }
 
   await query(`
     INSERT INTO public.lr_user_subscriptions (
@@ -2794,7 +2813,10 @@ async function lrProfileLinkChannel(
   `, [safeUserId]));
 
   const userId = Number(users[0]?.id);
-  if (!userId) return false;
+
+  if (!userId) {
+    return false;
+  }
 
   await query(`
     INSERT INTO public.lr_user_channels (
@@ -2811,19 +2833,25 @@ async function lrProfileLinkChannel(
     UPDATE public.channels
     SET
       owner_max_user_id=COALESCE(
-        NULLIF(owner_max_user_id, ''),
-        $1
+        owner_max_user_id,
+        $1::bigint
       ),
       updated_at=now()
     WHERE id=$2
-  `, [safeUserId, safeChannelId]).catch(() => {});
+  `, [safeUserId, safeChannelId]).catch(
+    (error) => {
+      console.error(
+        '[LR profile channel owner]',
+        error?.message || error
+      );
+    }
+  );
 
   return true;
 }
 
 async function lrProfileSingleUserBackfill(user) {
   const userId = Number(user?.id);
-
   const maxUserId = lrProfileClean(
     user?.max_user_id,
     100
@@ -2839,21 +2867,48 @@ async function lrProfileSingleUserBackfill(user) {
 
   await lrProfileEnsureSchema();
 
-  const realUsers = lrProfileRows(await query(`
-    SELECT id, max_user_id
+  await query(`
+    CREATE TABLE IF NOT EXISTS
+      public.lr_profile_migrations (
+        key text PRIMARY KEY,
+        completed_by_user_id bigint,
+        completed_at timestamptz
+          NOT NULL DEFAULT now()
+      )
+  `);
+
+  const otherRealUsers = lrProfileRows(await query(`
+    SELECT id
     FROM public.lr_users
-    WHERE COALESCE(is_blocked, false)=false
-      AND LOWER(COALESCE(username, ''))
-            NOT LIKE '%\\_bot' ESCAPE '\\'
+    WHERE id<>$1
+      AND COALESCE(is_blocked, false)=false
       AND LOWER(COALESCE(display_name, ''))
             NOT LIKE 'linkray%'
-    ORDER BY id
-  `).catch(() => []));
+      AND LOWER(COALESCE(username, ''))
+            NOT LIKE '%\\_bot' ESCAPE '\\'
+    LIMIT 1
+  `, [userId]).catch(() => []));
 
-  if (
-    realUsers.length !== 1 ||
-    Number(realUsers[0]?.id) !== userId
-  ) {
+  if (otherRealUsers.length > 0) {
+    return;
+  }
+
+  const claimed = lrProfileRows(await query(`
+    INSERT INTO public.lr_profile_migrations (
+      key,
+      completed_by_user_id,
+      completed_at
+    )
+    VALUES (
+      'legacy_channels_to_first_real_user_v4',
+      $1,
+      now()
+    )
+    ON CONFLICT (key) DO NOTHING
+    RETURNING key
+  `, [userId]));
+
+  if (!claimed.length) {
     return;
   }
 
@@ -2869,63 +2924,22 @@ async function lrProfileSingleUserBackfill(user) {
       now()
     FROM public.channels c
     WHERE COALESCE(c.is_active, true)=true
-      AND NOT EXISTS (
-        SELECT 1
-        FROM public.lr_users another_user
-        WHERE another_user.max_user_id=
-              c.owner_max_user_id
-          AND another_user.id<>$1
-          AND COALESCE(
-                another_user.is_blocked,
-                false
-              )=false
-          AND LOWER(
-                COALESCE(
-                  another_user.username,
-                  ''
-                )
-              ) NOT LIKE '%\\_bot' ESCAPE '\\'
-          AND LOWER(
-                COALESCE(
-                  another_user.display_name,
-                  ''
-                )
-              ) NOT LIKE 'linkray%'
-      )
     ON CONFLICT (user_id, channel_id)
     DO NOTHING
   `, [userId]);
 
   await query(`
-    UPDATE public.channels c
+    UPDATE public.channels
     SET
-      owner_max_user_id=$1,
+      owner_max_user_id=$1::bigint,
       updated_at=now()
-    WHERE COALESCE(c.is_active, true)=true
-      AND NOT EXISTS (
-        SELECT 1
-        FROM public.lr_users another_user
-        WHERE another_user.max_user_id=
-              c.owner_max_user_id
-          AND another_user.id<>$2
-          AND COALESCE(
-                another_user.is_blocked,
-                false
-              )=false
-          AND LOWER(
-                COALESCE(
-                  another_user.username,
-                  ''
-                )
-              ) NOT LIKE '%\\_bot' ESCAPE '\\'
-          AND LOWER(
-                COALESCE(
-                  another_user.display_name,
-                  ''
-                )
-              ) NOT LIKE 'linkray%'
-      )
-  `, [maxUserId, userId]);
+    WHERE COALESCE(is_active, true)=true
+  `, [maxUserId]).catch((error) => {
+    console.error(
+      '[LR profile legacy owner]',
+      error?.message || error
+    );
+  });
 }
 
 function lrProfileMskDate(value) {
@@ -2968,14 +2982,14 @@ async function lrProfileSyncChannels(user) {
 
   await lrProfileEnsureSchema();
 
-  const ownerIds = [
-    maxUserId,
-    privateChatId,
-  ].filter(Boolean);
+  await lrProfileSingleUserBackfill(user)
+    .catch((error) => {
+      console.error(
+        '[LR profile legacy sync]',
+        error?.message || error
+      );
+    });
 
-  /*
-   * Каналы, которым уже был установлен владелец.
-   */
   await query(`
     INSERT INTO public.lr_user_channels (
       user_id,
@@ -2988,18 +3002,24 @@ async function lrProfileSyncChannels(user) {
       now()
     FROM public.channels c
     WHERE COALESCE(c.is_active, true)=true
-      AND c.owner_max_user_id=$2
+      AND c.owner_max_user_id::text=$2
     ON CONFLICT (user_id, channel_id)
     DO NOTHING
   `, [
     userId,
     maxUserId,
-  ]);
+  ]).catch((error) => {
+    console.error(
+      '[LR profile owner sync]',
+      error?.message || error
+    );
+  });
 
-  /*
-   * Каналы пользователя из индивидуальных
-   * настроек ежедневной аналитики.
-   */
+  const ownerIds = [
+    maxUserId,
+    privateChatId,
+  ].filter(Boolean);
+
   if (ownerIds.length) {
     await query(`
       INSERT INTO public.lr_user_channels (
@@ -3015,50 +3035,16 @@ async function lrProfileSyncChannels(user) {
       JOIN public.lr_channel_analytics_daily_channels d
         ON d.channel_id=c.id
       WHERE COALESCE(c.is_active, true)=true
-        AND d.owner_chat_id::text=ANY($2::text[])
+        AND d.owner_chat_id::text=
+            ANY($2::text[])
       ON CONFLICT (user_id, channel_id)
       DO NOTHING
     `, [
       userId,
       ownerIds,
-    ]).catch((error) => {
-      console.error(
-        '[LR profile analytics channel sync]',
-        error?.message || error
-      );
-    });
-
-    await query(`
-      UPDATE public.channels c
-      SET
-        owner_max_user_id=$1,
-        updated_at=now()
-      WHERE COALESCE(c.is_active, true)=true
-        AND (
-          c.owner_max_user_id IS NULL
-          OR c.owner_max_user_id=''
-        )
-        AND EXISTS (
-          SELECT 1
-          FROM public.lr_channel_analytics_daily_channels d
-          WHERE d.channel_id=c.id
-            AND d.owner_chat_id::text=ANY($2::text[])
-        )
-    `, [
-      maxUserId,
-      ownerIds,
-    ]).catch((error) => {
-      console.error(
-        '[LR profile analytics channel owner]',
-        error?.message || error
-      );
-    });
+    ]).catch(() => {});
   }
 
-  /*
-   * Дополнительное восстановление владельца
-   * по созданным пользователем публикациям.
-   */
   await query(`
     INSERT INTO public.lr_user_channels (
       user_id,
@@ -3073,18 +3059,13 @@ async function lrProfileSyncChannels(user) {
     JOIN public.scheduled_posts p
       ON p.channel_id=c.id
     WHERE COALESCE(c.is_active, true)=true
-      AND p.created_by_max_user_id=$2
+      AND p.created_by_max_user_id::text=$2
     ON CONFLICT (user_id, channel_id)
     DO NOTHING
   `, [
     userId,
     maxUserId,
-  ]).catch((error) => {
-    console.error(
-      '[LR profile scheduled channel sync]',
-      error?.message || error
-    );
-  });
+  ]).catch(() => {});
 }
 
 async function lrProfileRead(maxUserId) {
@@ -3117,7 +3098,8 @@ async function lrProfileRead(maxUserId) {
         FROM public.channels c
         WHERE COALESCE(c.is_active, true)=true
           AND (
-            c.owner_max_user_id=u.max_user_id
+            c.owner_max_user_id::text=
+              u.max_user_id
 
             OR EXISTS (
               SELECT 1
@@ -3196,18 +3178,43 @@ async function lrProfileShow(
   update,
   touchedUser = null
 ) {
-  const user =
+  let user =
     touchedUser ||
     await lrProfileTouch(update);
 
+  if (!user) {
+    const chatId = lrProfilePrivateChatId(
+      update,
+      ''
+    );
+
+    if (chatId) {
+      user = lrProfileRows(await query(`
+        SELECT *
+        FROM public.lr_users
+        WHERE private_chat_id=$1
+           OR max_user_id=$1
+        ORDER BY last_seen_at DESC
+        LIMIT 1
+      `, [String(chatId)]))[0] || null;
+    }
+  }
+
   if (!user?.max_user_id) {
     throw new Error(
-      'Не удалось определить MAX user ID'
+      'Не удалось определить пользователя MAX'
     );
   }
 
-  await lrProfileSingleUserBackfill(user);
-  await lrProfileSyncChannels(user);
+  await lrProfileSyncChannels(user)
+    .catch((error) => {
+      console.error(
+        '[LR profile sync nonfatal]',
+        error?.stack ||
+        error?.message ||
+        error
+      );
+    });
 
   const profile = await lrProfileRead(
     user.max_user_id
@@ -3219,7 +3226,8 @@ async function lrProfileShow(
     );
   }
 
-  const text = lrProfileFormatText(profile);
+  const profileText =
+    lrProfileFormatText(profile);
 
   const rows = [[
     callbackButton(
@@ -3231,9 +3239,14 @@ async function lrProfileShow(
   const attachments =
     typeof buttonRows === 'function'
       ? buttonRows(rows)
-      : rows;
+      : (
+          typeof inlineKeyboard === 'function'
+            ? inlineKeyboard(rows)
+            : rows
+        );
 
-  const callbackId = lrProfileCallbackId(update);
+  const callbackId =
+    lrProfileCallbackId(update);
 
   if (
     callbackId &&
@@ -3241,7 +3254,7 @@ async function lrProfileShow(
   ) {
     await answerCallback({
       callbackId,
-      text,
+      text: profileText,
       format: 'html',
       attachments,
     });
@@ -3256,7 +3269,7 @@ async function lrProfileShow(
 
   await sendMaxMessage({
     chatId,
-    text,
+    text: profileText,
     format: 'html',
     attachments,
   });
@@ -3271,34 +3284,107 @@ async function lrProfileHandle(
   const payload = lrProfilePayload(update)
     .toLowerCase();
 
-  const text = lrProfileMessageText(update)
+  const messageText = lrProfileMessageText(update)
     .replace(/\uFE0F/g, '')
     .trim()
     .toLowerCase();
 
-  const profilePayload =
+  const isProfile =
     payload === 'profile' ||
     payload === 'main:profile' ||
     payload === 'menu:profile' ||
     payload === 'user:profile' ||
     payload === 'profile:open' ||
-    payload.endsWith(':profile');
+    payload.endsWith(':profile') ||
+    messageText === 'профиль' ||
+    messageText === '👤 профиль' ||
+    messageText === '/profile';
 
-  const profileText =
-    text === 'профиль' ||
-    text === '👤 профиль' ||
-    text === '/profile';
-
-  if (!profilePayload && !profileText) {
+  if (!isProfile) {
     return false;
   }
 
-  await lrProfileShow(
-    update,
-    touchedUser
-  );
+  try {
+    await lrProfileShow(
+      update,
+      touchedUser
+    );
 
-  return true;
+    return true;
+  } catch (error) {
+    console.error(
+      '[LR profile handled error]',
+      error?.stack ||
+      error?.message ||
+      error
+    );
+
+    const errorText = [
+      '⚠️ <b>Не удалось открыть профиль</b>',
+      '',
+      'Профиль зарегистрирован, но при получении данных возникла ошибка.',
+      'Повторите открытие через несколько секунд.',
+    ].join('\n');
+
+    const rows = [[
+      callbackButton(
+        '⬅️ Главное меню',
+        'main:menu'
+      )
+    ]];
+
+    const attachments =
+      typeof buttonRows === 'function'
+        ? buttonRows(rows)
+        : (
+            typeof inlineKeyboard === 'function'
+              ? inlineKeyboard(rows)
+              : rows
+          );
+
+    const callbackId =
+      lrProfileCallbackId(update);
+
+    let sent = false;
+
+    if (
+      callbackId &&
+      typeof answerCallback === 'function'
+    ) {
+      try {
+        await answerCallback({
+          callbackId,
+          text: errorText,
+          format: 'html',
+          attachments,
+        });
+
+        sent = true;
+      } catch {}
+    }
+
+    if (!sent) {
+      const chatId = lrProfilePrivateChatId(
+        update,
+        lrProfileMaxUserId(update)
+      );
+
+      if (chatId) {
+        await sendMaxMessage({
+          chatId,
+          text: errorText,
+          format: 'html',
+          attachments,
+        }).catch(() => {});
+      }
+    }
+
+    /*
+     * Важно: callback профиля обработан.
+     * Не передаём его общему fallback.
+     */
+    return true;
+  }
 }
 
 lrProfileEnsureSchema().catch((error) => {
