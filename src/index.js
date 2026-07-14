@@ -2823,19 +2823,37 @@ async function lrProfileLinkChannel(
 }
 
 async function lrProfileSingleUserBackfill(user) {
-  if (!user?.id || !user?.max_user_id) return;
+  const userId = Number(user?.id);
 
-  const counts = lrProfileRows(await query(`
-    SELECT
-      (SELECT COUNT(*) FROM public.lr_users)
-        AS users_count,
-      (SELECT COUNT(*) FROM public.lr_user_channels)
-        AS links_count
-  `))[0] || {};
+  const maxUserId = lrProfileClean(
+    user?.max_user_id,
+    100
+  );
 
   if (
-    Number(counts.users_count) !== 1 ||
-    Number(counts.links_count) !== 0
+    !Number.isInteger(userId) ||
+    userId <= 0 ||
+    !/^\d+$/.test(maxUserId)
+  ) {
+    return;
+  }
+
+  await lrProfileEnsureSchema();
+
+  const realUsers = lrProfileRows(await query(`
+    SELECT id, max_user_id
+    FROM public.lr_users
+    WHERE COALESCE(is_blocked, false)=false
+      AND LOWER(COALESCE(username, ''))
+            NOT LIKE '%\\_bot' ESCAPE '\\'
+      AND LOWER(COALESCE(display_name, ''))
+            NOT LIKE 'linkray%'
+    ORDER BY id
+  `).catch(() => []));
+
+  if (
+    realUsers.length !== 1 ||
+    Number(realUsers[0]?.id) !== userId
   ) {
     return;
   }
@@ -2852,20 +2870,63 @@ async function lrProfileSingleUserBackfill(user) {
       now()
     FROM public.channels c
     WHERE COALESCE(c.is_active, true)=true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.lr_users another_user
+        WHERE another_user.max_user_id=
+              c.owner_max_user_id
+          AND another_user.id<>$1
+          AND COALESCE(
+                another_user.is_blocked,
+                false
+              )=false
+          AND LOWER(
+                COALESCE(
+                  another_user.username,
+                  ''
+                )
+              ) NOT LIKE '%\\_bot' ESCAPE '\\'
+          AND LOWER(
+                COALESCE(
+                  another_user.display_name,
+                  ''
+                )
+              ) NOT LIKE 'linkray%'
+      )
     ON CONFLICT (user_id, channel_id)
     DO NOTHING
-  `, [user.id]);
+  `, [userId]);
 
   await query(`
-    UPDATE public.channels
+    UPDATE public.channels c
     SET
-      owner_max_user_id=COALESCE(
-        NULLIF(owner_max_user_id, ''),
-        $1
-      ),
+      owner_max_user_id=$1,
       updated_at=now()
-    WHERE COALESCE(is_active, true)=true
-  `, [String(user.max_user_id)]).catch(() => {});
+    WHERE COALESCE(c.is_active, true)=true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.lr_users another_user
+        WHERE another_user.max_user_id=
+              c.owner_max_user_id
+          AND another_user.id<>$2
+          AND COALESCE(
+                another_user.is_blocked,
+                false
+              )=false
+          AND LOWER(
+                COALESCE(
+                  another_user.username,
+                  ''
+                )
+              ) NOT LIKE '%\\_bot' ESCAPE '\\'
+          AND LOWER(
+                COALESCE(
+                  another_user.display_name,
+                  ''
+                )
+              ) NOT LIKE 'linkray%'
+      )
+  `, [maxUserId, userId]);
 }
 
 function lrProfileMskDate(value) {
@@ -3038,7 +3099,6 @@ async function lrProfileRead(maxUserId) {
       u.first_name,
       u.last_name,
       u.display_name,
-      u.username,
       u.registered_at,
       u.last_seen_at,
       u.is_blocked,
@@ -3054,12 +3114,19 @@ async function lrProfileRead(maxUserId) {
       s.expires_at AS subscription_expires_at,
 
       (
-        SELECT COUNT(*)
-        FROM public.lr_user_channels uc
-        JOIN public.channels c
-          ON c.id=uc.channel_id
-        WHERE uc.user_id=u.id
-          AND COALESCE(c.is_active, true)=true
+        SELECT COUNT(DISTINCT c.id)
+        FROM public.channels c
+        WHERE COALESCE(c.is_active, true)=true
+          AND (
+            c.owner_max_user_id=u.max_user_id
+
+            OR EXISTS (
+              SELECT 1
+              FROM public.lr_user_channels uc
+              WHERE uc.user_id=u.id
+                AND uc.channel_id=c.id
+            )
+          )
       )::integer AS channels_count
 
     FROM public.lr_users u
@@ -3094,10 +3161,6 @@ function lrProfileFormatText(profile) {
     profile.id
   ).padStart(6, '0')}`;
 
-  const maxUsername = profile.username
-    ? `@${lrProfileEsc(profile.username)}`
-    : 'не указан';
-
   const access = profile.subscription_expires_at
     ? `до ${lrProfileMskDate(
         profile.subscription_expires_at
@@ -3112,7 +3175,6 @@ function lrProfileFormatText(profile) {
       profile.display_name ||
       'Пользователь MAX'
     )}</b>`,
-    `🔗 Имя пользователя MAX: <b>${maxUsername}</b>`,
     '',
     `💎 Тариф: <b>${lrProfileEsc(
       profile.tariff_title ||
@@ -3145,6 +3207,7 @@ async function lrProfileShow(
     );
   }
 
+  await lrProfileSingleUserBackfill(user);
   await lrProfileSyncChannels(user);
 
   const profile = await lrProfileRead(
