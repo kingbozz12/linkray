@@ -263,18 +263,94 @@ async function cancelBroadcast(u, id, bid) {
   await audit(id, 'broadcast_cancelled', bid);
   await broadcastCard(u, id, bid);
 }
+/* LR_ADMIN_CLICKABLE_USERS_V1 */
 async function users(u, id) {
-  const list = R(await query(`SELECT u.id,u.display_name,u.registered_at,u.last_seen_at,u.is_blocked,
-    COUNT(DISTINCT uc.channel_id)::int channels FROM public.lr_users u
-    LEFT JOIN public.lr_user_channels uc ON uc.user_id=u.id
-    WHERE u.max_user_id ~ '^\\d+$' AND COALESCE(u.raw_profile->>'is_bot','false')<>'true'
-    GROUP BY u.id ORDER BY u.id DESC LIMIT 15`));
-  const lines = ['👥 <b>Последние пользователи</b>', ''];
-  for (const x of list) lines.push(`${x.is_blocked ? '🔴' : '🟢'} <b>LR-${String(x.id).padStart(6, '0')}</b> — ${H(x.display_name || 'Пользователь MAX')} · каналов ${F(x.channels)} · ${D(x.last_seen_at)}`);
-  if (!list.length) lines.push('Пользователей пока нет.');
-  await respond(u, id, lines.join('\n'), [[callbackButton('⬅️ Назад', 'admin:menu')]]);
+  const list = R(await query(`
+    SELECT
+      u.id,
+      u.max_user_id,
+      u.display_name,
+      u.registered_at,
+      u.last_seen_at,
+      u.is_blocked,
+      COUNT(DISTINCT uc.channel_id)::int AS channels
+
+    FROM public.lr_users u
+
+    LEFT JOIN public.lr_user_channels uc
+      ON uc.user_id=u.id
+
+    WHERE u.max_user_id ~ '^\\d+$'
+      AND COALESCE(
+        u.raw_profile->>'is_bot',
+        'false'
+      )<>'true'
+
+    GROUP BY
+      u.id,
+      u.max_user_id,
+      u.display_name,
+      u.registered_at,
+      u.last_seen_at,
+      u.is_blocked
+
+    ORDER BY u.id DESC
+    LIMIT 15
+  `));
+
+  const lines = [
+    '👥 <b>Последние пользователи</b>',
+    '',
+  ];
+
+  for (const x of list) {
+    const maxUserId = S(
+      x.max_user_id,
+      100
+    );
+
+    const safeName = H(
+      x.display_name ||
+      'Пользователь MAX'
+    );
+
+    const clickableName =
+      /^\d+$/.test(maxUserId)
+        ? `<a href="max://user/${maxUserId}">${safeName}</a>`
+        : safeName;
+
+    const status = x.is_blocked
+      ? '🔴'
+      : '🟢';
+
+    const profileId =
+      `LR-${String(x.id).padStart(6, '0')}`;
+
+    lines.push(
+      `${status} <b>${profileId}</b> — ` +
+      `${clickableName} · ` +
+      `каналов ${F(x.channels)} · ` +
+      `${D(x.last_seen_at)}`
+    );
+  }
+
+  if (!list.length) {
+    lines.push('Пользователей пока нет.');
+  }
+
+  await respond(
+    u,
+    id,
+    lines.join('\n'),
+    [[
+      callbackButton(
+        '⬅️ Назад',
+        'admin:menu'
+      )
+    ]]
+  );
 }
-/* LR_ADMIN_CLICKABLE_CHANNELS_V2 */
+
 async function channels(u, id) {
   const escapeText = (value) =>
     String(value ?? '')
