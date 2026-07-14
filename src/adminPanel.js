@@ -274,16 +274,268 @@ async function users(u, id) {
   if (!list.length) lines.push('Пользователей пока нет.');
   await respond(u, id, lines.join('\n'), [[callbackButton('⬅️ Назад', 'admin:menu')]]);
 }
+/* LR_ADMIN_CLICKABLE_CHANNELS_V2 */
 async function channels(u, id) {
-  const list = R(await query(`SELECT c.id,c.title,owner.display_name owner_name FROM public.channels c
-    LEFT JOIN LATERAL(SELECT u.display_name FROM public.lr_user_channels uc JOIN public.lr_users u ON u.id=uc.user_id
-      WHERE uc.channel_id=c.id ORDER BY uc.linked_at LIMIT 1) owner ON true
-    WHERE COALESCE(c.is_active,true)=true ORDER BY c.id DESC LIMIT 15`));
-  const lines = ['📢 <b>Последние подключённые каналы</b>', ''];
-  for (const x of list) lines.push(`• <b>${H(x.title || `Канал №${x.id}`)}</b>\n  Владелец: ${H(x.owner_name || 'не определён')}`);
-  if (!list.length) lines.push('Каналов пока нет.');
-  await respond(u, id, lines.join('\n'), [[callbackButton('⬅️ Назад', 'admin:menu')]]);
+  const escapeText = (value) =>
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+  const escapeAttribute = (value) =>
+    escapeText(value)
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const normalizeChannelLink = (value) => {
+    let link = S(value, 2000);
+
+    if (!link) return '';
+
+    if (
+      /^(?:max\.ru|www\.max\.ru|i\.oneme\.ru)\//i
+        .test(link)
+    ) {
+      link = `https://${link}`;
+    }
+
+    if (
+      /^http:\/\/(?:www\.)?max\.ru\//i.test(link)
+    ) {
+      link = link.replace(/^http:/i, 'https:');
+    }
+
+    const allowed =
+      /^https:\/\/(?:[a-z0-9-]+\.)?max\.ru\//i
+        .test(link) ||
+      /^https:\/\/i\.oneme\.ru\//i.test(link);
+
+    return allowed ? link : '';
+  };
+
+  const apiToken = S(
+    process.env.MAX_TOKEN ||
+    process.env.MAX_BOT_TOKEN ||
+    process.env.MAX_ACCESS_TOKEN ||
+    process.env.BOT_TOKEN ||
+    process.env.ACCESS_TOKEN ||
+    '',
+    4000
+  );
+
+  const apiBase = String(
+    process.env.MAX_API_BASE ||
+    process.env.MAX_API_BASE_URL ||
+    process.env.MAX_PLATFORM_API ||
+    'https://platform-api2.max.ru'
+  ).replace(/\/+$/, '');
+
+  async function restoreChannelLink(channel) {
+    const storedLink = normalizeChannelLink(
+      channel?.link
+    );
+
+    if (storedLink) {
+      return storedLink;
+    }
+
+    const maxChatId = S(
+      channel?.max_chat_id,
+      100
+    );
+
+    if (
+      !apiToken ||
+      !/^-?\d+$/.test(maxChatId)
+    ) {
+      return '';
+    }
+
+    try {
+      const response = await fetch(
+        `${apiBase}/chats/${
+          encodeURIComponent(maxChatId)
+        }`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: apiToken,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        console.error(
+          '[LR admin channel link]',
+          JSON.stringify({
+            channelId: channel?.id,
+            maxChatId,
+            status: response.status,
+          })
+        );
+
+        return '';
+      }
+
+      const data = await response.json();
+
+      const chat =
+        data?.chat ||
+        data?.result?.chat ||
+        data?.result ||
+        data ||
+        {};
+
+      const fetchedLink = normalizeChannelLink(
+        chat?.link ||
+        chat?.invite_link ||
+        chat?.inviteLink ||
+        chat?.public_link ||
+        chat?.publicLink ||
+        chat?.chat?.link ||
+        ''
+      );
+
+      if (!fetchedLink) {
+        return '';
+      }
+
+      await query(`
+        UPDATE public.channels
+        SET
+          link=$2,
+          updated_at=now()
+        WHERE id=$1
+      `, [
+        channel.id,
+        fetchedLink,
+      ]).catch((error) => {
+        console.error(
+          '[LR admin save channel link]',
+          error?.message || error
+        );
+      });
+
+      return fetchedLink;
+    } catch (error) {
+      console.error(
+        '[LR admin fetch channel link]',
+        error?.message || error
+      );
+
+      return '';
+    }
+  }
+
+  const list = R(await query(`
+    SELECT
+      c.id,
+      c.max_chat_id,
+      c.title,
+      c.link,
+
+      owner.display_name AS owner_name,
+      owner.max_user_id AS owner_max_user_id
+
+    FROM public.channels c
+
+    LEFT JOIN LATERAL (
+      SELECT
+        u.display_name,
+        u.max_user_id
+
+      FROM public.lr_users u
+
+      WHERE
+        u.max_user_id::text =
+          c.owner_max_user_id::text
+
+        OR EXISTS (
+          SELECT 1
+          FROM public.lr_user_channels uc
+          WHERE uc.user_id=u.id
+            AND uc.channel_id=c.id
+        )
+
+      ORDER BY
+        CASE
+          WHEN u.max_user_id::text =
+               c.owner_max_user_id::text
+          THEN 0
+          ELSE 1
+        END,
+        u.id
+
+      LIMIT 1
+    ) owner ON true
+
+    WHERE COALESCE(c.is_active, true)=true
+
+    ORDER BY
+      c.id DESC
+
+    LIMIT 15
+  `));
+
+  const lines = [
+    '📢 <b>Последние подключённые каналы</b>',
+    '',
+  ];
+
+  for (const channel of list) {
+    const title = escapeText(
+      channel.title ||
+      `Канал №${channel.id}`
+    );
+
+    const channelLink =
+      await restoreChannelLink(channel);
+
+    const channelText = channelLink
+      ? `<a href="${escapeAttribute(
+          channelLink
+        )}"><b>${title}</b></a>`
+      : `<b>${title}</b>`;
+
+    const ownerName = escapeText(
+      channel.owner_name ||
+      'не определён'
+    );
+
+    const ownerId = S(
+      channel.owner_max_user_id,
+      100
+    );
+
+    const ownerText =
+      /^\d+$/.test(ownerId)
+        ? `<a href="max://user/${ownerId}">` +
+          `${ownerName}</a>`
+        : ownerName;
+
+    lines.push(
+      `• ${channelText}\n` +
+      `  Владелец: ${ownerText}`
+    );
+  }
+
+  if (!list.length) {
+    lines.push('Каналов пока нет.');
+  }
+
+  await respond(
+    u,
+    id,
+    lines.join('\n'),
+    [[
+      callbackButton(
+        '⬅️ Назад',
+        'admin:menu'
+      )
+    ]]
+  );
 }
+
 async function logs(u, id) {
   const list = R(await query(`SELECT * FROM public.lr_admin_audit ORDER BY id DESC LIMIT 15`));
   const lines = ['📜 <b>Журнал действий</b>', ''];
