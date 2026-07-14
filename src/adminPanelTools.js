@@ -1,3 +1,4 @@
+/* LR_ADMIN_SEARCH_WAIT_GATE_FIX_V1 */
 import { adminOperationsMainRows, handleAdminOperationsAction, handleAdminOperationsMessage } from './adminOperationsCenter.js';
 /* LR_ADMIN_CHANNEL_LOG_TITLE_V5 */
 /* LR_ADMIN_IDENTITY_AND_AUDIT_FIX_V4 */
@@ -1277,7 +1278,9 @@ export function installAdminPanelTools(app) {
       const action = payload(update);
       const command = /^\/admin(?:\s|$)/i.test(messageText(update));
       const session = !action ? await getSession(adminId) : null;
-      const directMessage = session?.state === 'tool_user_message_wait';
+      const directMessage =
+      session?.state === 'tool_user_message_wait' ||
+      session?.state === 'ops_search_wait';
 
       if (!command && !isToolsAction(action) && !directMessage) {
         return next();
