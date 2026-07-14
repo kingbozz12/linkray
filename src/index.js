@@ -1,3 +1,4 @@
+/* LR_PROFILE_SUPPORT_BUTTON_V1 */
 import { startChannelTeamAccess, getProfileTeamAccess } from './channelTeamAccess.js';
 import { startChannelAccessSync } from './channelAccessSync.js';
 import { installLinkRayAdminPanel } from './adminPanel.js';
@@ -4033,12 +4034,20 @@ async function lrProfileShow(
       teamAccess
     );
 
-  const rows = [[
-    callbackButton(
-      '⬅️ Главное меню',
-      'main:menu'
-    )
-  ]];
+  const rows = [
+    [
+      callbackButton(
+        '❓ Вопросы / предложения',
+        'support:open'
+      ),
+    ],
+    [
+      callbackButton(
+        '⬅️ Главное меню',
+        'main:menu'
+      ),
+    ],
+  ];
 
   const attachments =
     typeof buttonRows === 'function'

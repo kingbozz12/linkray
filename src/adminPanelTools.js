@@ -1,8 +1,10 @@
+/* LR_SUPPORT_CENTER_INSTALL_V1 */
 /* LR_ADMIN_BROADCAST_CANCEL_FULL_MENU_V1 */
 /* LR_ADMIN_SEARCH_WAIT_GATE_FIX_V1 */
 import { adminOperationsMainRows, handleAdminOperationsAction, handleAdminOperationsMessage } from './adminOperationsCenter.js';
 /* LR_ADMIN_CHANNEL_LOG_TITLE_V5 */
 /* LR_ADMIN_IDENTITY_AND_AUDIT_FIX_V4 */
+import { installUserSupportCenter, addSupportAdminMenuRow } from './supportCenter.js';
 import { query } from './db.js';
 import {
   sendMaxMessage,
@@ -390,7 +392,7 @@ async function showMenu(update, adminId) {
       '',
       'Выберите нужный раздел.',
     ].join('\n'),
-    adminOperationsMainRows(),
+    addSupportAdminMenuRow(adminOperationsMainRows()),
   );
 }
 
@@ -1272,6 +1274,7 @@ export function installAdminPanelTools(app) {
 
   if (!app?.use) throw new Error('Express app is required');
 
+  installUserSupportCenter(app);
   app.use(async function adminPanelToolsMiddleware(req, res, next) {
     try {
       if (req.method !== 'POST') return next();
