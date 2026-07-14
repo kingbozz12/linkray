@@ -1,3 +1,4 @@
+import { installLinkRayPurchases } from './linkrayPurchases.js';
 import { installLinkRayProofReports } from './linkrayProofReports.js';
 /* LR_PROFILE_SUPPORT_BUTTON_V1 */
 import { startChannelTeamAccess, getProfileTeamAccess } from './channelTeamAccess.js';
@@ -2545,7 +2546,7 @@ function __lrForceMainMenuRowsV7() {
     [callbackButton('📊 Аналитика', 'main:analytics')],
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
     [
-      callbackButton('📈 Отчёты', 'reports:menu'),
+      callbackButton('🚀 Закупы', 'reports:menu'),
       callbackButton('🛡 Антифрод', 'fraud:menu')
     ],
  [callbackButton('👤 Профиль', 'main:profile')],
@@ -16443,7 +16444,7 @@ function mainMenuRows() {
     [callbackButton('📊 Аналитика', 'main:analytics')],
     [callbackButton('➕ Добавить канал', 'post:add_channel')],
     [
-      callbackButton('📈 Отчёты', 'reports:menu'),
+      callbackButton('🚀 Закупы', 'reports:menu'),
       callbackButton('🛡 Антифрод', 'fraud:menu')
     ],
  [callbackButton('👤 Профиль', 'main:profile')],
@@ -18380,7 +18381,7 @@ async function handleCallback(update) {
   if (payload === 'main:menu') return showMainCallback(callbackId);
   if (payload === 'main:posting') return showStudio(callbackId);
   if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
-  if (payload === 'reports:menu') return cb(callbackId, '📊 Отчёты скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
+  if (payload === 'reports:menu') return cb(callbackId, '🚀 Закупы скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'fraud:menu') return cb(callbackId, '🛡 Антифрод скоро будет здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
   if (payload === 'post:create') { const draft = emptyDraft(); return showChannelSelect(callbackId, key, draft, false); }
@@ -23149,7 +23150,8 @@ console.log('[v62 plan media] installed');
 
 
 /* LR_LINKRAY_PROOF_REPORTS_INSTALL_V1 */
-installLinkRayProofReports(app);
+/* LR_LINKRAY_PURCHASES_INSTALL_V1: old Proof runtime disabled */
+installLinkRayPurchases(app);
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
   if (process.env.WEBHOOK_SECRET && incomingSecret !== process.env.WEBHOOK_SECRET) return res.status(401).json({ ok: false });
