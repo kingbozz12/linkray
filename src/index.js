@@ -1,3 +1,4 @@
+import { startChannelAccessSync } from './channelAccessSync.js';
 import { installLinkRayAdminPanel } from './adminPanel.js';
 import 'dotenv/config';
 import './maxTextFormatPatch.js';
@@ -25982,3 +25983,16 @@ import('./channelMetricsCollector.js')
     );
   });
 /* LR_CHANNEL_METRICS_COLLECTOR_V1_BOOTSTRAP_END */
+
+/* LR_CHANNEL_ACCESS_SYNC_V1_START */
+try {
+  startChannelAccessSync();
+} catch (error) {
+  console.error(
+    '[channel access sync] start failed',
+    error?.stack ||
+    error?.message ||
+    error
+  );
+}
+/* LR_CHANNEL_ACCESS_SYNC_V1_END */
