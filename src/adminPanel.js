@@ -1500,7 +1500,7 @@ export function installLinkRayAdminPanel(app) {
         return next();
       }
       await touchUser(u, id).catch(() => null);
-      if (cmd) { await setSession(id, 'idle', {}); await audit(id, 'admin_opened'); await menu(u, id); return res.json({ ok: true }); }
+      if (cmd) { await setSession(id, 'idle', {});  await menu(u, id); return res.json({ ok: true }); }
       if (action) { await handleAction(u, id, p); return res.json({ ok: true }); }
       const s = await session(id);
       if (s.state === 'broadcast_wait') {
