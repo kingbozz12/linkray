@@ -1,3 +1,4 @@
+import { adminOperationsMainRows, handleAdminOperationsAction, handleAdminOperationsMessage } from './adminOperationsCenter.js';
 /* LR_ADMIN_CHANNEL_LOG_TITLE_V5 */
 /* LR_ADMIN_IDENTITY_AND_AUDIT_FIX_V4 */
 import { query } from './db.js';
@@ -367,7 +368,8 @@ async function dashboardStats() {
 }
 
 async function showMenu(update, adminId) {
-  const stats = await dashboardStats();
+  const stats =
+    await dashboardStats();
 
   await respond(
     update,
@@ -386,22 +388,7 @@ async function showMenu(update, adminId) {
       '',
       'Выберите нужный раздел.',
     ].join('\n'),
-    [
-      [callbackButton('🔄 Обновить', 'admin:menu')],
-      [
-        callbackButton('📨 Рассылки', 'admin:broadcasts'),
-        callbackButton('👥 Пользователи', 'admin:users'),
-      ],
-      [
-        callbackButton('📢 Каналы', 'admin:channels'),
-        callbackButton('🖥 Система', 'admin:system'),
-      ],
-      [
-        callbackButton('💎 Подписки', 'admin:subscriptions'),
-        callbackButton('📜 Журнал', 'admin:logs'),
-      ],
-      [callbackButton('⬅️ Главное меню', 'main:menu')],
-    ],
+    adminOperationsMainRows(),
   );
 }
 
@@ -1122,6 +1109,18 @@ function isToolsAction(action) {
 }
 
 async function handleAction(update, adminId, action) {
+  /* LR_ADMIN_OPERATIONS_ACTION_HOOK_V1 */
+
+  if (
+    await handleAdminOperationsAction(
+      update,
+      adminId,
+      action,
+    )
+  ) {
+    return true;
+  }
+
   if (action === 'admin:menu') return showMenu(update, adminId);
   if (action === 'admin:users') return showUsers(update, adminId);
   if (action === 'admin:channels') return showChannels(update, adminId);
@@ -1173,6 +1172,18 @@ async function handleAction(update, adminId, action) {
 }
 
 async function handleDirectMessage(update, adminId, session) {
+  /* LR_ADMIN_OPERATIONS_MESSAGE_HOOK_V1 */
+
+  if (
+    await handleAdminOperationsMessage(
+      update,
+      adminId,
+      session,
+    )
+  ) {
+    return true;
+  }
+
   const item = content(update);
   if (!item) return false;
 
