@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { query } from './db.js';
+import { query } from './db.js'; import { captureAudienceIdentity } from './channelAudienceReports.js';
 
 const API_BASE = (
   process.env.MAX_API_URL ||
@@ -1300,6 +1300,24 @@ export async function handleChannelMetricsUpdate(body) {
       occurredAt: new Date(occurredMs),
       raw: update,
     });
+
+    /* LR_AUDIENCE_IDENTITY_CAPTURE_V1 */
+    await captureAudienceIdentity({
+      update,
+      channelId,
+      eventType,
+      occurredAt:
+        new Date(occurredMs),
+    }).catch((error) => {
+      console.error(
+        '[LR_AUDIENCE_IDENTITY_CAPTURE]',
+        channelId,
+        error?.stack ||
+        error?.message ||
+        error
+      );
+    });
+
   }
 }
 

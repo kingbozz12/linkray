@@ -1,3 +1,4 @@
+/* LR_MAX_API2_AUTH_HEADER_ONLY_V1 */
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -5,7 +6,7 @@ import express from 'express';
 import sharp from 'sharp';
 import { query } from './db.js';
 import { sendMaxMessage, answerCallback } from './maxClient.js';
-import { getChannelMetricsReadiness } from './channelMetricsCollector.js';
+import { getChannelMetricsReadiness } from './channelMetricsCollector.js'; import { installChannelAudienceReports, createAudienceReportLink } from './channelAudienceReports.js';
 
 const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL ||
@@ -4653,7 +4654,11 @@ async function showAnalyticsMainMenu(chatId, keys, update = null) {
     [
       [lrCb('🖼 Аналитика каналов', 'lrchan:links')],
       [lrCb('📆📅 Ежедневный отчёт ПДП', 'lrchan:daily')],
-      [lrCb('⬅️ Главное меню', 'main:menu')],
+      [lrCb(
+          '👥 Подписки и отписки',
+          'lr_audience:menu'
+        )],
+        [lrCb('⬅️ Главное меню', 'main:menu')],
     ]
   );
 }
@@ -6174,19 +6179,15 @@ async function lrV34SendMaxImageUrl(update, imageUrl) {
 
   const attempts = [
     {
-      url: `${api}/messages?${query}`,
-      headers: { Authorization: token, 'Content-Type': 'application/json' },
-    },
-    {
-      url: `${api}/messages?${query}`,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    },
-    {
-      url: `${api}/messages?${query}&access_token=${encodeURIComponent(token)}`,
-      headers: { 'Content-Type': 'application/json' },
+      url:
+        `${api}/messages?${query}`,
+      headers: {
+        Authorization: token,
+        'Content-Type':
+          'application/json',
+      },
     },
   ];
-
   let last = '';
 
   for (const a of attempts) {
@@ -6642,22 +6643,36 @@ async function lrV74ReleaseDailyReport(
   ]).catch(() => {});
 }
 
-function lrV74DailyPdpText(stats) {
-  const net = stats.joined - stats.left;
+function lrV74DailyPdpText(
+  stats,
+  audienceUrl = ''
+) {
+  const net =
+    stats.joined - stats.left;
 
-  return [
-    '📊 <b>Ежедневный отчёт ПДП</b>',
+  const lines = [
+    '📊 Ежедневный отчёт ПДП',
     '',
-    `📢 <b>${esc(stats.title)}</b>`,
+    `📢 ${esc(stats.title)}`,
     '',
-    `👥 Всего подписчиков: <b>${fmt(stats.subscribers)}</b>`,
-    `➕ Подписались: <b>${fmt(stats.joined)}</b>`,
-    `➖ Отписались: <b>${fmt(stats.left)}</b>`,
-    `📈 Изменение: <b>${lrV74Signed(net)}</b>`,
+    `👥 Всего подписчиков: ${fmt(stats.subscribers)}`,
+    `➕ Подписались: ${fmt(stats.joined)}`,
+    `➖ Отписались: ${fmt(stats.left)}`,
+    `📈 Изменение: ${lrV74Signed(net)}`,
     '',
-    `🕘 Период: ${lrV74MskDateTime(stats.periodStart)} — ` +
+    `🕒 Период: ${lrV74MskDateTime(stats.periodStart)} — ` +
       `${lrV74MskDateTime(stats.periodEnd)} МСК`,
-  ].join('\n');
+  ];
+
+  if (audienceUrl) {
+    lines.push(
+      '',
+      '🌐 Подписки и отписки подробно:',
+      audienceUrl
+    );
+  }
+
+  return lines.join('\n');
 }
 
 async function lrV73SendDailyGroup(
@@ -6711,10 +6726,35 @@ async function lrV73SendDailyGroup(
     }
 
     try {
+      const audienceUrl =
+        createAudienceReportLink(
+          String(ownerChatId),
+          stats.maxChannelId,
+          {
+            from: stats.periodStart,
+            to: stats.periodEnd,
+            expiresDays: 30,
+          }
+        );
+
       await sendMaxMessage({
-        chatId: String(ownerChatId),
-        text: lrV74DailyPdpText(stats),
+        chatId:
+          String(ownerChatId),
+        text:
+          lrV74DailyPdpText(
+            stats,
+            audienceUrl
+          ),
         format: 'html',
+        attachments:
+          lrMenuButtons([[
+            {
+              type: 'link',
+              text:
+                '🌐 Подписки и отписки за 24 часа',
+              url: audienceUrl,
+            },
+          ]]),
       });
 
       console.log(
@@ -6746,6 +6786,9 @@ async function lrV73SendDailyGroup(
 export function mountLinkRayChannelAnalytics(app) {
   if (mounted) return;
   mounted = true;
+  /* LR_AUDIENCE_REPORTS_ANALYTICS_V1 */
+  installChannelAudienceReports(app);
+
 
   fs.mkdir(OUT_DIR, { recursive: true }).catch(() => {});
 
