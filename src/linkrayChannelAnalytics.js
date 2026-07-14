@@ -6386,31 +6386,360 @@ async function lrV73ResolveDailyChannel(row, index = 0) {
   };
 }
 
-async function lrV73SendDailyGroup(ownerChatId, sourceRows) {
-  /* LR_DAILY_READY_CHECK_V1 */
-  const dailyLinks = sourceRows.map((row) => row?.link).filter(Boolean);
-  const readiness = await getChannelMetricsReadiness(dailyLinks);
-  if (!readiness.ready) {
-    await lrSendChannelDataNotReady(String(ownerChatId), readiness, null);
-    return;
-  }
-  const channels = [];
-  for (let i = 0; i < sourceRows.length; i += 1) {
-    channels.push(await lrV73ResolveDailyChannel(sourceRows[i], i));
-  }
-  if (!channels.length) return;
-  const image = channels.length === 1
-    ? await renderSingle(channels[0])
-    : await renderNetwork(channels);
-  const caption = channels.length === 1
-    ? lrAnalyticsCaptionSingle(channels[0])
-    : lrAnalyticsCaptionNetwork(channels);
-  await sendImage(String(ownerChatId), image, caption);
-  console.log('[v73 daily] sent', JSON.stringify({
-    ownerChatId: String(ownerChatId),
-    channels: channels.length,
-  }));
+/* LR_DAILY_PDP_TEXT_V74_START */
+
+function lrV74Signed(value) {
+  const number = num(value);
+  if (number > 0) return `+${fmt(number)}`;
+  return fmt(number);
 }
+
+function lrV74MskDateTime(value) {
+  const date = value ? new Date(value) : null;
+
+  if (!date || Number.isNaN(date.getTime())) {
+    return 'не определён';
+  }
+
+  return date.toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).replace(',', '');
+}
+
+async function lrV74EnsureDailyPdpReportTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS
+      public.lr_channel_daily_pdp_reports (
+        owner_chat_id text NOT NULL,
+        channel_id bigint NOT NULL,
+        report_date date NOT NULL,
+        period_started_at timestamptz NOT NULL,
+        period_finished_at timestamptz NOT NULL,
+        joined_count integer NOT NULL DEFAULT 0,
+        left_count integer NOT NULL DEFAULT 0,
+        subscribers_total integer NOT NULL DEFAULT 0,
+        sent_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (
+          owner_chat_id,
+          channel_id,
+          report_date
+        )
+      )
+  `);
+}
+
+async function lrV74DailyWindow() {
+  const result = rows(await query(`
+    SELECT
+      (
+        (
+          date_trunc(
+            'day',
+            now() AT TIME ZONE 'Europe/Moscow'
+          ) - interval '1 day'
+        ) + interval '8 hours'
+      ) AT TIME ZONE 'Europe/Moscow'
+        AS period_start,
+
+      (
+        date_trunc(
+          'day',
+          now() AT TIME ZONE 'Europe/Moscow'
+        ) + interval '8 hours'
+      ) AT TIME ZONE 'Europe/Moscow'
+        AS period_end,
+
+      (
+        now() AT TIME ZONE 'Europe/Moscow'
+      )::date AS report_date
+  `))[0];
+
+  return {
+    periodStart: result.period_start,
+    periodEnd: result.period_end,
+    reportDate: result.report_date,
+  };
+}
+
+async function lrV74DailyPdpStats(
+  ownerChatId,
+  row,
+  window,
+  resolved
+) {
+  const dbChannelId = Number(row?.id);
+  const maxChannelId = String(
+    row?.max_chat_id ||
+    row?.channel_id ||
+    row?.id ||
+    ''
+  );
+
+  const setting = rows(await query(`
+    SELECT
+      d.updated_at AS enabled_at,
+      s.first_seen_at
+    FROM public.lr_channel_analytics_daily_channels d
+    LEFT JOIN public.lr_channel_metrics_state s
+      ON s.channel_id=$3
+    WHERE d.owner_chat_id=$1
+      AND d.channel_id=$2
+      AND d.enabled=true
+    LIMIT 1
+  `, [
+    String(ownerChatId),
+    dbChannelId,
+    maxChannelId,
+  ]).catch(() => []))[0] || {};
+
+  const candidates = [
+    window.periodStart,
+    setting.enabled_at,
+    setting.first_seen_at,
+  ]
+    .map((value) => value ? new Date(value) : null)
+    .filter(
+      (value) =>
+        value &&
+        !Number.isNaN(value.getTime())
+    );
+
+  const periodStart = candidates.length
+    ? new Date(
+        Math.max(...candidates.map((date) => date.getTime()))
+      )
+    : new Date(window.periodStart);
+
+  const periodEnd = new Date(window.periodEnd);
+
+  const movements = rows(await query(`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE event_type='joined'
+      )::integer AS joined_count,
+
+      COUNT(*) FILTER (
+        WHERE event_type='left'
+      )::integer AS left_count
+    FROM public.lr_channel_member_events
+    WHERE channel_id=$1
+      AND occurred_at >= $2
+      AND occurred_at < $3
+  `, [
+    maxChannelId,
+    periodStart,
+    periodEnd,
+  ]).catch(() => []))[0] || {};
+
+  const latestSnapshot = rows(await query(`
+    SELECT subscribers
+    FROM public.lr_channel_analytics_snapshots
+    WHERE collection_source='max_api_collector_v1'
+      AND (
+        raw #>> '{chat,chat_id}'=$1
+        OR raw #>> '{chat,id}'=$1
+        OR raw #>> '{chat,chat,id}'=$1
+        OR link=$2
+      )
+    ORDER BY captured_at DESC
+    LIMIT 1
+  `, [
+    maxChannelId,
+    String(row?.link || ''),
+  ]).catch(() => []))[0] || {};
+
+  const resolvedSubscribers = num(resolved?.subscribers);
+  const snapshotSubscribers = num(
+    latestSnapshot?.subscribers
+  );
+
+  return {
+    dbChannelId,
+    maxChannelId,
+    title:
+      resolved?.title ||
+      row?.title ||
+      'Канал MAX',
+
+    joined: num(movements.joined_count),
+    left: num(movements.left_count),
+
+    subscribers:
+      resolvedSubscribers > 0
+        ? resolvedSubscribers
+        : snapshotSubscribers,
+
+    periodStart,
+    periodEnd,
+    reportDate: window.reportDate,
+  };
+}
+
+async function lrV74ClaimDailyReport(
+  ownerChatId,
+  stats
+) {
+  const result = rows(await query(`
+    INSERT INTO public.lr_channel_daily_pdp_reports (
+      owner_chat_id,
+      channel_id,
+      report_date,
+      period_started_at,
+      period_finished_at,
+      joined_count,
+      left_count,
+      subscribers_total,
+      sent_at
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
+      now()
+    )
+    ON CONFLICT (
+      owner_chat_id,
+      channel_id,
+      report_date
+    ) DO NOTHING
+    RETURNING 1
+  `, [
+    String(ownerChatId),
+    stats.dbChannelId,
+    stats.reportDate,
+    stats.periodStart,
+    stats.periodEnd,
+    stats.joined,
+    stats.left,
+    stats.subscribers,
+  ]));
+
+  return result.length > 0;
+}
+
+async function lrV74ReleaseDailyReport(
+  ownerChatId,
+  stats
+) {
+  await query(`
+    DELETE FROM public.lr_channel_daily_pdp_reports
+    WHERE owner_chat_id=$1
+      AND channel_id=$2
+      AND report_date=$3
+  `, [
+    String(ownerChatId),
+    stats.dbChannelId,
+    stats.reportDate,
+  ]).catch(() => {});
+}
+
+function lrV74DailyPdpText(stats) {
+  const net = stats.joined - stats.left;
+
+  return [
+    '📊 <b>Ежедневный отчёт ПДП</b>',
+    '',
+    `📢 <b>${esc(stats.title)}</b>`,
+    '',
+    `👥 Всего подписчиков: <b>${fmt(stats.subscribers)}</b>`,
+    `➕ Подписались: <b>${fmt(stats.joined)}</b>`,
+    `➖ Отписались: <b>${fmt(stats.left)}</b>`,
+    `📈 Изменение: <b>${lrV74Signed(net)}</b>`,
+    '',
+    `🕘 Период: ${lrV74MskDateTime(stats.periodStart)} — ` +
+      `${lrV74MskDateTime(stats.periodEnd)} МСК`,
+  ].join('\n');
+}
+
+async function lrV73SendDailyGroup(
+  ownerChatId,
+  sourceRows
+) {
+  await lrV74EnsureDailyPdpReportTable();
+
+  const window = await lrV74DailyWindow();
+
+  for (let index = 0; index < sourceRows.length; index += 1) {
+    const row = sourceRows[index];
+
+    let resolved = null;
+
+    try {
+      resolved = await lrV73ResolveDailyChannel(
+        row,
+        index
+      );
+    } catch (error) {
+      console.error(
+        '[v74 daily pdp resolve]',
+        error?.message || error
+      );
+    }
+
+    const stats = await lrV74DailyPdpStats(
+      ownerChatId,
+      row,
+      window,
+      resolved
+    );
+
+    const claimed = await lrV74ClaimDailyReport(
+      ownerChatId,
+      stats
+    );
+
+    if (!claimed) {
+      console.log(
+        '[v74 daily pdp] already sent',
+        JSON.stringify({
+          ownerChatId: String(ownerChatId),
+          channelId: stats.dbChannelId,
+          reportDate: stats.reportDate,
+        })
+      );
+
+      continue;
+    }
+
+    try {
+      await sendMaxMessage({
+        chatId: String(ownerChatId),
+        text: lrV74DailyPdpText(stats),
+        format: 'html',
+      });
+
+      console.log(
+        '[v74 daily pdp] sent',
+        JSON.stringify({
+          ownerChatId: String(ownerChatId),
+          channelId: stats.dbChannelId,
+          title: stats.title,
+          subscribers: stats.subscribers,
+          joined: stats.joined,
+          left: stats.left,
+        })
+      );
+    } catch (error) {
+      await lrV74ReleaseDailyReport(
+        ownerChatId,
+        stats
+      );
+
+      throw error;
+    }
+  }
+}
+
+/* LR_DAILY_PDP_TEXT_V74_END */
 /* LR_CHANNEL_ANALYTICS_V73_END */
 
 
