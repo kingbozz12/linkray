@@ -202,16 +202,182 @@ async function menu(u, id) {
     `📨 Активных рассылок: <b>${F(s.active_broadcasts)}</b>`, '', 'Выберите раздел.',
   ].join('\n'), mainRows());
 }
-async function broadcasts(u, id) {
-  const list = R(await query(`SELECT * FROM public.lr_broadcasts ORDER BY id DESC LIMIT 8`));
-  const lines = ['📣 <b>Рассылки</b>', ''];
-  if (!list.length) lines.push('Рассылок ещё не было.');
-  for (const x of list) lines.push(`<b>№${x.id}</b> · ${H(x.status)} · ${F(x.sent_count)}/${F(x.total_count)} · ошибок ${F(x.failed_count)}`);
-  const buttons = [[callbackButton('➕ Создать рассылку', 'admin:broadcast:new')]];
-  for (const x of list.slice(0, 6)) buttons.push([callbackButton(`📨 №${x.id}`, `admin:broadcast:${x.id}`)]);
-  buttons.push([callbackButton('⬅️ Назад', 'admin:menu')]);
-  await respond(u, id, lines.join('\n'), buttons);
+/* LR_ADMIN_BROADCAST_DELETE_RU_V1 */
+
+function lrAdminBroadcastStatusRu(value) {
+  const status = S(value, 50).toLowerCase();
+
+  const names = {
+    draft: 'Черновик',
+    queued: 'В очереди',
+    running: 'Выполняется',
+    completed: 'Завершена',
+    cancelled: 'Остановлена',
+    failed: 'Ошибка',
+    pending: 'Ожидает отправки',
+    sending: 'Отправляется',
+    sent: 'Отправлено',
+  };
+
+  return names[status] || 'Неизвестен';
 }
+
+function lrAdminAuditActionRu(value) {
+  const action = S(value, 150);
+
+  const names = {
+    admin_bootstrap:
+      'Назначен владелец админ-панели',
+
+    admin_opened:
+      'Открыта админ-панель',
+
+    broadcast_draft_started:
+      'Начато создание рассылки',
+
+    broadcast_draft_received:
+      'Получен материал для рассылки',
+
+    broadcast_started:
+      'Рассылка запущена',
+
+    broadcast_cancelled:
+      'Рассылка остановлена',
+
+    broadcast_deleted:
+      'Рассылка удалена из базы',
+
+    user_blocked:
+      'Пользователь заблокирован',
+
+    user_unblocked:
+      'Пользователь разблокирован',
+
+    user_deleted:
+      'Профиль пользователя удалён',
+
+    subscription_granted:
+      'Пользователю выдана подписка',
+
+    subscription_extended:
+      'Подписка пользователя продлена',
+
+    subscription_cancelled:
+      'Подписка пользователя отменена',
+
+    channel_removed:
+      'Канал удалён из LinkRay',
+
+    channel_transferred:
+      'Канал передан другому пользователю',
+
+    maintenance_enabled:
+      'Включён режим технических работ',
+
+    maintenance_disabled:
+      'Режим технических работ выключен',
+  };
+
+  /*
+   * Не показываем неизвестные технические
+   * коды на английском.
+   */
+  return names[action] ||
+    'Выполнено действие администратора';
+}
+
+function lrAdminAuditTargetRu(row) {
+  const targetId = S(
+    row?.target_id,
+    150
+  );
+
+  if (!targetId) {
+    return '';
+  }
+
+  const action = S(
+    row?.action,
+    150
+  );
+
+  if (action.startsWith('broadcast_')) {
+    return ` · рассылка №${H(targetId)}`;
+  }
+
+  if (action.startsWith('user_')) {
+    return ` · пользователь ${H(targetId)}`;
+  }
+
+  if (action.startsWith('subscription_')) {
+    return ` · пользователь ${H(targetId)}`;
+  }
+
+  if (action.startsWith('channel_')) {
+    return ` · канал ${H(targetId)}`;
+  }
+
+  return ` · объект №${H(targetId)}`;
+}
+
+async function broadcasts(u, id) {
+  const list = R(await query(`
+    SELECT *
+    FROM public.lr_broadcasts
+    ORDER BY id DESC
+    LIMIT 8
+  `));
+
+  const lines = [
+    '📨 <b>Рассылки</b>',
+    '',
+  ];
+
+  if (!list.length) {
+    lines.push('Рассылок ещё не было.');
+  }
+
+  for (const item of list) {
+    lines.push(
+      `№${item.id} · ` +
+      `${lrAdminBroadcastStatusRu(item.status)} · ` +
+      `отправлено ${F(item.sent_count)} ` +
+      `из ${F(item.total_count)} · ` +
+      `ошибок ${F(item.failed_count)}`
+    );
+  }
+
+  const buttons = [[
+    callbackButton(
+      '➕ Создать рассылку',
+      'admin:broadcast:new'
+    )
+  ]];
+
+  for (const item of list.slice(0, 6)) {
+    buttons.push([
+      callbackButton(
+        `📨 Рассылка №${item.id}`,
+        `admin:broadcast:${item.id}`
+      )
+    ]);
+  }
+
+  buttons.push([
+    callbackButton(
+      '⬅️ Назад',
+      'admin:menu'
+    )
+  ]);
+
+  await respond(
+    u,
+    id,
+    lines.join('\n'),
+    buttons
+  );
+}
+
 async function startBroadcast(u, id) {
   await setSession(id, 'broadcast_wait', {});
   await audit(id, 'broadcast_draft_started');
@@ -248,21 +414,337 @@ async function confirmBroadcast(u, id) {
   void work();
 }
 async function broadcastCard(u, id, bid) {
-  const b = R(await query(`SELECT * FROM public.lr_broadcasts WHERE id=$1`, [bid]))[0];
-  if (!b) return respond(u, id, 'Рассылка не найдена.', [[callbackButton('⬅️ Назад', 'admin:broadcasts')]]);
-  const buttons = [[callbackButton('🔄 Обновить', `admin:broadcast:${bid}`)]];
-  if (['queued', 'running'].includes(b.status)) buttons.push([callbackButton('⛔ Остановить', `admin:broadcast:cancel:${bid}`)]);
-  buttons.push([callbackButton('⬅️ Назад', 'admin:broadcasts')]);
-  await respond(u, id, `📨 <b>Рассылка №${b.id}</b>\n\nСтатус: <b>${H(b.status)}</b>\nПолучателей: <b>${F(b.total_count)}</b>\nОтправлено: <b>${F(b.sent_count)}</b>\nОшибок: <b>${F(b.failed_count)}</b>\nСоздана: <b>${D(b.created_at)}</b>`, buttons);
+  const broadcast = R(await query(`
+    SELECT *
+    FROM public.lr_broadcasts
+    WHERE id=$1
+    LIMIT 1
+  `, [bid]))[0];
+
+  if (!broadcast) {
+    return respond(
+      u,
+      id,
+      '⚠️ Рассылка не найдена.',
+      [[
+        callbackButton(
+          '⬅️ К рассылкам',
+          'admin:broadcasts'
+        )
+      ]]
+    );
+  }
+
+  const buttons = [[
+    callbackButton(
+      '🔄 Обновить',
+      `admin:broadcast:${bid}`
+    )
+  ]];
+
+  if (
+    ['queued', 'running'].includes(
+      broadcast.status
+    )
+  ) {
+    buttons.push([
+      callbackButton(
+        '⛔ Остановить',
+        `admin:broadcast:cancel:${bid}`
+      )
+    ]);
+  } else {
+    buttons.push([
+      callbackButton(
+        '🗑 Удалить из базы',
+        `admin:broadcast:delete:ask:${bid}`
+      )
+    ]);
+  }
+
+  buttons.push([
+    callbackButton(
+      '⬅️ Назад',
+      'admin:broadcasts'
+    )
+  ]);
+
+  await respond(
+    u,
+    id,
+    [
+      `📨 <b>Рассылка №${broadcast.id}</b>`,
+      '',
+      `Статус: <b>${
+        lrAdminBroadcastStatusRu(
+          broadcast.status
+        )
+      }</b>`,
+      `Получателей: ${F(
+        broadcast.total_count
+      )}`,
+      `Отправлено: ${F(
+        broadcast.sent_count
+      )}`,
+      `Ошибок: ${F(
+        broadcast.failed_count
+      )}`,
+      `Создана: ${D(
+        broadcast.created_at
+      )}`,
+    ].join('\n'),
+    buttons
+  );
 }
-async function cancelBroadcast(u, id, bid) {
-  await query(`UPDATE public.lr_broadcasts SET status='cancelled',cancelled_at=now(),updated_at=now()
-    WHERE id=$1 AND status IN('queued','running')`, [bid]);
-  await query(`UPDATE public.lr_broadcast_recipients SET status='cancelled',updated_at=now()
-    WHERE broadcast_id=$1 AND status='pending'`, [bid]);
-  await audit(id, 'broadcast_cancelled', bid);
-  await broadcastCard(u, id, bid);
+
+async function cancelBroadcast(
+  u,
+  id,
+  bid
+) {
+  await query(`
+    UPDATE public.lr_broadcasts
+    SET
+      status='cancelled',
+      cancelled_at=now(),
+      updated_at=now()
+    WHERE id=$1
+      AND status IN (
+        'queued',
+        'running'
+      )
+  `, [bid]);
+
+  await query(`
+    UPDATE public.lr_broadcast_recipients
+    SET
+      status='cancelled',
+      updated_at=now()
+    WHERE broadcast_id=$1
+      AND status IN (
+        'pending',
+        'sending'
+      )
+  `, [bid]);
+
+  await audit(
+    id,
+    'broadcast_cancelled',
+    bid
+  );
+
+  await broadcastCard(
+    u,
+    id,
+    bid
+  );
 }
+
+async function askDeleteBroadcast(
+  u,
+  id,
+  bid
+) {
+  const broadcast = R(await query(`
+    SELECT *
+    FROM public.lr_broadcasts
+    WHERE id=$1
+    LIMIT 1
+  `, [bid]))[0];
+
+  if (!broadcast) {
+    return respond(
+      u,
+      id,
+      '⚠️ Рассылка уже удалена или не найдена.',
+      [[
+        callbackButton(
+          '⬅️ К рассылкам',
+          'admin:broadcasts'
+        )
+      ]]
+    );
+  }
+
+  if (
+    ['queued', 'running'].includes(
+      broadcast.status
+    )
+  ) {
+    return respond(
+      u,
+      id,
+      [
+        '⚠️ <b>Нельзя удалить активную рассылку</b>',
+        '',
+        'Сначала остановите её, затем удалите из базы.',
+      ].join('\n'),
+      [
+        [
+          callbackButton(
+            '⛔ Остановить',
+            `admin:broadcast:cancel:${bid}`
+          )
+        ],
+        [
+          callbackButton(
+            '⬅️ Назад',
+            `admin:broadcast:${bid}`
+          )
+        ],
+      ]
+    );
+  }
+
+  await respond(
+    u,
+    id,
+    [
+      `🗑 <b>Удалить рассылку №${bid}?</b>`,
+      '',
+      `Статус: <b>${
+        lrAdminBroadcastStatusRu(
+          broadcast.status
+        )
+      }</b>`,
+      `Получателей: ${F(
+        broadcast.total_count
+      )}`,
+      `Отправлено: ${F(
+        broadcast.sent_count
+      )}`,
+      `Ошибок: ${F(
+        broadcast.failed_count
+      )}`,
+      '',
+      'Из базы будут удалены карточка рассылки ',
+      'и техническая история доставки.',
+      '',
+      'Сообщения, которые уже получили пользователи, ',
+      'останутся в их диалогах.',
+    ].join('\n'),
+    [
+      [
+        callbackButton(
+          '🗑 Да, удалить',
+          `admin:broadcast:delete:${bid}`
+        )
+      ],
+      [
+        callbackButton(
+          '⬅️ Отмена',
+          `admin:broadcast:${bid}`
+        )
+      ],
+    ]
+  );
+}
+
+async function deleteBroadcast(
+  u,
+  id,
+  bid
+) {
+  const broadcast = R(await query(`
+    SELECT *
+    FROM public.lr_broadcasts
+    WHERE id=$1
+    LIMIT 1
+  `, [bid]))[0];
+
+  if (!broadcast) {
+    return respond(
+      u,
+      id,
+      '⚠️ Рассылка уже удалена или не найдена.',
+      [[
+        callbackButton(
+          '⬅️ К рассылкам',
+          'admin:broadcasts'
+        )
+      ]]
+    );
+  }
+
+  if (
+    ['queued', 'running'].includes(
+      broadcast.status
+    )
+  ) {
+    return respond(
+      u,
+      id,
+      '⚠️ Сначала остановите активную рассылку.',
+      [[
+        callbackButton(
+          '⬅️ Назад',
+          `admin:broadcast:${bid}`
+        )
+      ]]
+    );
+  }
+
+  const removed = R(await query(`
+    DELETE FROM public.lr_broadcasts
+    WHERE id=$1
+      AND status NOT IN (
+        'queued',
+        'running'
+      )
+    RETURNING id
+  `, [bid]))[0];
+
+  if (!removed) {
+    return respond(
+      u,
+      id,
+      '⚠️ Не удалось удалить рассылку.',
+      [[
+        callbackButton(
+          '⬅️ Назад',
+          `admin:broadcast:${bid}`
+        )
+      ]]
+    );
+  }
+
+  await audit(
+    id,
+    'broadcast_deleted',
+    bid,
+    {
+      previous_status:
+        broadcast.status,
+
+      total:
+        N(broadcast.total_count),
+
+      sent:
+        N(broadcast.sent_count),
+
+      failed:
+        N(broadcast.failed_count),
+    }
+  );
+
+  await respond(
+    u,
+    id,
+    [
+      `✅ <b>Рассылка №${bid} удалена</b>`,
+      '',
+      'Карточка рассылки и технические записи ',
+      'доставки удалены из базы.',
+    ].join('\n'),
+    [[
+      callbackButton(
+        '⬅️ К рассылкам',
+        'admin:broadcasts'
+      )
+    ]]
+  );
+}
+
 /* LR_ADMIN_CLICKABLE_USERS_V1 */
 async function users(u, id) {
   const list = R(await query(`
@@ -618,27 +1100,164 @@ async function channels(u, id) {
 }
 
 async function logs(u, id) {
-  const list = R(await query(`SELECT * FROM public.lr_admin_audit ORDER BY id DESC LIMIT 15`));
-  const lines = ['📜 <b>Журнал действий</b>', ''];
-  for (const x of list) lines.push(`${D(x.created_at)} — <b>${H(x.action)}</b>${x.target_id ? ` · ${H(x.target_id)}` : ''}`);
-  if (!list.length) lines.push('Действий пока нет.');
-  await respond(u, id, lines.join('\n'), [[callbackButton('🔄 Обновить', 'admin:logs')], [callbackButton('⬅️ Назад', 'admin:menu')]]);
+  const list = R(await query(`
+    SELECT *
+    FROM public.lr_admin_audit
+    ORDER BY id DESC
+    LIMIT 15
+  `));
+
+  const lines = [
+    '📜 <b>Журнал действий</b>',
+    '',
+  ];
+
+  for (const item of list) {
+    lines.push(
+      `${D(item.created_at)} — ` +
+      `${lrAdminAuditActionRu(
+        item.action
+      )}` +
+      `${lrAdminAuditTargetRu(item)}`
+    );
+  }
+
+  if (!list.length) {
+    lines.push('Действий пока нет.');
+  }
+
+  await respond(
+    u,
+    id,
+    lines.join('\n'),
+    [
+      [
+        callbackButton(
+          '🔄 Обновить',
+          'admin:logs'
+        )
+      ],
+      [
+        callbackButton(
+          '⬅️ Назад',
+          'admin:menu'
+        )
+      ],
+    ]
+  );
 }
 
-async function handleAction(u, id, p) {
-  if (p === 'admin:menu') return menu(u, id);
-  if (p === 'admin:broadcasts') return broadcasts(u, id);
-  if (p === 'admin:broadcast:new') return startBroadcast(u, id);
-  if (p === 'admin:broadcast:edit') { await setSession(id, 'broadcast_wait', {}); return respond(u, id, '✏️ Отправьте новый материал.', [[callbackButton('❌ Отмена', 'admin:session:cancel')]]); }
-  if (p === 'admin:broadcast:confirm') return confirmBroadcast(u, id);
-  if (p === 'admin:session:cancel') { await setSession(id, 'idle', {}); return menu(u, id); }
-  if (p === 'admin:users') return users(u, id);
-  if (p === 'admin:channels') return channels(u, id);
-  if (p === 'admin:logs') return logs(u, id);
-  let m = p.match(/^admin:broadcast:(\d+)$/);
-  if (m) return broadcastCard(u, id, Number(m[1]));
-  m = p.match(/^admin:broadcast:cancel:(\d+)$/);
-  if (m) return cancelBroadcast(u, id, Number(m[1]));
+async function handleAction(
+  u,
+  id,
+  p
+) {
+  if (p === 'admin:menu') {
+    return menu(u, id);
+  }
+
+  if (p === 'admin:broadcasts') {
+    return broadcasts(u, id);
+  }
+
+  if (p === 'admin:broadcast:new') {
+    return startBroadcast(u, id);
+  }
+
+  if (p === 'admin:broadcast:edit') {
+    await setSession(
+      id,
+      'broadcast_wait',
+      {}
+    );
+
+    return respond(
+      u,
+      id,
+      '✏️ Отправьте новый материал.',
+      [[
+        callbackButton(
+          '❌ Отмена',
+          'admin:session:cancel'
+        )
+      ]]
+    );
+  }
+
+  if (p === 'admin:broadcast:confirm') {
+    return confirmBroadcast(u, id);
+  }
+
+  if (p === 'admin:session:cancel') {
+    await setSession(
+      id,
+      'idle',
+      {}
+    );
+
+    return menu(u, id);
+  }
+
+  if (p === 'admin:users') {
+    return users(u, id);
+  }
+
+  if (p === 'admin:channels') {
+    return channels(u, id);
+  }
+
+  if (p === 'admin:logs') {
+    return logs(u, id);
+  }
+
+  let match = p.match(
+    /^admin:broadcast:(\d+)$/
+  );
+
+  if (match) {
+    return broadcastCard(
+      u,
+      id,
+      Number(match[1])
+    );
+  }
+
+  match = p.match(
+    /^admin:broadcast:cancel:(\d+)$/
+  );
+
+  if (match) {
+    return cancelBroadcast(
+      u,
+      id,
+      Number(match[1])
+    );
+  }
+
+  match = p.match(
+    /^admin:broadcast:delete:ask:(\d+)$/
+  );
+
+  if (match) {
+    return askDeleteBroadcast(
+      u,
+      id,
+      Number(match[1])
+    );
+  }
+
+  match = p.match(
+    /^admin:broadcast:delete:(\d+)$/
+  );
+
+  if (match) {
+    return deleteBroadcast(
+      u,
+      id,
+      Number(match[1])
+    );
+  }
+
   return menu(u, id);
 }
 
