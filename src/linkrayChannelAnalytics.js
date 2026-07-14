@@ -4311,22 +4311,27 @@ async function sendDailyForRow(row) {
 }
 
 async function runDailyWorkerOnce() {
-  await ensureTables();
+  await lrV73EnsureDailyChannelTable();
+  const result = await query(`
+    SELECT d.owner_chat_id, c.id, c.max_chat_id, c.title, c.link
+    FROM public.lr_channel_analytics_daily_channels d
+    JOIN public.channels c ON c.id = d.channel_id
+    WHERE d.enabled = true AND c.is_active = true
+    ORDER BY d.owner_chat_id, lower(coalesce(c.title, '')), c.id
+  `).catch(() => []);
 
-  const result = await query(
-    `
-    SELECT *
-    FROM public.lr_channel_analytics_settings
-    WHERE daily_enabled=true
-      AND jsonb_array_length(links) > 0
-    `
-  ).catch(() => []);
-
+  const grouped = new Map();
   for (const row of rows(result)) {
+    const owner = String(row.owner_chat_id);
+    if (!grouped.has(owner)) grouped.set(owner, []);
+    grouped.get(owner).push(row);
+  }
+
+  for (const [owner, channelRows] of grouped.entries()) {
     try {
-      await sendDailyForRow(row);
+      await lrV73SendDailyGroup(owner, channelRows);
     } catch (error) {
-      console.error('[LinkRay channel analytics daily]', error.message || error);
+      console.error('[v73 daily] send failed', error?.stack || error);
     }
   }
 }
@@ -4552,7 +4557,7 @@ async function showAnalyticsMainMenu(chatId, keys, update = null) {
     '━━━━━━━━━━━━━━\n' +
     '📊 <b>LinkRay Analytics</b>\n\n' +
     'Выберите раздел:\n\n' +
-    '🖼 <b>🖼 Аналитика каналов</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.\n\n' +
+    '🖼 <b>Аналитика каналов</b> — отправьте ссылку канала или несколько ссылок, бот сделает PNG-карточку.\n\n' +
     '📆 <b>Ежедневный отчёт ПДП</b> — отчёт каждый день в 08:00 МСК: подписки, отписки и общий итог.\n' +
     '━━━━━━━━━━━━━━',
     [
@@ -4568,7 +4573,7 @@ async function showAnalyticsLinkInput(chatId, keys, update = null) {
 
   await lrEditOrSendV3(update, chatId,
     '━━━━━━━━━━━━━━\n' +
-    '🖼 <b>🖼 Аналитика каналов</b>\n\n' +
+    '🖼 <b>Аналитика каналов</b>\n\n' +
     'Отправьте ссылку MAX-канала.\n\n' +
     'Можно отправить несколько ссылок сразу — каждую с новой строки.\n' +
     'Тогда бот сделает сводную карточку сети каналов.\n' +
@@ -4581,25 +4586,39 @@ async function showAnalyticsLinkInput(chatId, keys, update = null) {
 }
 
 async function showDailyPdpMenu(chatId, keys, update = null) {
-  const settings = await getAnalyticsSettingsForKeys(keys);
-  const status = settings.dailyEnabled ? 'включён' : 'выключен';
-  const icon = settings.dailyEnabled ? '✅' : '⛔';
+  const channels = await lrV73DailyChannelRows(chatId);
+  const enabledCount = channels.filter((channel) => Boolean(channel.enabled)).length;
+  const keyboard = [];
 
-  await lrEditOrSendV3(update, chatId,
+  for (const channel of channels) {
+    keyboard.push([
+      lrCb(
+        `${channel.enabled ? '✅' : '➖'} ${lrV73ShortTitle(channel.title)}`,
+        `lrchan:daily_toggle:${channel.id}`
+      ),
+    ]);
+  }
+
+  if (channels.length) {
+    keyboard.push([
+      lrCb('✅ Включить все', 'lrchan:daily_all:on'),
+      lrCb('➖ Выключить все', 'lrchan:daily_all:off'),
+    ]);
+  }
+
+  keyboard.push([lrCb('⬅️ В аналитику', 'lrchan:menu')]);
+
+  await lrEditorSendV3(
+    update,
+    chatId,
     '━━━━━━━━━━━━━━\n' +
-    '📆 <b>Ежедневный отчёт ПДП</b>\n\n' +
-    `${icon} Сейчас отчёт: <b>${status}</b>\n` +
-    `📌 Каналов сохранено: <b>${settings.links.length}</b>\n\n` +
-    'Каждый день в 08:00 МСК бот будет присылать:\n' +
-    '✅ сколько подписалось;\n' +
-    '➖ сколько отписалось;\n' +
-    '📈 общий итог за сутки;\n' +
-    '🖼 карточку LinkRay Analytics.\n' +
-    '━━━━━━━━━━━━━━',
-    [
-      [lrCb('✅ Включить отчёт', 'lrchan:on'), lrCb('⛔ Отключить отчёт', 'lrchan:off')],
-      [lrCb('⬅️ В аналитику', 'lrchan:menu')],
-    ]
+      '📅 <b>Ежедневный отчёт ПДП</b>\n\n' +
+      `Каналов подключено: <b>${channels.length}</b>\n` +
+      `Отчёт включён: <b>${enabledCount}</b>\n\n` +
+      'Нажмите на канал, чтобы включить или выключить отчёт отдельно.\n' +
+      'Каждый день в 08:00 МСК бот пришлёт показатели только по отмеченным каналам.\n' +
+      '━━━━━━━━━━━━━━',
+    keyboard
   );
 }
 
@@ -4632,6 +4651,30 @@ async function handleAnalyticsMenu(update) {
   const text = getText(update);
   const links = lrLinksDeep(update, text);
 
+  if (payload.startsWith('lrchan:daily_toggle:')) {
+    const channelId = Number(payload.split(':').pop());
+    if (Number.isFinite(channelId) && channelId > 0) {
+      const channelRows = await lrV73DailyChannelRows(chatId);
+      const current = channelRows.find((channel) => Number(channel.id) === channelId);
+      await lrV73SetChannelDaily(chatId, channelId, !Boolean(current?.enabled));
+    }
+    await showDailyPdpMenu(chatId, keys, update);
+    return true;
+  }
+
+  if (payload === 'lrchan:daily_all:on') {
+    await lrV73SetAllDaily(chatId, true);
+    await showDailyPdpMenu(chatId, keys, update);
+    return true;
+  }
+
+  if (payload === 'lrchan:daily_all:off') {
+    await lrV73SetAllDaily(chatId, false);
+    await showDailyPdpMenu(chatId, keys, update);
+    return true;
+  }
+
+
 
   if (lrIsStartText(text) || payload === 'main:menu' || payload === 'start' || payload === '/start') {
     await showFallbackMainMenu(chatId, keys);
@@ -4656,13 +4699,13 @@ async function handleAnalyticsMenu(update) {
   }
 
   if (payload === 'lrchan:on') {
-    await setDaily(chatId, true);
+    await lrV73SetAllDaily(chatId, true);
     await showDailyPdpMenu(chatId, keys, update);
     return true;
   }
 
   if (payload === 'lrchan:off') {
-    await setDaily(chatId, false);
+    await lrV73SetAllDaily(chatId, false);
     await showDailyPdpMenu(chatId, keys, update);
     return true;
   }
@@ -6127,6 +6170,131 @@ export async function handleLinkRayChannelAnalyticsIncoming(update) {
 }
 /* LR_ANALYTICS_LINK_ROUTE_V4_END */
 
+
+/* LR_CHANNEL_ANALYTICS_V73_START */
+async function lrV73EnsureDailyChannelTable() {
+  await ensureTables();
+  await query(`
+    CREATE TABLE IF NOT EXISTS public.lr_channel_analytics_daily_channels (
+      owner_chat_id text NOT NULL,
+      channel_id bigint NOT NULL,
+      enabled boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY(owner_chat_id, channel_id)
+    )
+  `);
+  await query(`
+    CREATE INDEX IF NOT EXISTS lr_channel_analytics_daily_channels_enabled_idx
+    ON public.lr_channel_analytics_daily_channels(enabled, owner_chat_id)
+  `).catch(() => {});
+}
+
+async function lrV73SyncDailyChannels(ownerChatId) {
+  await lrV73EnsureDailyChannelTable();
+  await query(`
+    INSERT INTO public.lr_channel_analytics_daily_channels
+      (owner_chat_id, channel_id, enabled, updated_at)
+    SELECT $1, c.id, false, now()
+    FROM public.channels c
+    WHERE c.is_active = true
+    ON CONFLICT(owner_chat_id, channel_id) DO NOTHING
+  `, [String(ownerChatId)]);
+}
+
+async function lrV73DailyChannelRows(ownerChatId) {
+  await lrV73SyncDailyChannels(ownerChatId);
+  const result = await query(`
+    SELECT c.id, c.max_chat_id, c.title, c.link,
+           coalesce(d.enabled, false) AS enabled
+    FROM public.channels c
+    LEFT JOIN public.lr_channel_analytics_daily_channels d
+      ON d.owner_chat_id = $1 AND d.channel_id = c.id
+    WHERE c.is_active = true
+    ORDER BY lower(coalesce(c.title, '')), c.id
+  `, [String(ownerChatId)]).catch(() => []);
+  return rows(result);
+}
+
+async function lrV73SetChannelDaily(ownerChatId, channelId, enabled) {
+  await lrV73EnsureDailyChannelTable();
+  await query(`
+    INSERT INTO public.lr_channel_analytics_daily_channels
+      (owner_chat_id, channel_id, enabled, updated_at)
+    VALUES($1, $2, $3, now())
+    ON CONFLICT(owner_chat_id, channel_id)
+    DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()
+  `, [String(ownerChatId), Number(channelId), Boolean(enabled)]);
+}
+
+async function lrV73SetAllDaily(ownerChatId, enabled) {
+  await lrV73SyncDailyChannels(ownerChatId);
+  await query(`
+    UPDATE public.lr_channel_analytics_daily_channels
+    SET enabled = $2, updated_at = now()
+    WHERE owner_chat_id = $1
+  `, [String(ownerChatId), Boolean(enabled)]);
+}
+
+function lrV73ShortTitle(value, limit = 31) {
+  const text = String(value || 'Канал').trim() || 'Канал';
+  return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
+}
+
+async function lrV73ResolveDailyChannel(row, index = 0) {
+  const candidates = [row?.link, row?.max_chat_id, row?.id].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const resolved = await resolveChannel(String(candidate), {
+        _lrIndex: index,
+        id: row?.id,
+        channel_id: row?.id,
+        max_chat_id: row?.max_chat_id,
+        title: row?.title,
+        link: row?.link,
+      });
+      if (resolved) {
+        resolved.title = resolved.title || row?.title || 'Канал';
+        resolved.link = resolved.link || row?.link || '';
+        return resolved;
+      }
+    } catch {}
+  }
+  return {
+    title: row?.title || 'Канал',
+    link: row?.link || '',
+    subscribers: 0,
+    views24: 0,
+    views48: 0,
+    views72: 0,
+    er24: 0,
+    delta_day: 0,
+    delta_week: 0,
+    delta_month: 0,
+  };
+}
+
+async function lrV73SendDailyGroup(ownerChatId, sourceRows) {
+  const channels = [];
+  for (let i = 0; i < sourceRows.length; i += 1) {
+    channels.push(await lrV73ResolveDailyChannel(sourceRows[i], i));
+  }
+  if (!channels.length) return;
+  const image = channels.length === 1
+    ? await renderSingle(channels[0])
+    : await renderNetwork(channels);
+  const caption = channels.length === 1
+    ? lrAnalyticsCaptionSingle(channels[0])
+    : lrAnalyticsCaptionNetwork(channels);
+  await sendImage(String(ownerChatId), image, caption);
+  console.log('[v73 daily] sent', JSON.stringify({
+    ownerChatId: String(ownerChatId),
+    channels: channels.length,
+  }));
+}
+/* LR_CHANNEL_ANALYTICS_V73_END */
+
+
 export function mountLinkRayChannelAnalytics(app) {
   if (mounted) return;
   mounted = true;
@@ -6156,7 +6324,7 @@ export function mountLinkRayChannelAnalytics(app) {
       if (!chatId) return next();
 
       if (payload === 'lrchan:on') {
-        await setDaily(chatId, true);
+        await lrV73SetAllDaily(chatId, true);
         await sendMaxMessage({
           chatId,
           text: '📅 Ежедневный отчёт ПДП включён.\nСводка будет приходить каждый день в 08:00 МСК.',
@@ -6166,7 +6334,7 @@ export function mountLinkRayChannelAnalytics(app) {
       }
 
       if (payload === 'lrchan:off') {
-        await setDaily(chatId, false);
+        await lrV73SetAllDaily(chatId, false);
         await sendMaxMessage({
           chatId,
           text: '⛔📅 Ежедневный отчёт ПДП отключена.',
