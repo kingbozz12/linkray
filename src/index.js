@@ -2264,7 +2264,8 @@ function __lrForceMainMenuRowsV7() {
       callbackButton('📈 Отчёты', 'reports:menu'),
       callbackButton('🛡 Антифрод', 'fraud:menu')
     ],
-  ];
+ [callbackButton('👤 Профиль', 'main:profile')],
+ ];
 }
 
 function __lrForceMenuAttachmentsV7(rows) {
@@ -15316,7 +15317,8 @@ function mainMenuRows() {
       callbackButton('📈 Отчёты', 'reports:menu'),
       callbackButton('🛡 Антифрод', 'fraud:menu')
     ],
-  ];
+ [callbackButton('👤 Профиль', 'main:profile')],
+ ];
 }
 
 async function showMainCallback(callbackId) {
