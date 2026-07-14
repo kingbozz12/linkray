@@ -1,3 +1,4 @@
+import { startChannelTeamAccess, getProfileTeamAccess } from './channelTeamAccess.js';
 import { startChannelAccessSync } from './channelAccessSync.js';
 import { installLinkRayAdminPanel } from './adminPanel.js';
 import 'dotenv/config';
@@ -3389,6 +3390,145 @@ function lrProfileFormatText(profile) {
   ].join('\n');
 }
 
+/* LR_TEAM_PROFILE_FORMAT_V1 */
+
+function lrProfileFormatTextWithTeam(
+  profile,
+  team = {}
+) {
+  const localId = `LR-${String(
+    profile.profile_number ||
+    profile.id
+  ).padStart(6, '0')}`;
+
+  const lines = [
+    '👤 <b>Профиль LinkRay</b>',
+    '',
+    `🆔 ID профиля: <b>${localId}</b>`,
+    `👤 Имя: <b>${lrProfileEsc(
+      profile.display_name ||
+      'Пользователь MAX'
+    )}</b>`,
+    '',
+  ];
+
+  if (team.ownPaid) {
+    lines.push(
+      `💎 Личная подписка: <b>${lrProfileEsc(
+        team.ownPaid.tariffTitle
+      )}</b>`
+    );
+
+    const limit =
+      team.ownPaid.channelLimit === null
+        ? ''
+        : ` из ${Number(
+            team.ownPaid.channelLimit
+          )}`;
+
+    lines.push(
+      `📢 Оплачено каналов: <b>${Number(
+        team.ownPaid.assignedChannels ||
+        0
+      )}${limit}</b>`
+    );
+
+    lines.push(
+      '👥 Доступ другим администраторам: <b>включён</b>'
+    );
+
+    if (team.ownPaid.expiresAt) {
+      lines.push(
+        `📅 Подписка до: <b>${lrProfileMskDate(
+          team.ownPaid.expiresAt
+        )}</b>`
+      );
+    }
+  } else {
+    lines.push(
+      `💎 Личная подписка: <b>${lrProfileEsc(
+        profile.tariff_title ||
+        'Бесплатный'
+      )}</b>`
+    );
+  }
+
+  if (
+    Array.isArray(team.sharedChannels) &&
+    team.sharedChannels.length
+  ) {
+    lines.push('');
+    lines.push(
+      `🤝 Доступ по подписке команды: <b>${
+        team.sharedChannels.length
+      }</b>`
+    );
+
+    for (
+      const channel
+      of team.sharedChannels.slice(0, 10)
+    ) {
+      lines.push('');
+      lines.push(
+        `• <b>${lrProfileEsc(
+          channel.channelTitle ||
+          'Канал MAX'
+        )}</b>`
+      );
+
+      lines.push(
+        `  Тариф: ${lrProfileEsc(
+          channel.tariffTitle ||
+          'Платный'
+        )}`
+      );
+
+      lines.push(
+        `  Оплачивает: ${lrProfileEsc(
+          channel.payerName ||
+          'другой администратор'
+        )}`
+      );
+    }
+  }
+
+  lines.push('');
+
+  lines.push(
+    `📢 Подключено каналов: <b>${Number(
+      profile.channels_count || 0
+    )}</b>`
+  );
+
+  lines.push(
+    `🗓 Регистрация: <b>${lrProfileMskDate(
+      profile.registered_at
+    )}</b>`
+  );
+
+  lines.push('');
+  lines.push('━━━━━━━━━━━━');
+
+  if (team.freeMode) {
+    lines.push(
+      'Сейчас LinkRay доступен бесплатно.'
+    );
+  } else if (
+    !team.ownPaid &&
+    !team.sharedChannels?.length
+  ) {
+    lines.push(
+      'Для работы требуется активная подписка.'
+    );
+  } else {
+    lines.push(
+      'Один оплаченный канал доступен всем его администраторам.'
+    );
+  }
+
+  return lines.join('\n');
+}
+
 async function lrProfileShow(
   update,
   touchedUser = null
@@ -3441,8 +3581,30 @@ async function lrProfileShow(
     );
   }
 
+  /* LR_TEAM_PROFILE_HOOK_V1 */
+  const teamAccess =
+    await getProfileTeamAccess(
+      profile.max_user_id
+    ).catch((error) => {
+      console.error(
+        '[team profile access]',
+        error?.stack ||
+        error?.message ||
+        error
+      );
+
+      return {
+        freeMode: true,
+        ownPaid: null,
+        sharedChannels: [],
+      };
+    });
+
   const profileText =
-    lrProfileFormatText(profile);
+    lrProfileFormatTextWithTeam(
+      profile,
+      teamAccess
+    );
 
   const rows = [[
     callbackButton(
@@ -25996,3 +26158,16 @@ try {
   );
 }
 /* LR_CHANNEL_ACCESS_SYNC_V1_END */
+
+/* LR_CHANNEL_TEAM_ACCESS_START */
+try {
+  startChannelTeamAccess();
+} catch (error) {
+  console.error(
+    '[channel team access] start failed',
+    error?.stack ||
+    error?.message ||
+    error
+  );
+}
+/* LR_CHANNEL_TEAM_ACCESS_END */
