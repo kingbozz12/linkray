@@ -1,3 +1,4 @@
+import { installLinkRayAdminPanel } from './adminPanel.js';
 import 'dotenv/config';
 import './maxTextFormatPatch.js';
 import * as lrCrypto from 'node:crypto';
@@ -3397,6 +3398,9 @@ lrProfileEnsureSchema().catch((error) => {
 });
 
 /* LR_USER_PROFILE_V1_END */
+
+/* LR_ADMIN_PANEL_V1_INSTALL */
+installLinkRayAdminPanel(app);
 
 app.use(async function lrForceStartMenuV7(req, res, next) {
   try {
