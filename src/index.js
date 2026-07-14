@@ -1,3 +1,4 @@
+import { installLinkRayProofReports } from './linkrayProofReports.js';
 /* LR_PROFILE_SUPPORT_BUTTON_V1 */
 import { startChannelTeamAccess, getProfileTeamAccess } from './channelTeamAccess.js';
 import { startChannelAccessSync } from './channelAccessSync.js';
@@ -23147,6 +23148,8 @@ console.log('[v62 plan media] installed');
 
 
 
+/* LR_LINKRAY_PROOF_REPORTS_INSTALL_V1 */
+installLinkRayProofReports(app);
 app.post('/webhook', async (req, res) => {
   const incomingSecret = req.header('X-Max-Bot-Api-Secret');
   if (process.env.WEBHOOK_SECRET && incomingSecret !== process.env.WEBHOOK_SECRET) return res.status(401).json({ ok: false });
