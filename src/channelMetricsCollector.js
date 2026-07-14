@@ -409,7 +409,7 @@ async function loadChannels() {
         (
           SELECT MIN(d.updated_at)
           FROM public.lr_channel_analytics_daily_channels d
-          WHERE d.channel_id=c.id
+          WHERE (d.channel_id::text=c.id::text OR d.channel_id::text=c.max_chat_id::text)
             AND d.enabled=true
         )
       ) AS data
@@ -418,7 +418,7 @@ async function loadChannels() {
       AND EXISTS (
         SELECT 1
         FROM public.lr_channel_analytics_daily_channels d
-        WHERE d.channel_id=c.id
+        WHERE (d.channel_id::text=c.id::text OR d.channel_id::text=c.max_chat_id::text)
           AND d.enabled=true
       )
   `);
@@ -1012,17 +1012,30 @@ function readinessRetryAt(state) {
   return new Date(Math.max(now + 1_000, warmupAt, nextCollectionAt));
 }
 
+/* LR_CHANNEL_SNAPSHOT_BY_CHAT_ID_V2 */
 async function channelHasCollectorSnapshot(channel) {
   const normalized = normalizeLink(channel?.link);
-  const key = channelKey(normalized || `max://chat/${channel?.channelId}`, channel?.channelId);
+  const id = clean(channel?.channelId);
+  const key = channelKey(
+    normalized || `max://chat/${id}`,
+    id
+  );
+
   const result = rows(await query(`
     SELECT 1
     FROM public.lr_channel_analytics_snapshots
     WHERE collection_source='max_api_collector_v1'
-      AND (channel_key=$1 OR link=$2)
+      AND (
+        channel_key=$1
+        OR link=$2
+        OR raw #>> '{chat,chat_id}'=$3
+        OR raw #>> '{chat,id}'=$3
+        OR raw #>> '{chat,chat,id}'=$3
+      )
     ORDER BY captured_at DESC
     LIMIT 1
-  `, [key, normalized]).catch(() => []));
+  `, [key, normalized, id]).catch(() => []));
+
   return result.length > 0;
 }
 
@@ -1078,14 +1091,33 @@ export async function getChannelMetricsReadiness(links = []) {
   const matched = [];
   const missing = [];
 
+  /* LR_CHANNEL_PRIVATE_LINK_MATCH_V2 */
+  const usedChannelIds = new Set();
+
   for (const link of requested) {
-    const channel = channels.find((item) =>
-      linksMatch(item.link, link) ||
-      clean(item.channelId) === clean(link) ||
-      clean(link).endsWith(`/${clean(item.channelId)}`)
+    let channel = channels.find((item) =>
+      !usedChannelIds.has(clean(item.channelId)) && (
+        linksMatch(item.link, link) ||
+        clean(item.channelId) === clean(link) ||
+        clean(link).endsWith(`/${clean(item.channelId)}`)
+      )
     );
-    if (channel) matched.push(channel);
-    else missing.push(link);
+
+    // Когда включён ровно один канал, он однозначно относится
+    // к отправленной приватной join-ссылке.
+    if (!channel && requested.length === 1 && channels.length === 1) {
+      channel = {
+        ...channels[0],
+        link,
+      };
+    }
+
+    if (channel) {
+      usedChannelIds.add(clean(channel.channelId));
+      matched.push(channel);
+    } else {
+      missing.push(link);
+    }
   }
 
   if (matched.length) {
@@ -1215,7 +1247,7 @@ async function isChannelMetricsEnabled(channelId) {
     SELECT 1
     FROM public.lr_channel_analytics_daily_channels d
     JOIN public.channels c
-      ON c.id=d.channel_id
+      ON (d.channel_id::text=c.id::text OR d.channel_id::text=c.max_chat_id::text)
     WHERE d.enabled=true
       AND c.is_active=true
       AND c.max_chat_id::text=$1
