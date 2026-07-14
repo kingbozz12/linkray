@@ -1,3 +1,4 @@
+/* LR_ADMIN_IDENTITY_AND_AUDIT_FIX_V4 */
 import { query } from './db.js';
 import {
   sendMaxMessage,
@@ -249,7 +250,10 @@ function short(value, max = 24) {
 function mention(maxUserId, name) {
   const id = clean(maxUserId, 100);
   const title = esc(name || 'Без имени');
-  return /^\d+$/.test(id) ? `cite0†${title}†user` : `<b>${title}</b>`;
+
+  return /^\d+$/.test(id)
+    ? `<a href="max://user/${id}">${title}</a>`
+    : `<b>${title}</b>`;
 }
 
 function normalizeChannelLink(value) {
@@ -271,9 +275,19 @@ function normalizeChannelLink(value) {
 }
 
 function channelTitle(channel) {
-  const title = esc(channel?.title || `Канал №${channel?.id || '—'}`);
-  const link = normalizeChannelLink(channel?.link);
-  return link ? `<a href="${esc(link)}">${title}</a>` : `<b>${title}</b>`;
+  const title = esc(
+    channel?.title ||
+    `Канал №${channel?.id || '—'}`,
+  );
+
+  const link =
+    normalizeChannelLink(
+      channel?.link,
+    );
+
+  return link
+    ? `<a href="${link}">${title}</a>`
+    : `<b>${title}</b>`;
 }
 
 async function dashboardStats() {
@@ -1136,8 +1150,7 @@ async function handleDirectMessage(update, adminId, session) {
 
   const target = (
     await safe(
-      `SELECT id,max_user_id,display_name,is_blocked
-       FROM public.lr_users WHERE id=$1 LIMIT 1`,
+      `SELECT id,profile_number,max_user_id,display_name,is_blocked FROM public.lr_users WHERE id=$1 LIMIT 1`,
       [Number(session?.data?.user_id)],
     )
   )[0];
@@ -1174,7 +1187,7 @@ async function handleDirectMessage(update, adminId, session) {
     });
 
     await setSession(adminId, 'idle', {});
-    await audit(adminId, 'user_message_sent', profileCode(target), {
+    await audit(adminId, 'Пользователю отправлено личное сообщение', profileCode(target), {
       display_name: target.display_name,
       max_user_id: target.max_user_id,
     });
