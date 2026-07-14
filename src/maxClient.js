@@ -1,6 +1,6 @@
 // LinkRay clean MAX client with native MAX markup passthrough
 
-const MAX_API_URL = process.env.MAX_API_URL || process.env.MAX_BASE_URL || 'https://platform-api.max.ru';
+const MAX_API_URL = process.env.MAX_API_URL || process.env.MAX_BASE_URL || 'https://platform-api2.max.ru';
 
 function token() {
   return process.env.BOT_TOKEN || process.env.MAX_BOT_TOKEN || process.env.MAX_TOKEN || '';
@@ -261,7 +261,36 @@ function buildMessageBody({ text = '', format = 'html', attachments = [], markup
   return body;
 }
 
-export function callbackButton(text, payload) {
+
+/* LR_REPORT_NO_CLICKS_V59_MAXCLIENT_START */
+function lrV59TextFromOutgoingPayload(value) {
+  const out = [];
+  const seen = new WeakSet();
+  const walk = (node) => {
+    if (node === null || node === undefined) return;
+    if (typeof node === 'string') { out.push(node); return; }
+    if (typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    for (const key of ['text','caption','message','body','notification','title','description']) {
+      const v = node[key];
+      if (typeof v === 'string') out.push(v);
+      else if (v && typeof v === 'object') walk(v);
+    }
+    if (Array.isArray(node)) for (const v of node) walk(v);
+  };
+  walk(value);
+  return out.join('\n');
+}
+function lrV59ShouldDropClickReport(payload) {
+  const text = lrV59TextFromOutgoingPayload(payload).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  const isReport = /Сводн(?:ый|ой)\s+отч[её]т|Публикации\s*:|Просмотры\s+за\s+24ч|Общие\s+просмотры/i.test(text);
+  const hasClicks = /Уникальные\s+клики|Все\s+клики|Переходы\s+по\s+ссылкам|Красивый\s+отч[её]т\s*:|Все\s+переходы/i.test(text);
+  return Boolean(isReport && hasClicks);
+}
+/* LR_REPORT_NO_CLICKS_V59_MAXCLIENT_END */
+ export function callbackButton(text, payload) {
   return {
     type: 'callback',
     text: String(text),
@@ -463,7 +492,7 @@ export async function sendMaxMessage({
   allowChannelService = false,
   allowChannelPost = false,
   bypassChannelGuard = false,
-} = {}) {
+} = {}) { if (typeof lrV59ShouldDropClickReport === 'function' && lrV59ShouldDropClickReport({ chatId, userId, text, format, attachments, markup })) { console.log('[v59 report] dropped duplicate 24h click report', JSON.stringify({ chatId: String(chatId || ''), userId: String(userId || ''), preview: String(text || '').slice(0, 180) })); return { success: true, ok: true, skipped: 'lr_v59_duplicate_click_report' }; }
   const url = new URL(`${MAX_API_URL}/messages`);
 
   if (chatId) {

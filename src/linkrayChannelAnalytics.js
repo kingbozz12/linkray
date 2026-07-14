@@ -5,6 +5,7 @@ import express from 'express';
 import sharp from 'sharp';
 import { query } from './db.js';
 import { sendMaxMessage, answerCallback } from './maxClient.js';
+import { getChannelMetricsReadiness } from './channelMetricsCollector.js';
 
 const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL ||
@@ -4268,8 +4269,89 @@ async function setDaily(chatId, enabled) {
   );
 }
 
+
+/* LR_CHANNEL_DATA_READY_WARNING_V1_START */
+function lrChannelReadyAtMsk(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return 'после следующего успешного сбора';
+  return date.toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).replace(',', '');
+}
+
+function lrChannelReadyTitleList(readiness) {
+  const channels = Array.isArray(readiness?.channels) ? readiness.channels : [];
+  return channels
+    .filter((channel) => !channel.ready)
+    .map((channel) => String(channel.title || 'Канал MAX').trim())
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+async function lrSendChannelDataNotReady(chatId, readiness, update = null) {
+  const missing = Array.isArray(readiness?.missing) ? readiness.missing : [];
+  const titles = lrChannelReadyTitleList(readiness);
+  let text = '';
+
+  if (missing.length) {
+    text =
+      '⚠️ Отчёт пока не может быть сформирован\n\n' +
+      'Один или несколько каналов ещё не подключены к сбору аналитики либо бот не имеет прав администратора.\n\n' +
+      'Таймер: не запущен.\n' +
+      'Отсчёт начнётся автоматически после успешного подключения канала и первого замера.\n\n' +
+      'Проверьте, что канал добавлен в LinkRay и бот назначен администратором.';
+  } else {
+    const countdown = String(readiness?.countdown || '00:10:00');
+    const readyAt = lrChannelReadyAtMsk(readiness?.readyAt);
+    const channelLine = titles.length
+      ? `\nКаналы: ${titles.join(', ')}\n`
+      : '\n';
+    const reasonLine = readiness?.reason === 'collection_error'
+      ? 'Последний сбор завершился ошибкой. LinkRay повторит попытку автоматически.\n\n'
+      : '';
+
+    text =
+      '⚠️ Отчёт пока не может быть сформирован\n\n' +
+      'LinkRay уже собирает исходные данные. Полный отчёт станет доступен после накопления минимум 24 часов данных с момента включения аналитики на канал. Подписки и отписки считаются сразу.\n' +
+      channelLine +
+      reasonLine +
+      `⏳ До готовности: ${countdown}\n` +
+      `Ориентировочно отчёт будет готов: ${readyAt} МСК.`;
+  }
+
+  const buttons = [
+    [lrCb('🔄 Обновить таймер', 'lrchan:ready_refresh')],
+    [lrCb('⬅️ В аналитику', 'lrchan:menu')],
+  ];
+
+  if (update && typeof lrEditOrSendV3 === 'function') {
+    await lrEditOrSendV3(update, chatId, text, buttons);
+    return;
+  }
+
+  await sendMaxMessage({
+    chatId,
+    text,
+    format: 'html',
+    attachments: lrMenuButtons(buttons),
+  });
+}
+/* LR_CHANNEL_DATA_READY_WARNING_V1_END */
+
 async function handleLinks(chatId, links, update = null) {
   await saveUserLinks(chatId, links);
+  /* LR_CHANNEL_DATA_READY_CHECK_V1 */
+  const readiness = await getChannelMetricsReadiness(links);
+  if (!readiness.ready) {
+    await lrSendChannelDataNotReady(chatId, readiness, update);
+    return false;
+  }
 
   const previewMap = lrExtractPreviewMap(update || {}, links);
   const channels = [];
@@ -4293,8 +4375,13 @@ async function handleLinks(chatId, links, update = null) {
 async function sendDailyForRow(row) {
   const chatId = String(row.chat_id);
   const links = Array.isArray(row.links) ? row.links : [];
-
   if (!links.length) return;
+  /* LR_LEGACY_DAILY_READY_CHECK_V1 */
+  const readiness = await getChannelMetricsReadiness(links);
+  if (!readiness.ready) {
+    await lrSendChannelDataNotReady(chatId, readiness, null);
+    return;
+  }
 
   const channels = [];
 
@@ -4412,7 +4499,7 @@ function lrPayloadDeep(update) {
   const strings = lrDeepStrings(update);
 
   return strings.find((s) =>
-    /^(main:analytics|analytics:menu|lrchan:menu|lrchan:links|lrchan:daily|lrchan:on|lrchan:off|main:menu)$/.test(String(s))
+    /^(main:analytics|analytics:menu|lrchan:menu|lrchan:links|lrchan:daily|lrchan:on|lrchan:off|lrchan:ready_refresh|main:menu)$/.test(String(s))
   ) || '';
 }
 
@@ -4653,6 +4740,18 @@ async function handleAnalyticsMenu(update) {
   const payload = lrPayloadDeep(update);
   const text = getText(update);
   const links = lrLinksDeep(update, text);
+  /* LR_CHANNEL_READY_REFRESH_V1 */
+  if (payload === 'lrchan:ready_refresh') {
+    const saved = await getAnalyticsSettingsForKeys(keys);
+    const savedLinks = Array.isArray(saved?.links) ? saved.links : [];
+    if (!savedLinks.length) {
+      await showAnalyticsLinkInput(chatId, keys, update);
+      return true;
+    }
+    await handleLinks(chatId, savedLinks, update);
+    return true;
+  }
+
 
   if (payload.startsWith('lrchan:daily_toggle:')) {
     const channelId = Number(payload.split(':').pop());
@@ -4763,7 +4862,7 @@ function lrV33MaxToken() {
 }
 
 function lrV33ApiBase() {
-  return (process.env.MAX_API_BASE || process.env.MAX_API_URL || 'https://platform-api.max.ru')
+  return (process.env.MAX_API_BASE || process.env.MAX_API_URL || 'https://platform-api2.max.ru')
     .replace(/\/+$/, '');
 }
 
@@ -5011,7 +5110,7 @@ function lrV34MaxToken() {
 }
 
 function lrV34ApiBase() {
-  return (process.env.MAX_API_BASE || process.env.MAX_API_URL || 'https://platform-api.max.ru').replace(/\/+$/, '');
+  return (process.env.MAX_API_BASE || process.env.MAX_API_URL || 'https://platform-api2.max.ru').replace(/\/+$/, '');
 }
 
 function lrV34PublicBase() {
@@ -6114,6 +6213,16 @@ async function lrV34TryDirectPublicNetworkCard(update) {
   const links = lrV34ExtractLinks(text);
 
   if (links.length < 2) return false;
+  /* LR_DIRECT_MULTI_READY_CHECK_V1 */
+  const readiness = await getChannelMetricsReadiness(links);
+  if (!readiness.ready) {
+    const target = typeof lrV34TargetFromUpdate === 'function'
+      ? lrV34TargetFromUpdate(update)
+      : { chatId: getChatId(update) };
+    const chatId = target?.chatId || getChatId(update);
+    if (chatId) await lrSendChannelDataNotReady(chatId, readiness, update);
+    return true;
+  }
 
   console.log('[LR_DIRECT_PUBLIC_IMAGE_V34] intercept multi links', links.join(' | '));
 
@@ -6278,6 +6387,13 @@ async function lrV73ResolveDailyChannel(row, index = 0) {
 }
 
 async function lrV73SendDailyGroup(ownerChatId, sourceRows) {
+  /* LR_DAILY_READY_CHECK_V1 */
+  const dailyLinks = sourceRows.map((row) => row?.link).filter(Boolean);
+  const readiness = await getChannelMetricsReadiness(dailyLinks);
+  if (!readiness.ready) {
+    await lrSendChannelDataNotReady(String(ownerChatId), readiness, null);
+    return;
+  }
   const channels = [];
   for (let i = 0; i < sourceRows.length; i += 1) {
     channels.push(await lrV73ResolveDailyChannel(sourceRows[i], i));

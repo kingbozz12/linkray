@@ -24594,3 +24594,13 @@ try {
 }
 /* LR_CONTENT_PLAN_TEXT_SAVE_V54_END */
 
+/* LR_CHANNEL_METRICS_COLLECTOR_V1_BOOTSTRAP */
+import('./channelMetricsCollector.js')
+  .then((mod) => mod.installChannelMetricsCollector(app))
+  .catch((error) => {
+    console.error(
+      '[LR_CHANNEL_METRICS_BOOTSTRAP]',
+      error?.stack || error?.message || error
+    );
+  });
+/* LR_CHANNEL_METRICS_COLLECTOR_V1_BOOTSTRAP_END */
