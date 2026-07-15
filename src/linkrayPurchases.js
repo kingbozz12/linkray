@@ -1,3 +1,4 @@
+/* LR_PURCHASE_ARCHIVE_DELETE_V2 */
 /* LR_PURCHASES_PRIVATE_LINK_FIX_V1 */
 import crypto from 'node:crypto';
 
@@ -2860,6 +2861,15 @@ async function showPurchase(
     ),
   ]);
 
+  if (purchase.archived_at) {
+    buttons.push([
+      callbackButton(
+        '🗑 Удалить из архива',
+        `buy:delete:ask:${purchase.id}`
+      ),
+    ]);
+  }
+
   buttons.push([
     callbackButton(
       '⬅️ К закупам',
@@ -3035,6 +3045,200 @@ async function archivePurchase(
   );
 }
 
+async function askDeleteArchivedPurchase(
+  update,
+  purchaseId
+) {
+  const purchase =
+    await loadPurchase(
+      update,
+      purchaseId
+    );
+
+  if (!purchase) {
+    await respond(
+      update,
+      '⚠️ Закуп не найден или у вас нет доступа.',
+      [[
+        callbackButton(
+          '⬅️ К архиву',
+          'buy:list:archive'
+        ),
+      ]]
+    );
+
+    return;
+  }
+
+  if (!purchase.archived_at) {
+    await showPurchase(
+      update,
+      purchase.id,
+      '⚠️ Удалять можно только закупы, перенесённые в архив.'
+    );
+
+    return;
+  }
+
+  const title =
+    short(
+      purchase.source_title ||
+      purchase.source_link ||
+      purchase.target_title ||
+      'Закуп без названия',
+      70
+    );
+
+  await respond(
+    update,
+    [
+      '🗑 <b>Удалить закуп навсегда?</b>',
+      '',
+      `Номер: <b>${esc(
+        purchase.purchase_code ||
+        `LR-BUY-${purchase.id}`
+      )}</b>`,
+      `Канал: ${esc(title)}`,
+      '',
+      'Будут удалены карточка закупа, статистика и контрольные замеры.',
+      '<b>Рекламный пост в канале MAX удалён не будет.</b>',
+      '',
+      'Восстановить запись после удаления нельзя.',
+    ].join('\n'),
+    [
+      [
+        callbackButton(
+          '🗑 Да, удалить',
+          `buy:delete:confirm:${purchase.id}`
+        ),
+      ],
+      [
+        callbackButton(
+          '❌ Отмена',
+          `buy:open:${purchase.id}`
+        ),
+      ],
+    ]
+  );
+}
+
+async function deleteArchivedPurchase(
+  update,
+  purchaseId
+) {
+  const maxUserId =
+    updateUserId(update);
+
+  const user =
+    await currentUser(
+      maxUserId
+    );
+
+  if (!user) {
+    await respond(
+      update,
+      '⚠️ Профиль LinkRay не найден. Нажмите /start.',
+      [[
+        callbackButton(
+          '⬅️ К закупам',
+          'reports:menu'
+        ),
+      ]]
+    );
+
+    return;
+  }
+
+  const deleted =
+    rows(
+      await query(`
+        DELETE FROM
+          public.lr_purchases
+
+        WHERE id=$1
+          AND owner_user_id=$2
+          AND archived_at IS NOT NULL
+
+        RETURNING
+          purchase_code,
+          source_title,
+          source_link,
+          target_title
+      `, [
+        Number(purchaseId),
+        Number(user.id),
+      ])
+    )[0];
+
+  if (!deleted) {
+    await respond(
+      update,
+      [
+        '⚠️ Закуп не удалён.',
+        '',
+        'Он не найден, не принадлежит вам или уже возвращён из архива.',
+      ].join('\n'),
+      [
+        [
+          callbackButton(
+            '🗂 Открыть архив',
+            'buy:list:archive'
+          ),
+        ],
+        [
+          callbackButton(
+            '⬅️ К закупам',
+            'reports:menu'
+          ),
+        ],
+      ]
+    );
+
+    return;
+  }
+
+  await clearSession(maxUserId);
+
+  const title =
+    short(
+      deleted.source_title ||
+      deleted.source_link ||
+      deleted.target_title ||
+      'Закуп без названия',
+      70
+    );
+
+  await respond(
+    update,
+    [
+      '✅ <b>Закуп удалён из архива</b>',
+      '',
+      `Номер: <b>${esc(
+        deleted.purchase_code ||
+        `LR-BUY-${purchaseId}`
+      )}</b>`,
+      `Канал: ${esc(title)}`,
+      '',
+      'Связанная статистика и контрольные замеры также удалены.',
+      'Сам рекламный пост в MAX не изменялся.',
+    ].join('\n'),
+    [
+      [
+        callbackButton(
+          '🗂 К архиву',
+          'buy:list:archive'
+        ),
+      ],
+      [
+        callbackButton(
+          '⬅️ К закупам',
+          'reports:menu'
+        ),
+      ],
+    ]
+  );
+}
+
 async function handleCallback(
   update,
   payload
@@ -3151,6 +3355,34 @@ async function handleCallback(
 
   if (match) {
     await cyclePayment(
+      update,
+      Number(match[1])
+    );
+
+    return true;
+  }
+
+  match =
+    payload.match(
+      /^buy:delete:ask:(\d+)$/
+    );
+
+  if (match) {
+    await askDeleteArchivedPurchase(
+      update,
+      Number(match[1])
+    );
+
+    return true;
+  }
+
+  match =
+    payload.match(
+      /^buy:delete:confirm:(\d+)$/
+    );
+
+  if (match) {
+    await deleteArchivedPurchase(
       update,
       Number(match[1])
     );
