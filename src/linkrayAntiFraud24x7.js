@@ -1,7 +1,7 @@
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '1.0.1';
+const MODULE_VERSION = '1.1.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -874,51 +874,359 @@ export async function installLinkRayAntiFraud({
     return result[0] || null;
   }
 
-  async function notifyWave(wave) {
-    if (!wave || wave.alert_sent || wave.status === 'ignored') return;
-    const channel = await configByChannelId(wave.channel_id);
-    const level = waveLevel(wave);
-    const textBody = `━━━━━━━━━━━━━━\n🚨 <b>LinkRay AntiFraud обнаружил наплыв</b>\n\n` +
-      `<b>Канал:</b> ${esc(channel?.current_title || channel?.title || wave.max_chat_id)}\n` +
-      `<b>Начало:</b> ${formatDate(wave.started_at)}\n\n` +
-      `<b>ПДП до наплыва:</b> ${wave.participants_before ?? 'уточняется'}\n` +
-      `<b>ПДП после:</b> ${wave.participants_after ?? 'уточняется'}\n` +
-      `<b>Пришло:</b> +${num(wave.joined_count)}\n\n` +
-      `🚨 Высокий риск: ${num(wave.high_count)}\n` +
-      `⚠️ Средний риск: ${num(wave.medium_count)}\n` +
-      `✅ Вероятно живые: ${num(wave.normal_count)}\n` +
-      `🤖 Боты MAX: ${num(wave.max_bot_count)}\n` +
-      `🧹 Безопасная очистка: ${num(wave.eligible_count)}\n\n` +
-      `<b>Уровень угрозы:</b> ${level}\n` +
-      `Никто не удалён автоматически.\n━━━━━━━━━━━━━━`;
-    const buttons = [
-      [callbackButton('🔎 Открыть наплыв', `fraud:wave:${wave.id}`)],
-      [callbackButton(`🚨 Высокий риск — ${num(wave.high_count)}`, `fraud:list:${wave.id}:high:0`)],
-      [callbackButton(`🧹 Проверить очистку — ${num(wave.eligible_count)}`, `fraud:remove_prompt:${wave.id}`)],
-    ];
-    await sendMaxMessage({
-      userId: ownerId(),
-      text: textBody,
-      format: 'html',
-      attachments: inlineKeyboard(buttons),
-      purpose: 'antifraud_alert',
+  
+  /* LR_ANTIFRAUD_USER_ALERTS_V3_START */
+
+  let alertDeliverySchemaPromise = null;
+
+  function ensureAlertDeliverySchema() {
+    if (alertDeliverySchemaPromise) return alertDeliverySchemaPromise;
+
+    alertDeliverySchemaPromise = (async () => {
+      await query(`
+        CREATE TABLE IF NOT EXISTS public.lr_antifraud_alert_deliveries (
+          wave_id bigint NOT NULL
+            REFERENCES public.lr_antifraud_waves(id)
+            ON DELETE CASCADE,
+          channel_id bigint NOT NULL,
+          user_id text NOT NULL,
+          status text NOT NULL DEFAULT 'pending',
+          attempts integer NOT NULL DEFAULT 0,
+          last_error text,
+          sent_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (wave_id, user_id)
+        )
+      `);
+
+      await query(`
+        CREATE INDEX IF NOT EXISTS
+          lr_antifraud_alert_deliveries_status_idx
+        ON public.lr_antifraud_alert_deliveries(
+          status,
+          updated_at DESC
+        )
+      `);
+    })().catch((schemaError) => {
+      alertDeliverySchemaPromise = null;
+      throw schemaError;
     });
-    await query(`UPDATE lr_antifraud_waves SET alert_sent=true, updated_at=now() WHERE id=$1`, [wave.id]);
+
+    return alertDeliverySchemaPromise;
   }
 
-  async function maybeNotify(wave) {
-    if (!wave || wave.alert_sent || wave.status === 'ignored') return;
-    const joined = num(wave.joined_count);
-    const high = num(wave.high_count);
-    const medium = num(wave.medium_count);
-    const baselineData = json(wave.baseline, {});
+  async function channelAlertRecipients(channelId) {
+    const linked = rows(await query(`
+      SELECT DISTINCT u.max_user_id::text AS user_id
+      FROM public.lr_users u
+      JOIN public.lr_user_channels uc
+        ON uc.user_id=u.id
+      JOIN public.channels c
+        ON c.id=uc.channel_id
+      WHERE uc.channel_id=$1
+        AND u.max_user_id IS NOT NULL
+        AND length(trim(u.max_user_id::text))>0
+        AND COALESCE(c.is_active, true)=true
+      ORDER BY user_id
+    `, [channelId]));
+
+    const recipients = uniqueStrings(
+      linked.map((item) => item.user_id)
+    );
+
+    if (recipients.length) return recipients;
+
+    /*
+     * Безопасный резерв: если старая запись канала ещё не связана с
+     * lr_user_channels, уведомление не теряется и приходит владельцу
+     * LinkRay для диагностики. После нормальной связи канала основной
+     * получатель — пользователь канала.
+     */
+    const fallback = idText(ownerId());
+    return fallback ? [fallback] : [];
+  }
+
+  async function claimAlertDelivery(waveId, channelId, userId) {
+    const claimed = rows(await query(`
+      INSERT INTO public.lr_antifraud_alert_deliveries(
+        wave_id,
+        channel_id,
+        user_id,
+        status,
+        attempts,
+        updated_at
+      )
+      VALUES($1,$2,$3,'pending',1,now())
+      ON CONFLICT(wave_id,user_id)
+      DO UPDATE SET
+        status='pending',
+        attempts=lr_antifraud_alert_deliveries.attempts+1,
+        last_error=NULL,
+        updated_at=now()
+      WHERE lr_antifraud_alert_deliveries.status<>'sent'
+      RETURNING *
+    `, [waveId, channelId, String(userId)]));
+
+    return Boolean(claimed[0]);
+  }
+
+  async function finishAlertDelivery(
+    waveId,
+    userId,
+    status,
+    lastError = null
+  ) {
+    await query(`
+      UPDATE public.lr_antifraud_alert_deliveries
+      SET
+        status=$3,
+        last_error=$4,
+        sent_at=CASE WHEN $3='sent' THEN now() ELSE sent_at END,
+        updated_at=now()
+      WHERE wave_id=$1
+        AND user_id=$2
+    `, [
+      waveId,
+      String(userId),
+      status,
+      lastError ? text(lastError, 1500) : null,
+    ]);
+  }
+
+  function unsafeWaveDecision(wave) {
+    const joined = num(wave?.joined_count);
+    const high = num(wave?.high_count);
+    const medium = num(wave?.medium_count);
+    const eligible = num(wave?.eligible_count);
+    const baselineData = json(wave?.baseline, {});
     const ratio = num(baselineData?.ratio);
-    if (joined >= 8 && (high >= 3 || medium >= 6 || ratio >= 5)) {
-      await notifyWave(wave);
+
+    const unsafe = Boolean(
+      joined >= 8 &&
+      (
+        high >= 3 ||
+        medium >= 6 ||
+        eligible >= 1 ||
+        ratio >= 5
+      )
+    );
+
+    return {
+      unsafe,
+      joined,
+      high,
+      medium,
+      eligible,
+      ratio,
+    };
+  }
+
+  function unsafeAlertButtons(wave) {
+    const buttons = [
+      [
+        callbackButton(
+          '🔎 Открыть наплыв',
+          `fraud:wave:${wave.id}`
+        ),
+      ],
+    ];
+
+    if (num(wave.high_count) > 0) {
+      buttons.push([
+        callbackButton(
+          `🚨 Высокий риск — ${num(wave.high_count)}`,
+          `fraud:list:${wave.id}:high:0`
+        ),
+      ]);
+    }
+
+    if (num(wave.medium_count) > 0) {
+      buttons.push([
+        callbackButton(
+          `⚠️ Средний риск — ${num(wave.medium_count)}`,
+          `fraud:list:${wave.id}:medium:0`
+        ),
+      ]);
+    }
+
+    if (num(wave.eligible_count) > 0) {
+      buttons.push([
+        callbackButton(
+          `🧹 Проверить очистку — ${num(wave.eligible_count)}`,
+          `fraud:remove_prompt:${wave.id}`
+        ),
+      ]);
+    }
+
+    return buttons;
+  }
+
+  async function notifyWave(wave) {
+    if (!wave || wave.status === 'ignored') return;
+
+    const decision = unsafeWaveDecision(wave);
+    if (!decision.unsafe) return;
+
+    await ensureAlertDeliverySchema();
+
+    const channel = await configByChannelId(wave.channel_id);
+    const recipients = await channelAlertRecipients(wave.channel_id);
+    const level = waveLevel(wave);
+
+    if (!recipients.length) {
+      warn(
+        `unsafe wave ${wave.id}: no alert recipients for channel `
+        + `${wave.channel_id}`
+      );
+      return;
+    }
+
+    const textBody =
+      `━━━━━━━━━━━━━━\n` +
+      `🚨 LinkRay обнаружил небезопасный наплыв\n\n` +
+      `Канал: ${esc(
+        channel?.current_title ||
+        channel?.title ||
+        wave.max_chat_id
+      )}\n` +
+      `Начало: ${formatDate(wave.started_at)}\n\n` +
+      `ПДП до наплыва: ${
+        wave.participants_before ?? 'уточняется'
+      }\n` +
+      `ПДП сейчас: ${
+        wave.participants_after ?? 'уточняется'
+      }\n` +
+      `Пришло: +${decision.joined}\n\n` +
+      `🚨 Высокий риск: ${decision.high}\n` +
+      `⚠️ Средний риск: ${decision.medium}\n` +
+      `✅ Вероятно живые: ${num(wave.normal_count)}\n` +
+      `🤖 Боты MAX: ${num(wave.max_bot_count)}\n` +
+      `🧹 Можно проверить для очистки: ${decision.eligible}\n\n` +
+      `Уровень угрозы: ${level}\n` +
+      `Никто не удалён автоматически.\n` +
+      `Откройте наплыв и проверьте участников.\n` +
+      `━━━━━━━━━━━━━━`;
+
+    const attachments = inlineKeyboard(
+      unsafeAlertButtons(wave)
+    );
+
+    let delivered = 0;
+    let failed = 0;
+
+    for (const recipient of recipients) {
+      const claimed = await claimAlertDelivery(
+        wave.id,
+        wave.channel_id,
+        recipient
+      );
+
+      if (!claimed) continue;
+
+      try {
+        await sendMaxMessage({
+          userId: recipient,
+          text: textBody,
+          format: 'html',
+          attachments,
+          purpose: 'antifraud_unsafe_wave_alert',
+        });
+
+        await finishAlertDelivery(
+          wave.id,
+          recipient,
+          'sent'
+        );
+        delivered += 1;
+      } catch (sendError) {
+        const message = text(
+          sendError?.message || sendError,
+          1500
+        );
+
+        await finishAlertDelivery(
+          wave.id,
+          recipient,
+          'failed',
+          message
+        );
+
+        failed += 1;
+        error(
+          `unsafe wave ${wave.id}: alert to `
+          + `${recipient} failed: ${message}`
+        );
+      }
+    }
+
+    if (delivered > 0) {
+      await query(`
+        UPDATE public.lr_antifraud_waves
+        SET
+          alert_sent=true,
+          updated_at=now()
+        WHERE id=$1
+      `, [wave.id]);
+
+      log(
+        `unsafe wave ${wave.id}: delivered to `
+        + `${delivered} channel user(s)`
+      );
+    }
+
+    if (failed > 0) {
+      warn(
+        `unsafe wave ${wave.id}: ${failed} delivery failure(s); `
+        + `they will be retried`
+      );
     }
   }
 
-  async function recordJoin(update) {
+  async function maybeNotify(wave) {
+    if (!wave || wave.status === 'ignored') return;
+
+    const decision = unsafeWaveDecision(wave);
+    if (!decision.unsafe) return;
+
+    /*
+     * alert_sent больше не блокирует отправку. Старые версии могли
+     * поставить этот флаг после отправки глобальному ownerId().
+     * Таблица доставок гарантирует одно сообщение на пользователя
+     * и позволяет безопасно повторять неудачные попытки.
+     */
+    await notifyWave(wave);
+  }
+
+  async function replayRecentUnsafeAlerts() {
+    await ensureAlertDeliverySchema();
+
+    const recentWaves = rows(await query(`
+      SELECT *
+      FROM public.lr_antifraud_waves
+      WHERE status<>'ignored'
+        AND started_at>=now()-interval '24 hours'
+      ORDER BY started_at DESC
+      LIMIT 100
+    `));
+
+    for (const wave of recentWaves) {
+      try {
+        await maybeNotify(wave);
+      } catch (replayError) {
+        error(
+          `unsafe wave ${wave.id}: replay failed:`,
+          replayError?.stack ||
+          replayError?.message ||
+          replayError
+        );
+      }
+    }
+  }
+
+  /* LR_ANTIFRAUD_USER_ALERTS_V3_END */
+
+async function recordJoin(update) {
     const maxChatId = chatId(update);
     const user = eventUser(update);
     if (!maxChatId || !user.userId) return;
@@ -1850,8 +2158,7 @@ async function handleCallback(update) {
     return { handled: false };
   }
 
-  await ensureSchema();
-  await syncChannels();
+  await ensureSchema(); await ensureAlertDeliverySchema(); await syncChannels(); setTimeout(() => replayRecentUnsafeAlerts().catch((e) => error('unsafe alert replay failed:', e?.stack || e?.message || e)), 8_000).unref?.();
   const timer = setInterval(() => closeStaleWaves().catch((e) => error('sweeper failed:', e?.message || e)), 60_000);
   timer.unref?.();
   setTimeout(() => closeStaleWaves().catch(() => {}), 5_000).unref?.();
