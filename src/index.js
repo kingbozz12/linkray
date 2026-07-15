@@ -18367,7 +18367,7 @@ async function handleCallback(update) {
   if (payload === 'main:posting') return showStudio(callbackId);
   if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
   if (payload === 'reports:menu') return cb(callbackId, '🚀 Закупы скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
-  if (payload === 'fraud:menu') { if (globalThis.__lrAntiFraud24x7) return globalThis.__lrAntiFraud24x7.handleCallback(update); return cb(callbackId, '⚠️ AntiFraud временно недоступен.', [[callbackButton('⬅️ В меню','main:menu')]]); }
+  if (String(payload || '').startsWith('fraud:')) { if (globalThis.__lrAntiFraud24x7) return globalThis.__lrAntiFraud24x7.handleCallback(update); return cb(callbackId, '⚠️ AntiFraud временно недоступен.', [[callbackButton('⬅️ В меню','main:menu')]]); }
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
   if (payload === 'post:create') { const draft = emptyDraft(); return showChannelSelect(callbackId, key, draft, false); }
   if (payload === 'post:multi') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), true); }
@@ -20683,6 +20683,30 @@ if (lrAntiFraud24x7) {
     const update = req?.body;
     if (!update || typeof update !== 'object' || Array.isArray(update)) return next();
     try {
+      /* LR_FRAUD_CALLBACK_ALL_V1_START */
+      const lrFraudPayload = String(
+        update?.payload ||
+        update?.callback?.payload ||
+        update?.message_callback?.payload ||
+        update?.body?.payload ||
+        update?.body?.callback?.payload ||
+        update?.message?.payload ||
+        ''
+      );
+
+      if (
+        lrFraudPayload.startsWith('fraud:') &&
+        typeof lrAntiFraud24x7.handleCallback === 'function'
+      ) {
+        await lrAntiFraud24x7.handleCallback(update);
+        return res.status(200).json({
+          success: true,
+          antifraud: true,
+          callback: lrFraudPayload,
+        });
+      }
+      /* LR_FRAUD_CALLBACK_ALL_V1_END */
+
       const result = await lrAntiFraud24x7.handleHttpUpdate(update);
       if (result?.handled) return res.status(200).json({ success: true });
     } catch (error) {

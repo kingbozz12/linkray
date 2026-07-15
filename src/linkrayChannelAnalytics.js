@@ -98,7 +98,7 @@ function hash(value) {
   return crypto.createHash('sha1').update(String(value)).digest('hex').slice(0, 18);
 }
 
-function getChatId(update) {
+function getChatIdLegacyLinkRayV1(update) {
   return (
     update?.message?.recipient?.chat_id ||
     update?.message?.chat_id ||
@@ -112,7 +112,31 @@ function getChatId(update) {
   );
 }
 
-function getText(update) {
+function getChatId(update) {
+  const legacy = getChatIdLegacyLinkRayV1(update);
+  if (legacy) return legacy;
+
+  return (
+    update?.message?.sender?.user_id ||
+    update?.message?.sender?.id ||
+    update?.sender?.user_id ||
+    update?.sender?.id ||
+    update?.user_id ||
+    update?.userId ||
+    update?.callback?.user?.user_id ||
+    update?.callback?.user_id ||
+    update?.body?.message?.sender?.user_id ||
+    update?.body?.message?.sender?.id ||
+    update?.body?.sender?.user_id ||
+    update?.body?.sender?.id ||
+    update?.body?.user_id ||
+    update?.body?.userId ||
+    null
+  );
+}
+
+
+function getTextLegacyLinkRayV1(update) {
   return String(
     update?.message?.body?.text ||
     update?.message?.text ||
@@ -122,6 +146,47 @@ function getText(update) {
     ''
   );
 }
+
+function getText(update) {
+  const legacy = String(
+    getTextLegacyLinkRayV1(update) || ''
+  ).trim();
+
+  if (legacy) return legacy;
+
+  const found = [];
+  const seen = new WeakSet();
+
+  function walk(value, depth = 0) {
+    if (value === null || value === undefined || depth > 12) {
+      return;
+    }
+
+    if (typeof value === 'string') {
+      if (/https?:\/\/(?:www\.)?max\.ru\//i.test(value)) {
+        found.push(value);
+      }
+      return;
+    }
+
+    if (typeof value !== 'object') return;
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1);
+      return;
+    }
+
+    for (const child of Object.values(value)) {
+      walk(child, depth + 1);
+    }
+  }
+
+  walk(update);
+  return found.join('\n');
+}
+
 
 function getPayload(update) {
   return String(
@@ -6238,6 +6303,57 @@ async function lrV34TryDirectPublicNetworkCard(update) {
 /* LR_DIRECT_PUBLIC_IMAGE_V34_END */
 
 export async function handleLinkRayChannelAnalyticsIncoming(update) {
+  /* LR_ANALYTICS_PRIVATE_LINK_RESCUE_V1_START */
+  try {
+    const rescueChatId = getChatId(update);
+    const rescueText = getText(update);
+    const rescueLinks = typeof lrLinksDeep === 'function'
+      ? lrLinksDeep(update, rescueText)
+      : extractMaxLinks(rescueText);
+
+    if (rescueChatId && rescueLinks.length) {
+      const rescueKeys = typeof lrIdentityKeys === 'function'
+        ? lrIdentityKeys(update, rescueChatId)
+        : [String(rescueChatId)];
+
+      const rescueSettings =
+        await getAnalyticsSettingsForKeys(rescueKeys);
+
+      if (rescueSettings?.mode === 'await_links') {
+        const uniqueLinks = typeof lrV14UniqueLinks === 'function'
+          ? lrV14UniqueLinks(rescueLinks)
+          : [...new Set(rescueLinks)];
+
+        await setAnalyticsModeForKeys(rescueKeys, '');
+
+        console.log(
+          '[LR_ANALYTICS_PRIVATE_LINK_RESCUE_V1]',
+          JSON.stringify({
+            chatId: String(rescueChatId),
+            links: uniqueLinks,
+          })
+        );
+
+        await handleLinks(
+          rescueChatId,
+          uniqueLinks,
+          update
+        );
+
+        return true;
+      }
+    }
+  } catch (rescueError) {
+    console.error(
+      '[LR_ANALYTICS_PRIVATE_LINK_RESCUE_V1]',
+      rescueError?.stack ||
+      rescueError?.message ||
+      rescueError
+    );
+  }
+  /* LR_ANALYTICS_PRIVATE_LINK_RESCUE_V1_END */
+
+
   /* LR_DIRECT_PUBLIC_IMAGE_V34_CALL_START */
   try {
     if (await lrV34TryDirectPublicNetworkCard(update)) {
