@@ -1,8 +1,9 @@
+import { createLinkRayAntifraudBaselineV3 } from './linkrayAntifraudBaselineV3.js';
 import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '2.2.0';
+const MODULE_VERSION = '3.0.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -400,6 +401,9 @@ export async function installLinkRayAntiFraud({
   const error = (...args) => logger?.error?.('[LinkRay AntiFraud]', ...args);
   /* LR_ANTIFRAUD_COHORT_V2_START */
   let cohortEngine = null;
+  /* LR_ANTIFRAUD_BASELINE_COUNTRY_V3_START */
+  let baselineV3 = null;
+  /* LR_ANTIFRAUD_BASELINE_COUNTRY_V3_END */
   /* LR_ANTIFRAUD_COHORT_V2_END */
 
   async function ensureSchema() {
@@ -1571,6 +1575,10 @@ async function recordJoin(update) {
   async function showWave(update, waveId) {
     let wave = await waveById(waveId);
     if (!wave) return showUserMenu(update);
+    if (baselineV3) {
+      wave = (await baselineV3.fixWave(waveId)) || wave;
+    }
+
 
     if (cohortEngine) {
       wave = (
@@ -1852,7 +1860,46 @@ async function recordJoin(update) {
       buttons
     );
   }
-  async function showMember(update, waveId, eventId) {
+  
+  async function setCountryEvidence(
+    update,
+    waveId,
+    eventId,
+    evidence
+  ) {
+    const allowed = evidence === 'foreign'
+      ? 'foreign'
+      : evidence === 'trusted'
+        ? 'trusted'
+        : null;
+
+    if (!allowed) return showMember(update, waveId, eventId);
+
+    await query(`
+      UPDATE public.lr_antifraud_events
+      SET
+        country_evidence=$3,
+        country_name=CASE
+          WHEN $3='foreign' THEN 'иностранный номер'
+          ELSE 'Россия / Казахстан / Беларусь'
+        END,
+        country_source='manual_profile_check',
+        updated_at=now()
+      WHERE id=$1
+        AND wave_id=$2
+    `, [eventId, waveId, allowed]);
+
+    if (cohortEngine) {
+      await cohortEngine.rescoreWave(
+        waveId,
+        { enrich: false }
+      );
+    }
+
+    return showMember(update, waveId, eventId);
+  }
+
+async function showMember(update, waveId, eventId) {
     const item = rows(await query(`
       SELECT *
       FROM lr_antifraud_events
@@ -1894,6 +1941,18 @@ async function recordJoin(update) {
 
     buttons.push([
       callbackButton(
+        '🌍 Номер не РФ/КЗ/РБ',
+        `fraud:country:${waveId}:${eventId}:foreign`
+      ),
+      callbackButton(
+        '🏠 Номер РФ/КЗ/РБ',
+        `fraud:country:${waveId}:${eventId}:trusted`
+      ),
+    ]);
+
+
+    buttons.push([
+      callbackButton(
         '⬅️ К вероятным ботам',
         `fraud:list:${waveId}:bots:0`
       ),
@@ -1920,6 +1979,7 @@ async function recordJoin(update) {
       `Вероятность бота: ${num(item.bot_probability)}/100\n` +
       `Независимых сильных признаков: ` +
       `${num(item.cohort_strong_signals ?? item.strong_signals)}\n` +
+      `Страна номера: ${item.country_evidence === 'foreign' ? 'иностранная (подтверждено)' : item.country_evidence === 'trusted' ? 'РФ/КЗ/РБ (подтверждено)' : item.country_name || 'недоступна Bot API'}\n` +
       `Официальный бот MAX: ${item.is_bot ? 'да' : 'нет'}\n` +
       `Допущен к проверке удаления: ` +
       `${item.removal_eligible ? 'да' : 'нет'}\n\n` +
@@ -2066,6 +2126,10 @@ async function recordJoin(update) {
   async function cleanupPrompt(update, waveId, mode = 'safe') {
     let wave = await waveById(waveId);
     if (!wave) return showUserMenu(update);
+    if (baselineV3) {
+      wave = (await baselineV3.fixWave(waveId)) || wave;
+    }
+
 
     const selectedMode = cleanupMode(mode);
 
@@ -2600,7 +2664,9 @@ async function recordJoin(update) {
   async function callbackChannelForAccess(parts) {
     const action = parts[1] || '';
 
-    if (['channel', 'toggle', 'waves'].includes(action)) {
+    if (['channel', 'toggle', 'waves',
+      'country'
+    ].includes(action)) {
       return num(parts[2]);
     }
 
@@ -2801,7 +2867,7 @@ async function handleCallback(update) {
     else if (action === 'member') await showMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'whitelist') await whitelistMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'ignore') await ignoreWave(update, num(parts[2]));
-    else if (action === 'rescore') { if (cohortEngine) await cohortEngine.rescoreWave(num(parts[2]), { enrich: true }); await showWave(update, num(parts[2])); } else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
+    else if (action === 'country') await setCountryEvidence(update, num(parts[2]), num(parts[3]), parts[4]); else if (action === 'rescore') { if (cohortEngine) await cohortEngine.rescoreWave(num(parts[2]), { enrich: true }); await showWave(update, num(parts[2])); } else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
     else if (action === 'remove_confirm') await executeRemoval(update, parts[2]);
     else await showUserMenu(update);
     return true;
@@ -2842,7 +2908,14 @@ async function handleCallback(update) {
       if (wave) await maybeNotify(wave);
     },
   });
-  await cohortEngine.ensureSchema(); await ensureAlertDeliverySchema(); await syncChannels(); await cohortEngine.start(); setTimeout(() => replayRecentUnsafeAlerts().catch((e) => error('unsafe alert replay failed:', e?.stack || e?.message || e)), 8_000).unref?.();
+  await cohortEngine.ensureSchema();
+  baselineV3 = createLinkRayAntifraudBaselineV3({
+    query,
+    maxFetch,
+    logger,
+  });
+  await baselineV3.ensureSchema(); await ensureAlertDeliverySchema(); await syncChannels(); await cohortEngine.start();
+  await baselineV3.start(); setTimeout(() => replayRecentUnsafeAlerts().catch((e) => error('unsafe alert replay failed:', e?.stack || e?.message || e)), 8_000).unref?.();
   const timer = setInterval(() => closeStaleWaves().catch((e) => error('sweeper failed:', e?.message || e)), 60_000);
   timer.unref?.();
   setTimeout(() => closeStaleWaves().catch(() => {}), 5_000).unref?.();

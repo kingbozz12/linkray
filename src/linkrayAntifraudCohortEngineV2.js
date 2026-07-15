@@ -71,6 +71,95 @@ function coefficientOfVariation(values) {
   return Math.sqrt(variance) / mean;
 }
 
+
+/* LR_ANTIFRAUD_COUNTRY_SIGNAL_V3_START */
+
+const TRUSTED_PHONE_COUNTRIES = new Set([
+  'ru', 'rus', 'russia', 'россия', 'российскаяфедерация',
+  'kz', 'kaz', 'kazakhstan', 'казахстан',
+  'by', 'blr', 'belarus', 'беларусь', 'белоруссия',
+]);
+
+function normalizedCountry(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/gi, '');
+}
+
+function eventCountrySignal(event) {
+  const snapshot = json(event?.profile_snapshot, {});
+  const raw = json(event?.raw, {});
+  const manual = String(event?.country_evidence || '').toLowerCase();
+
+  if (manual === 'foreign') {
+    return {
+      known: true,
+      foreign: true,
+      trusted: false,
+      name: event?.country_name || 'иностранный номер',
+      source: event?.country_source || 'manual_profile_check',
+    };
+  }
+
+  if (manual === 'trusted') {
+    return {
+      known: true,
+      foreign: false,
+      trusted: true,
+      name: event?.country_name || 'Россия / Казахстан / Беларусь',
+      source: event?.country_source || 'manual_profile_check',
+    };
+  }
+
+  const candidates = [
+    event?.country_name,
+    snapshot?.phone_country,
+    snapshot?.phone_country_code,
+    snapshot?.country,
+    snapshot?.country_code,
+    snapshot?.phone_region,
+    raw?.phone_country,
+    raw?.phone_country_code,
+    raw?.country,
+    raw?.country_code,
+    raw?.phone_region,
+    raw?.user?.phone_country,
+    raw?.user?.country,
+    raw?.member?.phone_country,
+    raw?.member?.country,
+  ];
+
+  const found = candidates
+    .map((value) => String(value || '').trim())
+    .find(Boolean);
+
+  if (!found) {
+    return {
+      known: false,
+      foreign: false,
+      trusted: false,
+      name: '',
+      source: '',
+    };
+  }
+
+  const trusted = TRUSTED_PHONE_COUNTRIES.has(
+    normalizedCountry(found)
+  );
+
+  return {
+    known: true,
+    foreign: !trusted,
+    trusted,
+    name: found,
+    source: 'max_payload_optional',
+  };
+}
+
+/* LR_ANTIFRAUD_COUNTRY_SIGNAL_V3_END */
+
 function normalizeName(value) {
   return String(value || '')
     .trim()
@@ -504,6 +593,7 @@ export function createLinkRayCohortEngine({
       const localDense = localGap[index] <= 3;
       const noUsername = !String(event.username || '').trim();
       const noActivity = !event.last_activity_time;
+      const countrySignal = eventCountrySignal(event);
       const normalized = normalizeName(event.display_name);
       const duplicateNameCount = normalized
         ? (exactNameCounts.get(normalized) || 0)
@@ -652,6 +742,23 @@ export function createLinkRayCohortEngine({
         identityEvidence = true;
         signals.push('official_max_bot');
         reasons.push('MAX помечает профиль как официальный бот-аккаунт');
+      }
+
+      
+      if (countrySignal.known && countrySignal.foreign) {
+        probability += 25;
+        strongSignals += 1;
+        identityEvidence = true;
+        signals.push('foreign_phone_country');
+        reasons.push(
+          `Иностранная страна номера: ${countrySignal.name}`
+        );
+      } else if (countrySignal.known && countrySignal.trusted) {
+        probability -= 8;
+        signals.push('trusted_phone_country');
+        reasons.push(
+          `Страна номера относится к РФ/КЗ/РБ: ${countrySignal.name}`
+        );
       }
 
       probability = clamp(Math.round(probability), 0, 100);
@@ -1003,7 +1110,7 @@ export function createLinkRayCohortEngine({
   }
 
   return {
-    version: '2.0.0',
+    version: '3.0.0',
     ensureSchema,
     rescoreWave,
     rescoreRecent,
