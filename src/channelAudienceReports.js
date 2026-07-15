@@ -1,3 +1,4 @@
+/* LR_AUDIENCE_BOTS_AND_WEB_REPORT_FIX_V1 */
 /* LR_AUDIENCE_STATIC_NAMES_PDP_LINK_V1 */
 /* LR_AUDIENCE_PROFILE_BOT_FALLBACK_V1 */
 /* LR_AUDIENCE_PROFILE_LINK_FAVICON_V3 */
@@ -795,6 +796,37 @@ async function ensureSchema() {
           NOT NULL DEFAULT now()
       )
     `);
+  await query(`
+    ALTER TABLE
+      public.lr_channel_member_profiles
+
+    ADD COLUMN IF NOT EXISTS
+      is_bot boolean
+      NOT NULL DEFAULT false
+  `);
+
+  await query(`
+    UPDATE
+      public.lr_channel_member_profiles
+
+    SET is_bot =
+      CASE
+        WHEN lower(
+          COALESCE(
+            raw->>'is_bot',
+            raw->>'isBot',
+            'false'
+          )
+        ) IN (
+          'true',
+          '1',
+          'yes'
+        )
+        THEN true
+        ELSE is_bot
+      END
+  `);
+
   })().catch((error) => {
     schemaPromise = null;
     throw error;
@@ -884,10 +916,7 @@ function normalizeMember(
     120
   );
 
-  if (
-    !userId ||
-    member?.is_bot === true
-  ) {
+  if (!userId) {
     return null;
   }
 
@@ -938,6 +967,9 @@ function normalizeMember(
       activityMs
         ? new Date(activityMs)
         : null,
+    isBot:
+      member?.is_bot === true ||
+      member?.isBot === true,
     raw: member,
   };
 }
@@ -1109,6 +1141,22 @@ async function upsertProfile(
     profile.lastActivityTime,
     Boolean(isCurrent),
     JSON.stringify(profile.raw || {}),
+  ]);
+
+  await query(`
+    UPDATE
+      public.lr_channel_member_profiles
+
+    SET
+      is_bot=$3,
+      last_seen_at=now()
+
+    WHERE channel_id=$1
+      AND max_user_id=$2
+  `, [
+    String(channelId),
+    String(profile.userId),
+    Boolean(profile.isBot),
   ]);
 
   return profile;
@@ -2763,6 +2811,61 @@ async function showChannelList(
   );
 }
 
+async function audienceProfileBreakdown(
+  channelId,
+  subscribers = 0
+) {
+  const item =
+    rows(
+      await query(`
+        SELECT
+          COUNT(*) FILTER (
+            WHERE is_current=true
+          )::bigint AS profile_count,
+
+          COUNT(*) FILTER (
+            WHERE
+              is_current=true
+              AND is_bot=false
+          )::bigint AS human_profiles,
+
+          COUNT(*) FILTER (
+            WHERE
+              is_current=true
+              AND is_bot=true
+          )::bigint AS bot_profiles
+
+        FROM
+          public.lr_channel_member_profiles
+
+        WHERE channel_id=$1
+      `, [
+        String(channelId),
+      ]).catch(() => [])
+    )[0] || {};
+
+  const profileCount =
+    int(item.profile_count);
+
+  const humanProfiles =
+    int(item.human_profiles);
+
+  const botProfiles =
+    int(item.bot_profiles);
+
+  return {
+    profileCount,
+    humanProfiles,
+    botProfiles,
+    unavailableProfiles:
+      Math.max(
+        0,
+        int(subscribers) -
+        profileCount
+      ),
+  };
+}
+
 async function showChannelSummary(
   update,
   ownerChatId,
@@ -2805,6 +2908,12 @@ async function showChannelSummary(
       to
     );
 
+  const profileBreakdown =
+    await audienceProfileBreakdown(
+      channel.channel_id,
+      summary.subscribers
+    );
+
   const url =
     createAudienceReportLink(
       ownerChatId,
@@ -2837,6 +2946,18 @@ async function showChannelSummary(
         summary.subscribers
       )
     }`,
+    `📇 Получено профилей: ${formatNumber(
+      profileBreakdown.profileCount
+    )}`,
+    `👤 Обычных аккаунтов: ${formatNumber(
+      profileBreakdown.humanProfiles
+    )}`,
+    `🤖 Официальных ботов MAX: ${formatNumber(
+      profileBreakdown.botProfiles
+    )}`,
+    `❔ Профиль недоступен: ${formatNumber(
+      profileBreakdown.unavailableProfiles
+    )}`,
     `➕ Подписались: ${
       formatNumber(
         summary.joined
@@ -3015,7 +3136,7 @@ async function handleAudienceCallback(
         update,
         ownerChatId,
         dbChannelId,
-        `✅ Синхронизировано пользователей: ${
+        `✅ Синхронизировано профилей: ${
           formatNumber(
             result.membersSynced
           )
@@ -3092,863 +3213,1095 @@ function renderReportPage({
   <meta charset="utf-8">
   <meta
     name="viewport"
-    content="width=device-width,initial-scale=1"
+    content="width=device-width,initial-scale=1,viewport-fit=cover"
   >
   <meta
     name="robots"
     content="noindex,nofollow,noarchive"
   >
-  <link
-    rel="icon"
-    type="image/png"
-    href="/brand/favicon.png?v=20260715"
-  >
-  <link
-    rel="apple-touch-icon"
-    href="/brand/apple-touch-icon.png?v=20260715"
-  >
   <meta
     name="theme-color"
     content="#07101d"
   >
-  <title>${title} — аудитория LinkRay</title>
+  <link
+    rel="icon"
+    type="image/png"
+    href="/brand/favicon.png?v=20260715b"
+  >
+  <link
+    rel="apple-touch-icon"
+    href="/brand/apple-touch-icon.png?v=20260715b"
+  >
+  <title>${title} — Отчёт ПДП LinkRay</title>
   <style>
     :root {
-      color-scheme: light dark;
+      color-scheme: dark;
       --bg: #07101d;
-      --card: rgba(18, 31, 50, .92);
-      --card-2: rgba(26, 43, 67, .9);
-      --text: #eef7ff;
-      --muted: #9eb0c8;
-      --line: rgba(255,255,255,.11);
-      --good: #42e6ad;
-      --bad: #ff7185;
-      --warn: #ffd166;
-      --accent: #5ec8ff;
+      --panel: rgba(15, 28, 47, .92);
+      --panel-soft: rgba(25, 42, 67, .78);
+      --line: rgba(156, 214, 255, .16);
+      --text: #f4f8ff;
+      --muted: #9cb0c9;
+      --accent: #75e4b3;
+      --accent-2: #72b9ff;
+      --danger: #ff7d91;
+      --warning: #ffd37d;
+      --shadow: 0 18px 55px rgba(0, 0, 0, .28);
     }
 
     * {
       box-sizing: border-box;
     }
 
+    html {
+      min-height: 100%;
+      background:
+        radial-gradient(
+          circle at 90% 0,
+          rgba(67, 213, 159, .18),
+          transparent 38%
+        ),
+        radial-gradient(
+          circle at 0 20%,
+          rgba(55, 121, 224, .22),
+          transparent 40%
+        ),
+        var(--bg);
+    }
+
     body {
       margin: 0;
       min-height: 100vh;
-      background:
-        radial-gradient(
-          circle at 15% -10%,
-          rgba(39, 166, 255, .3),
-          transparent 34%
-        ),
-        radial-gradient(
-          circle at 95% 10%,
-          rgba(45, 230, 173, .18),
-          transparent 28%
-        ),
-        var(--bg);
       color: var(--text);
+      background: transparent;
       font-family:
         Inter,
-        system-ui,
         -apple-system,
         BlinkMacSystemFont,
         "Segoe UI",
         sans-serif;
     }
 
-    a {
-      color: inherit;
+    button,
+    input {
+      font: inherit;
     }
 
-    .wrap {
+    .shell {
       width: min(1180px, 100%);
       margin: 0 auto;
-      padding: 20px 14px 50px;
+      padding:
+        max(18px, env(safe-area-inset-top))
+        16px
+        max(34px, env(safe-area-inset-bottom));
     }
 
-    .top {
+    .hero,
+    .toolbar,
+    .events-panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero {
+      border-radius: 28px;
+      padding: 22px;
+    }
+
+    .brand-row {
       display: flex;
+      align-items: center;
       gap: 14px;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 18px;
     }
 
-    .brand {
-      font-size: 13px;
+    .brand-logo {
+      width: 58px;
+      height: 58px;
+      border-radius: 18px;
+      object-fit: cover;
+      box-shadow:
+        0 10px 28px
+        rgba(59, 207, 153, .22);
+    }
+
+    .eyebrow {
       color: var(--accent);
+      font-size: 13px;
       font-weight: 800;
       letter-spacing: .09em;
       text-transform: uppercase;
     }
 
     h1 {
-      margin: 7px 0 6px;
-      font-size: clamp(25px, 5vw, 42px);
-      line-height: 1.05;
+      margin: 5px 0 0;
+      font-size: clamp(22px, 5vw, 36px);
+      line-height: 1.12;
     }
 
     .period {
+      margin-top: 10px;
       color: var(--muted);
-      font-size: 14px;
-    }
-
-    .channel-link {
-      display: inline-flex;
-      text-decoration: none;
-      border: 1px solid var(--line);
-      border-radius: 13px;
-      padding: 10px 13px;
-      background: rgba(255,255,255,.05);
-      white-space: nowrap;
+      line-height: 1.55;
     }
 
     .metrics {
       display: grid;
       grid-template-columns:
-        repeat(6, minmax(0, 1fr));
-      gap: 10px;
-      margin-bottom: 16px;
+        repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 20px;
     }
 
     .metric {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 17px;
-      padding: 15px;
-      min-height: 100px;
-    }
-
-    .metric b {
-      display: block;
-      font-size: clamp(23px, 4vw, 34px);
-      margin-top: 9px;
-    }
-
-    .metric span {
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .metric.good b {
-      color: var(--good);
-    }
-
-    .metric.bad b {
-      color: var(--bad);
-    }
-
-    .metric.warn b {
-      color: var(--warn);
-    }
-
-    .panel {
-      background: var(--card);
+      min-height: 105px;
+      padding: 16px;
       border: 1px solid var(--line);
       border-radius: 20px;
-      overflow: hidden;
+      background: var(--panel-soft);
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .metric-value {
+      margin-top: 7px;
+      font-size: clamp(24px, 4.8vw, 34px);
+      font-weight: 850;
+      letter-spacing: -.03em;
+    }
+
+    .metric-value.positive {
+      color: var(--accent);
+    }
+
+    .metric-value.negative {
+      color: var(--danger);
+    }
+
+    .metric-value.warning {
+      color: var(--warning);
     }
 
     .toolbar {
-      display: grid;
-      grid-template-columns:
-        minmax(180px, 1fr)
-        auto;
-      gap: 10px;
+      margin-top: 16px;
+      border-radius: 24px;
       padding: 14px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    input {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px 13px;
-      background: rgba(0,0,0,.2);
-      color: var(--text);
-      outline: none;
     }
 
     .tabs {
       display: flex;
-      flex-wrap: wrap;
-      gap: 7px;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+      scrollbar-width: none;
     }
 
-    button {
+    .tabs::-webkit-scrollbar {
+      display: none;
+    }
+
+    .tab {
+      flex: 0 0 auto;
       border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 10px 12px;
-      background: rgba(255,255,255,.06);
-      color: var(--text);
+      border-radius: 14px;
+      padding: 10px 14px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, .035);
       cursor: pointer;
+      font-weight: 750;
     }
 
-    button.active {
+    .tab.active {
+      color: #06131f;
       background: var(--accent);
-      color: #04111f;
       border-color: transparent;
+    }
+
+    .search-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .search-row input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      padding: 12px 14px;
+      color: var(--text);
+      background: rgba(0, 0, 0, .18);
+      outline: none;
+    }
+
+    .search-row input:focus {
+      border-color: rgba(117, 228, 179, .6);
+      box-shadow:
+        0 0 0 3px
+        rgba(117, 228, 179, .11);
+    }
+
+    .search-row button,
+    .pager button {
+      border: 0;
+      border-radius: 15px;
+      padding: 11px 16px;
+      color: #06131f;
+      background: var(--accent-2);
+      cursor: pointer;
       font-weight: 800;
     }
 
-    .list {
-      padding: 8px 14px;
+    .events-panel {
+      margin-top: 16px;
+      border-radius: 24px;
+      padding: 16px;
     }
 
-    .person {
-      display: grid;
-      grid-template-columns:
-        52px minmax(0, 1fr) auto;
-      gap: 12px;
+    .events-head {
+      display: flex;
       align-items: center;
-      padding: 13px 2px;
-      border-bottom: 1px solid var(--line);
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .events-title {
+      font-size: 18px;
+      font-weight: 850;
+    }
+
+    .events-count {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .events {
+      display: grid;
+      gap: 10px;
+    }
+
+    .event {
+      display: grid;
+      grid-template-columns: 50px minmax(0, 1fr);
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, .028);
     }
 
     .avatar {
-      width: 52px;
-      height: 52px;
-      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      border-radius: 16px;
       object-fit: cover;
-      background: var(--card-2);
-      border: 1px solid var(--line);
+      background:
+        linear-gradient(
+          135deg,
+          rgba(114, 185, 255, .35),
+          rgba(117, 228, 179, .35)
+        );
     }
 
     .avatar-fallback {
       display: grid;
       place-items: center;
-      font-size: 20px;
-      font-weight: 800;
+      font-size: 22px;
+      font-weight: 850;
+    }
+
+    .event-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
     }
 
     .person-name {
-      font-weight: 800;
-      text-decoration: none;
-    }
-
-    .person-name:hover {
+      min-width: 0;
+      overflow: hidden;
       color: var(--text);
-    }
-
-    /* LR_AUDIENCE_STATIC_PERSON_NAME_CSS */
-    .person-name {
-      pointer-events: none !important;
-      cursor: default !important;
-      color: var(--text) !important;
-      text-decoration: none !important;
-    }
-
-    .person-name[aria-disabled="true"] {
-      pointer-events: none;
+      font-weight: 850;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       cursor: default;
-      color: var(--text);
       text-decoration: none;
+      pointer-events: none;
     }
 
-    .person-name[aria-disabled="true"]:hover {
-      color: var(--text);
+    .event-kind,
+    .badge {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .event-kind.joined {
+      color: var(--accent);
+      background: rgba(117, 228, 179, .11);
+    }
+
+    .event-kind.left {
+      color: var(--danger);
+      background: rgba(255, 125, 145, .11);
+    }
+
+    .meta,
+    .details {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .meta {
+      margin-top: 4px;
     }
 
     .details {
-      margin-top: 5px;
       display: flex;
       flex-wrap: wrap;
-      gap: 5px 12px;
-      color: var(--muted);
-      font-size: 13px;
+      gap: 5px 14px;
+      margin-top: 8px;
     }
 
-    .risk {
-      min-width: 92px;
-      text-align: right;
+    .badge.bot {
+      color: #a8d8ff;
+      background: rgba(114, 185, 255, .12);
     }
 
-    .risk strong {
-      display: inline-block;
-      border-radius: 999px;
-      padding: 6px 9px;
-      font-size: 12px;
-      background: rgba(66,230,173,.13);
-      color: var(--good);
-    }
-
-    .risk.high strong {
-      background: rgba(255,113,133,.15);
-      color: var(--bad);
-    }
-
-    .risk.medium strong {
-      background: rgba(255,209,102,.14);
-      color: var(--warn);
+    .badge.risk {
+      color: var(--warning);
+      background: rgba(255, 211, 125, .12);
     }
 
     .empty,
+    .error,
     .loading {
-      padding: 35px 12px;
-      text-align: center;
+      padding: 36px 12px;
       color: var(--muted);
+      text-align: center;
+      line-height: 1.6;
+    }
+
+    .error {
+      color: var(--danger);
     }
 
     .pager {
       display: flex;
-      justify-content: center;
       align-items: center;
-      gap: 10px;
-      padding: 14px;
-      border-top: 1px solid var(--line);
+      justify-content: center;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .pager button:disabled {
+      opacity: .35;
+      cursor: default;
+    }
+
+    .page-number {
+      color: var(--muted);
+      font-size: 14px;
     }
 
     .privacy {
-      margin-top: 14px;
+      margin: 16px 3px 0;
       color: var(--muted);
       font-size: 12px;
-      line-height: 1.5;
+      line-height: 1.55;
+      text-align: center;
     }
 
-    @media (
-      max-width: 900px
-    ) {
-      .metrics {
-        grid-template-columns:
-          repeat(3, minmax(0, 1fr));
-      }
-
-      .toolbar {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    @media (
-      max-width: 560px
-    ) {
-      .top {
-        display: block;
-      }
-
-      .channel-link {
-        margin-top: 12px;
-      }
-
+    @media (max-width: 860px) {
       .metrics {
         grid-template-columns:
           repeat(2, minmax(0, 1fr));
       }
+    }
 
-      .person {
-        grid-template-columns:
-          46px minmax(0, 1fr);
+    @media (max-width: 540px) {
+      .shell {
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+
+      .hero {
+        padding: 17px;
+        border-radius: 22px;
+      }
+
+      .metrics {
+        gap: 8px;
+      }
+
+      .metric {
+        min-height: 94px;
+        padding: 13px;
+        border-radius: 17px;
+      }
+
+      .search-row {
+        flex-direction: column;
+      }
+
+      .search-row button {
+        width: 100%;
+      }
+
+      .event {
+        grid-template-columns: 44px minmax(0, 1fr);
+        padding: 12px;
       }
 
       .avatar {
-        width: 46px;
-        height: 46px;
-      }
-
-      .risk {
-        grid-column: 2;
-        text-align: left;
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
       }
     }
   </style>
 </head>
 <body>
-  <main class="wrap">
-    <div class="top">
-      <div>
-        <div class="brand">
-          LinkRay Audience Guard
-        </div>
-        <h1>${title}</h1>
-        <div
-          class="period"
-          id="period"
-        ></div>
-      </div>
-      ${
-        channel.link
-          ? `<a
-              class="channel-link"
-              href="${
-                escapeHtml(channel.link)
-              }"
-              target="_blank"
-              rel="noreferrer"
-            >Открыть канал</a>`
-          : ''
-      }
-    </div>
-
-    <section
-      class="metrics"
-      id="metrics"
-    ></section>
-
-    <section class="panel">
-      <div class="toolbar">
-        <input
-          id="search"
-          type="search"
-          placeholder="Поиск по имени, username или MAX ID"
+  <main class="shell">
+    <section class="hero">
+      <div class="brand-row">
+        <img
+          class="brand-logo"
+          src="/brand/favicon.png?v=20260715b"
+          alt="LinkRay"
         >
-        <div class="tabs">
-          <button
-            data-tab="all"
-            class="active"
-          >Все</button>
-          <button
-            data-tab="joined"
-          >Подписались</button>
-          <button
-            data-tab="left"
-          >Отписались</button>
-          <button
-            data-tab="risk"
-          >Подозрительные</button>
+        <div>
+          <div class="eyebrow">
+            LinkRay · Отчёт ПДП
+          </div>
+          <h1 id="channel-title">
+            ${title}
+          </h1>
         </div>
       </div>
 
       <div
-        class="list"
-        id="list"
+        class="period"
+        id="period"
+      ></div>
+
+      <div
+        class="metrics"
+        id="metrics"
       >
         <div class="loading">
-          Загружаем события…
+          Загружаем показатели…
         </div>
-      </div>
-
-      <div class="pager">
-        <button id="prev">
-          Назад
-        </button>
-        <span id="page"></span>
-        <button id="next">
-          Далее
-        </button>
       </div>
     </section>
 
+    <section class="toolbar">
+      <div
+        class="tabs"
+        id="tabs"
+      >
+        <button
+          class="tab active"
+          data-tab="all"
+        >
+          Все
+        </button>
+        <button
+          class="tab"
+          data-tab="joined"
+        >
+          Подписались
+        </button>
+        <button
+          class="tab"
+          data-tab="left"
+        >
+          Отписались
+        </button>
+        <button
+          class="tab"
+          data-tab="risk"
+        >
+          Аномалии
+        </button>
+      </div>
+
+      <form
+        class="search-row"
+        id="search-form"
+      >
+        <input
+          id="search"
+          type="search"
+          autocomplete="off"
+          placeholder="Имя, username или MAX ID"
+        >
+        <button type="submit">
+          Найти
+        </button>
+      </form>
+    </section>
+
+    <section class="events-panel">
+      <div class="events-head">
+        <div class="events-title">
+          События аудитории
+        </div>
+        <div
+          class="events-count"
+          id="events-count"
+        ></div>
+      </div>
+
+      <div
+        class="events"
+        id="events"
+      >
+        <div class="loading">
+          Загружаем список…
+        </div>
+      </div>
+
+      <div
+        class="pager"
+        id="pager"
+      ></div>
+    </section>
+
     <div class="privacy">
-      Отчёт доступен только по подписанной
-      приватной ссылке и не индексируется.
-      Оценка риска показывает аномалии,
-      а не утверждает, что пользователь
-      является ботом.
+      Приватный отчёт. Ссылка имеет ограниченный срок действия
+      и не индексируется поисковыми системами.
     </div>
   </main>
 
   <script>
-    const INITIAL =
-      ${safeJson(initial)};
+    const INITIAL = ${safeJson(initial)};
 
     const state = {
+      tab: 'all',
       page: 1,
       limit: 50,
-      tab: 'all',
       search: '',
-      total: 0,
+      loading: false,
     };
 
-    const el = {
-      metrics:
-        document.querySelector(
-          '#metrics'
-        ),
-      list:
-        document.querySelector(
-          '#list'
-        ),
-      search:
-        document.querySelector(
-          '#search'
-        ),
-      page:
-        document.querySelector(
-          '#page'
-        ),
-      prev:
-        document.querySelector(
-          '#prev'
-        ),
-      next:
-        document.querySelector(
-          '#next'
-        ),
-      period:
-        document.querySelector(
-          '#period'
-        ),
+    const byId = (id) =>
+      document.getElementById(id);
+
+    const h = (value) =>
+      String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+    const number = (value) =>
+      new Intl.NumberFormat('ru-RU')
+        .format(Number(value || 0));
+
+    const dateTime = (value) => {
+      if (!value) {
+        return '—';
+      }
+
+      const date =
+        new Date(value);
+
+      if (
+        Number.isNaN(
+          date.getTime()
+        )
+      ) {
+        return '—';
+      }
+
+      return new Intl.DateTimeFormat(
+        'ru-RU',
+        {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }
+      ).format(date);
     };
-
-    const fmt = (value) =>
-      new Intl.NumberFormat(
-        'ru-RU'
-      ).format(
-        Number(value || 0)
-      );
-
-    const date = (value) =>
-      value
-        ? new Intl.DateTimeFormat(
-            'ru-RU',
-            {
-              dateStyle: 'short',
-              timeStyle: 'short',
-              timeZone: 'Europe/Moscow',
-            }
-          ).format(
-            new Date(value)
-          )
-        : '—';
 
     const duration = (seconds) => {
-      const total =
+      const value =
         Math.max(
           0,
           Number(seconds || 0)
         );
 
-      const days =
-        Math.floor(
-          total / 86400
-        );
+      if (value < 60) {
+        return Math.round(value) + ' сек.';
+      }
 
+      if (value < 3600) {
+        return Math.floor(value / 60) + ' мин.';
+      }
+
+      if (value < 86400) {
+        const hours =
+          Math.floor(value / 3600);
+        const minutes =
+          Math.floor(
+            (value % 3600) / 60
+          );
+
+        return (
+          hours +
+          ' ч. ' +
+          minutes +
+          ' мин.'
+        );
+      }
+
+      const days =
+        Math.floor(value / 86400);
       const hours =
         Math.floor(
-          (total % 86400) /
-          3600
+          (value % 86400) / 3600
         );
 
-      const minutes =
-        Math.floor(
-          (total % 3600) /
-          60
-        );
-
-      if (days) {
-        return \`\${days} д. \${hours} ч.\`;
-      }
-
-      if (hours) {
-        return \`\${hours} ч. \${minutes} мин.\`;
-      }
-
-      return \`\${minutes} мин.\`;
+      return (
+        days +
+        ' дн. ' +
+        hours +
+        ' ч.'
+      );
     };
 
-    const html = (value) =>
-      String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
+    const metric = (
+      label,
+      value,
+      className
+    ) =>
+      '<div class="metric">' +
+        '<div class="metric-label">' +
+          h(label) +
+        '</div>' +
+        '<div class="metric-value ' +
+          h(className || '') +
+        '">' +
+          h(value) +
+        '</div>' +
+      '</div>';
 
-    function renderMetrics(summary) {
-      const data = [
-        [
-          'Подписались',
-          summary.joined,
-          'good',
-        ],
-        [
-          'Отписались',
-          summary.left,
-          'bad',
-        ],
-        [
-          'Чистый прирост',
-          (
-            summary.net > 0
-              ? '+'
-              : ''
-          ) + fmt(summary.net),
-          'good',
-        ],
-        [
-          'Ушли < 1 часа',
-          summary.quickLeft,
-          'warn',
-        ],
-        [
-          'Высокий риск',
-          summary.suspicious,
-          'bad',
-        ],
-        [
-          'Среднее удержание',
-          duration(
-            summary.averageStaySeconds
-          ),
-          '',
-        ],
+    const renderMetrics = (summary) => {
+      const net =
+        Number(summary.net || 0);
+
+      byId('metrics').innerHTML = [
+        metric(
+          'Всего подписчиков',
+          number(summary.subscribers),
+          ''
+        ),
+        metric(
+          'Подписались за период',
+          '+' + number(summary.joined),
+          'positive'
+        ),
+        metric(
+          'Отписались за период',
+          '−' + number(summary.left),
+          'negative'
+        ),
+        metric(
+          'Чистое изменение',
+          (net >= 0 ? '+' : '') +
+            number(net),
+          net >= 0
+            ? 'positive'
+            : 'negative'
+        ),
+        metric(
+          'Получено профилей',
+          number(summary.profileCount),
+          ''
+        ),
+        metric(
+          'Обычных аккаунтов',
+          number(summary.humanProfiles),
+          ''
+        ),
+        metric(
+          'Официальных ботов MAX',
+          number(summary.botProfiles),
+          'warning'
+        ),
+        metric(
+          'Профиль недоступен',
+          number(summary.unavailableProfiles),
+          summary.unavailableProfiles > 0
+            ? 'warning'
+            : ''
+        ),
+      ].join('');
+    };
+
+    const avatarHtml = (item) => {
+      const url =
+        item.avatar_url ||
+        item.full_avatar_url ||
+        '';
+
+      if (url) {
+        return (
+          '<img class="avatar" ' +
+          'src="' + h(url) + '" ' +
+          'alt="" loading="lazy" ' +
+          'referrerpolicy="no-referrer">'
+        );
+      }
+
+      const name =
+        String(
+          item.display_name ||
+          'П'
+        ).trim();
+
+      return (
+        '<div class="avatar avatar-fallback">' +
+          h(
+            name.slice(0, 1).toUpperCase()
+          ) +
+        '</div>'
+      );
+    };
+
+    const eventHtml = (item) => {
+      const joined =
+        item.event_type === 'joined';
+
+      const kind =
+        joined
+          ? 'Подписался'
+          : 'Отписался';
+
+      const name =
+        item.display_name ||
+        'Пользователь MAX';
+
+      const username =
+        item.username
+          ? '@' +
+            String(item.username)
+              .replace(/^@/, '')
+          : '';
+
+      const badges = [];
+
+      if (item.is_bot) {
+        badges.push(
+          '<span class="badge bot">' +
+          '🤖 Бот MAX' +
+          '</span>'
+        );
+      }
+
+      if (
+        Number(item.risk_score || 0) >= 50
+      ) {
+        badges.push(
+          '<span class="badge risk">' +
+          '⚠️ Риск ' +
+          h(item.risk_score) +
+          '%' +
+          '</span>'
+        );
+      }
+
+      const details = [
+        '<span>Событие: ' +
+          h(dateTime(item.occurred_at)) +
+        '</span>',
+        '<span>Подписался: ' +
+          h(dateTime(item.joined_at)) +
+        '</span>',
       ];
 
-      el.metrics.innerHTML =
-        data.map(
-          ([label, value, cls]) =>
-            \`<article class="metric \${cls}">
-              <span>\${html(label)}</span>
-              <b>\${
-                typeof value === 'number'
-                  ? fmt(value)
-                  : html(value)
-              }</b>
-            </article>\`
-        ).join('');
-    }
-
-    function renderPeople(items) {
-      if (!items.length) {
-        el.list.innerHTML =
-          '<div class="empty">Событий по выбранному фильтру нет.</div>';
-        return;
-      }
-
-      el.list.innerHTML =
-        items.map((item) => {
-          const name =
-            item.display_name ||
-            'Пользователь MAX';
-
-          const avatar =
-            item.avatar_url ||
-            item.full_avatar_url;
-
-          const firstLetter =
-            html(
-              name.slice(0, 1)
-                .toUpperCase()
-            );
-
-          const avatarHtml =
-            avatar
-              ? \`<img
-                  class="avatar"
-                  src="\${html(avatar)}"
-                  alt=""
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="
-                    this.outerHTML =
-                    '<div class=&quot;avatar avatar-fallback&quot;>\${firstLetter}</div>'
-                  "
-                >\`
-              : \`<div
-                  class="avatar avatar-fallback"
-                >\${firstLetter}</div>\`;
-
-          const eventLabel =
-            item.event_type === 'joined'
-              ? 'Подписался'
-              : 'Отписался';
-
-          const riskClass =
-            item.risk_score >= 50
-              ? 'high'
-              : item.risk_score >= 25
-                ? 'medium'
-                : '';
-
-          const profile =
-            item.profile_url || '';
-
-          const stay =
-            item.stay_seconds === null
-              ? (
-                  item.event_type === 'joined'
-                    ? 'находится в канале'
-                    : 'не определено'
-                )
-              : duration(
-                  item.stay_seconds
-                );
-
-          return \`<article class="person">
-            \${avatarHtml}
-            <div>
-              <span class="person-name">${html(name)}</span>
-              <div class="details">
-                <span>
-                  \${eventLabel}:
-                  \${date(item.occurred_at)}
-                </span>
-                <span>
-                  В канале:
-                  \${html(stay)}
-                </span>
-                \${
-                  item.username
-                    ? \`<span>@\${html(item.username)}</span>\`
-                    : ''
-                }
-                \${
-                  item.max_user_id
-                    ? \`<span>ID: \${html(item.max_user_id)}</span>\`
-                    : '<span>Профиль не сохранён</span>'
-                }
-              </div>
-            </div>
-            <div class="risk \${riskClass}">
-              <strong>
-                Риск \${fmt(item.risk_score)}%
-              </strong>
-            </div>
-          </article>\`;
-        }).join('');
-    }
-
-    async function load() {
-      el.list.innerHTML =
-        '<div class="loading">Загружаем события…</div>';
-
-      const params =
-        new URLSearchParams({
-          page: String(state.page),
-          limit: String(state.limit),
-          tab: state.tab,
-          search: state.search,
-        });
-
-      const response =
-        await fetch(
-          \`/api/audience/\${
-            encodeURIComponent(
-              INITIAL.token
-            )
-          }?\${params}\`,
-          {
-            credentials: 'omit',
-            cache: 'no-store',
-          }
-        );
-
-      if (!response.ok) {
-        throw new Error(
-          'Отчёт недоступен'
+      if (!joined) {
+        details.push(
+          '<span>Отписался: ' +
+            h(dateTime(item.left_at)) +
+          '</span>'
         );
       }
 
-      const body =
-        await response.json();
-
-      state.total =
-        Number(body.total || 0);
-
-      renderMetrics(
-        body.summary || {}
+      details.push(
+        '<span>В канале: ' +
+          h(duration(item.stay_seconds)) +
+        '</span>'
       );
 
-      renderPeople(
-        body.items || []
-      );
+      if (item.max_user_id) {
+        details.push(
+          '<span>MAX ID: ' +
+            h(item.max_user_id) +
+          '</span>'
+        );
+      }
 
+      return (
+        '<article class="event">' +
+          avatarHtml(item) +
+          '<div>' +
+            '<div class="event-top">' +
+              '<div style="min-width:0">' +
+                '<div class="person-name">' +
+                  h(name) +
+                '</div>' +
+                '<div class="meta">' +
+                  h(username) +
+                '</div>' +
+              '</div>' +
+              '<span class="event-kind ' +
+                (joined ? 'joined' : 'left') +
+              '">' +
+                h(kind) +
+              '</span>' +
+            '</div>' +
+            (
+              badges.length
+                ? '<div class="details">' +
+                    badges.join('') +
+                  '</div>'
+                : ''
+            ) +
+            '<div class="details">' +
+              details.join('') +
+            '</div>' +
+          '</div>' +
+        '</article>'
+      );
+    };
+
+    const renderPager = (
+      page,
+      total,
+      limit
+    ) => {
       const pages =
         Math.max(
           1,
-          Math.ceil(
-            state.total /
-            state.limit
-          )
+          Math.ceil(total / limit)
         );
 
-      el.page.textContent =
-        \`\${state.page} / \${pages}\`;
+      byId('pager').innerHTML =
+        '<button id="prev" ' +
+          (page <= 1 ? 'disabled' : '') +
+        '>Назад</button>' +
+        '<span class="page-number">' +
+          'Страница ' +
+          number(page) +
+          ' из ' +
+          number(pages) +
+        '</span>' +
+        '<button id="next" ' +
+          (page >= pages ? 'disabled' : '') +
+        '>Далее</button>';
 
-      el.prev.disabled =
-        state.page <= 1;
+      const prev =
+        byId('prev');
 
-      el.next.disabled =
-        state.page >= pages;
-    }
+      const next =
+        byId('next');
 
-    let timer = null;
-
-    el.search.addEventListener(
-      'input',
-      () => {
-        clearTimeout(timer);
-
-        timer = setTimeout(() => {
-          state.search =
-            el.search.value.trim();
-
-          state.page = 1;
-
-          load().catch(showError);
-        }, 250);
-      }
-    );
-
-    document
-      .querySelectorAll(
-        '[data-tab]'
-      )
-      .forEach((button) => {
-        button.addEventListener(
-          'click',
-          () => {
-            document
-              .querySelectorAll(
-                '[data-tab]'
-              )
-              .forEach(
-                (item) =>
-                  item.classList
-                    .remove('active')
-              );
-
-            button.classList
-              .add('active');
-
-            state.tab =
-              button.dataset.tab;
-
-            state.page = 1;
-
-            load().catch(showError);
+      prev.addEventListener(
+        'click',
+        () => {
+          if (state.page > 1) {
+            state.page -= 1;
+            load();
           }
-        );
-      });
+        }
+      );
 
-    el.prev.addEventListener(
-      'click',
-      () => {
-        state.page =
-          Math.max(
-            1,
-            state.page - 1
+      next.addEventListener(
+        'click',
+        () => {
+          if (state.page < pages) {
+            state.page += 1;
+            load();
+          }
+        }
+      );
+    };
+
+    async function load() {
+      if (state.loading) {
+        return;
+      }
+
+      state.loading = true;
+
+      byId('events').innerHTML =
+        '<div class="loading">' +
+          'Загружаем события…' +
+        '</div>';
+
+      try {
+        const params =
+          new URLSearchParams({
+            tab: state.tab,
+            page: String(state.page),
+            limit: String(state.limit),
+            search: state.search,
+          });
+
+        const response =
+          await fetch(
+            '/api/audience/' +
+            encodeURIComponent(
+              INITIAL.token
+            ) +
+            '?' +
+            params.toString(),
+            {
+              headers: {
+                Accept: 'application/json',
+              },
+              cache: 'no-store',
+            }
           );
 
-        load().catch(showError);
-      }
-    );
+        const data =
+          await response.json();
 
-    el.next.addEventListener(
-      'click',
-      () => {
-        state.page += 1;
-        load().catch(showError);
-      }
-    );
+        if (
+          !response.ok ||
+          !data?.ok
+        ) {
+          throw new Error(
+            data?.error ||
+            'Не удалось загрузить данные'
+          );
+        }
 
-    function showError(error) {
-      el.list.innerHTML =
-        \`<div class="empty">
-          \${html(
-            error?.message ||
-            'Не удалось загрузить отчёт'
-          )}
-        </div>\`;
+        byId('channel-title').textContent =
+          data.channel?.title ||
+          INITIAL.channel.title;
+
+        byId('period').textContent =
+          'Период: ' +
+          dateTime(data.period?.from) +
+          ' — ' +
+          dateTime(data.period?.to) +
+          ' МСК';
+
+        renderMetrics(
+          data.summary || {}
+        );
+
+        const items =
+          Array.isArray(data.items)
+            ? data.items
+            : [];
+
+        byId('events-count').textContent =
+          'Найдено: ' +
+          number(data.total);
+
+        byId('events').innerHTML =
+          items.length
+            ? items
+                .map(eventHtml)
+                .join('')
+            : '<div class="empty">' +
+                'За выбранный период событий нет.' +
+              '</div>';
+
+        renderPager(
+          Number(data.page || 1),
+          Number(data.total || 0),
+          Number(data.limit || state.limit)
+        );
+      } catch (error) {
+        byId('events').innerHTML =
+          '<div class="error">' +
+            'Не удалось загрузить отчёт.<br>' +
+            h(
+              error?.message ||
+              String(error)
+            ) +
+          '</div>';
+
+        byId('metrics').innerHTML =
+          '<div class="error">' +
+            'Показатели временно недоступны.' +
+          '</div>';
+      } finally {
+        state.loading = false;
+      }
     }
 
-    el.period.textContent =
-      \`\${date(INITIAL.period.from)} — \${date(INITIAL.period.to)} МСК\`;
+    byId('tabs')
+      .addEventListener(
+        'click',
+        (event) => {
+          const button =
+            event.target.closest(
+              '[data-tab]'
+            );
 
-    load().catch(showError);
+          if (!button) {
+            return;
+          }
+
+          document
+            .querySelectorAll(
+              '[data-tab]'
+            )
+            .forEach((item) =>
+              item.classList.toggle(
+                'active',
+                item === button
+              )
+            );
+
+          state.tab =
+            button.dataset.tab;
+
+          state.page = 1;
+          load();
+        }
+      );
+
+    byId('search-form')
+      .addEventListener(
+        'submit',
+        (event) => {
+          event.preventDefault();
+
+          state.search =
+            byId('search')
+              .value
+              .trim();
+
+          state.page = 1;
+          load();
+        }
+      );
+
+    load();
   </script>
 </body>
 </html>`;
 }
+
 
 function tabCondition(tab) {
   if (tab === 'joined') {
@@ -4086,6 +4439,10 @@ async function listAudienceEvents({
           ),
           p.full_avatar_url
         ) AS full_avatar_url,
+      COALESCE(
+        p.is_bot,
+        false
+      ) AS is_bot,
         COALESCE(
           e.joined_at,
           membership.joined_at,
@@ -4366,6 +4723,12 @@ async function handleReportApi(
       access.to
     );
 
+  const profileBreakdown =
+    await audienceProfileBreakdown(
+      channel.channel_id,
+      summary.subscribers
+    );
+
   res.set({
     'Cache-Control':
       'private, no-store, max-age=0',
@@ -4390,7 +4753,10 @@ async function handleReportApi(
       to:
         access.to.toISOString(),
     },
-    summary,
+    summary: {
+      ...summary,
+      ...profileBreakdown,
+    },
     page,
     limit,
     total:
@@ -4688,6 +5054,57 @@ export function installChannelAudienceReports(
         MAX_SYNC_MEMBERS,
     })
   );
+}
+
+export function audienceBotsAndPageSmokeTest() {
+  const bot =
+    normalizeMember({
+      user_id: '777',
+      first_name: 'Test',
+      is_bot: true,
+    });
+
+  const html =
+    renderReportPage({
+      channel: {
+        channel_id: '123',
+        title: 'Тестовый канал',
+        link: '',
+      },
+      access: {
+        from:
+          new Date(
+            Date.now() -
+            24 * 60 * 60_000
+          ),
+        to:
+          new Date(),
+      },
+      reportToken:
+        'test-token',
+    });
+
+  return {
+    ok:
+      Boolean(bot?.isBot) &&
+      html.includes(
+        'Отчёт ПДП LinkRay'
+      ) &&
+      html.includes(
+        'class="person-name"'
+      ) &&
+      !html.includes(
+        '<a class="person-name"'
+      ),
+    botAccepted:
+      Boolean(bot?.isBot),
+    staticNames:
+      !html.includes(
+        '<a class="person-name"'
+      ),
+    pageLength:
+      html.length,
+  };
 }
 
 export async function audienceReportsSmokeTest() {
