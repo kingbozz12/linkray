@@ -1,3 +1,4 @@
+/* LR_AUDIENCE_STATIC_NAMES_PDP_LINK_V1 */
 /* LR_AUDIENCE_PROFILE_BOT_FALLBACK_V1 */
 /* LR_AUDIENCE_PROFILE_LINK_FAVICON_V3 */
 import crypto from 'node:crypto';
@@ -2868,9 +2869,8 @@ async function showChannelSummary(
       )
     }`,
     '',
-    '🌐 Подробный список:',
-    url,
-    '',
+    `🌐 <a href="${escapeHtml(url)}">Отчёт ПДП</a>`,
+        '',
     `Период: ${
       formatDate(from)
     } — ${
@@ -3327,7 +3327,15 @@ function renderReportPage({
     }
 
     .person-name:hover {
-      color: var(--accent);
+      color: var(--text);
+    }
+
+    /* LR_AUDIENCE_STATIC_PERSON_NAME_CSS */
+    .person-name {
+      pointer-events: none !important;
+      cursor: default !important;
+      color: var(--text) !important;
+      text-decoration: none !important;
     }
 
     .person-name[aria-disabled="true"] {
@@ -3758,14 +3766,7 @@ function renderReportPage({
           return \`<article class="person">
             \${avatarHtml}
             <div>
-              <a
-                class="person-name"
-                href="\${html(profile || '#')}"
-                \${profile
-                  ? 'rel="noreferrer"'
-                  : 'aria-disabled="true"'
-                }
-              >\${html(name)}</a>
+              <span class="person-name">${html(name)}</span>
               <div class="details">
                 <span>
                   \${eventLabel}:
@@ -4195,11 +4196,7 @@ async function listAudienceEvents({
     `, params)
   ).map((item) => ({
     ...item,
-    profile_url:
-      profileUrl(
-        item.max_user_id,
-        item.username
-      ),
+    profile_url: '',
     risk_score:
       int(item.risk_score),
     stay_seconds:
