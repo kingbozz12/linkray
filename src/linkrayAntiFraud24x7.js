@@ -3,7 +3,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '3.1.0';
+const MODULE_VERSION = '3.2.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -1573,17 +1573,13 @@ async function recordJoin(update) {
   }
 
   async function showWave(update, waveId) {
-    /* LR_ANTIFRAUD_FAST_WAVE_VIEW_V5_1_START */
     /*
-     * Открытие карточки не должно пересчитывать сотни участников.
-     * Callback MAX живёт недолго, поэтому показываем уже сохранённый
-     * результат сразу. Полный пересчёт выполняется только отдельной
-     * кнопкой fraud:rescore.
+     * Карточка показывает сохранённый результат сразу.
+     * Любой тяжёлый пересчёт запускается только фоновым заданием.
      */
     const wave = await waveById(waveId);
 
     if (!wave) return showUserMenu(update);
-    /* LR_ANTIFRAUD_FAST_WAVE_VIEW_V5_1_END */
 
     const channel = await configByChannelId(wave.channel_id);
     const summary = json(wave.cohort_summary, {});
@@ -2818,7 +2814,127 @@ async function showMember(update, waveId, eventId) {
   /* LR_ANTIFRAUD_PER_USER_ACCESS_V2_END */
 
 
-async function handleCallback(update) {
+/* LR_ANTIFRAUD_ASYNC_RESCORE_V6_START */
+
+  const runningWaveRescores = new Set();
+
+  function callbackFreeUpdate(update) {
+    const actor = (
+      actorId(update) ||
+      chatId(update) ||
+      ownerId()
+    );
+
+    return {
+      user_id: String(actor),
+      chat_id: String(actor),
+      payload: '',
+    };
+  }
+
+  async function startWaveRescore(update, waveId) {
+    const safeWaveId = num(waveId);
+
+    if (!safeWaveId) {
+      return showUserMenu(update);
+    }
+
+    if (runningWaveRescores.has(safeWaveId)) {
+      return render(
+        update,
+        `━━━━━━━━━━━━━━\n` +
+        `🔄 Пересчёт уже выполняется\n\n` +
+        `Дождитесь сообщения с готовой карточкой наплыва.\n` +
+        `Повторный процесс не запущен.\n` +
+        `━━━━━━━━━━━━━━`,
+        [[
+          callbackButton(
+            '⬅️ К наплыву',
+            `fraud:wave:${safeWaveId}`
+          ),
+        ]],
+        'Пересчёт уже запущен'
+      );
+    }
+
+    runningWaveRescores.add(safeWaveId);
+
+    try {
+      await render(
+        update,
+        `━━━━━━━━━━━━━━\n` +
+        `🔄 Пересчёт наплыва запущен\n\n` +
+        `LinkRay повторно проверяет ПДП и участников волны.\n` +
+        `Для большого наплыва это может занять несколько минут.\n\n` +
+        `Готовая карточка придёт отдельным сообщением.\n` +
+        `━━━━━━━━━━━━━━`,
+        [[
+          callbackButton(
+            '⬅️ Вернуться к наплыву',
+            `fraud:wave:${safeWaveId}`
+          ),
+        ]],
+        'Пересчёт запущен'
+      );
+    } catch (startError) {
+      runningWaveRescores.delete(safeWaveId);
+      throw startError;
+    }
+
+    const deliveryUpdate = callbackFreeUpdate(update);
+
+    const timer = setTimeout(async () => {
+      try {
+        if (baselineV3) {
+          await baselineV3.fixWave(safeWaveId);
+        }
+
+        if (cohortEngine) {
+          await cohortEngine.rescoreWave(
+            safeWaveId,
+            { enrich: true }
+          );
+        }
+
+        await showWave(deliveryUpdate, safeWaveId);
+
+        log(
+          `wave ${safeWaveId}: background rescore completed`
+        );
+      } catch (rescoreError) {
+        error(
+          `wave ${safeWaveId}: background rescore failed:`,
+          rescoreError?.stack ||
+          rescoreError?.message ||
+          rescoreError
+        );
+
+        await render(
+          deliveryUpdate,
+          `━━━━━━━━━━━━━━\n` +
+          `⚠️ Не удалось завершить пересчёт наплыва\n\n` +
+          `Сохранённые данные не удалены. ` +
+          `Попробуйте запустить пересчёт ещё раз позднее.\n` +
+          `━━━━━━━━━━━━━━`,
+          [[
+            callbackButton(
+              '⬅️ Открыть наплыв',
+              `fraud:wave:${safeWaveId}`
+            ),
+          ]]
+        ).catch(() => {});
+      } finally {
+        runningWaveRescores.delete(safeWaveId);
+      }
+    }, 0);
+
+    timer.unref?.();
+    return true;
+  }
+
+  /* LR_ANTIFRAUD_ASYNC_RESCORE_V6_END */
+
+  async function handleCallback(update) {
     const payload = callbackPayload(update);
     if (!payload.startsWith('fraud:')) return false;
 
@@ -2863,7 +2979,7 @@ async function handleCallback(update) {
     else if (action === 'member') await showMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'whitelist') await whitelistMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'ignore') await ignoreWave(update, num(parts[2]));
-    else if (action === 'country') await setCountryEvidence(update, num(parts[2]), num(parts[3]), parts[4]); else if (action === 'rescore') { const rescoreWaveId = num(parts[2]); if (baselineV3) await baselineV3.fixWave(rescoreWaveId); if (cohortEngine) await cohortEngine.rescoreWave(rescoreWaveId, { enrich: true }); await showWave(update, rescoreWaveId); } else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
+    else if (action === 'country') await setCountryEvidence(update, num(parts[2]), num(parts[3]), parts[4]); else if (action === 'rescore') await startWaveRescore(update, num(parts[2])); else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
     else if (action === 'remove_confirm') await executeRemoval(update, parts[2]);
     else await showUserMenu(update);
     return true;
