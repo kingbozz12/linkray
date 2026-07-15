@@ -1,3 +1,4 @@
+/* LR_MAIN_MENU_PURCHASES_PROFILE_TEXT_V1 */
 import { installLinkRayPurchases } from './linkrayPurchases.js';
 import { installLinkRayProofReports } from './linkrayProofReports.js';
 /* LR_PROFILE_SUPPORT_BUTTON_V1 */
@@ -2520,28 +2521,29 @@ console.log('[v52 plan ui] installed: calendar clean, post emojis, editor menu')
 
 
 // LR_FORCE_START_MENU_V7_START
-function __lrForceMainMenuTextV7() {
-  return `━━━━━━━━━━━━━━
-⚡ <b>LinkRay</b>
+function __lrForceMainMenuTextV7() { return `━━━━━━━━━━━━━━
+⚡ LinkRay
 
-🚀 <b>LinkRay Studio</b>
+🚀 LinkRay Studio
 Создание постов, очередь публикаций и рекламные выходы.
 
-📊 <b>Аналитика</b>
+📊 Аналитика
 PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
 
-➕ <b>Добавить канал</b>
+➕ Добавить канал
 Подключение MAX-канала к LinkRay.
 
-📈 <b>Отчёты</b>
-Статистика размещений, просмотры и CPM.
+🚀 Закупы
+Создание и контроль рекламных закупов, сроков, просмотров и стоимости.
 
-🛡 <b>Антифрод</b>
+🛡 Антифрод
 Проверка качества трафика и подозрительных скачков.
 
+👤 Профиль
+LinkRay ID, тариф, подключённые каналы и поддержка.
+
 Выберите нужный раздел.
-━━━━━━━━━━━━━━`;
-}
+━━━━━━━━━━━━━━`; }
 
 function __lrForceMainMenuRowsV7() {
   return [
@@ -16399,47 +16401,54 @@ async function composePostForChannel(draft, channelId) {
 
 function makeDraftFromPost(row) { return { ...emptyDraft(), channelIds: [Number(row.channel_id)], content: { text: row.text || '', format: row.format || 'html', attachments: safeJson(row.attachments, []), markup: [], raw: null }, buttons: safeJson(row.buttons, []), isAd: Boolean(row.is_ad), cpm: row.cpm ? Number(row.cpm) : null, autoDeleteMinutes: row.auto_delete_minutes || null, reportAfterHours: row.report_after_hours || 24, signatureEnabled: !row.is_ad, postId: Number(row.id), publishedMessageId: row.published_message_id || null, status: row.status || 'scheduled' }; }
 
-function mainMenuTextV5() {
-  return `━━━━━━━━━━━━━━
-⚡ <b>LinkRay</b>
+function mainMenuTextV5() { return `━━━━━━━━━━━━━━
+⚡ LinkRay
 
-🚀 <b>LinkRay Studio</b>
+🚀 LinkRay Studio
 Создание постов, очередь публикаций и рекламные выходы.
 
-📊 <b>Аналитика</b>
-PNG-карточки каналов, графики и ежедневный отчёт ПДП.
+📊 Аналитика
+PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
 
-➕ <b>Добавить канал</b>
+➕ Добавить канал
 Подключение MAX-канала к LinkRay.
 
-📈 <b>Отчёты</b> и 🛡 <b>Антифрод</b>
-Контроль размещений и качество трафика.
-━━━━━━━━━━━━━━`;
-}
+🚀 Закупы
+Создание и контроль рекламных закупов, сроков, просмотров и стоимости.
 
-
-function mainMenuTextV6() {
-  return `━━━━━━━━━━━━━━
-⚡ <b>LinkRay</b>
-
-🚀 <b>LinkRay Studio</b>
-Создание постов, очередь публикаций и рекламные выходы.
-
-📊 <b>Аналитика</b>
-PNG-карточки каналов, графики и ежедневный отчёт ПДП.
-
-➕ <b>Добавить канал</b>
-Подключение MAX-канала к LinkRay.
-
-📈 <b>Отчёты</b>
-Статистика размещений, просмотры и CPM.
-
-🛡 <b>Антифрод</b>
+🛡 Антифрод
 Проверка качества трафика и подозрительных скачков.
 
+👤 Профиль
+LinkRay ID, тариф, подключённые каналы и поддержка.
+
 Выберите нужный раздел.
-━━━━━━━━━━━━━━`;
-}
+━━━━━━━━━━━━━━`; }
+
+
+function mainMenuTextV6() { return `━━━━━━━━━━━━━━
+⚡ LinkRay
+
+🚀 LinkRay Studio
+Создание постов, очередь публикаций и рекламные выходы.
+
+📊 Аналитика
+PNG-карточки каналов, графики, просмотры и ежедневный отчёт ПДП.
+
+➕ Добавить канал
+Подключение MAX-канала к LinkRay.
+
+🚀 Закупы
+Создание и контроль рекламных закупов, сроков, просмотров и стоимости.
+
+🛡 Антифрод
+Проверка качества трафика и подозрительных скачков.
+
+👤 Профиль
+LinkRay ID, тариф, подключённые каналы и поддержка.
+
+Выберите нужный раздел.
+━━━━━━━━━━━━━━`; }
 
 function mainMenuRows() {
   return [
