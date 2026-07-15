@@ -3,7 +3,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '3.2.0';
+const MODULE_VERSION = '3.3.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -333,11 +333,22 @@ async function maxFetch(path, { method = 'GET', query = {}, body = null } = {}) 
   return data || { success: true };
 }
 
+
 async function getMaxMember(maxChatId, userId) {
-  const data = await maxFetch(`/chats/${encodeURIComponent(String(maxChatId))}/members`, {
-    query: { user_ids: String(userId) },
-  });
-  return (data?.members || data?.chat?.members || [])[0] || null;
+  const data = await maxFetch(
+    `/chats/${encodeURIComponent(String(maxChatId))}/members`,
+    {
+      query: {
+        user_ids: [String(userId)],
+      },
+    }
+  );
+
+  return (
+    data?.members ||
+    data?.chat?.members ||
+    []
+  )[0] || null;
 }
 
 async function getMaxParticipantCount(maxChatId) {
@@ -1573,10 +1584,6 @@ async function recordJoin(update) {
   }
 
   async function showWave(update, waveId) {
-    /*
-     * Карточка показывает сохранённый результат сразу.
-     * Любой тяжёлый пересчёт запускается только фоновым заданием.
-     */
     const wave = await waveById(waveId);
 
     if (!wave) return showUserMenu(update);
@@ -2115,39 +2122,21 @@ async function showMember(update, waveId, eventId) {
     return cleanupCandidates(waveId, 'safe');
   }
 
-  async function cleanupPrompt(update, waveId, mode = 'safe') {
-    let wave = await waveById(waveId);
-    if (!wave) return showUserMenu(update);
-    if (baselineV3) {
-      wave = (await baselineV3.fixWave(waveId)) || wave;
-    }
+  
+async function cleanupPrompt(update, waveId, mode = 'safe') {
+    const wave = await waveById(waveId);
 
+    if (!wave) return showUserMenu(update);
 
     const selectedMode = cleanupMode(mode);
-
-    if (cohortEngine) {
-      wave = (
-        await cohortEngine.rescoreWave(
-          waveId,
-          { enrich: true }
-        )
-      ) || wave;
-    }
-
     const candidates = await cleanupCandidates(
       waveId,
       selectedMode.key
     );
 
-    const capability = cohortEngine
-      ? await cohortEngine.checkRemovalCapability(
-          wave.max_chat_id
-        )
-      : {
-          known: false,
-          hasPermission: false,
-          permissions: [],
-        };
+    const candidateIds = uniqueStrings(
+      candidates.map((candidate) => String(candidate.user_id))
+    ).slice(0, 1000);
 
     const token =
       `${Date.now().toString(36)}` +
@@ -2168,7 +2157,7 @@ async function showMember(update, waveId, eventId) {
         $1,$2,$3,$4,
         'pending',
         $5,
-        now()+interval '10 minutes',
+        now()+interval '30 minutes',
         $6::jsonb
       )
       RETURNING *
@@ -2181,8 +2170,14 @@ async function showMember(update, waveId, eventId) {
       JSON.stringify({
         cleanup_mode: selectedMode.key,
         candidate_count: candidates.length,
+        candidate_user_ids: candidateIds,
+        wave_updated_at: wave.updated_at || null,
       }),
     ]))[0];
+
+    if (!action) {
+      throw new Error('Failed to create AntiFraud cleanup action');
+    }
 
     const expectedAfter =
       wave.participants_after === null ||
@@ -2192,14 +2187,6 @@ async function showMember(update, waveId, eventId) {
             0,
             num(wave.participants_after) - candidates.length
           );
-
-    const permissionText = capability.known
-      ? (
-          capability.hasPermission
-            ? '✅ У бота есть право add_remove_members.'
-            : '⛔ MAX не выдал боту право add_remove_members.'
-        )
-      : '⚠️ Право удаления не удалось проверить заранее.';
 
     const listCategory =
       selectedMode.key === 'safe'
@@ -2217,10 +2204,7 @@ async function showMember(update, waveId, eventId) {
       ],
     ];
 
-    if (
-      candidates.length > 0 &&
-      (!capability.known || capability.hasPermission)
-    ) {
+    if (candidates.length > 0) {
       buttons.push([
         callbackButton(
           selectedMode.button,
@@ -2247,7 +2231,6 @@ async function showMember(update, waveId, eventId) {
       `Всего вступили в волну: ${num(wave.joined_count)}\n` +
       `Уверенность алгоритма: ` +
       `${Math.round(num(wave.cohort_confidence) * 100)}%\n\n` +
-      `${permissionText}\n\n` +
       `ПДП до наплыва: ${
         wave.participants_before ?? 'уточняется'
       }\n` +
@@ -2256,11 +2239,12 @@ async function showMember(update, waveId, eventId) {
       }\n` +
       `Ожидаемый ПДП после: ${expectedAfter}\n\n` +
       `⚠️ ${selectedMode.warning}\n\n` +
-      `После нажатия кнопки LinkRay ещё раз пересчитает ` +
-      `волну и повторно проверит каждого участника через MAX.\n` +
-      `Владельцы, администраторы, пользователи LinkRay, ` +
-      `белый список и уже вышедшие будут пропущены.\n\n` +
-      `Удаление не запускается автоматически.\n` +
+      `После подтверждения очистка запустится в фоне. ` +
+      `LinkRay повторно проверит каждого участника через MAX, ` +
+      `не удалит владельцев, администраторов, белый список, ` +
+      `пользователей LinkRay и уже вышедших.\n\n` +
+      `Право удаления и фактический ответ MAX будут проверены ` +
+      `непосредственно перед первой очисткой.\n` +
       `━━━━━━━━━━━━━━`,
       buttons
     );
@@ -2278,146 +2262,249 @@ async function showMember(update, waveId, eventId) {
     };
   }
 
-  async function executeRemoval(update, actionToken) {
-    const action = rows(await query(`
-      SELECT *
-      FROM lr_antifraud_actions
-      WHERE action_token=$1
-        AND status='pending'
-        AND expires_at>now()
-      LIMIT 1
-    `, [actionToken]))[0];
+  
+  /* LR_ANTIFRAUD_STABLE_WORKERS_V7_START */
 
-    if (!action) {
-      return render(
-        update,
-        '⚠️ Подтверждение устарело или уже использовано.',
-        [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]
-      );
-    }
+  const runningRemovalActions = new Set();
 
-    if (
-      (action.requested_by || ownerId()) !==
-      (actorId(update) || ownerId())
-    ) {
-      return render(
-        update,
-        '⛔ Это подтверждение создано другим пользователем.',
-        [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]
-      );
-    }
+  function backgroundUpdateForUser(userId) {
+    const target = idText(userId) || ownerId();
 
-    await query(`
-      UPDATE lr_antifraud_actions
-      SET status='running'
-      WHERE id=$1
-    `, [action.id]);
+    return {
+      user_id: String(target),
+      chat_id: String(target),
+      payload: '',
+    };
+  }
 
-    let wave = await waveById(action.wave_id);
-
-    const actionMode = {
+  function actionModeFromType(actionType) {
+    return {
       remove_high_confidence_bots: 'safe',
       remove_probable_bots: 'probable',
       remove_entire_wave: 'wave',
-    }[action.action_type] || 'safe';
+    }[actionType] || 'safe';
+  }
 
-    if (cohortEngine) {
-      wave = (
-        await cohortEngine.rescoreWave(
-          action.wave_id,
-          { enrich: true }
-        )
-      ) || wave;
+  function maxErrorStatus(errorValue) {
+    const direct = Number(errorValue?.status);
+    if (Number.isFinite(direct)) return direct;
 
-      const capability =
-        await cohortEngine.checkRemovalCapability(
-          wave.max_chat_id
-        );
+    const match = String(
+      errorValue?.message || errorValue || ''
+    ).match(/\b(400|401|403|404|405|409|429|500|502|503|504)\b/);
 
-      if (
-        capability.known &&
-        !capability.hasPermission
-      ) {
-        await query(`
-          UPDATE lr_antifraud_actions
-          SET
-            status='failed',
-            completed_at=now(),
-            result=$2::jsonb
-          WHERE id=$1
-        `, [
-          action.id,
-          JSON.stringify({
-            error:
-              'MAX did not grant add_remove_members',
-          }),
-        ]);
+    return match ? Number(match[1]) : 0;
+  }
 
-        return render(
-          update,
-          '⛔ MAX не выдал боту право удаления ' +
-          'подписчиков этого канала.',
-          [[
-            callbackButton(
-              '⬅️ К наплыву',
-              `fraud:wave:${action.wave_id}`
-            ),
-          ]]
-        );
+  function shortMaxError(errorValue) {
+    const status = maxErrorStatus(errorValue);
+
+    if (status === 401) {
+      return 'MAX отклонил токен бота.';
+    }
+
+    if (status === 403 || status === 405) {
+      return (
+        'MAX не разрешил боту удалить подписчика. ' +
+        'Проверьте право add_remove_members. ' +
+        'Для некоторых каналов платформа ограничивает удаление ' +
+        'подписчиков через токен бота.'
+      );
+    }
+
+    if (status === 404) {
+      return 'Участник уже отсутствует в канале.';
+    }
+
+    if (status === 429) {
+      return 'MAX временно ограничил частоту запросов.';
+    }
+
+    if (status >= 500) {
+      return 'Временная ошибка MAX API.';
+    }
+
+    return text(
+      errorValue?.message || errorValue || 'Неизвестная ошибка MAX',
+      500
+    );
+  }
+
+  function isPermissionFailure(errorValue) {
+    return [401, 403, 405].includes(
+      maxErrorStatus(errorValue)
+    );
+  }
+
+  async function removeMaxMemberWithRetry(maxChatId, userId) {
+    const delays = [0, 800, 1800, 3500];
+    let lastError = null;
+
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      if (delays[attempt]) {
+        await sleep(delays[attempt]);
+      }
+
+      try {
+        return await removeMaxMember(maxChatId, userId);
+      } catch (removeError) {
+        lastError = removeError;
+        const status = maxErrorStatus(removeError);
+
+        if (
+          ![429, 500, 502, 503, 504].includes(status) ||
+          attempt === delays.length - 1
+        ) {
+          throw removeError;
+        }
       }
     }
 
-    const candidates = await cleanupCandidates(
+    throw lastError || new Error('MAX removal failed');
+  }
+
+  async function writeRemovalRecord(
+    action,
+    candidate,
+    status,
+    errorText = ''
+  ) {
+    await query(`
+      INSERT INTO lr_antifraud_removals(
+        action_id,
+        wave_id,
+        channel_id,
+        max_chat_id,
+        user_id,
+        display_name,
+        risk_score,
+        status,
+        error,
+        removed_at
+      )
+      VALUES(
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,
+        CASE WHEN $8='removed' THEN now() ELSE NULL END
+      )
+    `, [
+      action.id,
       action.wave_id,
-      actionMode
-    );
+      candidate.channel_id,
+      candidate.max_chat_id,
+      candidate.user_id,
+      candidate.display_name,
+      num(
+        candidate.bot_probability ??
+        candidate.risk_score
+      ),
+      status,
+      errorText || null,
+    ]);
+  }
 
-    const limit = 1000;
-    const selected = candidates.slice(0, limit);
+  async function saveRemovalProgress(actionId, result) {
+    await query(`
+      UPDATE lr_antifraud_actions
+      SET result=$2::jsonb
+      WHERE id=$1
+    `, [
+      actionId,
+      JSON.stringify(result),
+    ]).catch(() => {});
+  }
 
-    const result = {
-      mode: actionMode,
-      requested: candidates.length,
-      processed: selected.length,
-      removed: 0,
-      skipped: 0,
-      failed: 0,
-      errors: [],
-    };
+  async function runRemovalAction(actionId, deliveryUpdate) {
+    if (runningRemovalActions.has(actionId)) return;
 
-    for (const candidate of selected) {
-      let status = 'failed';
-      let err = '';
+    runningRemovalActions.add(actionId);
+
+    try {
+      const action = rows(await query(`
+        SELECT *
+        FROM lr_antifraud_actions
+        WHERE id=$1
+          AND status='running'
+        LIMIT 1
+      `, [actionId]))[0];
+
+      if (!action) return;
+
+      const wave = await waveById(action.wave_id);
+
+      if (!wave) {
+        throw new Error('AntiFraud wave not found');
+      }
+
+      const actionResult = json(action.result, {});
+      const actionMode = actionModeFromType(action.action_type);
+      const snapshotIds = new Set(
+        uniqueStrings(actionResult.candidate_user_ids || [])
+      );
+
+      let candidates = await cleanupCandidates(
+        action.wave_id,
+        actionMode
+      );
+
+      if (snapshotIds.size) {
+        candidates = candidates.filter(
+          (candidate) => snapshotIds.has(
+            String(candidate.user_id)
+          )
+        );
+      }
+
+      const selected = candidates.slice(0, 1000);
+
+      const result = {
+        ...actionResult,
+        mode: actionMode,
+        requested: candidates.length,
+        processed: 0,
+        removed: 0,
+        skipped: 0,
+        failed: 0,
+        platform_denied: false,
+        rate_limited: false,
+        started_at: new Date().toISOString(),
+        errors: [],
+      };
 
       try {
-        if (
-          await isWhitelisted(
-            candidate.channel_id,
-            candidate.user_id
-          )
-        ) {
-          status = 'skipped_whitelist';
-          result.skipped += 1;
-        } else {
-          let liveMember = null;
+        if (cohortEngine) {
+          result.capability =
+            await cohortEngine.checkRemovalCapability(
+              wave.max_chat_id
+            );
+        }
+      } catch (capabilityError) {
+        result.capability = {
+          known: false,
+          error: shortMaxError(capabilityError),
+        };
+      }
 
-          try {
-            liveMember = await getMaxMember(
-              candidate.max_chat_id,
+      for (const candidate of selected) {
+        let removalStatus = 'failed';
+        let removalError = '';
+
+        try {
+          if (
+            await isWhitelisted(
+              candidate.channel_id,
+              candidate.user_id
+            )
+          ) {
+            removalStatus = 'skipped_whitelist';
+            result.skipped += 1;
+          } else {
+            const liveMember = await getMaxMember(
+              candidate.max_chat_id || wave.max_chat_id,
               candidate.user_id
             );
-          } catch (memberError) {
-            if (memberError?.status === 404) {
-              status = 'skipped_absent';
-              result.skipped += 1;
-            } else {
-              throw memberError;
-            }
-          }
 
-          if (status === 'failed') {
             if (!liveMember) {
-              status = 'skipped_absent';
+              removalStatus = 'skipped_absent';
               result.skipped += 1;
             } else {
               const flags = memberFlags(liveMember);
@@ -2440,138 +2527,385 @@ async function showMember(update, waveId, eventId) {
                 flags.isOwner ||
                 linkedOwner[0]
               ) {
-                status = 'skipped_protected';
+                removalStatus = 'skipped_protected';
                 result.skipped += 1;
               } else {
-                await removeMaxMember(
-                  candidate.max_chat_id,
+                await removeMaxMemberWithRetry(
+                  candidate.max_chat_id || wave.max_chat_id,
                   candidate.user_id
                 );
 
-                status = 'removed';
+                removalStatus = 'removed';
                 result.removed += 1;
               }
             }
           }
+        } catch (removeError) {
+          const status = maxErrorStatus(removeError);
+          removalError = shortMaxError(removeError);
+
+          if (status === 404) {
+            removalStatus = 'skipped_absent';
+            result.skipped += 1;
+          } else {
+            removalStatus = 'failed';
+            result.failed += 1;
+
+            result.errors.push({
+              user_id: String(candidate.user_id),
+              status,
+              error: removalError,
+            });
+
+            if (isPermissionFailure(removeError)) {
+              result.platform_denied = true;
+            }
+
+            if (status === 429) {
+              result.rate_limited = true;
+            }
+          }
         }
-      } catch (removeError) {
-        err = text(
-          removeError?.message || removeError,
-          1000
+
+        result.processed += 1;
+
+        await writeRemovalRecord(
+          action,
+          candidate,
+          removalStatus,
+          removalError
         );
 
-        result.failed += 1;
-        result.errors.push({
-          userId: candidate.user_id,
-          error: err,
-        });
+        if (
+          result.processed % 10 === 0 ||
+          result.platform_denied ||
+          result.rate_limited
+        ) {
+          await saveRemovalProgress(action.id, result);
+        }
+
+        if (
+          result.platform_denied ||
+          result.rate_limited
+        ) {
+          break;
+        }
+
+        await sleep(350);
       }
 
+      let participants = null;
+
+      try {
+        participants = await getMaxParticipantCount(
+          wave.max_chat_id
+        );
+      } catch (participantError) {
+        result.participant_count_error =
+          shortMaxError(participantError);
+      }
+
+      const updatedWave = await refreshWave(
+        wave.id,
+        participants
+      );
+
+      result.completed_at = new Date().toISOString();
+
+      const finalStatus =
+        result.platform_denied
+          ? 'failed'
+          : 'completed';
+
       await query(`
-        INSERT INTO lr_antifraud_removals(
-          action_id,
-          wave_id,
-          channel_id,
-          max_chat_id,
-          user_id,
-          display_name,
-          risk_score,
-          status,
-          error,
-          removed_at
-        )
-        VALUES(
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,
-          CASE WHEN $8='removed' THEN now() ELSE NULL END
-        )
+        UPDATE lr_antifraud_actions
+        SET
+          status=$2,
+          completed_at=now(),
+          result=$3::jsonb
+        WHERE id=$1
       `, [
         action.id,
-        action.wave_id,
-        candidate.channel_id,
-        candidate.max_chat_id,
-        candidate.user_id,
-        candidate.display_name,
-        num(
-          candidate.bot_probability ??
-          candidate.risk_score
-        ),
-        status,
-        err || null,
+        finalStatus,
+        JSON.stringify(result),
       ]);
 
-      await sleep(220);
-    }
+      const modeTitle = {
+        safe: 'Безопасная очистка',
+        probable: 'Очистка вероятных ботов',
+        wave: 'Очистка всего наплыва',
+      }[actionMode] || 'Очистка';
 
-    let participants = null;
+      const platformText = result.platform_denied
+        ? (
+            `\n\n⛔ MAX отклонил удаление через токен бота.\n` +
+            `Это фактический ответ платформы, а не ошибка ` +
+            `подсчёта AntiFraud. Проверьте право ` +
+            `add_remove_members у LinkRay в этом канале.`
+          )
+        : '';
 
-    try {
-      participants = await getMaxParticipantCount(
-        wave.max_chat_id
+      const rateText = result.rate_limited
+        ? (
+            `\n\n⚠️ MAX временно ограничил частоту запросов. ` +
+            `Повторный запуск продолжит очистку оставшихся.`
+          )
+        : '';
+
+      await render(
+        deliveryUpdate,
+        `━━━━━━━━━━━━━━\n` +
+        `${result.platform_denied ? '⚠️' : '✅'} ` +
+        `${modeTitle} завершена\n\n` +
+        `Найдено кандидатов: ${result.requested}\n` +
+        `Проверено: ${result.processed}\n` +
+        `Удалено: ${result.removed}\n` +
+        `Безопасно пропущено: ${result.skipped}\n` +
+        `Ошибок MAX API: ${result.failed}\n` +
+        (
+          result.requested > result.processed
+            ? `Осталось: ${
+                result.requested - result.processed
+              }\n`
+            : ''
+        ) +
+        `\nПДП до наплыва: ${
+          updatedWave?.participants_before ?? 'уточняется'
+        }\n` +
+        `ПДП после очистки: ${
+          updatedWave?.participants_after ?? 'уточняется'
+        }` +
+        platformText +
+        rateText +
+        `\n━━━━━━━━━━━━━━`,
+        [
+          [
+            callbackButton(
+              '🔎 Открыть наплыв',
+              `fraud:wave:${wave.id}`
+            ),
+          ],
+          [
+            callbackButton(
+              '⬅️ К каналам',
+              'fraud:menu'
+            ),
+          ],
+        ]
       );
-    } catch {}
+    } catch (workerError) {
+      error(
+        `removal action ${actionId} failed:`,
+        workerError?.stack ||
+        workerError?.message ||
+        workerError
+      );
 
-    const updatedWave = await refreshWave(
-      wave.id,
-      participants
-    );
+      await query(`
+        UPDATE lr_antifraud_actions
+        SET
+          status='failed',
+          completed_at=now(),
+          result=
+            COALESCE(result, '{}'::jsonb) ||
+            jsonb_build_object(
+              'worker_error',
+              $2,
+              'completed_at',
+              now()::text
+            )
+        WHERE id=$1
+      `, [
+        actionId,
+        text(
+          workerError?.message || workerError,
+          1000
+        ),
+      ]).catch(() => {});
 
-    await query(`
-      UPDATE lr_antifraud_actions
-      SET
-        status='completed',
-        completed_at=now(),
-        result=$2::jsonb
-      WHERE id=$1
-    `, [
-      action.id,
-      JSON.stringify(result),
-    ]);
-
-    const modeTitle = {
-      safe: 'Безопасная очистка',
-      probable: 'Очистка вероятных ботов',
-      wave: 'Очистка всего наплыва',
-    }[actionMode] || 'Очистка';
-
-    return render(
-      update,
-      `━━━━━━━━━━━━━━\n` +
-      `✅ ${modeTitle} завершена\n\n` +
-      `Найдено кандидатов: ${result.requested}\n` +
-      `Обработано: ${result.processed}\n` +
-      `Удалено: ${result.removed}\n` +
-      `Безопасно пропущено: ${result.skipped}\n` +
-      `Ошибок MAX API: ${result.failed}\n` +
-      (
-        result.requested > result.processed
-          ? `Осталось на следующий запуск: ` +
-            `${result.requested - result.processed}\n`
-          : ''
-      ) +
-      `\nПДП до наплыва: ${
-        updatedWave?.participants_before ?? 'уточняется'
-      }\n` +
-      `ПДП после очистки: ${
-        updatedWave?.participants_after ?? 'уточняется'
-      }\n\n` +
-      `Защищённые пользователи и уже вышедшие ` +
-      `не удалялись.\n` +
-      `━━━━━━━━━━━━━━`,
-      [
-        [
-          callbackButton(
-            '🔎 Вернуться к наплыву',
-            `fraud:wave:${wave.id}`
-          ),
-        ],
-        [
+      await render(
+        deliveryUpdate,
+        `━━━━━━━━━━━━━━\n` +
+        `⚠️ Очистка остановлена\n\n` +
+        `Причина записана в журнал AntiFraud.\n` +
+        `Сохранённые данные и кандидаты не удалены.\n` +
+        `━━━━━━━━━━━━━━`,
+        [[
           callbackButton(
             '⬅️ К каналам',
             'fraud:menu'
           ),
-        ],
-      ]
+        ]]
+      ).catch(() => {});
+    } finally {
+      runningRemovalActions.delete(actionId);
+    }
+  }
+
+  /* LR_ANTIFRAUD_STABLE_WORKERS_V7_END */
+
+  
+async function executeRemoval(update, actionToken) {
+    const action = rows(await query(`
+      SELECT *
+      FROM lr_antifraud_actions
+      WHERE action_token=$1
+      LIMIT 1
+    `, [actionToken]))[0];
+
+    if (!action) {
+      return render(
+        update,
+        '⚠️ Подтверждение не найдено.',
+        [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]
+      );
+    }
+
+    if (
+      String(action.requested_by || ownerId()) !==
+      String(actorId(update) || ownerId())
+    ) {
+      return render(
+        update,
+        '⛔ Это подтверждение создано другим пользователем.',
+        [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]
+      );
+    }
+
+    if (action.status === 'running') {
+      return render(
+        update,
+        `━━━━━━━━━━━━━━\n` +
+        `🧹 Очистка уже выполняется\n\n` +
+        `После завершения LinkRay пришлёт отдельный результат.\n` +
+        `━━━━━━━━━━━━━━`,
+        [[
+          callbackButton(
+            '⬅️ К наплыву',
+            `fraud:wave:${action.wave_id}`
+          ),
+        ]],
+        'Очистка уже запущена'
+      );
+    }
+
+    if (['completed', 'failed'].includes(action.status)) {
+      return render(
+        update,
+        `━━━━━━━━━━━━━━\n` +
+        `ℹ️ Это подтверждение уже использовано\n\n` +
+        `Статус: ${
+          action.status === 'completed' ? 'завершено' : 'ошибка'
+        }.\n` +
+        `━━━━━━━━━━━━━━`,
+        [[
+          callbackButton(
+            '⬅️ К наплыву',
+            `fraud:wave:${action.wave_id}`
+          ),
+        ]]
+      );
+    }
+
+    if (
+      action.status !== 'pending' ||
+      new Date(action.expires_at).getTime() <= Date.now()
+    ) {
+      return render(
+        update,
+        '⚠️ Подтверждение устарело. Откройте очистку заново.',
+        [[
+          callbackButton(
+            '⬅️ К наплыву',
+            `fraud:wave:${action.wave_id}`
+          ),
+        ]]
+      );
+    }
+
+    const started = rows(await query(`
+      UPDATE lr_antifraud_actions
+      SET
+        status='running',
+        result=
+          COALESCE(result, '{}'::jsonb) ||
+          jsonb_build_object(
+            'started_at',
+            now()::text
+          )
+      WHERE id=$1
+        AND status='pending'
+        AND expires_at>now()
+      RETURNING *
+    `, [action.id]))[0];
+
+    if (!started) {
+      return render(
+        update,
+        '⚠️ Очистка уже запущена или подтверждение устарело.',
+        [[
+          callbackButton(
+            '⬅️ К наплыву',
+            `fraud:wave:${action.wave_id}`
+          ),
+        ]]
+      );
+    }
+
+    const modeTitle = {
+      safe: 'безопасная очистка',
+      probable: 'очистка вероятных ботов',
+      wave: 'очистка всего наплыва',
+    }[actionModeFromType(started.action_type)] || 'очистка';
+
+    const deliveryUpdate = backgroundUpdateForUser(
+      started.requested_by
     );
+
+    try {
+      await render(
+        update,
+        `━━━━━━━━━━━━━━\n` +
+        `🧹 ${modeTitle} запущена\n\n` +
+        `LinkRay проверит каждого кандидата через MAX и ` +
+        `выполнит удаление в фоне.\n\n` +
+        `Готовый результат придёт отдельным сообщением.\n` +
+        `━━━━━━━━━━━━━━`,
+        [[
+          callbackButton(
+            '⬅️ Вернуться к наплыву',
+            `fraud:wave:${started.wave_id}`
+          ),
+        ]],
+        'Очистка запущена'
+      );
+    } catch (startError) {
+      await query(`
+        UPDATE lr_antifraud_actions
+        SET status='pending'
+        WHERE id=$1
+          AND status='running'
+      `, [started.id]).catch(() => {});
+
+      throw startError;
+    }
+
+    const timer = setTimeout(() => {
+      runRemovalAction(
+        started.id,
+        deliveryUpdate
+      ).catch((workerError) => {
+        error(
+          `removal action ${started.id} unhandled:`,
+          workerError?.stack ||
+          workerError?.message ||
+          workerError
+        );
+      });
+    }, 0);
+
+    timer.unref?.();
+    return true;
   }
   /* LR_ANTIFRAUD_PER_USER_ACCESS_V2_START */
 
@@ -2832,7 +3166,8 @@ async function showMember(update, waveId, eventId) {
     };
   }
 
-  async function startWaveRescore(update, waveId) {
+  
+async function startWaveRescore(update, waveId) {
     const safeWaveId = num(waveId);
 
     if (!safeWaveId) {
@@ -2844,7 +3179,7 @@ async function showMember(update, waveId, eventId) {
         update,
         `━━━━━━━━━━━━━━\n` +
         `🔄 Пересчёт уже выполняется\n\n` +
-        `Дождитесь сообщения с готовой карточкой наплыва.\n` +
+        `Дождитесь сообщения с результатом.\n` +
         `Повторный процесс не запущен.\n` +
         `━━━━━━━━━━━━━━`,
         [[
@@ -2859,13 +3194,18 @@ async function showMember(update, waveId, eventId) {
 
     runningWaveRescores.add(safeWaveId);
 
+    const deliveryUpdate = backgroundUpdateForUser(
+      actorId(update) ||
+      chatId(update) ||
+      ownerId()
+    );
+
     try {
       await render(
         update,
         `━━━━━━━━━━━━━━\n` +
         `🔄 Пересчёт наплыва запущен\n\n` +
-        `LinkRay повторно проверяет ПДП и участников волны.\n` +
-        `Для большого наплыва это может занять несколько минут.\n\n` +
+        `Обновление ПДП и анализ участников идут в фоне.\n` +
         `Готовая карточка придёт отдельным сообщением.\n` +
         `━━━━━━━━━━━━━━`,
         [[
@@ -2881,40 +3221,92 @@ async function showMember(update, waveId, eventId) {
       throw startError;
     }
 
-    const deliveryUpdate = callbackFreeUpdate(update);
-
     const timer = setTimeout(async () => {
+      const failures = [];
+
       try {
         if (baselineV3) {
-          await baselineV3.fixWave(safeWaveId);
+          try {
+            await baselineV3.fixWave(safeWaveId);
+          } catch (baselineError) {
+            failures.push(
+              `ПДП: ${text(
+                baselineError?.message || baselineError,
+                300
+              )}`
+            );
+
+            error(
+              `wave ${safeWaveId}: baseline failed:`,
+              baselineError?.stack ||
+              baselineError?.message ||
+              baselineError
+            );
+          }
         }
 
         if (cohortEngine) {
-          await cohortEngine.rescoreWave(
-            safeWaveId,
-            { enrich: true }
-          );
+          try {
+            await cohortEngine.rescoreWave(
+              safeWaveId,
+              { enrich: true }
+            );
+          } catch (cohortError) {
+            failures.push(
+              `анализ участников: ${text(
+                cohortError?.message || cohortError,
+                300
+              )}`
+            );
+
+            error(
+              `wave ${safeWaveId}: cohort failed:`,
+              cohortError?.stack ||
+              cohortError?.message ||
+              cohortError
+            );
+          }
         }
 
         await showWave(deliveryUpdate, safeWaveId);
 
+        if (failures.length) {
+          await render(
+            deliveryUpdate,
+            `━━━━━━━━━━━━━━\n` +
+            `⚠️ Пересчёт завершён частично\n\n` +
+            failures.map(
+              (failure) => `• ${failure}`
+            ).join('\n') +
+            `\n\nСохранённая карточка доступна. ` +
+            `Другие части AntiFraud продолжают работать.\n` +
+            `━━━━━━━━━━━━━━`,
+            [[
+              callbackButton(
+                '⬅️ Открыть наплыв',
+                `fraud:wave:${safeWaveId}`
+              ),
+            ]]
+          );
+        }
+
         log(
-          `wave ${safeWaveId}: background rescore completed`
+          `wave ${safeWaveId}: background rescore completed; ` +
+          `failures=${failures.length}`
         );
-      } catch (rescoreError) {
+      } catch (deliveryError) {
         error(
-          `wave ${safeWaveId}: background rescore failed:`,
-          rescoreError?.stack ||
-          rescoreError?.message ||
-          rescoreError
+          `wave ${safeWaveId}: delivery failed:`,
+          deliveryError?.stack ||
+          deliveryError?.message ||
+          deliveryError
         );
 
         await render(
           deliveryUpdate,
           `━━━━━━━━━━━━━━\n` +
-          `⚠️ Не удалось завершить пересчёт наплыва\n\n` +
-          `Сохранённые данные не удалены. ` +
-          `Попробуйте запустить пересчёт ещё раз позднее.\n` +
+          `⚠️ Пересчёт выполнен, но карточку не удалось отправить\n\n` +
+          `Откройте наплыв повторно из истории.\n` +
           `━━━━━━━━━━━━━━`,
           [[
             callbackButton(
