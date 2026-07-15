@@ -88,33 +88,13 @@ function normalizedCountry(value) {
     .replace(/[^a-zа-я0-9]+/gi, '');
 }
 
+
 function eventCountrySignal(event) {
+  /* LR_ANTIFRAUD_PAYLOAD_COUNTRY_ONLY_V8_START */
   const snapshot = json(event?.profile_snapshot, {});
   const raw = json(event?.raw, {});
-  const manual = String(event?.country_evidence || '').toLowerCase();
-
-  if (manual === 'foreign') {
-    return {
-      known: true,
-      foreign: true,
-      trusted: false,
-      name: event?.country_name || 'иностранный номер',
-      source: event?.country_source || 'manual_profile_check',
-    };
-  }
-
-  if (manual === 'trusted') {
-    return {
-      known: true,
-      foreign: false,
-      trusted: true,
-      name: event?.country_name || 'Россия / Казахстан / Беларусь',
-      source: event?.country_source || 'manual_profile_check',
-    };
-  }
 
   const candidates = [
-    event?.country_name,
     snapshot?.phone_country,
     snapshot?.phone_country_code,
     snapshot?.country,
@@ -126,9 +106,13 @@ function eventCountrySignal(event) {
     raw?.country_code,
     raw?.phone_region,
     raw?.user?.phone_country,
+    raw?.user?.phone_country_code,
     raw?.user?.country,
+    raw?.user?.country_code,
     raw?.member?.phone_country,
+    raw?.member?.phone_country_code,
     raw?.member?.country,
+    raw?.member?.country_code,
   ];
 
   const found = candidates
@@ -156,6 +140,7 @@ function eventCountrySignal(event) {
     name: found,
     source: 'max_payload_optional',
   };
+  /* LR_ANTIFRAUD_PAYLOAD_COUNTRY_ONLY_V8_END */
 }
 
 /* LR_ANTIFRAUD_COUNTRY_SIGNAL_V3_END */
@@ -213,13 +198,37 @@ function memberCollection(data) {
   return [];
 }
 
+
 function profileSnapshot(member) {
   return {
     description: member?.description ?? null,
-    join_time: member?.join_time ?? member?.joinTime ?? null,
-    last_access_time: member?.last_access_time ?? member?.lastAccessTime ?? null,
-    permissions: Array.isArray(member?.permissions) ? member.permissions : [],
+    join_time:
+      member?.join_time ??
+      member?.joinTime ??
+      null,
+    last_access_time:
+      member?.last_access_time ??
+      member?.lastAccessTime ??
+      null,
+    permissions: Array.isArray(member?.permissions)
+      ? member.permissions
+      : [],
     alias: member?.alias ?? null,
+    phone_country:
+      member?.phone_country ??
+      null,
+    phone_country_code:
+      member?.phone_country_code ??
+      null,
+    country:
+      member?.country ??
+      null,
+    country_code:
+      member?.country_code ??
+      null,
+    phone_region:
+      member?.phone_region ??
+      null,
   };
 }
 

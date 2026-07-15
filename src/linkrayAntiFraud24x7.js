@@ -3,7 +3,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '3.3.0';
+const MODULE_VERSION = '3.3.1';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -1860,44 +1860,9 @@ async function recordJoin(update) {
     );
   }
   
-  async function setCountryEvidence(
-    update,
-    waveId,
-    eventId,
-    evidence
-  ) {
-    const allowed = evidence === 'foreign'
-      ? 'foreign'
-      : evidence === 'trusted'
-        ? 'trusted'
-        : null;
+  
 
-    if (!allowed) return showMember(update, waveId, eventId);
-
-    await query(`
-      UPDATE public.lr_antifraud_events
-      SET
-        country_evidence=$3,
-        country_name=CASE
-          WHEN $3='foreign' THEN 'иностранный номер'
-          ELSE 'Россия / Казахстан / Беларусь'
-        END,
-        country_source='manual_profile_check',
-        updated_at=now()
-      WHERE id=$1
-        AND wave_id=$2
-    `, [eventId, waveId, allowed]);
-
-    if (cohortEngine) {
-      await cohortEngine.rescoreWave(
-        waveId,
-        { enrich: false }
-      );
-    }
-
-    return showMember(update, waveId, eventId);
-  }
-
+/* LR_ANTIFRAUD_NO_MANUAL_COUNTRY_V8_START */
 async function showMember(update, waveId, eventId) {
     const item = rows(await query(`
       SELECT *
@@ -1938,16 +1903,7 @@ async function showMember(update, waveId, eventId) {
       ),
     ]);
 
-    buttons.push([
-      callbackButton(
-        '🌍 Номер не РФ/КЗ/РБ',
-        `fraud:country:${waveId}:${eventId}:foreign`
-      ),
-      callbackButton(
-        '🏠 Номер РФ/КЗ/РБ',
-        `fraud:country:${waveId}:${eventId}:trusted`
-      ),
-    ]);
+    
 
 
     buttons.push([
@@ -1977,8 +1933,8 @@ async function showMember(update, waveId, eventId) {
       `Класс: ${labels[item.bot_class] || labels.unknown}\n` +
       `Вероятность бота: ${num(item.bot_probability)}/100\n` +
       `Независимых сильных признаков: ` +
-      `${num(item.cohort_strong_signals ?? item.strong_signals)}\n` +
-      `Страна номера: ${item.country_evidence === 'foreign' ? 'иностранная (подтверждено)' : item.country_evidence === 'trusted' ? 'РФ/КЗ/РБ (подтверждено)' : item.country_name || 'недоступна Bot API'}\n` +
+      `${num(item.cohort_strong_signals ?? item.strong_signals)}\n`
+      +
       `Официальный бот MAX: ${item.is_bot ? 'да' : 'нет'}\n` +
       `Допущен к проверке удаления: ` +
       `${item.removal_eligible ? 'да' : 'нет'}\n\n` +
@@ -1994,6 +1950,7 @@ async function showMember(update, waveId, eventId) {
       buttons
     );
   }
+/* LR_ANTIFRAUD_NO_MANUAL_COUNTRY_V8_END */
   async function whitelistMember(update, waveId, eventId) {
     const item = rows(await query(`SELECT * FROM lr_antifraud_events WHERE id=$1 AND wave_id=$2 LIMIT 1`, [eventId, waveId]))[0];
     if (!item) return showWave(update, waveId);
@@ -3371,7 +3328,7 @@ async function startWaveRescore(update, waveId) {
     else if (action === 'member') await showMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'whitelist') await whitelistMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'ignore') await ignoreWave(update, num(parts[2]));
-    else if (action === 'country') await setCountryEvidence(update, num(parts[2]), num(parts[3]), parts[4]); else if (action === 'rescore') await startWaveRescore(update, num(parts[2])); else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
+    else if (action === 'country') await showMember(update, num(parts[2]), num(parts[3])); else if (action === 'rescore') await startWaveRescore(update, num(parts[2])); else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
     else if (action === 'remove_confirm') await executeRemoval(update, parts[2]);
     else await showUserMenu(update);
     return true;
