@@ -2,7 +2,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '2.1.0';
+const MODULE_VERSION = '2.2.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -259,6 +259,26 @@ function profileUrl(username) {
   const clean = text(username, 250).replace(/^@/, '');
   return clean ? `https://max.ru/${encodeURIComponent(clean)}` : '';
 }
+
+
+/* LR_ANTIFRAUD_CLICKABLE_PROFILES_V1_START */
+
+/**
+ * Штатное упоминание пользователя MAX.
+ * Открывает профиль по user_id даже без username.
+ */
+function userMention(userId, displayName) {
+  const safeId = idText(userId);
+  const safeName = esc(
+    displayName || (safeId ? `MAX ID ${safeId}` : 'Пользователь MAX')
+  );
+
+  if (!/^\d+$/.test(safeId)) return safeName;
+
+  return `<a href="max://user/${safeId}">${safeName}</a>`;
+}
+
+/* LR_ANTIFRAUD_CLICKABLE_PROFILES_V1_END */
 
 function formatDate(value) {
   const date = value instanceof Date ? value : new Date(value);
@@ -1763,7 +1783,7 @@ async function recordJoin(update) {
     const lines = visible.map((item, index) => (
       `${index + 1 + page * limit}. ` +
       `${markerFor(item)} ` +
-      `${esc(item.display_name || `MAX ID ${item.user_id}`)}\n` +
+      `${userMention(item.user_id, item.display_name || `MAX ID ${item.user_id}`)}\n` +
       `MAX ID: ${esc(item.user_id)} · ` +
       `вероятность ${num(item.bot_probability)}/100` +
       `${item.is_bot ? ' · официальный бот MAX' : ''}`
@@ -1828,7 +1848,7 @@ async function recordJoin(update) {
           ? lines.join('\n\n')
           : 'В этой категории никого нет.'
       ) +
-      `\n━━━━━━━━━━━━━━`,
+      `\n\nНажмите на имя, чтобы открыть профиль MAX.\n━━━━━━━━━━━━━━`,
       buttons
     );
   }
@@ -1891,7 +1911,8 @@ async function recordJoin(update) {
     return render(
       update,
       `━━━━━━━━━━━━━━\n` +
-      `🔎 ${esc(item.display_name || `MAX ID ${item.user_id}`)}\n\n` +
+      `🔎 ${userMention(item.user_id, item.display_name || `MAX ID ${item.user_id}`)}\n\n` +
+      `Нажмите на имя выше, чтобы открыть профиль MAX.\n\n` +
       `MAX ID: ${esc(item.user_id)}\n` +
       `Username: ${item.username ? `@${esc(item.username)}` : 'нет'}\n` +
       `Вступил: ${formatDate(item.event_at)}\n` +
