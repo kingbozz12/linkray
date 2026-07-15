@@ -11538,8 +11538,7 @@ async function lrV31InstallSubscription() {
       'bot_added',
       'bot_removed',
       'bot_started',
-      'chat_title_changed'
-    ];
+      'chat_title_changed', 'user_added', 'user_removed'];
 
     const body = {
       url,
@@ -18469,7 +18468,7 @@ async function handleCallback(update) {
   if (payload === 'main:posting') return showStudio(callbackId);
   if (payload === 'post:add_channel') return showChannels(callbackId, chatId);
   if (payload === 'reports:menu') return cb(callbackId, '🚀 Закупы скоро будут здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
-  if (payload === 'fraud:menu') return cb(callbackId, '🛡 Антифрод скоро будет здесь.', [[callbackButton('⬅️ В меню','main:menu')]]);
+  if (payload === 'fraud:menu') { if (globalThis.__lrAntiFraud24x7) return globalThis.__lrAntiFraud24x7.handleCallback(update); return cb(callbackId, '⚠️ AntiFraud временно недоступен.', [[callbackButton('⬅️ В меню','main:menu')]]); }
   if (payload === 'post:cancel') { await clearSession(key); return cb(callbackId, '❌ Действие отменено.', [[callbackButton('🏠 В меню','main:menu')]]); }
   if (payload === 'post:create') { const draft = emptyDraft(); return showChannelSelect(callbackId, key, draft, false); }
   if (payload === 'post:multi') { const s = await getSession(key); return showChannelSelect(callbackId, key, safeDraft(s.data), true); }
@@ -20768,6 +20767,42 @@ function lrV41Payload(update) {
 }
 console.log('[v41 buttons] installed: all webhook routes have type/chatId scope');
 /* LR_FIX_ALL_WEBHOOK_TYPE_SCOPE_V41_END */
+/* LR_ANTIFRAUD_24X7_V1_START */
+let lrAntiFraud24x7 = null;
+try {
+  const { installLinkRayAntiFraud: lrInstallAntiFraud24x7 } = await import('./linkrayAntiFraud24x7.js');
+  lrAntiFraud24x7 = await lrInstallAntiFraud24x7({
+    query,
+    callbackButton,
+    linkButton: typeof linkButton === 'function' ? linkButton : null,
+    inlineKeyboard,
+    answerCallback,
+    sendMaxMessage,
+    getChannels: typeof getChannels === 'function' ? getChannels : null,
+    logger: console,
+  });
+  globalThis.__lrAntiFraud24x7 = lrAntiFraud24x7;
+  console.log('[LinkRay AntiFraud 24/7] middleware ready');
+} catch (error) {
+  globalThis.__lrAntiFraud24x7 = null;
+  console.error('[LinkRay AntiFraud 24/7] disabled after initialization error:', error?.stack || error?.message || error);
+}
+
+if (lrAntiFraud24x7) {
+  app.use(async function lrAntiFraud24x7Middleware(req, res, next) {
+    const update = req?.body;
+    if (!update || typeof update !== 'object' || Array.isArray(update)) return next();
+    try {
+      const result = await lrAntiFraud24x7.handleHttpUpdate(update);
+      if (result?.handled) return res.status(200).json({ success: true });
+    } catch (error) {
+      console.error('[LinkRay AntiFraud 24/7] update failed:', error?.stack || error?.message || error);
+    }
+    return next();
+  });
+}
+/* LR_ANTIFRAUD_24X7_V1_END */
+
 /* LR_FINAL_MAX_CORE_V47_START */
 function lrV47Rows(result) {
   return Array.isArray(result) ? result : (result?.rows || []);
@@ -21800,8 +21835,7 @@ async function lrV47InstallSubscriptions() {
       'message_created',
       'message_callback',
       'message_edited',
-      'message_removed'
-    ]
+      'message_removed', 'user_added', 'user_removed']
   };
 
   const secret = String(process.env.WEBHOOK_SECRET || process.env.MAX_WEBHOOK_SECRET || '').trim();

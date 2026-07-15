@@ -1,0 +1,1605 @@
+// LinkRay AntiFraud 24/7 v1
+// Separate channel-protection module. Does not modify autoposting or Studio.
+
+const MODULE_VERSION = '1.0.0';
+const DEFAULT_OWNER_ID = '405954311';
+const MAX_API_URL = String(
+  process.env.MAX_API_URL ||
+  process.env.MAX_BASE_URL ||
+  process.env.MAX_API_BASE ||
+  'https://platform-api2.max.ru'
+).replace(/\/+$/, '');
+
+function apiToken() {
+  return String(
+    process.env.MAX_TOKEN ||
+    process.env.MAX_BOT_TOKEN ||
+    process.env.MAX_ACCESS_TOKEN ||
+    process.env.BOT_TOKEN ||
+    process.env.ACCESS_TOKEN ||
+    process.env.API_TOKEN ||
+    process.env.TOKEN ||
+    ''
+  );
+}
+
+function ownerId() {
+  return String(
+    process.env.LR_OWNER_USER_ID ||
+    process.env.OWNER_USER_ID ||
+    process.env.ADMIN_USER_ID ||
+    process.env.LR_OWNER_CHAT_ID ||
+    process.env.OWNER_CHAT_ID ||
+    process.env.ADMIN_CHAT_ID ||
+    DEFAULT_OWNER_ID
+  );
+}
+
+function rows(value) {
+  return Array.isArray(value) ? value : (value?.rows || []);
+}
+
+function text(value, max = 4000) {
+  const out = String(value ?? '').trim();
+  if (!out) return '';
+  return out.slice(0, max);
+}
+
+function idText(value) {
+  const out = text(value, 120);
+  if (!out || ['unknown', 'undefined', 'null', 'nan', '[object object]'].includes(out.toLowerCase())) return '';
+  return out;
+}
+
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function num(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function json(value, fallback = {}) {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(String(value)); } catch { return fallback; }
+}
+
+function uniqueStrings(values) {
+  return [...new Set((values || []).map((v) => text(v, 500)).filter(Boolean))];
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function updateType(update) {
+  return text(
+    update?.update_type ||
+    update?.type ||
+    update?.event_type ||
+    update?.event ||
+    update?.body?.update_type ||
+    update?.body?.type ||
+    '',
+    100
+  ).toLowerCase();
+}
+
+function callbackPayload(update) {
+  return text(
+    update?.payload ||
+    update?.callback?.payload ||
+    update?.message_callback?.payload ||
+    update?.body?.payload ||
+    update?.body?.callback?.payload ||
+    update?.message?.payload ||
+    '',
+    500
+  );
+}
+
+function callbackId(update) {
+  return idText(
+    update?.callback_id ||
+    update?.callbackId ||
+    update?.callback?.callback_id ||
+    update?.callback?.id ||
+    update?.message_callback?.callback_id ||
+    update?.message_callback?.id ||
+    update?.body?.callback_id ||
+    update?.body?.callbackId ||
+    update?.body?.callback?.callback_id ||
+    update?.body?.callback?.id ||
+    ''
+  );
+}
+
+function chatId(update) {
+  return idText(
+    update?.chat_id ||
+    update?.chatId ||
+    update?.chat?.id ||
+    update?.recipient?.chat_id ||
+    update?.message?.recipient?.chat_id ||
+    update?.message?.recipient?.id ||
+    update?.body?.chat_id ||
+    update?.body?.chatId ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.recipient?.id ||
+    ''
+  );
+}
+
+function actorId(update) {
+  return idText(
+    update?.user_id ||
+    update?.userId ||
+    update?.sender?.user_id ||
+    update?.sender?.id ||
+    update?.callback?.user?.user_id ||
+    update?.callback?.user?.id ||
+    update?.message_callback?.user?.user_id ||
+    update?.message_callback?.user?.id ||
+    update?.message?.sender?.user_id ||
+    update?.message?.sender?.id ||
+    update?.body?.user_id ||
+    update?.body?.userId ||
+    update?.body?.sender?.user_id ||
+    update?.body?.sender?.id ||
+    update?.body?.message?.sender?.user_id ||
+    update?.body?.message?.sender?.id ||
+    ''
+  );
+}
+
+function eventTimestamp(update) {
+  const rawValue = update?.timestamp || update?.created_at || update?.body?.timestamp || Date.now();
+  const numeric = Number(rawValue);
+  if (Number.isFinite(numeric)) {
+    if (numeric > 10_000_000_000) return new Date(numeric);
+    if (numeric > 1_000_000_000) return new Date(numeric * 1000);
+  }
+  const parsed = new Date(rawValue);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function isoDateOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  let parsed;
+  if (Number.isFinite(numeric)) {
+    parsed = new Date(numeric > 10_000_000_000 ? numeric : numeric * 1000);
+  } else {
+    parsed = new Date(value);
+  }
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function eventUser(update) {
+  const candidate =
+    update?.user ||
+    update?.member ||
+    update?.chat_member ||
+    update?.body?.user ||
+    update?.body?.member ||
+    update?.body?.chat_member ||
+    update?.message?.user ||
+    {};
+
+  const userId = idText(
+    candidate?.user_id ||
+    candidate?.id ||
+    update?.target_user_id ||
+    update?.removed_user_id ||
+    update?.user_id ||
+    update?.userId ||
+    update?.user_ids?.[0] ||
+    update?.body?.target_user_id ||
+    update?.body?.removed_user_id ||
+    update?.body?.user_id ||
+    update?.body?.userId ||
+    update?.body?.user_ids?.[0] ||
+    ''
+  );
+
+  const firstName = text(candidate?.first_name || candidate?.firstName || candidate?.name || '', 250);
+  const lastName = text(candidate?.last_name || candidate?.lastName || '', 250);
+  const displayName = text(`${firstName} ${lastName}`.trim() || candidate?.display_name || candidate?.username || `MAX ID ${userId}`, 500);
+  const username = text(candidate?.username || candidate?.login || candidate?.handle || '', 250).replace(/^@/, '');
+  const avatarUrl = text(
+    candidate?.avatar_url ||
+    candidate?.avatarUrl ||
+    candidate?.photo_url ||
+    candidate?.photoUrl ||
+    candidate?.photo?.url ||
+    candidate?.avatar ||
+    '',
+    1500
+  );
+  const lastActivity = candidate?.last_activity_time || candidate?.lastActivityTime || candidate?.last_seen || null;
+  const isBot = Boolean(candidate?.is_bot ?? candidate?.isBot ?? candidate?.bot);
+  const isAdmin = Boolean(candidate?.is_admin ?? candidate?.isAdmin ?? candidate?.admin);
+  const isOwner = Boolean(candidate?.is_owner ?? candidate?.isOwner ?? candidate?.owner);
+
+  return {
+    userId,
+    firstName,
+    lastName,
+    displayName,
+    username,
+    avatarUrl,
+    lastActivity,
+    isBot,
+    isAdmin,
+    isOwner,
+    raw: candidate,
+  };
+}
+
+function normalizeName(value) {
+  return text(value, 500)
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/gi, '')
+    .replace(/\d+$/g, '');
+}
+
+function profileUrl(username) {
+  const clean = text(username, 250).replace(/^@/, '');
+  return clean ? `https://max.ru/${encodeURIComponent(clean)}` : '';
+}
+
+function formatDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date);
+}
+
+function formatDuration(seconds) {
+  const s = Math.max(0, Math.round(num(seconds)));
+  if (s < 60) return `${s} сек`;
+  if (s < 3600) return `${Math.floor(s / 60)} мин ${s % 60} сек`;
+  return `${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} мин`;
+}
+
+async function maxFetch(path, { method = 'GET', query = {}, body = null } = {}) {
+  const token = apiToken();
+  if (!token) throw new Error('MAX token not found');
+  const url = new URL(`${MAX_API_URL}${path}`);
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value === null || value === undefined || value === '') continue;
+    if (Array.isArray(value)) {
+      for (const item of value) url.searchParams.append(key, String(item));
+    } else {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  const headers = { Authorization: token };
+  if (body !== null && body !== undefined) headers['Content-Type'] = 'application/json';
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: body !== null && body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const raw = await response.text().catch(() => '');
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch { data = { raw }; }
+  if (!response.ok || data?.success === false) {
+    const error = new Error(`MAX API ${method} ${url.pathname} ${response.status}: ${raw.slice(0, 500)}`);
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data || { success: true };
+}
+
+async function getMaxMember(maxChatId, userId) {
+  const data = await maxFetch(`/chats/${encodeURIComponent(String(maxChatId))}/members`, {
+    query: { user_ids: String(userId) },
+  });
+  return (data?.members || data?.chat?.members || [])[0] || null;
+}
+
+async function getMaxParticipantCount(maxChatId) {
+  const data = await maxFetch(`/chats/${encodeURIComponent(String(maxChatId))}`);
+  const source = data?.chat || data || {};
+  const candidates = [
+    source.participants_count,
+    source.members_count,
+    source.subscribers_count,
+    source.participant_count,
+    source.membersCount,
+    source.subscribersCount,
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+async function removeMaxMember(maxChatId, userId) {
+  return maxFetch(`/chats/${encodeURIComponent(String(maxChatId))}/members`, {
+    method: 'DELETE',
+    query: { user_id: String(userId), block: 'false' },
+  });
+}
+
+function riskLabel(score, eligible = false) {
+  if (eligible || score >= 85) return '🚨 высокий';
+  if (score >= 55) return '⚠️ средний';
+  return '✅ низкий';
+}
+
+function waveLevel(row) {
+  const high = num(row?.high_count);
+  const medium = num(row?.medium_count);
+  const joined = num(row?.joined_count);
+  if (high >= 5 || (joined >= 20 && high >= 3)) return 'высокий';
+  if (high >= 1 || medium >= 5) return 'средний';
+  return 'низкий';
+}
+
+export async function installLinkRayAntiFraud({
+  query,
+  callbackButton,
+  linkButton,
+  inlineKeyboard,
+  answerCallback,
+  sendMaxMessage,
+  getChannels,
+  logger = console,
+} = {}) {
+  if (typeof query !== 'function') throw new Error('AntiFraud requires query()');
+  if (typeof callbackButton !== 'function') throw new Error('AntiFraud requires callbackButton()');
+  if (typeof inlineKeyboard !== 'function') throw new Error('AntiFraud requires inlineKeyboard()');
+  if (typeof answerCallback !== 'function') throw new Error('AntiFraud requires answerCallback()');
+  if (typeof sendMaxMessage !== 'function') throw new Error('AntiFraud requires sendMaxMessage()');
+
+  const log = (...args) => logger?.log?.('[LinkRay AntiFraud]', ...args);
+  const warn = (...args) => logger?.warn?.('[LinkRay AntiFraud]', ...args);
+  const error = (...args) => logger?.error?.('[LinkRay AntiFraud]', ...args);
+
+  async function ensureSchema() {
+    const statements = [
+      `CREATE TABLE IF NOT EXISTS lr_antifraud_channels (
+        channel_id bigint PRIMARY KEY,
+        max_chat_id text NOT NULL UNIQUE,
+        title text,
+        enabled boolean NOT NULL DEFAULT false,
+        enabled_at timestamptz,
+        disabled_at timestamptz,
+        learning_started_at timestamptz,
+        last_event_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`,
+      `CREATE TABLE IF NOT EXISTS lr_antifraud_waves (
+        id bigserial PRIMARY KEY,
+        channel_id bigint NOT NULL,
+        max_chat_id text NOT NULL,
+        started_at timestamptz NOT NULL,
+        last_event_at timestamptz NOT NULL,
+        ended_at timestamptz,
+        status text NOT NULL DEFAULT 'detected',
+        participants_before integer,
+        participants_after integer,
+        joined_count integer NOT NULL DEFAULT 0,
+        removed_count integer NOT NULL DEFAULT 0,
+        high_count integer NOT NULL DEFAULT 0,
+        medium_count integer NOT NULL DEFAULT 0,
+        normal_count integer NOT NULL DEFAULT 0,
+        max_bot_count integer NOT NULL DEFAULT 0,
+        eligible_count integer NOT NULL DEFAULT 0,
+        baseline jsonb NOT NULL DEFAULT '{}'::jsonb,
+        alert_sent boolean NOT NULL DEFAULT false,
+        ignored_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`,
+      `CREATE INDEX IF NOT EXISTS lr_antifraud_waves_channel_time_idx
+       ON lr_antifraud_waves(channel_id, started_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS lr_antifraud_events (
+        id bigserial PRIMARY KEY,
+        event_key text NOT NULL UNIQUE,
+        channel_id bigint NOT NULL,
+        max_chat_id text NOT NULL,
+        wave_id bigint REFERENCES lr_antifraud_waves(id) ON DELETE SET NULL,
+        event_type text NOT NULL,
+        event_at timestamptz NOT NULL,
+        user_id text NOT NULL,
+        first_name text,
+        last_name text,
+        display_name text,
+        normalized_name text,
+        username text,
+        avatar_url text,
+        is_bot boolean NOT NULL DEFAULT false,
+        is_admin boolean NOT NULL DEFAULT false,
+        is_owner boolean NOT NULL DEFAULT false,
+        last_activity_time timestamptz,
+        risk_score integer NOT NULL DEFAULT 0,
+        risk_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+        strong_signals integer NOT NULL DEFAULT 0,
+        removal_eligible boolean NOT NULL DEFAULT false,
+        left_at timestamptz,
+        raw jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`,
+      `CREATE INDEX IF NOT EXISTS lr_antifraud_events_channel_time_idx
+       ON lr_antifraud_events(channel_id, event_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS lr_antifraud_events_wave_risk_idx
+       ON lr_antifraud_events(wave_id, removal_eligible DESC, risk_score DESC)`,
+      `CREATE TABLE IF NOT EXISTS lr_antifraud_whitelist (
+        channel_id bigint NOT NULL,
+        user_id text NOT NULL,
+        display_name text,
+        added_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY(channel_id, user_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS lr_antifraud_actions (
+        id bigserial PRIMARY KEY,
+        action_token text NOT NULL UNIQUE,
+        wave_id bigint NOT NULL,
+        channel_id bigint NOT NULL,
+        action_type text NOT NULL,
+        status text NOT NULL DEFAULT 'pending',
+        requested_by text,
+        expires_at timestamptz NOT NULL,
+        completed_at timestamptz,
+        result jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )`,
+      `CREATE TABLE IF NOT EXISTS lr_antifraud_removals (
+        id bigserial PRIMARY KEY,
+        action_id bigint REFERENCES lr_antifraud_actions(id) ON DELETE SET NULL,
+        wave_id bigint NOT NULL,
+        channel_id bigint NOT NULL,
+        max_chat_id text NOT NULL,
+        user_id text NOT NULL,
+        display_name text,
+        risk_score integer NOT NULL,
+        status text NOT NULL,
+        error text,
+        removed_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )`,
+    ];
+    for (const statement of statements) await query(statement);
+  }
+
+  async function channelList() {
+    try {
+      if (typeof getChannels === 'function') {
+        const result = await getChannels();
+        if (Array.isArray(result)) return result;
+      }
+    } catch (e) {
+      warn('getChannels failed:', e?.message || e);
+    }
+    return rows(await query(`
+      SELECT id, max_chat_id, title, link, is_active, updated_at
+      FROM channels
+      WHERE COALESCE(is_active, true)=true
+      ORDER BY COALESCE(updated_at, bot_added_at, now()) DESC, id DESC
+    `));
+  }
+
+  async function syncChannels() {
+    const channels = await channelList();
+    for (const channel of channels) {
+      const internalId = num(channel?.id);
+      const maxChatId = idText(channel?.max_chat_id || channel?.chat_id || channel?.channel_id);
+      if (!internalId || !maxChatId) continue;
+      await query(`
+        INSERT INTO lr_antifraud_channels(channel_id, max_chat_id, title, updated_at)
+        VALUES($1,$2,$3,now())
+        ON CONFLICT(channel_id) DO UPDATE SET
+          max_chat_id=EXCLUDED.max_chat_id,
+          title=EXCLUDED.title,
+          updated_at=now()
+      `, [internalId, maxChatId, text(channel?.title || channel?.name || `Канал ${internalId}`, 500)]);
+    }
+    return channels;
+  }
+
+  async function configByMaxChatId(maxChatId) {
+    const result = rows(await query(`
+      SELECT af.*, c.title AS current_title, c.is_active
+      FROM lr_antifraud_channels af
+      LEFT JOIN channels c ON c.id=af.channel_id
+      WHERE af.max_chat_id=$1
+        AND COALESCE(c.is_active, true)=true
+      LIMIT 1
+    `, [String(maxChatId)]));
+    return result[0] || null;
+  }
+
+  async function configByChannelId(channelId) {
+    const result = rows(await query(`
+      SELECT af.*, c.title AS current_title, c.is_active
+      FROM lr_antifraud_channels af
+      LEFT JOIN channels c ON c.id=af.channel_id
+      WHERE af.channel_id=$1
+      LIMIT 1
+    `, [channelId]));
+    return result[0] || null;
+  }
+
+  async function isWhitelisted(channelId, userId) {
+    const result = rows(await query(`
+      SELECT 1 FROM lr_antifraud_whitelist
+      WHERE channel_id=$1 AND user_id=$2
+      LIMIT 1
+    `, [channelId, String(userId)]));
+    return Boolean(result[0]);
+  }
+
+  async function recentCounts(channelId) {
+    const result = rows(await query(`
+      SELECT
+        count(*) FILTER (WHERE event_at >= now() - interval '1 minute')::int AS c1,
+        count(*) FILTER (WHERE event_at >= now() - interval '5 minutes')::int AS c5,
+        count(*) FILTER (WHERE event_at >= now() - interval '15 minutes')::int AS c15,
+        count(*) FILTER (WHERE event_at >= now() - interval '60 minutes')::int AS c60
+      FROM lr_antifraud_events
+      WHERE channel_id=$1 AND event_type='join'
+    `, [channelId]));
+    return result[0] || { c1: 0, c5: 0, c15: 0, c60: 0 };
+  }
+
+  async function baseline(channelId, enabledAt) {
+    const enabled = enabledAt ? new Date(enabledAt) : new Date();
+    const learningHours = Math.max(0, (Date.now() - enabled.getTime()) / 3_600_000);
+    const result = rows(await query(`
+      WITH bounds AS (
+        SELECT GREATEST($2::timestamptz, now() - interval '7 days') AS started,
+               now() - interval '60 minutes' AS finished
+      ), buckets AS (
+        SELECT gs AS bucket_start,
+               count(e.id)::int AS joins
+        FROM bounds b
+        CROSS JOIN LATERAL generate_series(
+          date_trunc('minute', b.started),
+          date_trunc('minute', b.finished),
+          interval '5 minutes'
+        ) gs
+        LEFT JOIN lr_antifraud_events e
+          ON e.channel_id=$1
+         AND e.event_type='join'
+         AND e.event_at >= gs
+         AND e.event_at < gs + interval '5 minutes'
+        GROUP BY gs
+      )
+      SELECT
+        count(*)::int AS bucket_count,
+        COALESCE(avg(joins),0)::numeric AS avg5,
+        COALESCE(stddev_pop(joins),0)::numeric AS std5,
+        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY joins),0)::numeric AS median5,
+        COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY joins),0)::numeric AS p95_5
+      FROM buckets
+    `, [channelId, enabled.toISOString()]));
+    const row = result[0] || {};
+    return {
+      learningHours,
+      bucketCount: num(row.bucket_count),
+      avg5: num(row.avg5),
+      std5: num(row.std5),
+      median5: num(row.median5),
+      p95_5: num(row.p95_5),
+    };
+  }
+
+  function anomalyDecision(counts, base) {
+    const c1 = num(counts.c1);
+    const c5 = num(counts.c5);
+    const c15 = num(counts.c15);
+    const learned = base.learningHours >= 12 && base.bucketCount >= 24;
+
+    const threshold5 = learned
+      ? Math.max(8, Math.ceil(base.p95_5 + 4), Math.ceil(base.avg5 * 5 + 3), Math.ceil(base.avg5 + base.std5 * 5 + 3))
+      : 12;
+    const expected1 = learned ? Math.max(0.05, base.avg5 / 5) : 0.25;
+    const threshold1 = learned ? Math.max(5, Math.ceil(expected1 * 8 + 2)) : 6;
+    const threshold15 = Math.max(15, threshold5 * 2);
+    const anomalous = c1 >= threshold1 || c5 >= threshold5 || c15 >= threshold15;
+    const ratio = c5 / Math.max(1, base.avg5 || 1);
+
+    return {
+      anomalous,
+      learned,
+      threshold1,
+      threshold5,
+      threshold15,
+      ratio,
+      counts: { c1, c5, c15, c60: num(counts.c60) },
+      base,
+    };
+  }
+
+  async function openWave(channelId) {
+    const result = rows(await query(`
+      SELECT * FROM lr_antifraud_waves
+      WHERE channel_id=$1
+        AND status IN ('detected','review')
+        AND last_event_at >= now() - interval '20 minutes'
+      ORDER BY id DESC
+      LIMIT 1
+    `, [channelId]));
+    return result[0] || null;
+  }
+
+  async function createWave(config, decision) {
+    let participants = null;
+    try { participants = await getMaxParticipantCount(config.max_chat_id); }
+    catch (e) { warn('participants count failed:', e?.message || e); }
+
+    const before = participants === null
+      ? null
+      : Math.max(0, participants - num(decision.counts.c5));
+
+    const result = rows(await query(`
+      INSERT INTO lr_antifraud_waves(
+        channel_id,max_chat_id,started_at,last_event_at,status,
+        participants_before,participants_after,baseline,updated_at
+      )
+      VALUES(
+        $1,$2,now() - interval '5 minutes',now(),'detected',
+        $3,$4,$5::jsonb,now()
+      )
+      RETURNING *
+    `, [
+      config.channel_id,
+      config.max_chat_id,
+      before,
+      participants,
+      JSON.stringify(decision),
+    ]));
+    return result[0];
+  }
+
+  async function scoreJoin({ config, user, eventAt, wave, decision }) {
+    if (await isWhitelisted(config.channel_id, user.userId)) {
+      return { score: 0, reasons: ['Пользователь находится в белом списке'], strongSignals: 0, eligible: false };
+    }
+
+    let score = 0;
+    let strongSignals = 0;
+    let identitySignals = 0;
+    const reasons = [];
+
+    if (user.isAdmin || user.isOwner) {
+      return { score: 0, reasons: ['Администратор или владелец канала'], strongSignals: 0, eligible: false };
+    }
+
+    const prior = rows(await query(`
+      SELECT user_id,event_at,normalized_name,is_bot
+      FROM lr_antifraud_events
+      WHERE channel_id=$1
+        AND event_type='join'
+        AND event_at < $2
+        AND event_at >= $2::timestamptz - interval '15 minutes'
+      ORDER BY event_at DESC
+      LIMIT 30
+    `, [config.channel_id, eventAt.toISOString()]));
+
+    const previous = prior[0];
+    if (previous?.event_at) {
+      const intervalMs = Math.max(0, eventAt.getTime() - new Date(previous.event_at).getTime());
+      if (intervalMs <= 1000) {
+        score += 28; strongSignals += 1;
+        reasons.push(`Вступление через ${Math.max(0.1, intervalMs / 1000).toFixed(1)} сек после предыдущего`);
+      } else if (intervalMs <= 3000) {
+        score += 18; strongSignals += 1;
+        reasons.push(`Вступление через ${(intervalMs / 1000).toFixed(1)} сек после предыдущего`);
+      } else if (intervalMs <= 10_000) {
+        score += 7;
+        reasons.push('Очень плотная серия вступлений');
+      }
+    }
+
+    let flowSignal = false;
+    if (decision.counts.c1 >= decision.threshold1) {
+      score += 20;
+      flowSignal = true;
+      reasons.push(`${decision.counts.c1} вступлений за минуту`);
+    }
+    if (decision.counts.c5 >= decision.threshold5) {
+      score += 20;
+      flowSignal = true;
+      reasons.push(`${decision.counts.c5} вступлений за 5 минут при пороге ${decision.threshold5}`);
+    }
+    if (flowSignal) strongSignals += 1; // One correlated traffic signal, not two independent signals.
+    if (decision.ratio >= 5) {
+      score += 10;
+      reasons.push(`Поток выше нормы примерно в ${decision.ratio.toFixed(1)} раза`);
+    }
+
+    const currentId = /^\d+$/.test(user.userId) ? BigInt(user.userId) : null;
+    if (currentId !== null) {
+      let nearest = null;
+      for (const item of prior.slice(0, 20)) {
+        if (!/^\d+$/.test(String(item.user_id || ''))) continue;
+        const diff = currentId > BigInt(item.user_id)
+          ? currentId - BigInt(item.user_id)
+          : BigInt(item.user_id) - currentId;
+        if (nearest === null || diff < nearest) nearest = diff;
+      }
+      if (nearest !== null && nearest <= 3n) {
+        score += 30; strongSignals += 1; identitySignals += 1;
+        reasons.push(`MAX ID почти последовательный: расстояние ${nearest.toString()}`);
+      } else if (nearest !== null && nearest <= 20n) {
+        score += 18; strongSignals += 1; identitySignals += 1;
+        reasons.push(`MAX ID находится в плотной последовательности: расстояние ${nearest.toString()}`);
+      }
+    }
+
+    const normalized = normalizeName(user.displayName);
+    if (normalized) {
+      const sameName = prior.filter((item) => item.normalized_name === normalized).length;
+      if (sameName >= 3) {
+        score += 25; strongSignals += 1; identitySignals += 1;
+        reasons.push(`Одинаковый шаблон имени найден у ${sameName + 1} участников`);
+      } else if (sameName >= 1) {
+        score += 8;
+        reasons.push('Имя повторяется внутри наплыва');
+      }
+    }
+
+    if (user.isBot) {
+      score += 45;
+      reasons.push('Профиль помечен MAX как бот');
+      // is_bot alone is not enough for automatic eligibility.
+    }
+    if (!user.username) {
+      score += 3;
+      reasons.push('Нет публичного username — только слабый признак');
+    }
+    if (!user.avatarUrl) {
+      score += 2;
+      reasons.push('Нет аватара — только слабый признак');
+    }
+
+    score = clamp(Math.round(score), 0, 100);
+    const eligible = Boolean(
+      wave &&
+      score >= 90 &&
+      strongSignals >= 2 &&
+      identitySignals >= 1 &&
+      !user.isAdmin &&
+      !user.isOwner
+    );
+
+    return { score, reasons: uniqueStrings(reasons), strongSignals, eligible };
+  }
+
+  async function backfillWave(config, wave, decision) {
+    const recent = rows(await query(`
+      SELECT *
+      FROM lr_antifraud_events
+      WHERE channel_id=$1
+        AND event_type='join'
+        AND event_at >= $2
+        AND event_at <= now()
+        AND (wave_id IS NULL OR wave_id=$3)
+      ORDER BY event_at ASC,id ASC
+    `, [config.channel_id, wave.started_at, wave.id]));
+
+    for (const item of recent) {
+      const user = {
+        userId: String(item.user_id || ''),
+        firstName: item.first_name || '',
+        lastName: item.last_name || '',
+        displayName: item.display_name || `MAX ID ${item.user_id}`,
+        username: item.username || '',
+        avatarUrl: item.avatar_url || '',
+        lastActivity: item.last_activity_time || null,
+        isBot: Boolean(item.is_bot),
+        isAdmin: Boolean(item.is_admin),
+        isOwner: Boolean(item.is_owner),
+      };
+      const eventAt = new Date(item.event_at);
+      if (!user.userId || Number.isNaN(eventAt.getTime())) continue;
+      const risk = await scoreJoin({ config, user, eventAt, wave, decision });
+      await query(`
+        UPDATE lr_antifraud_events SET
+          wave_id=$2,
+          risk_score=$3,
+          risk_reasons=$4::jsonb,
+          strong_signals=$5,
+          removal_eligible=$6,
+          updated_at=now()
+        WHERE id=$1
+      `, [item.id, wave.id, risk.score, JSON.stringify(risk.reasons), risk.strongSignals, risk.eligible]);
+    }
+
+    let participantCount = null;
+    try { participantCount = await getMaxParticipantCount(config.max_chat_id); }
+    catch (e) { warn('participant backfill refresh failed:', e?.message || e); }
+    return refreshWave(wave.id, participantCount);
+  }
+
+  async function refreshWave(waveId, participantCount = null) {
+    const result = rows(await query(`
+      WITH stats AS (
+        SELECT
+          count(*) FILTER (WHERE event_type='join')::int AS joined_count,
+          count(*) FILTER (WHERE event_type='leave')::int AS removed_count,
+          count(*) FILTER (WHERE event_type='join' AND risk_score >= 85)::int AS high_count,
+          count(*) FILTER (WHERE event_type='join' AND risk_score >= 55 AND risk_score < 85)::int AS medium_count,
+          count(*) FILTER (WHERE event_type='join' AND risk_score < 55)::int AS normal_count,
+          count(*) FILTER (WHERE event_type='join' AND is_bot=true)::int AS max_bot_count,
+          count(*) FILTER (WHERE event_type='join' AND removal_eligible=true)::int AS eligible_count,
+          max(event_at) AS last_event_at
+        FROM lr_antifraud_events
+        WHERE wave_id=$1
+      )
+      UPDATE lr_antifraud_waves w SET
+        joined_count=COALESCE(s.joined_count,0),
+        removed_count=COALESCE(s.removed_count,0),
+        high_count=COALESCE(s.high_count,0),
+        medium_count=COALESCE(s.medium_count,0),
+        normal_count=COALESCE(s.normal_count,0),
+        max_bot_count=COALESCE(s.max_bot_count,0),
+        eligible_count=COALESCE(s.eligible_count,0),
+        last_event_at=COALESCE(s.last_event_at,w.last_event_at),
+        participants_after=COALESCE($2,w.participants_after,
+          CASE WHEN w.participants_before IS NULL THEN NULL
+               ELSE w.participants_before + COALESCE(s.joined_count,0) - COALESCE(s.removed_count,0)
+          END),
+        updated_at=now()
+      FROM stats s
+      WHERE w.id=$1
+      RETURNING w.*
+    `, [waveId, participantCount]));
+    return result[0] || null;
+  }
+
+  async function notifyWave(wave) {
+    if (!wave || wave.alert_sent || wave.status === 'ignored') return;
+    const channel = await configByChannelId(wave.channel_id);
+    const level = waveLevel(wave);
+    const textBody = `━━━━━━━━━━━━━━\n🚨 <b>LinkRay AntiFraud обнаружил наплыв</b>\n\n` +
+      `<b>Канал:</b> ${esc(channel?.current_title || channel?.title || wave.max_chat_id)}\n` +
+      `<b>Начало:</b> ${formatDate(wave.started_at)}\n\n` +
+      `<b>ПДП до наплыва:</b> ${wave.participants_before ?? 'уточняется'}\n` +
+      `<b>ПДП после:</b> ${wave.participants_after ?? 'уточняется'}\n` +
+      `<b>Пришло:</b> +${num(wave.joined_count)}\n\n` +
+      `🚨 Высокий риск: ${num(wave.high_count)}\n` +
+      `⚠️ Средний риск: ${num(wave.medium_count)}\n` +
+      `✅ Вероятно живые: ${num(wave.normal_count)}\n` +
+      `🤖 Боты MAX: ${num(wave.max_bot_count)}\n` +
+      `🧹 Безопасная очистка: ${num(wave.eligible_count)}\n\n` +
+      `<b>Уровень угрозы:</b> ${level}\n` +
+      `Никто не удалён автоматически.\n━━━━━━━━━━━━━━`;
+    const buttons = [
+      [callbackButton('🔎 Открыть наплыв', `fraud:wave:${wave.id}`)],
+      [callbackButton(`🚨 Высокий риск — ${num(wave.high_count)}`, `fraud:list:${wave.id}:high:0`)],
+      [callbackButton(`🧹 Проверить очистку — ${num(wave.eligible_count)}`, `fraud:remove_prompt:${wave.id}`)],
+    ];
+    await sendMaxMessage({
+      userId: ownerId(),
+      text: textBody,
+      format: 'html',
+      attachments: inlineKeyboard(buttons),
+      purpose: 'antifraud_alert',
+    });
+    await query(`UPDATE lr_antifraud_waves SET alert_sent=true, updated_at=now() WHERE id=$1`, [wave.id]);
+  }
+
+  async function maybeNotify(wave) {
+    if (!wave || wave.alert_sent || wave.status === 'ignored') return;
+    const joined = num(wave.joined_count);
+    const high = num(wave.high_count);
+    const medium = num(wave.medium_count);
+    const baselineData = json(wave.baseline, {});
+    const ratio = num(baselineData?.ratio);
+    if (joined >= 8 && (high >= 3 || medium >= 6 || ratio >= 5)) {
+      await notifyWave(wave);
+    }
+  }
+
+  async function recordJoin(update) {
+    const maxChatId = chatId(update);
+    const user = eventUser(update);
+    if (!maxChatId || !user.userId) return;
+    const config = await configByMaxChatId(maxChatId);
+    if (!config?.enabled) return;
+
+    const eventAt = eventTimestamp(update);
+    const eventKey = `join:${maxChatId}:${user.userId}:${eventAt.getTime()}`;
+    const inserted = rows(await query(`
+      INSERT INTO lr_antifraud_events(
+        event_key,channel_id,max_chat_id,event_type,event_at,user_id,
+        first_name,last_name,display_name,normalized_name,username,avatar_url,
+        is_bot,is_admin,is_owner,last_activity_time,raw,updated_at
+      )
+      VALUES($1,$2,$3,'join',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,now())
+      ON CONFLICT(event_key) DO NOTHING
+      RETURNING *
+    `, [
+      eventKey,
+      config.channel_id,
+      maxChatId,
+      eventAt.toISOString(),
+      user.userId,
+      user.firstName,
+      user.lastName,
+      user.displayName,
+      normalizeName(user.displayName),
+      user.username || null,
+      user.avatarUrl || null,
+      user.isBot,
+      user.isAdmin,
+      user.isOwner,
+      isoDateOrNull(user.lastActivity),
+      JSON.stringify(update || {}),
+    ]));
+    if (!inserted[0]) return;
+
+    await query(`UPDATE lr_antifraud_channels SET last_event_at=$2, updated_at=now() WHERE channel_id=$1`, [config.channel_id, eventAt.toISOString()]);
+
+    const counts = await recentCounts(config.channel_id);
+    const base = await baseline(config.channel_id, config.enabled_at || config.learning_started_at || config.updated_at);
+    const decision = anomalyDecision(counts, base);
+    let wave = await openWave(config.channel_id);
+    let createdNow = false;
+    if (!wave && decision.anomalous) {
+      wave = await createWave(config, decision);
+      createdNow = Boolean(wave);
+    }
+
+    if (!wave) return;
+    if (createdNow) {
+      wave = await backfillWave(config, wave, decision);
+      await maybeNotify(wave);
+      return;
+    }
+
+    const risk = await scoreJoin({ config, user, eventAt, wave, decision });
+    await query(`
+      UPDATE lr_antifraud_events SET
+        wave_id=$2,
+        risk_score=$3,
+        risk_reasons=$4::jsonb,
+        strong_signals=$5,
+        removal_eligible=$6,
+        updated_at=now()
+      WHERE id=$1
+    `, [inserted[0].id, wave.id, risk.score, JSON.stringify(risk.reasons), risk.strongSignals, risk.eligible]);
+
+    let participantCount = null;
+    const currentJoined = num(wave.joined_count) + 1;
+    if (currentJoined === 1 || currentJoined % 5 === 0) {
+      try { participantCount = await getMaxParticipantCount(maxChatId); }
+      catch (e) { warn('participant refresh failed:', e?.message || e); }
+    }
+    wave = await refreshWave(wave.id, participantCount);
+    await maybeNotify(wave);
+  }
+
+  async function recordLeave(update) {
+    const maxChatId = chatId(update);
+    const user = eventUser(update);
+    if (!maxChatId || !user.userId) return;
+    const config = await configByMaxChatId(maxChatId);
+    if (!config?.enabled) return;
+    const eventAt = eventTimestamp(update);
+    const eventKey = `leave:${maxChatId}:${user.userId}:${eventAt.getTime()}`;
+    const wave = await openWave(config.channel_id);
+
+    await query(`
+      INSERT INTO lr_antifraud_events(
+        event_key,channel_id,max_chat_id,wave_id,event_type,event_at,user_id,
+        first_name,last_name,display_name,normalized_name,username,avatar_url,
+        is_bot,is_admin,is_owner,raw,updated_at
+      )
+      VALUES($1,$2,$3,$4,'leave',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,now())
+      ON CONFLICT(event_key) DO NOTHING
+    `, [
+      eventKey,
+      config.channel_id,
+      maxChatId,
+      wave?.id || null,
+      eventAt.toISOString(),
+      user.userId,
+      user.firstName,
+      user.lastName,
+      user.displayName,
+      normalizeName(user.displayName),
+      user.username || null,
+      user.avatarUrl || null,
+      user.isBot,
+      user.isAdmin,
+      user.isOwner,
+      JSON.stringify(update || {}),
+    ]);
+
+    await query(`
+      UPDATE lr_antifraud_events SET left_at=$3, updated_at=now()
+      WHERE id=(
+        SELECT id FROM lr_antifraud_events
+        WHERE channel_id=$1 AND user_id=$2 AND event_type='join' AND left_at IS NULL
+        ORDER BY event_at DESC LIMIT 1
+      )
+    `, [config.channel_id, user.userId, eventAt.toISOString()]);
+
+    if (wave) await refreshWave(wave.id);
+  }
+
+  async function closeStaleWaves() {
+    const stale = rows(await query(`
+      UPDATE lr_antifraud_waves
+      SET status=CASE WHEN status='review' THEN status ELSE 'closed' END,
+          ended_at=COALESCE(ended_at,last_event_at),
+          updated_at=now()
+      WHERE status='detected'
+        AND last_event_at < now() - interval '12 minutes'
+      RETURNING id
+    `));
+    if (stale.length) log('closed stale waves:', stale.map((x) => x.id).join(','));
+    await query(`DELETE FROM lr_antifraud_actions WHERE expires_at < now() - interval '1 day'`).catch(() => {});
+  }
+
+  function actorAllowed(update) {
+    const actor = actorId(update) || chatId(update);
+    return Boolean(actor && actor === ownerId());
+  }
+
+  async function render(update, body, buttons = [], notification = '') {
+    const cbId = callbackId(update);
+    const actor = actorId(update) || ownerId();
+    const attachments = buttons?.length ? inlineKeyboard(buttons) : [];
+    if (cbId) {
+      return answerCallback({
+        callbackId: cbId,
+        text: body,
+        format: 'html',
+        attachments,
+        notification,
+      });
+    }
+    return sendMaxMessage({
+      userId: actor,
+      text: body,
+      format: 'html',
+      attachments,
+      purpose: 'antifraud_menu',
+    });
+  }
+
+  async function showMenu(update) {
+    await syncChannels();
+    const list = rows(await query(`
+      SELECT af.*,
+        COALESCE(c.title,af.title,af.max_chat_id) AS display_title,
+        COALESCE((
+          SELECT count(*) FROM lr_antifraud_events e
+          WHERE e.channel_id=af.channel_id
+            AND e.event_type='join'
+            AND e.risk_score>=55
+            AND e.event_at>=now()-interval '24 hours'
+        ),0)::int AS suspicious_24h,
+        COALESCE((
+          SELECT count(*) FROM lr_antifraud_waves w
+          WHERE w.channel_id=af.channel_id
+            AND w.started_at>=now()-interval '24 hours'
+        ),0)::int AS waves_24h
+      FROM lr_antifraud_channels af
+      LEFT JOIN channels c ON c.id=af.channel_id
+      WHERE COALESCE(c.is_active,true)=true
+      ORDER BY display_title ASC
+    `));
+
+    const buttons = [];
+    for (const channel of list.slice(0, 15)) {
+      const status = channel.enabled ? '🟢' : '🔴';
+      const suffix = channel.enabled && num(channel.suspicious_24h) > 0 ? ` · ⚠️ ${num(channel.suspicious_24h)}` : '';
+      buttons.push([callbackButton(`${status} ${text(channel.display_title, 45)}${suffix}`, `fraud:channel:${channel.channel_id}`)]);
+    }
+    if (list.length) {
+      buttons.push([
+        callbackButton('✅ Включить для всех', 'fraud:enable_all'),
+        callbackButton('⛔ Выключить для всех', 'fraud:disable_all'),
+      ]);
+    }
+    buttons.push([callbackButton('⬅️ В меню', 'main:menu')]);
+
+    const enabled = list.filter((x) => x.enabled).length;
+    return render(update,
+      `━━━━━━━━━━━━━━\n🛡 <b>LinkRay AntiFraud 24/7</b>\n\n` +
+      `Защита включается отдельно для каждого канала и работает постоянно.\n` +
+      `Система сначала фиксирует наплыв, затем оценивает только участников этой волны.\n\n` +
+      `<b>Подключено каналов:</b> ${list.length}\n` +
+      `<b>Защищено:</b> ${enabled}\n\n` +
+      `Автоматического удаления нет: очистка доступна только после проверки и двойного подтверждения.\n━━━━━━━━━━━━━━`,
+      buttons
+    );
+  }
+
+  async function showChannel(update, channelId) {
+    const channel = await configByChannelId(channelId);
+    if (!channel) return showMenu(update);
+    const stats = rows(await query(`
+      SELECT
+        count(*) FILTER (WHERE event_type='join' AND event_at>=now()-interval '24 hours')::int AS joins24,
+        count(*) FILTER (WHERE event_type='leave' AND event_at>=now()-interval '24 hours')::int AS leaves24,
+        count(*) FILTER (WHERE event_type='join' AND risk_score>=55 AND event_at>=now()-interval '24 hours')::int AS suspicious24,
+        count(*) FILTER (WHERE event_type='join' AND removal_eligible=true AND event_at>=now()-interval '24 hours')::int AS eligible24
+      FROM lr_antifraud_events WHERE channel_id=$1
+    `, [channelId]))[0] || {};
+    const lastWave = rows(await query(`
+      SELECT * FROM lr_antifraud_waves WHERE channel_id=$1 ORDER BY started_at DESC LIMIT 1
+    `, [channelId]))[0];
+
+    const buttons = [
+      [callbackButton(channel.enabled ? '⛔ Выключить защиту' : '✅ Включить защиту', `fraud:toggle:${channelId}`)],
+      [callbackButton('📋 История наплывов', `fraud:waves:${channelId}:0`)],
+    ];
+    if (lastWave) buttons.push([callbackButton('🔎 Последний наплыв', `fraud:wave:${lastWave.id}`)]);
+    buttons.push([callbackButton('⬅️ К каналам', 'fraud:menu')]);
+
+    return render(update,
+      `━━━━━━━━━━━━━━\n🛡 <b>${esc(channel.current_title || channel.title || channel.max_chat_id)}</b>\n\n` +
+      `<b>Защита:</b> ${channel.enabled ? '🟢 включена 24/7' : '🔴 выключена'}\n` +
+      `<b>Наблюдение с:</b> ${channel.enabled_at ? formatDate(channel.enabled_at) : '—'}\n\n` +
+      `<b>За последние 24 часа</b>\n` +
+      `Подписались: +${num(stats.joins24)}\n` +
+      `Отписались: -${num(stats.leaves24)}\n` +
+      `Подозрительных: ${num(stats.suspicious24)}\n` +
+      `Допущено к безопасной очистке: ${num(stats.eligible24)}\n\n` +
+      `В первые часы используются строгие безопасные пороги. Затем LinkRay изучает нормальный темп именно этого канала.\n━━━━━━━━━━━━━━`,
+      buttons
+    );
+  }
+
+  async function toggleChannel(update, channelId) {
+    const channel = await configByChannelId(channelId);
+    if (!channel) return showMenu(update);
+    const next = !channel.enabled;
+    await query(`
+      UPDATE lr_antifraud_channels SET
+        enabled=$2,
+        enabled_at=CASE WHEN $2 THEN now() ELSE enabled_at END,
+        learning_started_at=CASE WHEN $2 THEN now() ELSE learning_started_at END,
+        disabled_at=CASE WHEN $2 THEN NULL ELSE now() END,
+        updated_at=now()
+      WHERE channel_id=$1
+    `, [channelId, next]);
+    return showChannel(update, channelId);
+  }
+
+  async function setAll(enabled) {
+    await syncChannels();
+    await query(`
+      UPDATE lr_antifraud_channels SET
+        enabled=$1,
+        enabled_at=CASE WHEN $1 AND enabled=false THEN now() ELSE enabled_at END,
+        learning_started_at=CASE WHEN $1 AND enabled=false THEN now() ELSE learning_started_at END,
+        disabled_at=CASE WHEN $1 THEN NULL ELSE now() END,
+        updated_at=now()
+    `, [enabled]);
+  }
+
+  async function showWaves(update, channelId, page = 0) {
+    const channel = await configByChannelId(channelId);
+    if (!channel) return showMenu(update);
+    const limit = 8;
+    const list = rows(await query(`
+      SELECT * FROM lr_antifraud_waves
+      WHERE channel_id=$1
+      ORDER BY started_at DESC
+      LIMIT $2 OFFSET $3
+    `, [channelId, limit + 1, page * limit]));
+    const hasNext = list.length > limit;
+    const visible = list.slice(0, limit);
+    const buttons = visible.map((wave) => [callbackButton(
+      `${waveLevel(wave) === 'высокий' ? '🚨' : waveLevel(wave) === 'средний' ? '⚠️' : '✅'} ${formatDate(wave.started_at)} · +${num(wave.joined_count)}`,
+      `fraud:wave:${wave.id}`
+    )]);
+    const nav = [];
+    if (page > 0) nav.push(callbackButton('⬅️', `fraud:waves:${channelId}:${page - 1}`));
+    if (hasNext) nav.push(callbackButton('➡️', `fraud:waves:${channelId}:${page + 1}`));
+    if (nav.length) buttons.push(nav);
+    buttons.push([callbackButton('⬅️ К каналу', `fraud:channel:${channelId}`)]);
+
+    return render(update,
+      `━━━━━━━━━━━━━━\n📋 <b>История наплывов</b>\n\n` +
+      `<b>Канал:</b> ${esc(channel.current_title || channel.title || channel.max_chat_id)}\n` +
+      `<b>Страница:</b> ${page + 1}\n\n` +
+      (visible.length ? 'Выберите обнаруженный период.' : 'Обнаруженных наплывов пока нет.') +
+      `\n━━━━━━━━━━━━━━`,
+      buttons
+    );
+  }
+
+  async function waveById(waveId) {
+    return rows(await query(`SELECT * FROM lr_antifraud_waves WHERE id=$1 LIMIT 1`, [waveId]))[0] || null;
+  }
+
+  async function showWave(update, waveId) {
+    const wave = await waveById(waveId);
+    if (!wave) return showMenu(update);
+    const channel = await configByChannelId(wave.channel_id);
+    const elapsed = (new Date(wave.ended_at || wave.last_event_at).getTime() - new Date(wave.started_at).getTime()) / 1000;
+    const buttons = [
+      [callbackButton(`🚨 Высокий риск — ${num(wave.high_count)}`, `fraud:list:${wave.id}:high:0`)],
+      [callbackButton(`⚠️ Средний риск — ${num(wave.medium_count)}`, `fraud:list:${wave.id}:medium:0`)],
+      [callbackButton(`✅ Вероятно живые — ${num(wave.normal_count)}`, `fraud:list:${wave.id}:normal:0`)],
+      [callbackButton(`🧹 Безопасная очистка — ${num(wave.eligible_count)}`, `fraud:remove_prompt:${wave.id}`)],
+    ];
+    if (wave.status !== 'ignored') buttons.push([callbackButton('🙈 Игнорировать этот наплыв', `fraud:ignore:${wave.id}`)]);
+    buttons.push([callbackButton('⬅️ К истории', `fraud:waves:${wave.channel_id}:0`)]);
+
+    return render(update,
+      `━━━━━━━━━━━━━━\n🛡 <b>Проверка наплыва</b>\n\n` +
+      `<b>Канал:</b> ${esc(channel?.current_title || channel?.title || wave.max_chat_id)}\n` +
+      `<b>Период:</b> ${formatDate(wave.started_at)} — ${formatDate(wave.ended_at || wave.last_event_at)}\n` +
+      `<b>Длительность:</b> ${formatDuration(elapsed)}\n\n` +
+      `<b>ПДП до наплыва:</b> ${wave.participants_before ?? 'уточняется'}\n` +
+      `<b>ПДП после:</b> ${wave.participants_after ?? 'уточняется'}\n` +
+      `<b>Общий приток:</b> +${num(wave.joined_count)}\n` +
+      `<b>Ушли во время волны:</b> -${num(wave.removed_count)}\n\n` +
+      `🚨 Высокий риск: ${num(wave.high_count)}\n` +
+      `⚠️ Средний риск: ${num(wave.medium_count)}\n` +
+      `✅ Вероятно живые: ${num(wave.normal_count)}\n` +
+      `🤖 Боты MAX: ${num(wave.max_bot_count)}\n` +
+      `🧹 Можно удалить после проверки: ${num(wave.eligible_count)}\n\n` +
+      `<b>Статус:</b> ${esc(wave.status)}\n` +
+      `Удаление доступно только для оценки 90–100 и минимум двух сильных признаков.\n━━━━━━━━━━━━━━`,
+      buttons
+    );
+  }
+
+  function riskFilter(category) {
+    if (category === 'high') return `risk_score>=85`;
+    if (category === 'medium') return `risk_score>=55 AND risk_score<85`;
+    if (category === 'normal') return `risk_score<55`;
+    if (category === 'eligible') return `removal_eligible=true`;
+    return `true`;
+  }
+
+  async function showRiskList(update, waveId, category, page = 0) {
+    const wave = await waveById(waveId);
+    if (!wave) return showMenu(update);
+    const limit = 5;
+    const list = rows(await query(`
+      SELECT * FROM lr_antifraud_events
+      WHERE wave_id=$1 AND event_type='join' AND ${riskFilter(category)}
+      ORDER BY removal_eligible DESC, risk_score DESC, event_at ASC
+      LIMIT $2 OFFSET $3
+    `, [waveId, limit + 1, page * limit]));
+    const visible = list.slice(0, limit);
+    const hasNext = list.length > limit;
+    const lines = visible.map((item, index) => {
+      const marker = item.removal_eligible ? '🧹' : item.risk_score >= 85 ? '🚨' : item.risk_score >= 55 ? '⚠️' : '✅';
+      return `${index + 1 + page * limit}. ${marker} <b>${esc(item.display_name || `MAX ID ${item.user_id}`)}</b>\n` +
+        `MAX ID: <code>${esc(item.user_id)}</code> · риск ${num(item.risk_score)}/100${item.is_bot ? ' · 🤖 Бот MAX' : ''}`;
+    });
+    const buttons = visible.map((item) => [callbackButton(
+      `${item.removal_eligible ? '🧹' : item.risk_score >= 85 ? '🚨' : item.risk_score >= 55 ? '⚠️' : '✅'} ${text(item.display_name || item.user_id, 35)} · ${num(item.risk_score)}`,
+      `fraud:member:${waveId}:${item.id}`
+    )]);
+    const nav = [];
+    if (page > 0) nav.push(callbackButton('⬅️', `fraud:list:${waveId}:${category}:${page - 1}`));
+    if (hasNext) nav.push(callbackButton('➡️', `fraud:list:${waveId}:${category}:${page + 1}`));
+    if (nav.length) buttons.push(nav);
+    buttons.push([callbackButton('⬅️ К наплыву', `fraud:wave:${waveId}`)]);
+
+    const labels = { high: 'Высокий риск', medium: 'Средний риск', normal: 'Вероятно живые', eligible: 'Безопасная очистка' };
+    return render(update,
+      `━━━━━━━━━━━━━━\n🔎 <b>${labels[category] || 'Участники наплыва'}</b>\n\n` +
+      (lines.length ? lines.join('\n\n') : 'В этой категории никого нет.') +
+      `\n━━━━━━━━━━━━━━`,
+      buttons
+    );
+  }
+
+  async function showMember(update, waveId, eventId) {
+    const item = rows(await query(`
+      SELECT * FROM lr_antifraud_events
+      WHERE id=$1 AND wave_id=$2 AND event_type='join'
+      LIMIT 1
+    `, [eventId, waveId]))[0];
+    if (!item) return showWave(update, waveId);
+    const reasons = Array.isArray(item.risk_reasons) ? item.risk_reasons : json(item.risk_reasons, []);
+    const buttons = [];
+    const url = profileUrl(item.username);
+    if (url) {
+      if (typeof linkButton === 'function') buttons.push([linkButton('👤 Открыть профиль MAX', url)]);
+      else buttons.push([{ type: 'link', text: '👤 Открыть профиль MAX', url }]);
+    }
+    buttons.push([callbackButton('✅ Это живой — в белый список', `fraud:whitelist:${waveId}:${eventId}`)]);
+    buttons.push([callbackButton('⬅️ К высокому риску', `fraud:list:${waveId}:high:0`)]);
+
+    return render(update,
+      `━━━━━━━━━━━━━━\n👤 <b>${esc(item.display_name || `MAX ID ${item.user_id}`)}</b>\n\n` +
+      `<b>MAX ID:</b> <code>${esc(item.user_id)}</code>\n` +
+      `<b>Username:</b> ${item.username ? `@${esc(item.username)}` : 'нет'}\n` +
+      `<b>Вступил:</b> ${formatDate(item.event_at)}\n` +
+      `<b>Риск:</b> ${num(item.risk_score)}/100 — ${riskLabel(num(item.risk_score), item.removal_eligible)}\n` +
+      `<b>Сильных признаков:</b> ${num(item.strong_signals)}\n` +
+      `<b>Бот MAX:</b> ${item.is_bot ? 'да' : 'нет'}\n` +
+      `<b>Допущен к очистке:</b> ${item.removal_eligible ? 'да' : 'нет'}\n\n` +
+      `<b>Причины оценки</b>\n` +
+      (reasons.length ? reasons.map((reason) => `• ${esc(reason)}`).join('\n') : '• Сильных признаков не найдено') +
+      `\n\nОтсутствие аватара или username само по себе никогда не допускает удаление.\n━━━━━━━━━━━━━━`,
+      buttons
+    );
+  }
+
+  async function whitelistMember(update, waveId, eventId) {
+    const item = rows(await query(`SELECT * FROM lr_antifraud_events WHERE id=$1 AND wave_id=$2 LIMIT 1`, [eventId, waveId]))[0];
+    if (!item) return showWave(update, waveId);
+    await query(`
+      INSERT INTO lr_antifraud_whitelist(channel_id,user_id,display_name,added_at)
+      VALUES($1,$2,$3,now())
+      ON CONFLICT(channel_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,added_at=now()
+    `, [item.channel_id, item.user_id, item.display_name]);
+    await query(`
+      UPDATE lr_antifraud_events SET risk_score=0,risk_reasons='["Белый список"]'::jsonb,
+        strong_signals=0,removal_eligible=false,updated_at=now()
+      WHERE channel_id=$1 AND user_id=$2
+    `, [item.channel_id, item.user_id]);
+    await refreshWave(waveId);
+    return showMember(update, waveId, eventId);
+  }
+
+  async function ignoreWave(update, waveId) {
+    const wave = await waveById(waveId);
+    if (!wave) return showMenu(update);
+    await query(`UPDATE lr_antifraud_waves SET status='ignored',ignored_at=now(),updated_at=now() WHERE id=$1`, [waveId]);
+    return showWave(update, waveId);
+  }
+
+  async function eligibleCandidates(waveId) {
+    return rows(await query(`
+      SELECT e.*
+      FROM lr_antifraud_events e
+      LEFT JOIN lr_antifraud_whitelist w
+        ON w.channel_id=e.channel_id AND w.user_id=e.user_id
+      WHERE e.wave_id=$1
+        AND e.event_type='join'
+        AND e.removal_eligible=true
+        AND e.risk_score>=90
+        AND e.strong_signals>=2
+        AND e.is_admin=false
+        AND e.is_owner=false
+        AND w.user_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM lr_antifraud_removals r
+          WHERE r.wave_id=e.wave_id AND r.user_id=e.user_id AND r.status='removed'
+        )
+      ORDER BY e.risk_score DESC,e.event_at ASC
+    `, [waveId]));
+  }
+
+  async function removalPrompt(update, waveId) {
+    const wave = await waveById(waveId);
+    if (!wave) return showMenu(update);
+    const candidates = await eligibleCandidates(waveId);
+    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    const action = rows(await query(`
+      INSERT INTO lr_antifraud_actions(
+        action_token,wave_id,channel_id,action_type,status,requested_by,expires_at
+      ) VALUES($1,$2,$3,'remove_high_risk','pending',$4,now()+interval '10 minutes')
+      RETURNING *
+    `, [token, waveId, wave.channel_id, actorId(update) || ownerId()]))[0];
+    const expectedAfter = wave.participants_after === null || wave.participants_after === undefined
+      ? 'уточняется'
+      : Math.max(0, num(wave.participants_after) - candidates.length);
+    return render(update,
+      `━━━━━━━━━━━━━━\n🧹 <b>Безопасная очистка</b>\n\n` +
+      `<b>Будут повторно проверены:</b> ${candidates.length}\n` +
+      `<b>Минимальный риск:</b> 90/100\n` +
+      `<b>Минимум сильных признаков:</b> 2\n` +
+      `<b>Обязательный профильный признак:</b> последовательные MAX ID или массово повторяющийся шаблон имени\n` +
+      `<b>ПДП до наплыва:</b> ${wave.participants_before ?? 'уточняется'}\n` +
+      `<b>ПДП сейчас:</b> ${wave.participants_after ?? 'уточняется'}\n` +
+      `<b>Ожидаемый ПДП после очистки:</b> ${expectedAfter}\n\n` +
+      `Перед удалением LinkRay повторно запросит каждого участника у MAX и пропустит владельцев, администраторов и белый список.\n` +
+      `Пользователи со средним риском удалены не будут.\n━━━━━━━━━━━━━━`,
+      [
+        [callbackButton(`🔎 Посмотреть кандидатов — ${candidates.length}`, `fraud:list:${waveId}:eligible:0`)],
+        [callbackButton('⚠️ Подтвердить очистку', `fraud:remove_confirm:${action.action_token}`)],
+        [callbackButton('⬅️ Отмена', `fraud:wave:${waveId}`)],
+      ]
+    );
+  }
+
+  function memberFlags(member) {
+    return {
+      isAdmin: Boolean(member?.is_admin ?? member?.isAdmin ?? member?.admin),
+      isOwner: Boolean(member?.is_owner ?? member?.isOwner ?? member?.owner),
+    };
+  }
+
+  async function executeRemoval(update, actionToken) {
+    const action = rows(await query(`
+      SELECT * FROM lr_antifraud_actions
+      WHERE action_token=$1 AND status='pending' AND expires_at>now()
+      LIMIT 1
+    `, [actionToken]))[0];
+    if (!action) {
+      return render(update, '⚠️ Подтверждение устарело или уже использовано.', [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]);
+    }
+    if ((action.requested_by || ownerId()) !== (actorId(update) || ownerId())) {
+      return render(update, '⛔ Это подтверждение создано другим пользователем.', [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]);
+    }
+
+    await query(`UPDATE lr_antifraud_actions SET status='running' WHERE id=$1`, [action.id]);
+    const wave = await waveById(action.wave_id);
+    const candidates = await eligibleCandidates(action.wave_id);
+    const result = { removed: 0, skipped: 0, failed: 0, errors: [] };
+
+    for (const candidate of candidates.slice(0, 500)) {
+      let status = 'failed';
+      let err = '';
+      try {
+        if (await isWhitelisted(candidate.channel_id, candidate.user_id)) {
+          status = 'skipped_whitelist';
+          result.skipped += 1;
+        } else {
+          let liveMember = null;
+          try { liveMember = await getMaxMember(candidate.max_chat_id, candidate.user_id); }
+          catch (e) {
+            // 404/member absent means already gone; skip safely.
+            if (e?.status === 404) {
+              status = 'skipped_absent';
+              result.skipped += 1;
+            } else {
+              throw e;
+            }
+          }
+          if (status === 'failed') {
+            if (!liveMember) {
+              status = 'skipped_absent';
+              result.skipped += 1;
+            } else {
+              const flags = memberFlags(liveMember);
+              if (flags.isAdmin || flags.isOwner) {
+                status = 'skipped_admin';
+                result.skipped += 1;
+              } else {
+                await removeMaxMember(candidate.max_chat_id, candidate.user_id);
+                status = 'removed';
+                result.removed += 1;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        err = text(e?.message || e, 1000);
+        result.failed += 1;
+        result.errors.push({ userId: candidate.user_id, error: err });
+      }
+
+      await query(`
+        INSERT INTO lr_antifraud_removals(
+          action_id,wave_id,channel_id,max_chat_id,user_id,display_name,risk_score,status,error,removed_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $8='removed' THEN now() ELSE NULL END)
+      `, [
+        action.id,
+        action.wave_id,
+        candidate.channel_id,
+        candidate.max_chat_id,
+        candidate.user_id,
+        candidate.display_name,
+        candidate.risk_score,
+        status,
+        err || null,
+      ]);
+      await sleep(180);
+    }
+
+    let participants = null;
+    try { participants = await getMaxParticipantCount(wave.max_chat_id); } catch {}
+    const updatedWave = await refreshWave(wave.id, participants);
+    await query(`
+      UPDATE lr_antifraud_actions SET status='completed',completed_at=now(),result=$2::jsonb
+      WHERE id=$1
+    `, [action.id, JSON.stringify(result)]);
+
+    return render(update,
+      `━━━━━━━━━━━━━━\n✅ <b>Очистка завершена</b>\n\n` +
+      `<b>Удалено:</b> ${result.removed}\n` +
+      `<b>Безопасно пропущено:</b> ${result.skipped}\n` +
+      `<b>Ошибок MAX API:</b> ${result.failed}\n\n` +
+      `<b>ПДП до наплыва:</b> ${updatedWave?.participants_before ?? 'уточняется'}\n` +
+      `<b>ПДП после очистки:</b> ${updatedWave?.participants_after ?? 'уточняется'}\n\n` +
+      `Средний риск и вероятно живые участники не удалялись.\n━━━━━━━━━━━━━━`,
+      [
+        [callbackButton('🔎 Вернуться к наплыву', `fraud:wave:${wave.id}`)],
+        [callbackButton('⬅️ К каналам', 'fraud:menu')],
+      ]
+    );
+  }
+
+  async function handleCallback(update) {
+    const payload = callbackPayload(update);
+    if (!payload.startsWith('fraud:')) return false;
+    if (!actorAllowed(update)) {
+      await render(update, '⛔ Раздел AntiFraud доступен только владельцу LinkRay.', [[callbackButton('⬅️ В меню', 'main:menu')]]);
+      return true;
+    }
+
+    const parts = payload.split(':');
+    const action = parts[1] || '';
+    if (action === 'menu') await showMenu(update);
+    else if (action === 'channel') await showChannel(update, num(parts[2]));
+    else if (action === 'toggle') await toggleChannel(update, num(parts[2]));
+    else if (action === 'enable_all') { await setAll(true); await showMenu(update); }
+    else if (action === 'disable_all') { await setAll(false); await showMenu(update); }
+    else if (action === 'waves') await showWaves(update, num(parts[2]), num(parts[3]));
+    else if (action === 'wave') await showWave(update, num(parts[2]));
+    else if (action === 'list') await showRiskList(update, num(parts[2]), parts[3] || 'high', num(parts[4]));
+    else if (action === 'member') await showMember(update, num(parts[2]), num(parts[3]));
+    else if (action === 'whitelist') await whitelistMember(update, num(parts[2]), num(parts[3]));
+    else if (action === 'ignore') await ignoreWave(update, num(parts[2]));
+    else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
+    else if (action === 'remove_confirm') await executeRemoval(update, parts[2]);
+    else await showMenu(update);
+    return true;
+  }
+
+  function handleEvent(update) {
+    const type = updateType(update);
+    if (type === 'user_added') {
+      recordJoin(update).catch((e) => error('user_added failed:', e?.stack || e?.message || e));
+    } else if (type === 'user_removed') {
+      recordLeave(update).catch((e) => error('user_removed failed:', e?.stack || e?.message || e));
+    } else if (type === 'bot_removed') {
+      const maxChatId = chatId(update);
+      if (maxChatId) {
+        query(`UPDATE lr_antifraud_channels SET enabled=false,disabled_at=now(),updated_at=now() WHERE max_chat_id=$1`, [maxChatId])
+          .catch((e) => error('bot_removed disable failed:', e?.message || e));
+      }
+    }
+  }
+
+  async function handleHttpUpdate(update) {
+    const payload = callbackPayload(update);
+    if (payload.startsWith('fraud:')) {
+      await handleCallback(update);
+      return { handled: true, reason: 'antifraud_callback' };
+    }
+    handleEvent(update);
+    return { handled: false };
+  }
+
+  await ensureSchema();
+  await syncChannels();
+  const timer = setInterval(() => closeStaleWaves().catch((e) => error('sweeper failed:', e?.message || e)), 60_000);
+  timer.unref?.();
+  setTimeout(() => closeStaleWaves().catch(() => {}), 5_000).unref?.();
+  log(`installed v${MODULE_VERSION}; owner=${ownerId()}`);
+
+  return {
+    version: MODULE_VERSION,
+    handleHttpUpdate,
+    handleCallback,
+    handleEvent,
+    ensureSchema,
+    syncChannels,
+    closeStaleWaves,
+  };
+}
