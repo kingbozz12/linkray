@@ -23206,62 +23206,99 @@ log('webhook', { type: lrV40Type(update), chatId: getChatId(update), key: getSes
 
     if (type.includes('callback') || callbackId || payload) {
         console.log('[webhook callback direct]', JSON.stringify({ type: lrV40Type(update), chatId: lrV40ChatId(update), payload, hasCallbackId: Boolean(callbackId) }));
-
-      /* LR_FRAUD_DIRECT_WEBHOOK_V2_START */
+      /* LR_FRAUD_FINAL_WEBHOOK_V4_START */
       if (String(payload || '').startsWith('fraud:')) {
         const fraudModule = globalThis.__lrAntiFraud24x7;
+
+        const fraudActorId = String(
+          update?.user_id ||
+          update?.userId ||
+          update?.sender?.user_id ||
+          update?.sender?.id ||
+          update?.callback?.user?.user_id ||
+          update?.callback?.user?.id ||
+          update?.message_callback?.user?.user_id ||
+          update?.message_callback?.user?.id ||
+          update?.message?.sender?.user_id ||
+          update?.message?.sender?.id ||
+          update?.body?.user_id ||
+          update?.body?.userId ||
+          update?.body?.sender?.user_id ||
+          update?.body?.sender?.id ||
+          update?.body?.message?.sender?.user_id ||
+          update?.body?.message?.sender?.id ||
+          chatId ||
+          ''
+        );
+
+        const fraudUpdate = {
+          ...(update || {}),
+          payload: String(payload),
+          callback_id: String(
+            callbackId ||
+            update?.callback_id ||
+            update?.callbackId ||
+            update?.callback?.callback_id ||
+            update?.callback?.id ||
+            update?.message_callback?.callback_id ||
+            update?.message_callback?.id ||
+            update?.body?.callback_id ||
+            update?.body?.callbackId ||
+            update?.body?.callback?.callback_id ||
+            update?.body?.callback?.id ||
+            ''
+          ),
+          chat_id: String(
+            chatId ||
+            update?.chat_id ||
+            update?.chatId ||
+            update?.message?.recipient?.chat_id ||
+            update?.message?.recipient?.id ||
+            update?.body?.chat_id ||
+            update?.body?.chatId ||
+            update?.body?.message?.recipient?.chat_id ||
+            update?.body?.message?.recipient?.id ||
+            ''
+          ),
+          user_id: fraudActorId,
+        };
 
         try {
           if (
             !fraudModule ||
             typeof fraudModule.handleCallback !== 'function'
           ) {
-            const unavailableText =
-              '⚠️ AntiFraud временно недоступен.';
-
-            if (callbackId && typeof cb === 'function') {
-              await cb(
-                callbackId,
-                unavailableText,
-                [[callbackButton('⬅️ В меню', 'main:menu')]]
-              );
-            } else if (chatId && typeof msg === 'function') {
-              await msg(
-                chatId,
-                unavailableText,
-                [[callbackButton('⬅️ В меню', 'main:menu')]]
-              );
-            }
-
-            return;
+            throw new Error(
+              'globalThis.__lrAntiFraud24x7 is unavailable'
+            );
           }
 
-          const fraudUpdate = {
-            ...(update || {}),
-            payload: String(payload),
-          };
+          /*
+           * Здесь нет предварительного answerCallback().
+           * Карточку и callback отвечает ровно один раз сам AntiFraud.
+           */
+          const fraudHandled =
+            await fraudModule.handleCallback(fraudUpdate);
 
-          if (callbackId && typeof answerCallback === 'function') {
-            await answerCallback({
-              callbackId,
-              notification: 'Открываю...',
-            }).catch(() => {});
+          if (!fraudHandled) {
+            throw new Error(
+              `AntiFraud did not handle ${String(payload)}`
+            );
           }
 
           console.log(
-            '[LR_FRAUD_DIRECT_WEBHOOK_V2]',
+            '[LR_FRAUD_FINAL_WEBHOOK_V4]',
             JSON.stringify({
+              ok: true,
               payload: String(payload),
               callbackId: callbackId || null,
               chatId: chatId || null,
+              actorId: fraudActorId || null,
             })
           );
-
-          await fraudModule.handleCallback(fraudUpdate);
-          return;
         } catch (fraudError) {
           console.error(
-            '[LR_FRAUD_DIRECT_WEBHOOK_V2]',
+            '[LR_FRAUD_FINAL_WEBHOOK_V4]',
             fraudError?.stack ||
             fraudError?.message ||
             fraudError
@@ -23271,26 +23308,41 @@ log('webhook', { type: lrV40Type(update), chatId: getChatId(update), key: getSes
             '⚠️ Не удалось открыть раздел AntiFraud. ' +
             'Попробуйте нажать кнопку ещё раз.';
 
-          try {
-            if (callbackId && typeof cb === 'function') {
+          let delivered = false;
+
+          if (callbackId && typeof cb === 'function') {
+            try {
               await cb(
                 callbackId,
                 errorText,
                 [[callbackButton('⬅️ К каналам', 'fraud:menu')]]
               );
-            } else if (chatId && typeof msg === 'function') {
+              delivered = true;
+            } catch {}
+          }
+
+          if (
+            !delivered &&
+            fraudActorId &&
+            typeof msg === 'function'
+          ) {
+            try {
               await msg(
-                chatId,
+                fraudActorId,
                 errorText,
                 [[callbackButton('⬅️ К каналам', 'fraud:menu')]]
               );
-            }
-          } catch {}
-
-          return;
+            } catch {}
+          }
         }
+
+        return;
       }
-      /* LR_FRAUD_DIRECT_WEBHOOK_V2_END */
+      /* LR_FRAUD_FINAL_WEBHOOK_V4_END */
+
+
+
+      
 
 
         if (payload === 'main:menu') {
@@ -23315,15 +23367,7 @@ log('webhook', { type: lrV40Type(update), chatId: getChatId(update), key: getSes
           return;
         }
 
-        if (payload === 'fraud:menu') {
-          const rows = [[callbackButton('⬅️ В меню', 'main:menu')]];
-          const text = `🛡 <b>Антифрод</b>
-
-Раздел проверки качества трафика и подозрительных скачков скоро будет доступен.`;
-          if (callbackId && typeof cb === 'function') await cb(callbackId, text, rows);
-          else if (chatId && typeof msg === 'function') await msg(chatId, text, rows);
-          return;
-        }
+        
 
         if (payload === 'main:analytics' || payload === 'analytics:menu') {
           const rows = [[callbackButton('⬅️ В меню', 'main:menu')]];
