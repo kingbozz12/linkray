@@ -1,7 +1,7 @@
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '1.0.0';
+const MODULE_VERSION = '1.0.1';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -1138,7 +1138,7 @@ export async function installLinkRayAntiFraud({
 
   async function showChannel(update, channelId) {
     const channel = await configByChannelId(channelId);
-    if (!channel) return showMenu(update);
+    if (!channel) return showUserMenu(update);
     const stats = rows(await query(`
       SELECT
         count(*) FILTER (WHERE event_type='join' AND event_at>=now()-interval '24 hours')::int AS joins24,
@@ -1174,7 +1174,7 @@ export async function installLinkRayAntiFraud({
 
   async function toggleChannel(update, channelId) {
     const channel = await configByChannelId(channelId);
-    if (!channel) return showMenu(update);
+    if (!channel) return showUserMenu(update);
     const next = !channel.enabled;
     await query(`
       UPDATE lr_antifraud_channels SET
@@ -1202,7 +1202,7 @@ export async function installLinkRayAntiFraud({
 
   async function showWaves(update, channelId, page = 0) {
     const channel = await configByChannelId(channelId);
-    if (!channel) return showMenu(update);
+    if (!channel) return showUserMenu(update);
     const limit = 8;
     const list = rows(await query(`
       SELECT * FROM lr_antifraud_waves
@@ -1238,7 +1238,7 @@ export async function installLinkRayAntiFraud({
 
   async function showWave(update, waveId) {
     const wave = await waveById(waveId);
-    if (!wave) return showMenu(update);
+    if (!wave) return showUserMenu(update);
     const channel = await configByChannelId(wave.channel_id);
     const elapsed = (new Date(wave.ended_at || wave.last_event_at).getTime() - new Date(wave.started_at).getTime()) / 1000;
     const buttons = [
@@ -1280,7 +1280,7 @@ export async function installLinkRayAntiFraud({
 
   async function showRiskList(update, waveId, category, page = 0) {
     const wave = await waveById(waveId);
-    if (!wave) return showMenu(update);
+    if (!wave) return showUserMenu(update);
     const limit = 5;
     const list = rows(await query(`
       SELECT * FROM lr_antifraud_events
@@ -1366,7 +1366,7 @@ export async function installLinkRayAntiFraud({
 
   async function ignoreWave(update, waveId) {
     const wave = await waveById(waveId);
-    if (!wave) return showMenu(update);
+    if (!wave) return showUserMenu(update);
     await query(`UPDATE lr_antifraud_waves SET status='ignored',ignored_at=now(),updated_at=now() WHERE id=$1`, [waveId]);
     return showWave(update, waveId);
   }
@@ -1395,7 +1395,7 @@ export async function installLinkRayAntiFraud({
 
   async function removalPrompt(update, waveId) {
     const wave = await waveById(waveId);
-    if (!wave) return showMenu(update);
+    if (!wave) return showUserMenu(update);
     const candidates = await eligibleCandidates(waveId);
     const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const action = rows(await query(`
@@ -1534,21 +1534,285 @@ export async function installLinkRayAntiFraud({
     );
   }
 
-  async function handleCallback(update) {
+  
+  /* LR_ANTIFRAUD_PER_USER_ACCESS_V2_START */
+
+  async function userChannelRows(update) {
+    const maxUserId = actorId(update);
+    if (!maxUserId) return [];
+
+    await syncChannels();
+
+    return rows(await query(`
+      SELECT DISTINCT
+        c.id,
+        c.max_chat_id,
+        c.title,
+        c.link,
+        c.is_active,
+        COALESCE(af.enabled, false) AS enabled,
+        af.enabled_at,
+        af.disabled_at,
+        af.last_event_at
+      FROM public.lr_users u
+      JOIN public.lr_user_channels uc
+        ON uc.user_id=u.id
+      JOIN public.channels c
+        ON c.id=uc.channel_id
+      LEFT JOIN public.lr_antifraud_channels af
+        ON af.channel_id=c.id
+      WHERE u.max_user_id::text=$1
+        AND COALESCE(c.is_active, true)=true
+
+      UNION
+
+      SELECT DISTINCT
+        c.id,
+        c.max_chat_id,
+        c.title,
+        c.link,
+        c.is_active,
+        COALESCE(af.enabled, false) AS enabled,
+        af.enabled_at,
+        af.disabled_at,
+        af.last_event_at
+      FROM public.channels c
+      LEFT JOIN public.lr_antifraud_channels af
+        ON af.channel_id=c.id
+      WHERE c.owner_max_user_id::text=$1
+        AND COALESCE(c.is_active, true)=true
+
+      ORDER BY title, id
+    `, [String(maxUserId)]));
+  }
+
+  async function userCanManageChannel(update, channelId) {
+    const maxUserId = actorId(update);
+    const safeChannelId = num(channelId);
+
+    if (!maxUserId || !safeChannelId) return false;
+
+    const access = rows(await query(`
+      SELECT 1 AS allowed
+      FROM (
+        SELECT uc.channel_id
+        FROM public.lr_users u
+        JOIN public.lr_user_channels uc
+          ON uc.user_id=u.id
+        WHERE u.max_user_id::text=$1
+          AND uc.channel_id=$2
+
+        UNION
+
+        SELECT c.id AS channel_id
+        FROM public.channels c
+        WHERE c.id=$2
+          AND c.owner_max_user_id::text=$1
+      ) permitted
+      LIMIT 1
+    `, [String(maxUserId), safeChannelId]));
+
+    return Boolean(access[0]);
+  }
+
+  async function callbackChannelForAccess(parts) {
+    const action = parts[1] || '';
+
+    if (['channel', 'toggle', 'waves'].includes(action)) {
+      return num(parts[2]);
+    }
+
+    if ([
+      'wave',
+      'list',
+      'member',
+      'whitelist',
+      'ignore',
+      'remove_prompt',
+    ].includes(action)) {
+      const waveId = num(parts[2]);
+      if (!waveId) return 0;
+
+      const wave = rows(await query(`
+        SELECT channel_id
+        FROM public.lr_antifraud_waves
+        WHERE id=$1
+        LIMIT 1
+      `, [waveId]))[0];
+
+      return num(wave?.channel_id);
+    }
+
+    if (action === 'remove_confirm') {
+      const token = text(parts[2], 200);
+      if (!token) return 0;
+
+      const pendingAction = rows(await query(`
+        SELECT channel_id
+        FROM public.lr_antifraud_actions
+        WHERE action_token=$1
+        LIMIT 1
+      `, [token]))[0];
+
+      return num(pendingAction?.channel_id);
+    }
+
+    return 0;
+  }
+
+  async function showUserMenu(update) {
+    const maxUserId = actorId(update);
+
+    if (!maxUserId) {
+      return render(
+        update,
+        '⚠️ Не удалось определить пользователя MAX.',
+        [[callbackButton('⬅️ В меню', 'main:menu')]]
+      );
+    }
+
+    const channels = await userChannelRows(update);
+    const buttons = channels.map((channel) => [
+      callbackButton(
+        `${channel.enabled ? '🟢' : '🔴'} ${text(channel.title || `Канал ${channel.id}`, 42)}`,
+        `fraud:channel:${channel.id}`
+      ),
+    ]);
+
+    if (channels.length) {
+      buttons.push([
+        callbackButton('🟢 Включить для всех', 'fraud:enable_all'),
+      ]);
+      buttons.push([
+        callbackButton('🔴 Выключить для всех', 'fraud:disable_all'),
+      ]);
+    }
+
+    buttons.push([
+      callbackButton('⬅️ В меню', 'main:menu'),
+    ]);
+
+    const enabledCount = channels.filter(
+      (channel) => Boolean(channel.enabled)
+    ).length;
+
+    const body = channels.length
+      ? (
+          `━━━━━━━━━━━━━━\n` +
+          `🛡 AntiFraud LinkRay\n\n` +
+          `Круглосуточная защита подключённых каналов.\n` +
+          `Каждый канал включается отдельно.\n\n` +
+          `Каналов: ${channels.length}\n` +
+          `Защита включена: ${enabledCount}\n` +
+          `Защита выключена: ${channels.length - enabledCount}\n\n` +
+          `Выберите канал.\n` +
+          `━━━━━━━━━━━━━━`
+        )
+      : (
+          `━━━━━━━━━━━━━━\n` +
+          `🛡 AntiFraud LinkRay\n\n` +
+          `У вас пока нет подключённых каналов, ` +
+          `которыми вы управляете в LinkRay.\n\n` +
+          `Сначала добавьте канал и оставьте бота администратором.\n` +
+          `━━━━━━━━━━━━━━`
+        );
+
+    return render(update, body, buttons);
+  }
+
+  async function setUserChannels(update, enabled) {
+    const maxUserId = actorId(update);
+    if (!maxUserId) return 0;
+
+    await syncChannels();
+
+    const changed = rows(await query(`
+      UPDATE public.lr_antifraud_channels af
+      SET
+        enabled=$2,
+        enabled_at=CASE
+          WHEN $2=true THEN COALESCE(af.enabled_at, now())
+          ELSE af.enabled_at
+        END,
+        learning_started_at=CASE
+          WHEN $2=true THEN COALESCE(af.learning_started_at, now())
+          ELSE af.learning_started_at
+        END,
+        disabled_at=CASE
+          WHEN $2=true THEN NULL
+          ELSE now()
+        END,
+        updated_at=now()
+      FROM (
+        SELECT DISTINCT uc.channel_id
+        FROM public.lr_users u
+        JOIN public.lr_user_channels uc
+          ON uc.user_id=u.id
+        WHERE u.max_user_id::text=$1
+
+        UNION
+
+        SELECT c.id AS channel_id
+        FROM public.channels c
+        WHERE c.owner_max_user_id::text=$1
+      ) permitted
+      WHERE af.channel_id=permitted.channel_id
+      RETURNING af.channel_id
+    `, [String(maxUserId), Boolean(enabled)]));
+
+    return changed.length;
+  }
+
+  async function denyForeignChannel(update) {
+    return render(
+      update,
+      '⛔ У вас нет доступа к этому каналу.',
+      [[callbackButton('⬅️ К моим каналам', 'fraud:menu')]]
+    );
+  }
+
+  /* LR_ANTIFRAUD_PER_USER_ACCESS_V2_END */
+
+
+async function handleCallback(update) {
     const payload = callbackPayload(update);
     if (!payload.startsWith('fraud:')) return false;
-    if (!actorAllowed(update)) {
-      await render(update, '⛔ Раздел AntiFraud доступен только владельцу LinkRay.', [[callbackButton('⬅️ В меню', 'main:menu')]]);
-      return true;
-    }
+
 
     const parts = payload.split(':');
     const action = parts[1] || '';
-    if (action === 'menu') await showMenu(update);
+
+    if (action === 'menu') {
+      await showUserMenu(update);
+      return true;
+    }
+
+    if (action === 'enable_all') {
+      await setUserChannels(update, true);
+      await showUserMenu(update);
+      return true;
+    }
+
+    if (action === 'disable_all') {
+      await setUserChannels(update, false);
+      await showUserMenu(update);
+      return true;
+    }
+
+    const protectedChannelId = await callbackChannelForAccess(parts);
+    if (
+      protectedChannelId &&
+      !(await userCanManageChannel(update, protectedChannelId))
+    ) {
+      await denyForeignChannel(update);
+      return true;
+    }
+
+    if (action === 'menu') await showUserMenu(update);
     else if (action === 'channel') await showChannel(update, num(parts[2]));
     else if (action === 'toggle') await toggleChannel(update, num(parts[2]));
-    else if (action === 'enable_all') { await setAll(true); await showMenu(update); }
-    else if (action === 'disable_all') { await setAll(false); await showMenu(update); }
+    else if (action === 'enable_all') { await setAll(true); await showUserMenu(update); }
+    else if (action === 'disable_all') { await setAll(false); await showUserMenu(update); }
     else if (action === 'waves') await showWaves(update, num(parts[2]), num(parts[3]));
     else if (action === 'wave') await showWave(update, num(parts[2]));
     else if (action === 'list') await showRiskList(update, num(parts[2]), parts[3] || 'high', num(parts[4]));
@@ -1557,7 +1821,7 @@ export async function installLinkRayAntiFraud({
     else if (action === 'ignore') await ignoreWave(update, num(parts[2]));
     else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
     else if (action === 'remove_confirm') await executeRemoval(update, parts[2]);
-    else await showMenu(update);
+    else await showUserMenu(update);
     return true;
   }
 
