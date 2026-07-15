@@ -854,6 +854,81 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 // LINKRAY_PREEMPT_ANALYTICS_END
 
 app.use(express.json({ limit: '50mb' }));
+
+/* LR_ANTIFRAUD_PRIORITY_V1_START */
+const __lrAntiFraudModulePromise =
+  import('./linkrayAntiFraud.js');
+
+void __lrAntiFraudModulePromise
+  .then((module) => {
+    module.startLinkRayAntiFraudWorker?.();
+  })
+  .catch((error) => {
+    console.error(
+      '[LinkRay AntiFraud startup]',
+      error?.stack || error?.message || error,
+    );
+  });
+
+app.use(
+  async function linkRayAntiFraudPriority(
+    req,
+    res,
+    next,
+  ) {
+    const update = req.body || {};
+    const payload = String(
+      update?.callback?.payload ||
+      update?.callback?.body?.payload ||
+      update?.callback?.button?.payload ||
+      update?.callback?.data ||
+      update?.callback_payload ||
+      update?.message_callback?.payload ||
+      update?.payload ||
+      update?.data ||
+      update?.message?.callback?.payload ||
+      '',
+    );
+
+    if (
+      !payload.startsWith('fraud:') &&
+      !payload.startsWith('antifraud:')
+    ) {
+      return next();
+    }
+
+    try {
+      const module =
+        await __lrAntiFraudModulePromise;
+      const handled =
+        await module.handleLinkRayAntiFraudIncoming(
+          update,
+        );
+
+      if (handled) {
+        if (!res.headersSent) {
+          return res
+            .status(200)
+            .json({
+              ok: true,
+              handled: 'linkray_antifraud',
+            });
+        }
+        return;
+      }
+    } catch (error) {
+      console.error(
+        '[LinkRay AntiFraud middleware]',
+        error?.stack || error?.message || error,
+      );
+    }
+
+    return next();
+  },
+);
+/* LR_ANTIFRAUD_PRIORITY_V1_END */
+
+
 /* LR_PURCHASES_WEBHOOK_PRIORITY_V1 */
 installLinkRayPurchases(app);
 

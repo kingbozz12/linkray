@@ -1,3 +1,4 @@
+/* LR_AUDIENCE_NO_AVATAR_FRAUD_CRITERION_V1 */
 /* LR_AUDIENCE_BOTS_AND_WEB_REPORT_FIX_V1 */
 /* LR_AUDIENCE_STATIC_NAMES_PDP_LINK_V1 */
 /* LR_AUDIENCE_PROFILE_BOT_FALLBACK_V1 */
@@ -1369,11 +1370,7 @@ function calculateRisk({
     score += 8;
     flags.push('no_username');
   }
-
-  if (!avatarUrl) {
-    score += 8;
-    flags.push('no_avatar');
-  }
+  /* Аватар не является признаком накрутки. */
 
   if (repeatCount >= 3) {
     score += 25;
