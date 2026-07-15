@@ -23207,6 +23207,92 @@ log('webhook', { type: lrV40Type(update), chatId: getChatId(update), key: getSes
     if (type.includes('callback') || callbackId || payload) {
         console.log('[webhook callback direct]', JSON.stringify({ type: lrV40Type(update), chatId: lrV40ChatId(update), payload, hasCallbackId: Boolean(callbackId) }));
 
+      /* LR_FRAUD_DIRECT_WEBHOOK_V2_START */
+      if (String(payload || '').startsWith('fraud:')) {
+        const fraudModule = globalThis.__lrAntiFraud24x7;
+
+        try {
+          if (
+            !fraudModule ||
+            typeof fraudModule.handleCallback !== 'function'
+          ) {
+            const unavailableText =
+              '⚠️ AntiFraud временно недоступен.';
+
+            if (callbackId && typeof cb === 'function') {
+              await cb(
+                callbackId,
+                unavailableText,
+                [[callbackButton('⬅️ В меню', 'main:menu')]]
+              );
+            } else if (chatId && typeof msg === 'function') {
+              await msg(
+                chatId,
+                unavailableText,
+                [[callbackButton('⬅️ В меню', 'main:menu')]]
+              );
+            }
+
+            return;
+          }
+
+          const fraudUpdate = {
+            ...(update || {}),
+            payload: String(payload),
+          };
+
+          if (callbackId && typeof answerCallback === 'function') {
+            await answerCallback({
+              callbackId,
+              notification: 'Открываю...',
+            }).catch(() => {});
+          }
+
+          console.log(
+            '[LR_FRAUD_DIRECT_WEBHOOK_V2]',
+            JSON.stringify({
+              payload: String(payload),
+              callbackId: callbackId || null,
+              chatId: chatId || null,
+            })
+          );
+
+          await fraudModule.handleCallback(fraudUpdate);
+          return;
+        } catch (fraudError) {
+          console.error(
+            '[LR_FRAUD_DIRECT_WEBHOOK_V2]',
+            fraudError?.stack ||
+            fraudError?.message ||
+            fraudError
+          );
+
+          const errorText =
+            '⚠️ Не удалось открыть раздел AntiFraud. ' +
+            'Попробуйте нажать кнопку ещё раз.';
+
+          try {
+            if (callbackId && typeof cb === 'function') {
+              await cb(
+                callbackId,
+                errorText,
+                [[callbackButton('⬅️ К каналам', 'fraud:menu')]]
+              );
+            } else if (chatId && typeof msg === 'function') {
+              await msg(
+                chatId,
+                errorText,
+                [[callbackButton('⬅️ К каналам', 'fraud:menu')]]
+              );
+            }
+          } catch {}
+
+          return;
+        }
+      }
+      /* LR_FRAUD_DIRECT_WEBHOOK_V2_END */
+
+
         if (payload === 'main:menu') {
           if (callbackId && typeof showMainCallback === 'function') await showMainCallback(callbackId);
           else if (chatId && typeof sendMain === 'function') await sendMain(chatId);
