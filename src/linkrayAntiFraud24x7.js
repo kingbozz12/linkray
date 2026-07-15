@@ -1,7 +1,8 @@
+import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '1.1.0';
+const MODULE_VERSION = '2.0.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -377,6 +378,9 @@ export async function installLinkRayAntiFraud({
   const log = (...args) => logger?.log?.('[LinkRay AntiFraud]', ...args);
   const warn = (...args) => logger?.warn?.('[LinkRay AntiFraud]', ...args);
   const error = (...args) => logger?.error?.('[LinkRay AntiFraud]', ...args);
+  /* LR_ANTIFRAUD_COHORT_V2_START */
+  let cohortEngine = null;
+  /* LR_ANTIFRAUD_COHORT_V2_END */
 
   async function ensureSchema() {
     const statements = [
@@ -1545,116 +1549,332 @@ async function recordJoin(update) {
   }
 
   async function showWave(update, waveId) {
-    const wave = await waveById(waveId);
+    let wave = await waveById(waveId);
     if (!wave) return showUserMenu(update);
-    const channel = await configByChannelId(wave.channel_id);
-    const elapsed = (new Date(wave.ended_at || wave.last_event_at).getTime() - new Date(wave.started_at).getTime()) / 1000;
-    const buttons = [
-      [callbackButton(`🚨 Высокий риск — ${num(wave.high_count)}`, `fraud:list:${wave.id}:high:0`)],
-      [callbackButton(`⚠️ Средний риск — ${num(wave.medium_count)}`, `fraud:list:${wave.id}:medium:0`)],
-      [callbackButton(`✅ Вероятно живые — ${num(wave.normal_count)}`, `fraud:list:${wave.id}:normal:0`)],
-      [callbackButton(`🧹 Безопасная очистка — ${num(wave.eligible_count)}`, `fraud:remove_prompt:${wave.id}`)],
-    ];
-    if (wave.status !== 'ignored') buttons.push([callbackButton('🙈 Игнорировать этот наплыв', `fraud:ignore:${wave.id}`)]);
-    buttons.push([callbackButton('⬅️ К истории', `fraud:waves:${wave.channel_id}:0`)]);
 
-    return render(update,
-      `━━━━━━━━━━━━━━\n🛡 <b>Проверка наплыва</b>\n\n` +
-      `<b>Канал:</b> ${esc(channel?.current_title || channel?.title || wave.max_chat_id)}\n` +
-      `<b>Период:</b> ${formatDate(wave.started_at)} — ${formatDate(wave.ended_at || wave.last_event_at)}\n` +
-      `<b>Длительность:</b> ${formatDuration(elapsed)}\n\n` +
-      `<b>ПДП до наплыва:</b> ${wave.participants_before ?? 'уточняется'}\n` +
-      `<b>ПДП после:</b> ${wave.participants_after ?? 'уточняется'}\n` +
-      `<b>Общий приток:</b> +${num(wave.joined_count)}\n` +
-      `<b>Ушли во время волны:</b> -${num(wave.removed_count)}\n\n` +
-      `🚨 Высокий риск: ${num(wave.high_count)}\n` +
-      `⚠️ Средний риск: ${num(wave.medium_count)}\n` +
+    if (cohortEngine) {
+      wave = (await cohortEngine.rescoreWave(waveId, { enrich: false })) || wave;
+    }
+
+    const channel = await configByChannelId(wave.channel_id);
+    const summary = json(wave.cohort_summary, {});
+    const elapsed = (
+      new Date(wave.ended_at || wave.last_event_at).getTime() -
+      new Date(wave.started_at).getTime()
+    ) / 1000;
+
+    const probable = num(wave.probable_bot_count);
+    const eligible = num(wave.eligible_count);
+    const review = num(wave.review_count);
+    const official = num(wave.official_bot_count ?? wave.max_bot_count);
+    const confidence = Math.round(num(wave.cohort_confidence) * 100);
+
+    const buttons = [
+      [
+        callbackButton(
+          `🤖 Вероятные боты — ${probable}`,
+          `fraud:list:${wave.id}:bots:0`
+        ),
+      ],
+      [
+        callbackButton(
+          `🚨 Проверить удаление — ${eligible}`,
+          `fraud:remove_prompt:${wave.id}`
+        ),
+      ],
+      [
+        callbackButton(
+          `⚠️ Требуют проверки — ${review}`,
+          `fraud:list:${wave.id}:review:0`
+        ),
+      ],
+      [
+        callbackButton(
+          `✅ Вероятно живые — ${num(wave.normal_count)}`,
+          `fraud:list:${wave.id}:human:0`
+        ),
+      ],
+    ];
+
+    if (official > 0) {
+      buttons.push([
+        callbackButton(
+          `🧩 Боты MAX — ${official}`,
+          `fraud:list:${wave.id}:official:0`
+        ),
+      ]);
+    }
+
+    buttons.push([
+      callbackButton(
+        '🔄 Пересчитать наплыв',
+        `fraud:rescore:${wave.id}`
+      ),
+    ]);
+
+    if (wave.status !== 'ignored') {
+      buttons.push([
+        callbackButton(
+          '🚫 Игнорировать наплыв',
+          `fraud:ignore:${wave.id}`
+        ),
+      ]);
+    }
+
+    buttons.push([
+      callbackButton(
+        '⬅️ К истории',
+        `fraud:waves:${wave.channel_id}:0`
+      ),
+    ]);
+
+    return render(
+      update,
+      `━━━━━━━━━━━━━━\n` +
+      `🛡 Проверка наплыва\n\n` +
+      `Канал: ${esc(
+        channel?.current_title ||
+        channel?.title ||
+        wave.max_chat_id
+      )}\n` +
+      `Период: ${formatDate(wave.started_at)} — ` +
+      `${formatDate(wave.ended_at || wave.last_event_at)}\n` +
+      `Длительность: ${formatDuration(elapsed)}\n\n` +
+      `ПДП до наплыва: ${wave.participants_before ?? 'уточняется'}\n` +
+      `ПДП после: ${wave.participants_after ?? 'уточняется'}\n` +
+      `Общий приток: +${num(wave.joined_count)}\n` +
+      `Ушли во время волны: -${num(wave.removed_count)}\n\n` +
+      `🤖 Вероятные боты: ${probable}\n` +
+      `🚨 Допущены к проверке удаления: ${eligible}\n` +
+      `⚠️ Требуют ручной проверки: ${review}\n` +
       `✅ Вероятно живые: ${num(wave.normal_count)}\n` +
-      `🤖 Боты MAX: ${num(wave.max_bot_count)}\n` +
-      `🧹 Можно удалить после проверки: ${num(wave.eligible_count)}\n\n` +
-      `<b>Статус:</b> ${esc(wave.status)}\n` +
-      `Удаление доступно только для оценки 90–100 и минимум двух сильных признаков.\n━━━━━━━━━━━━━━`,
+      `🧩 Официальные боты MAX: ${official}\n\n` +
+      `Уверенность алгоритма: ${confidence}%\n` +
+      `Медианный интервал: ${num(summary.median_gap_seconds).toFixed(1)} сек\n` +
+      `Плотность машинной серии: ` +
+      `${Math.round(num(summary.dense_share) * 100)}%\n\n` +
+      `Важно: «Бот MAX» — официальный бот-аккаунт. ` +
+      `Накрученные профили людей MAX так не помечает, ` +
+      `поэтому LinkRay определяет их отдельно по всей волне.\n\n` +
+      `Аватар не используется для допуска к удалению. ` +
+      `Автоматического удаления нет.\n` +
+      `━━━━━━━━━━━━━━`,
       buttons
     );
   }
-
   function riskFilter(category) {
-    if (category === 'high') return `risk_score>=85`;
-    if (category === 'medium') return `risk_score>=55 AND risk_score<85`;
-    if (category === 'normal') return `risk_score<55`;
+    if (category === 'bots') {
+      return `bot_class IN (
+        'official_max_bot',
+        'high_confidence_bot',
+        'likely_bot'
+      )`;
+    }
+
     if (category === 'eligible') return `removal_eligible=true`;
+
+    if (category === 'review') {
+      return `removal_eligible=false
+        AND bot_class IN ('likely_bot','suspicious')`;
+    }
+
+    if (category === 'human') return `bot_class='likely_human'`;
+    if (category === 'official') return `bot_class='official_max_bot'`;
+
+    if (category === 'high') return `bot_probability>=85`;
+    if (category === 'medium') {
+      return `bot_probability>=55 AND bot_probability<85`;
+    }
+    if (category === 'normal') return `bot_probability<55`;
+
     return `true`;
   }
-
   async function showRiskList(update, waveId, category, page = 0) {
     const wave = await waveById(waveId);
     if (!wave) return showUserMenu(update);
+
     const limit = 5;
     const list = rows(await query(`
-      SELECT * FROM lr_antifraud_events
-      WHERE wave_id=$1 AND event_type='join' AND ${riskFilter(category)}
-      ORDER BY removal_eligible DESC, risk_score DESC, event_at ASC
+      SELECT *
+      FROM lr_antifraud_events
+      WHERE wave_id=$1
+        AND event_type='join'
+        AND ${riskFilter(category)}
+      ORDER BY
+        removal_eligible DESC,
+        bot_probability DESC,
+        event_at ASC
       LIMIT $2 OFFSET $3
     `, [waveId, limit + 1, page * limit]));
+
     const visible = list.slice(0, limit);
     const hasNext = list.length > limit;
-    const lines = visible.map((item, index) => {
-      const marker = item.removal_eligible ? '🧹' : item.risk_score >= 85 ? '🚨' : item.risk_score >= 55 ? '⚠️' : '✅';
-      return `${index + 1 + page * limit}. ${marker} <b>${esc(item.display_name || `MAX ID ${item.user_id}`)}</b>\n` +
-        `MAX ID: <code>${esc(item.user_id)}</code> · риск ${num(item.risk_score)}/100${item.is_bot ? ' · 🤖 Бот MAX' : ''}`;
-    });
-    const buttons = visible.map((item) => [callbackButton(
-      `${item.removal_eligible ? '🧹' : item.risk_score >= 85 ? '🚨' : item.risk_score >= 55 ? '⚠️' : '✅'} ${text(item.display_name || item.user_id, 35)} · ${num(item.risk_score)}`,
-      `fraud:member:${waveId}:${item.id}`
-    )]);
-    const nav = [];
-    if (page > 0) nav.push(callbackButton('⬅️', `fraud:list:${waveId}:${category}:${page - 1}`));
-    if (hasNext) nav.push(callbackButton('➡️', `fraud:list:${waveId}:${category}:${page + 1}`));
-    if (nav.length) buttons.push(nav);
-    buttons.push([callbackButton('⬅️ К наплыву', `fraud:wave:${waveId}`)]);
 
-    const labels = { high: 'Высокий риск', medium: 'Средний риск', normal: 'Вероятно живые', eligible: 'Безопасная очистка' };
-    return render(update,
-      `━━━━━━━━━━━━━━\n🔎 <b>${labels[category] || 'Участники наплыва'}</b>\n\n` +
-      (lines.length ? lines.join('\n\n') : 'В этой категории никого нет.') +
+    const markerFor = (item) => {
+      if (item.removal_eligible) return '🚨';
+      if (item.bot_class === 'official_max_bot') return '🧩';
+      if (
+        item.bot_class === 'high_confidence_bot' ||
+        item.bot_class === 'likely_bot'
+      ) return '🤖';
+      if (item.bot_class === 'suspicious') return '⚠️';
+      return '✅';
+    };
+
+    const lines = visible.map((item, index) => (
+      `${index + 1 + page * limit}. ` +
+      `${markerFor(item)} ` +
+      `${esc(item.display_name || `MAX ID ${item.user_id}`)}\n` +
+      `MAX ID: ${esc(item.user_id)} · ` +
+      `вероятность ${num(item.bot_probability)}/100` +
+      `${item.is_bot ? ' · официальный бот MAX' : ''}`
+    ));
+
+    const buttons = visible.map((item) => [
+      callbackButton(
+        `${markerFor(item)} ` +
+        `${text(item.display_name || item.user_id, 30)} · ` +
+        `${num(item.bot_probability)}`,
+        `fraud:member:${waveId}:${item.id}`
+      ),
+    ]);
+
+    const nav = [];
+
+    if (page > 0) {
+      nav.push(
+        callbackButton(
+          '⬅️',
+          `fraud:list:${waveId}:${category}:${page - 1}`
+        )
+      );
+    }
+
+    if (hasNext) {
+      nav.push(
+        callbackButton(
+          '➡️',
+          `fraud:list:${waveId}:${category}:${page + 1}`
+        )
+      );
+    }
+
+    if (nav.length) buttons.push(nav);
+
+    buttons.push([
+      callbackButton(
+        '⬅️ К наплыву',
+        `fraud:wave:${waveId}`
+      ),
+    ]);
+
+    const labels = {
+      bots: 'Вероятные боты',
+      eligible: 'Проверка перед удалением',
+      review: 'Требуют ручной проверки',
+      human: 'Вероятно живые',
+      official: 'Официальные боты MAX',
+      high: 'Высокая вероятность',
+      medium: 'Средняя вероятность',
+      normal: 'Вероятно живые',
+    };
+
+    return render(
+      update,
+      `━━━━━━━━━━━━━━\n` +
+      `${category === 'bots' ? '🤖' : category === 'eligible' ? '🚨' : '🔎'} ` +
+      `${labels[category] || 'Участники наплыва'}\n\n` +
+      (
+        lines.length
+          ? lines.join('\n\n')
+          : 'В этой категории никого нет.'
+      ) +
       `\n━━━━━━━━━━━━━━`,
       buttons
     );
   }
-
   async function showMember(update, waveId, eventId) {
     const item = rows(await query(`
-      SELECT * FROM lr_antifraud_events
-      WHERE id=$1 AND wave_id=$2 AND event_type='join'
+      SELECT *
+      FROM lr_antifraud_events
+      WHERE id=$1
+        AND wave_id=$2
+        AND event_type='join'
       LIMIT 1
     `, [eventId, waveId]))[0];
+
     if (!item) return showWave(update, waveId);
-    const reasons = Array.isArray(item.risk_reasons) ? item.risk_reasons : json(item.risk_reasons, []);
+
+    const reasons = Array.isArray(item.risk_reasons)
+      ? item.risk_reasons
+      : json(item.risk_reasons, []);
+
     const buttons = [];
     const url = profileUrl(item.username);
-    if (url) {
-      if (typeof linkButton === 'function') buttons.push([linkButton('👤 Открыть профиль MAX', url)]);
-      else buttons.push([{ type: 'link', text: '👤 Открыть профиль MAX', url }]);
-    }
-    buttons.push([callbackButton('✅ Это живой — в белый список', `fraud:whitelist:${waveId}:${eventId}`)]);
-    buttons.push([callbackButton('⬅️ К высокому риску', `fraud:list:${waveId}:high:0`)]);
 
-    return render(update,
-      `━━━━━━━━━━━━━━\n👤 <b>${esc(item.display_name || `MAX ID ${item.user_id}`)}</b>\n\n` +
-      `<b>MAX ID:</b> <code>${esc(item.user_id)}</code>\n` +
-      `<b>Username:</b> ${item.username ? `@${esc(item.username)}` : 'нет'}\n` +
-      `<b>Вступил:</b> ${formatDate(item.event_at)}\n` +
-      `<b>Риск:</b> ${num(item.risk_score)}/100 — ${riskLabel(num(item.risk_score), item.removal_eligible)}\n` +
-      `<b>Сильных признаков:</b> ${num(item.strong_signals)}\n` +
-      `<b>Бот MAX:</b> ${item.is_bot ? 'да' : 'нет'}\n` +
-      `<b>Допущен к очистке:</b> ${item.removal_eligible ? 'да' : 'нет'}\n\n` +
-      `<b>Причины оценки</b>\n` +
-      (reasons.length ? reasons.map((reason) => `• ${esc(reason)}`).join('\n') : '• Сильных признаков не найдено') +
-      `\n\nОтсутствие аватара или username само по себе никогда не допускает удаление.\n━━━━━━━━━━━━━━`,
+    if (url) {
+      if (typeof linkButton === 'function') {
+        buttons.push([
+          linkButton('🔗 Открыть профиль MAX', url),
+        ]);
+      } else {
+        buttons.push([{
+          type: 'link',
+          text: '🔗 Открыть профиль MAX',
+          url,
+        }]);
+      }
+    }
+
+    buttons.push([
+      callbackButton(
+        '✅ Это живой — в белый список',
+        `fraud:whitelist:${waveId}:${eventId}`
+      ),
+    ]);
+
+    buttons.push([
+      callbackButton(
+        '⬅️ К вероятным ботам',
+        `fraud:list:${waveId}:bots:0`
+      ),
+    ]);
+
+    const labels = {
+      official_max_bot: 'официальный бот MAX',
+      high_confidence_bot: 'бот с высокой уверенностью',
+      likely_bot: 'вероятный бот',
+      suspicious: 'требует проверки',
+      likely_human: 'вероятно живой',
+      unknown: 'не определён',
+    };
+
+    return render(
+      update,
+      `━━━━━━━━━━━━━━\n` +
+      `🔎 ${esc(item.display_name || `MAX ID ${item.user_id}`)}\n\n` +
+      `MAX ID: ${esc(item.user_id)}\n` +
+      `Username: ${item.username ? `@${esc(item.username)}` : 'нет'}\n` +
+      `Вступил: ${formatDate(item.event_at)}\n` +
+      `Класс: ${labels[item.bot_class] || labels.unknown}\n` +
+      `Вероятность бота: ${num(item.bot_probability)}/100\n` +
+      `Независимых сильных признаков: ` +
+      `${num(item.cohort_strong_signals ?? item.strong_signals)}\n` +
+      `Официальный бот MAX: ${item.is_bot ? 'да' : 'нет'}\n` +
+      `Допущен к проверке удаления: ` +
+      `${item.removal_eligible ? 'да' : 'нет'}\n\n` +
+      `Причины оценки\n` +
+      (
+        reasons.length
+          ? reasons.map((reason) => `• ${esc(reason)}`).join('\n')
+          : '• Сильных признаков не найдено'
+      ) +
+      `\n\nАватар не участвует в решении об удалении. ` +
+      `Отсутствие username или активности само по себе недостаточно.\n` +
+      `━━━━━━━━━━━━━━`,
       buttons
     );
   }
-
   async function whitelistMember(update, waveId, eventId) {
     const item = rows(await query(`SELECT * FROM lr_antifraud_events WHERE id=$1 AND wave_id=$2 LIMIT 1`, [eventId, waveId]))[0];
     if (!item) return showWave(update, waveId);
@@ -1684,56 +1904,153 @@ async function recordJoin(update) {
       SELECT e.*
       FROM lr_antifraud_events e
       LEFT JOIN lr_antifraud_whitelist w
-        ON w.channel_id=e.channel_id AND w.user_id=e.user_id
+        ON w.channel_id=e.channel_id
+       AND w.user_id=e.user_id
       WHERE e.wave_id=$1
         AND e.event_type='join'
         AND e.removal_eligible=true
-        AND e.risk_score>=90
-        AND e.strong_signals>=2
+        AND e.bot_probability>=92
+        AND e.cohort_strong_signals>=3
+        AND e.bot_class IN (
+          'official_max_bot',
+          'high_confidence_bot'
+        )
         AND e.is_admin=false
         AND e.is_owner=false
+        AND e.left_at IS NULL
         AND w.user_id IS NULL
         AND NOT EXISTS (
-          SELECT 1 FROM lr_antifraud_removals r
-          WHERE r.wave_id=e.wave_id AND r.user_id=e.user_id AND r.status='removed'
+          SELECT 1
+          FROM lr_antifraud_removals r
+          WHERE r.wave_id=e.wave_id
+            AND r.user_id=e.user_id
+            AND r.status='removed'
         )
-      ORDER BY e.risk_score DESC,e.event_at ASC
+      ORDER BY
+        e.bot_probability DESC,
+        e.event_at ASC
     `, [waveId]));
   }
-
   async function removalPrompt(update, waveId) {
-    const wave = await waveById(waveId);
+    let wave = await waveById(waveId);
     if (!wave) return showUserMenu(update);
+
+    if (cohortEngine) {
+      wave = (
+        await cohortEngine.rescoreWave(
+          waveId,
+          { enrich: true }
+        )
+      ) || wave;
+    }
+
     const candidates = await eligibleCandidates(waveId);
-    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    const capability = cohortEngine
+      ? await cohortEngine.checkRemovalCapability(wave.max_chat_id)
+      : {
+          known: false,
+          hasPermission: false,
+          permissions: [],
+        };
+
+    const token =
+      `${Date.now().toString(36)}` +
+      `${Math.random().toString(36).slice(2, 10)}`;
+
     const action = rows(await query(`
       INSERT INTO lr_antifraud_actions(
-        action_token,wave_id,channel_id,action_type,status,requested_by,expires_at
-      ) VALUES($1,$2,$3,'remove_high_risk','pending',$4,now()+interval '10 minutes')
+        action_token,
+        wave_id,
+        channel_id,
+        action_type,
+        status,
+        requested_by,
+        expires_at
+      )
+      VALUES(
+        $1,$2,$3,
+        'remove_high_confidence_bots',
+        'pending',
+        $4,
+        now()+interval '10 minutes'
+      )
       RETURNING *
-    `, [token, waveId, wave.channel_id, actorId(update) || ownerId()]))[0];
-    const expectedAfter = wave.participants_after === null || wave.participants_after === undefined
-      ? 'уточняется'
-      : Math.max(0, num(wave.participants_after) - candidates.length);
-    return render(update,
-      `━━━━━━━━━━━━━━\n🧹 <b>Безопасная очистка</b>\n\n` +
-      `<b>Будут повторно проверены:</b> ${candidates.length}\n` +
-      `<b>Минимальный риск:</b> 90/100\n` +
-      `<b>Минимум сильных признаков:</b> 2\n` +
-      `<b>Обязательный профильный признак:</b> последовательные MAX ID или массово повторяющийся шаблон имени\n` +
-      `<b>ПДП до наплыва:</b> ${wave.participants_before ?? 'уточняется'}\n` +
-      `<b>ПДП сейчас:</b> ${wave.participants_after ?? 'уточняется'}\n` +
-      `<b>Ожидаемый ПДП после очистки:</b> ${expectedAfter}\n\n` +
-      `Перед удалением LinkRay повторно запросит каждого участника у MAX и пропустит владельцев, администраторов и белый список.\n` +
-      `Пользователи со средним риском удалены не будут.\n━━━━━━━━━━━━━━`,
+    `, [
+      token,
+      waveId,
+      wave.channel_id,
+      actorId(update) || ownerId(),
+    ]))[0];
+
+    const expectedAfter =
+      wave.participants_after === null ||
+      wave.participants_after === undefined
+        ? 'уточняется'
+        : Math.max(
+            0,
+            num(wave.participants_after) - candidates.length
+          );
+
+    const permissionText = capability.known
+      ? (
+          capability.hasPermission
+            ? '✅ У бота есть право add_remove_members.'
+            : '⛔ MAX не выдал боту право add_remove_members.'
+        )
+      : '⚠️ Право удаления не удалось проверить заранее.';
+
+    const buttons = [
       [
-        [callbackButton(`🔎 Посмотреть кандидатов — ${candidates.length}`, `fraud:list:${waveId}:eligible:0`)],
-        [callbackButton('⚠️ Подтвердить очистку', `fraud:remove_confirm:${action.action_token}`)],
-        [callbackButton('⬅️ Отмена', `fraud:wave:${waveId}`)],
-      ]
+        callbackButton(
+          `🔎 Кандидаты — ${candidates.length}`,
+          `fraud:list:${waveId}:eligible:0`
+        ),
+      ],
+    ];
+
+    if (
+      candidates.length > 0 &&
+      (!capability.known || capability.hasPermission)
+    ) {
+      buttons.push([
+        callbackButton(
+          '⚠️ Подтвердить очистку',
+          `fraud:remove_confirm:${action.action_token}`
+        ),
+      ]);
+    }
+
+    buttons.push([
+      callbackButton(
+        '⬅️ Отмена',
+        `fraud:wave:${waveId}`
+      ),
+    ]);
+
+    return render(
+      update,
+      `━━━━━━━━━━━━━━\n` +
+      `🧹 Безопасная очистка\n\n` +
+      `Вероятных ботов в волне: ` +
+      `${num(wave.probable_bot_count)}\n` +
+      `Допущены алгоритмом: ${candidates.length}\n` +
+      `Минимальная вероятность: 92/100\n` +
+      `Минимум независимых сильных признаков: 3\n` +
+      `Уверенность всей волны: ` +
+      `${Math.round(num(wave.cohort_confidence) * 100)}%\n\n` +
+      `${permissionText}\n\n` +
+      `ПДП до наплыва: ${wave.participants_before ?? 'уточняется'}\n` +
+      `ПДП сейчас: ${wave.participants_after ?? 'уточняется'}\n` +
+      `Ожидаемый ПДП после очистки: ${expectedAfter}\n\n` +
+      `Перед каждым удалением LinkRay снова проверит участника ` +
+      `через MAX и пропустит владельцев, администраторов, ` +
+      `белый список и уже вышедших.\n\n` +
+      `Автоматического удаления нет. ` +
+      `При отсутствии права MAX кнопка подтверждения не показывается.\n` +
+      `━━━━━━━━━━━━━━`,
+      buttons
     );
   }
-
   function memberFlags(member) {
     return {
       isAdmin: Boolean(member?.is_admin ?? member?.isAdmin ?? member?.admin),
@@ -1755,8 +2072,7 @@ async function recordJoin(update) {
     }
 
     await query(`UPDATE lr_antifraud_actions SET status='running' WHERE id=$1`, [action.id]);
-    const wave = await waveById(action.wave_id);
-    const candidates = await eligibleCandidates(action.wave_id);
+    let wave = await waveById(action.wave_id); if (cohortEngine) { wave = (await cohortEngine.rescoreWave(action.wave_id, { enrich: true })) || wave; const capability = await cohortEngine.checkRemovalCapability(wave.max_chat_id); if (capability.known && !capability.hasPermission) { await query(`UPDATE lr_antifraud_actions SET status='failed',completed_at=now(),result=$2::jsonb WHERE id=$1`, [action.id, JSON.stringify({error:'MAX did not grant add_remove_members'})]); return render(update, '⛔ MAX не выдал боту право удаления подписчиков этого канала.', [[callbackButton('⬅️ К наплыву', `fraud:wave:${action.wave_id}`)]]); } } const candidates = await eligibleCandidates(action.wave_id);
     const result = { removed: 0, skipped: 0, failed: 0, errors: [] };
 
     for (const candidate of candidates.slice(0, 500)) {
@@ -1936,7 +2252,7 @@ async function recordJoin(update) {
       'member',
       'whitelist',
       'ignore',
-      'remove_prompt',
+      'remove_prompt', 'rescore',
     ].includes(action)) {
       const waveId = num(parts[2]);
       if (!waveId) return 0;
@@ -2127,7 +2443,7 @@ async function handleCallback(update) {
     else if (action === 'member') await showMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'whitelist') await whitelistMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'ignore') await ignoreWave(update, num(parts[2]));
-    else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
+    else if (action === 'rescore') { if (cohortEngine) await cohortEngine.rescoreWave(num(parts[2]), { enrich: true }); await showWave(update, num(parts[2])); } else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
     else if (action === 'remove_confirm') await executeRemoval(update, parts[2]);
     else await showUserMenu(update);
     return true;
@@ -2158,7 +2474,17 @@ async function handleCallback(update) {
     return { handled: false };
   }
 
-  await ensureSchema(); await ensureAlertDeliverySchema(); await syncChannels(); setTimeout(() => replayRecentUnsafeAlerts().catch((e) => error('unsafe alert replay failed:', e?.stack || e?.message || e)), 8_000).unref?.();
+  await ensureSchema();
+  cohortEngine = createLinkRayCohortEngine({
+    query,
+    maxFetch,
+    logger,
+    refreshWave,
+    onWaveScored: async (wave) => {
+      if (wave) await maybeNotify(wave);
+    },
+  });
+  await cohortEngine.ensureSchema(); await ensureAlertDeliverySchema(); await syncChannels(); await cohortEngine.start(); setTimeout(() => replayRecentUnsafeAlerts().catch((e) => error('unsafe alert replay failed:', e?.stack || e?.message || e)), 8_000).unref?.();
   const timer = setInterval(() => closeStaleWaves().catch((e) => error('sweeper failed:', e?.message || e)), 60_000);
   timer.unref?.();
   setTimeout(() => closeStaleWaves().catch(() => {}), 5_000).unref?.();
