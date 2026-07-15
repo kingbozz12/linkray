@@ -1667,53 +1667,53 @@ export async function installLinkRayAntiFraud({
       return render(
         update,
         '⚠️ Не удалось определить пользователя MAX.',
-        [[callbackButton('⬅️ В меню', 'main:menu')]]
+        [[callbackButton('⬅️ Назад', 'main:menu')]]
       );
     }
 
     const channels = await userChannelRows(update);
+    const enabledCount = channels.filter(
+      (channel) => Boolean(channel.enabled)
+    ).length;
+
     const buttons = channels.map((channel) => [
       callbackButton(
-        `${channel.enabled ? '🟢' : '🔴'} ${text(channel.title || `Канал ${channel.id}`, 42)}`,
+        `${channel.enabled ? '●' : '○'} ${text(
+          channel.title || `Канал ${channel.id}`,
+          38
+        )}`,
         `fraud:channel:${channel.id}`
       ),
     ]);
 
     if (channels.length) {
       buttons.push([
-        callbackButton('🟢 Включить для всех', 'fraud:enable_all'),
-      ]);
-      buttons.push([
-        callbackButton('🔴 Выключить для всех', 'fraud:disable_all'),
+        callbackButton('✅ Включить все', 'fraud:enable_all'),
+        callbackButton('⏸ Выключить все', 'fraud:disable_all'),
       ]);
     }
 
     buttons.push([
-      callbackButton('⬅️ В меню', 'main:menu'),
+      callbackButton('⬅️ Назад', 'main:menu'),
     ]);
-
-    const enabledCount = channels.filter(
-      (channel) => Boolean(channel.enabled)
-    ).length;
 
     const body = channels.length
       ? (
           `━━━━━━━━━━━━━━\n` +
           `🛡 AntiFraud LinkRay\n\n` +
-          `Круглосуточная защита подключённых каналов.\n` +
-          `Каждый канал включается отдельно.\n\n` +
-          `Каналов: ${channels.length}\n` +
-          `Защита включена: ${enabledCount}\n` +
-          `Защита выключена: ${channels.length - enabledCount}\n\n` +
-          `Выберите канал.\n` +
+          `Защита подключённых каналов работает 24/7.\n` +
+          `Выберите канал для настройки.\n\n` +
+          `Подключено: ${channels.length}\n` +
+          `Под защитой: ${enabledCount}\n` +
+          `Выключено: ${channels.length - enabledCount}\n\n` +
+          `● защита включена   ○ защита выключена\n` +
           `━━━━━━━━━━━━━━`
         )
       : (
           `━━━━━━━━━━━━━━\n` +
           `🛡 AntiFraud LinkRay\n\n` +
-          `У вас пока нет подключённых каналов, ` +
-          `которыми вы управляете в LinkRay.\n\n` +
-          `Сначала добавьте канал и оставьте бота администратором.\n` +
+          `Нет подключённых каналов.\n\n` +
+          `Добавьте канал и оставьте LinkRay администратором.\n` +
           `━━━━━━━━━━━━━━`
         );
 
