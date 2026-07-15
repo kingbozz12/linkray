@@ -3,7 +3,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '3.0.0';
+const MODULE_VERSION = '3.1.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -1573,21 +1573,17 @@ async function recordJoin(update) {
   }
 
   async function showWave(update, waveId) {
-    let wave = await waveById(waveId);
+    /* LR_ANTIFRAUD_FAST_WAVE_VIEW_V5_1_START */
+    /*
+     * Открытие карточки не должно пересчитывать сотни участников.
+     * Callback MAX живёт недолго, поэтому показываем уже сохранённый
+     * результат сразу. Полный пересчёт выполняется только отдельной
+     * кнопкой fraud:rescore.
+     */
+    const wave = await waveById(waveId);
+
     if (!wave) return showUserMenu(update);
-    if (baselineV3) {
-      wave = (await baselineV3.fixWave(waveId)) || wave;
-    }
-
-
-    if (cohortEngine) {
-      wave = (
-        await cohortEngine.rescoreWave(
-          waveId,
-          { enrich: false }
-        )
-      ) || wave;
-    }
+    /* LR_ANTIFRAUD_FAST_WAVE_VIEW_V5_1_END */
 
     const channel = await configByChannelId(wave.channel_id);
     const summary = json(wave.cohort_summary, {});
@@ -2867,7 +2863,7 @@ async function handleCallback(update) {
     else if (action === 'member') await showMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'whitelist') await whitelistMember(update, num(parts[2]), num(parts[3]));
     else if (action === 'ignore') await ignoreWave(update, num(parts[2]));
-    else if (action === 'country') await setCountryEvidence(update, num(parts[2]), num(parts[3]), parts[4]); else if (action === 'rescore') { if (cohortEngine) await cohortEngine.rescoreWave(num(parts[2]), { enrich: true }); await showWave(update, num(parts[2])); } else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
+    else if (action === 'country') await setCountryEvidence(update, num(parts[2]), num(parts[3]), parts[4]); else if (action === 'rescore') { const rescoreWaveId = num(parts[2]); if (baselineV3) await baselineV3.fixWave(rescoreWaveId); if (cohortEngine) await cohortEngine.rescoreWave(rescoreWaveId, { enrich: true }); await showWave(update, rescoreWaveId); } else if (action === 'cleanup_prompt') await cleanupPrompt(update, num(parts[2]), parts[3] || 'probable'); else if (action === 'remove_prompt') await removalPrompt(update, num(parts[2]));
     else if (action === 'remove_confirm') await executeRemoval(update, parts[2]);
     else await showUserMenu(update);
     return true;
