@@ -816,7 +816,6 @@ try {
 /* LR_GENERATED_STATIC_V34_END */
 
 
-
 // LINKRAY_24H_REPORT_START
 import('./linkray24hReport.js')
   .then((mod) => {
@@ -854,79 +853,6 @@ app.get('/analytics/stats/:groupId', async (req, res, next) => {
 // LINKRAY_PREEMPT_ANALYTICS_END
 
 app.use(express.json({ limit: '50mb' }));
-
-/* LR_ANTIFRAUD_PRIORITY_V1_START */
-const __lrAntiFraudModulePromise =
-  import('./linkrayAntiFraud.js');
-
-void __lrAntiFraudModulePromise
-  .then((module) => {
-    module.startLinkRayAntiFraudWorker?.();
-  })
-  .catch((error) => {
-    console.error(
-      '[LinkRay AntiFraud startup]',
-      error?.stack || error?.message || error,
-    );
-  });
-
-app.use(
-  async function linkRayAntiFraudPriority(
-    req,
-    res,
-    next,
-  ) {
-    const update = req.body || {};
-    const payload = String(
-      update?.callback?.payload ||
-      update?.callback?.body?.payload ||
-      update?.callback?.button?.payload ||
-      update?.callback?.data ||
-      update?.callback_payload ||
-      update?.message_callback?.payload ||
-      update?.payload ||
-      update?.data ||
-      update?.message?.callback?.payload ||
-      '',
-    );
-
-    if (
-      !payload.startsWith('fraud:') &&
-      !payload.startsWith('antifraud:')
-    ) {
-      return next();
-    }
-
-    try {
-      const module =
-        await __lrAntiFraudModulePromise;
-      const handled =
-        await module.handleLinkRayAntiFraudIncoming(
-          update,
-        );
-
-      if (handled) {
-        if (!res.headersSent) {
-          return res
-            .status(200)
-            .json({
-              ok: true,
-              handled: 'linkray_antifraud',
-            });
-        }
-        return;
-      }
-    } catch (error) {
-      console.error(
-        '[LinkRay AntiFraud middleware]',
-        error?.stack || error?.message || error,
-      );
-    }
-
-    return next();
-  },
-);
-/* LR_ANTIFRAUD_PRIORITY_V1_END */
 
 
 /* LR_PURCHASES_WEBHOOK_PRIORITY_V1 */
@@ -2080,7 +2006,6 @@ app.use(async function lrContentPlanV51Router(req, res, next) {
     }
 
 
-
     if (payload.startsWith('lr_plan_v51:edit_text:')) {
       const parts = payload.split(':');
       await lrV51SetState(key, 'content_plan_v53_wait_text', {
@@ -2592,7 +2517,6 @@ console.log('[v53 plan editor] installed: edit buttons now have actions');
 console.log('[v52 plan ui] installed: calendar clean, post emojis, editor menu');
 /* LR_CONTENT_PLAN_UI_V52_END */
 /* LR_CONTENT_PLAN_V51_END */
-
 
 
 // LR_FORCE_START_MENU_V7_START
@@ -4383,7 +4307,6 @@ app.use(async function lrForceStartMenuV7(req, res, next) {
   }
 });
 // LR_FORCE_START_MENU_V7_END
-
 
 
 // LR_ANALYTICS_PRIORITY_BEFORE_POSTING_START
@@ -14075,11 +13998,6 @@ if (!globalThis.__lrChannelAddV3WatcherStarted) {
 /* LR_CHANNEL_ADD_V3_FINAL_END */
 
 
-
-
-
-
-
 /* LR_WRAP_MAYBE_REGISTER_CONFIRM_V34_START */
 function lrV34Clean(value, max = 4000) {
   const text = String(value ?? '').trim();
@@ -14972,7 +14890,6 @@ console.log('[v40 buttons] installed: fixed missing type without redeclaring cha
 /* LR_FIX_NATIVE_CALLBACK_TYPE_V40_END */
 
 
-
 /* LR_CONFIRM_AFTER_CHANNEL_ADD_V3_SAVE_V35_START */
 function lrV35Clean(value, max = 4000) {
   const text = String(value ?? '').trim();
@@ -15175,15 +15092,6 @@ async function maybeRegisterChannel(update) {
 }
 
 
-
-
-
-
-
-
-
-
-
 async function getChannels() {
   /* LR_FINAL_MAX_CORE_V47_GETCHANNELS_DB */
   try {
@@ -15201,8 +15109,6 @@ async function getChannels() {
 }
 
 
-
-
 async function getChannel(id) {
   await query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`).catch(() => {});
   const rows = await query(`
@@ -15214,8 +15120,6 @@ async function getChannel(id) {
   `, [id]);
   return rows[0] || null;
 }
-
-
 
 
 async function getChannelsByIds(ids) {
@@ -15235,8 +15139,6 @@ async function getChannelsByIds(ids) {
     ORDER BY title ASC NULLS LAST, id ASC
   `, [cleanIds]);
 }
-
-
 
 
 async function refreshChannelMeta(channel) {
@@ -18427,9 +18329,6 @@ async function __lrAutosignDirectMessageV12(update) {
 async function handleCallback(update) {
 
 
-
-
-
   if (await __lrAutosignDirectCallbackV12(update).catch(e => {
     console.error('[autosign direct v18 callback]', e?.stack || e?.message || e);
     return false;
@@ -18859,14 +18758,6 @@ async function showChannels(callbackId, chatId) {
   if (callbackId && typeof cb === 'function') return cb(callbackId, text, lrV15Buttons(), 'html');
   if (chatId && typeof msg === 'function') return msg(chatId, text, lrV15Buttons(), 'html');
 }
-
-
-
-
-
-
-
-
 
 
 async function showSignaturesMenu(callbackId) { const channels = await getChannels(); const rows = channels.map(c => [callbackButton(`🏷 ${channelName(c)}`, `sig:channel:${c.id}`)]); rows.push([callbackButton('⬅️ В Studio','main:posting')]); await cb(callbackId, `━━━━━━━━━━━━━━\n🏷 <b>Автоподписи</b>\n\nВыберите канал.\n━━━━━━━━━━━━━━`, rows); }
@@ -20746,7 +20637,6 @@ a{color:#78ffd0;text-decoration:none}a:hover{text-decoration:underline}
 app.get('/health', async (_req, res) => { try { await query('SELECT 1'); res.json({ ok: true, service: 'linkray-bot', db: true, time: nowIso() }); } catch(e) { res.status(500).json({ ok:false, error: e.message }); } });
 
 
-
 /* LR_FIX_ALL_WEBHOOK_TYPE_SCOPE_V41_START */
 function lrV41Type(update) {
   try { if (typeof getUpdateType === 'function') return String(getUpdateType(update) || ''); } catch {}
@@ -21891,10 +21781,6 @@ app.use(async function lrFinalMaxCoreV47(req, res, next) {
 
 console.log('[v47 final] installed');
 /* LR_FINAL_MAX_CORE_V47_END */
-
-
-
-
 
 
 /* LR_V59_SYNC_EDITOR_AND_REPORT_GUARD_START */
@@ -23267,7 +23153,6 @@ app.use(async function lrContentPlanMediaEditV62(req, res, next) {
 });
 console.log('[v62 plan media] installed');
 /* LR_CONTENT_PLAN_MEDIA_EDIT_V62_END */
-
 
 
 /* LR_LINKRAY_PROOF_REPORTS_INSTALL_V1 */
