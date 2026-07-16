@@ -3,7 +3,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '3.4.0';
+const MODULE_VERSION = '3.4.1';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -2429,7 +2429,9 @@ async function cleanupPrompt(update, waveId, mode = 'safe') {
     ]).catch(() => {});
   }
 
-  async function runRemovalAction(actionId, deliveryUpdate) {
+  
+async function runRemovalAction(actionId, deliveryUpdate) {
+    /* LR_ANTIFRAUD_CLEANUP_PROGRESS_V11_START */
     if (runningRemovalActions.has(actionId)) return;
 
     runningRemovalActions.add(actionId);
@@ -2485,6 +2487,64 @@ async function cleanupPrompt(update, waveId, mode = 'safe') {
         started_at: new Date().toISOString(),
         errors: [],
       };
+
+      const modeTitle = {
+        safe: 'Безопасная очистка',
+        probable: 'Очистка вероятных ботов',
+        wave: 'Очистка всего наплыва',
+      }[actionMode] || 'Очистка';
+
+      const updateProgress = async (
+        statusText = 'Очистка выполняется'
+      ) => {
+        if (!deliveryUpdate?._edit_message_id) return;
+
+        const total = Math.max(0, num(result.requested));
+        const processed = Math.min(
+          total || num(result.processed),
+          num(result.processed)
+        );
+        const percent = total > 0
+          ? Math.min(
+              100,
+              Math.round(processed / total * 100)
+            )
+          : 100;
+
+        const cells = 12;
+        const filled = Math.min(
+          cells,
+          Math.round(percent / 100 * cells)
+        );
+        const progressBar =
+          '█'.repeat(filled) +
+          '░'.repeat(cells - filled);
+
+        await render(
+          deliveryUpdate,
+          `━━━━━━━━━━━━━━\n` +
+          `🧹 ${modeTitle}\n\n` +
+          `${statusText}\n\n` +
+          `Кандидатов: ${total}\n` +
+          `Проверено: ${processed}/${total}\n` +
+          `Удалено: ${num(result.removed)}\n` +
+          `Безопасно пропущено: ${num(result.skipped)}\n` +
+          `Ошибок MAX API: ${num(result.failed)}\n\n` +
+          `${progressBar} ${percent}%\n\n` +
+          `Не запускайте очистку повторно — ` +
+          `текущий процесс уже работает.\n` +
+          `━━━━━━━━━━━━━━`,
+          []
+        ).catch((progressError) => {
+          warn(
+            `removal action ${action.id}: ` +
+            `progress update failed:`,
+            progressError?.message || progressError
+          );
+        });
+      };
+
+      await updateProgress('Очистка началась');
 
       try {
         if (cohortEngine) {
@@ -2592,12 +2652,23 @@ async function cleanupPrompt(update, waveId, mode = 'safe') {
           removalError
         );
 
+        const shouldUpdateProgress =
+          result.processed === 1 ||
+          result.processed % 10 === 0 ||
+          result.processed === selected.length ||
+          result.platform_denied ||
+          result.rate_limited;
+
         if (
           result.processed % 10 === 0 ||
           result.platform_denied ||
           result.rate_limited
         ) {
           await saveRemovalProgress(action.id, result);
+        }
+
+        if (shouldUpdateProgress) {
+          await updateProgress('Очистка выполняется');
         }
 
         if (
@@ -2646,24 +2717,17 @@ async function cleanupPrompt(update, waveId, mode = 'safe') {
         JSON.stringify(result),
       ]);
 
-      const modeTitle = {
-        safe: 'Безопасная очистка',
-        probable: 'Очистка вероятных ботов',
-        wave: 'Очистка всего наплыва',
-      }[actionMode] || 'Очистка';
-
       const platformText = result.platform_denied
         ? (
             `\n\n⛔ MAX отклонил удаление через токен бота.\n` +
-            `Это фактический ответ платформы, а не ошибка ` +
-            `подсчёта AntiFraud. Проверьте право ` +
-            `add_remove_members у LinkRay в этом канале.`
+            `Проверьте право add_remove_members ` +
+            `у LinkRay в этом канале.`
           )
         : '';
 
       const rateText = result.rate_limited
         ? (
-            `\n\n⚠️ MAX временно ограничил частоту запросов. ` +
+            `\n\n⚠️ MAX временно ограничил частоту запросов.\n` +
             `Повторный запуск продолжит очистку оставшихся.`
           )
         : '';
@@ -2756,168 +2820,224 @@ async function cleanupPrompt(update, waveId, mode = 'safe') {
     } finally {
       runningRemovalActions.delete(actionId);
     }
+    /* LR_ANTIFRAUD_CLEANUP_PROGRESS_V11_END */
   }
 
   /* LR_ANTIFRAUD_STABLE_WORKERS_V7_END */
 
   
+
 async function executeRemoval(update, actionToken) {
-    const action = rows(await query(`
-      SELECT *
-      FROM lr_antifraud_actions
-      WHERE action_token=$1
-      LIMIT 1
-    `, [actionToken]))[0];
+    const safeToken = text(actionToken, 200);
+    const actor =
+      actorId(update) ||
+      chatId(update) ||
+      ownerId();
+    const originalMessageId = messageId(update);
 
-    if (!action) {
-      return render(
-        update,
-        '⚠️ Подтверждение не найдено.',
-        [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]
-      );
-    }
-
-    if (
-      String(action.requested_by || ownerId()) !==
-      String(actorId(update) || ownerId())
-    ) {
-      return render(
-        update,
-        '⛔ Это подтверждение создано другим пользователем.',
-        [[callbackButton('⬅️ Антифрод', 'fraud:menu')]]
-      );
-    }
-
-    if (action.status === 'running') {
-      return render(
-        update,
-        `━━━━━━━━━━━━━━\n` +
-        `🧹 Очистка уже выполняется\n\n` +
-        `После завершения LinkRay пришлёт отдельный результат.\n` +
-        `━━━━━━━━━━━━━━`,
-        [[
-          callbackButton(
-            '⬅️ К наплыву',
-            `fraud:wave:${action.wave_id}`
-          ),
-        ]],
-        'Очистка уже запущена'
-      );
-    }
-
-    if (['completed', 'failed'].includes(action.status)) {
-      return render(
-        update,
-        `━━━━━━━━━━━━━━\n` +
-        `ℹ️ Это подтверждение уже использовано\n\n` +
-        `Статус: ${
-          action.status === 'completed' ? 'завершено' : 'ошибка'
-        }.\n` +
-        `━━━━━━━━━━━━━━`,
-        [[
-          callbackButton(
-            '⬅️ К наплыву',
-            `fraud:wave:${action.wave_id}`
-          ),
-        ]]
-      );
-    }
-
-    if (
-      action.status !== 'pending' ||
-      new Date(action.expires_at).getTime() <= Date.now()
-    ) {
-      return render(
-        update,
-        '⚠️ Подтверждение устарело. Откройте очистку заново.',
-        [[
-          callbackButton(
-            '⬅️ К наплыву',
-            `fraud:wave:${action.wave_id}`
-          ),
-        ]]
-      );
-    }
-
-    const started = rows(await query(`
-      UPDATE lr_antifraud_actions
-      SET
-        status='running',
-        result=
-          COALESCE(result, '{}'::jsonb) ||
-          jsonb_build_object(
-            'started_at',
-            now()::text
-          )
-      WHERE id=$1
-        AND status='pending'
-        AND expires_at>now()
-      RETURNING *
-    `, [action.id]))[0];
-
-    if (!started) {
-      return render(
-        update,
-        '⚠️ Очистка уже запущена или подтверждение устарело.',
-        [[
-          callbackButton(
-            '⬅️ К наплыву',
-            `fraud:wave:${action.wave_id}`
-          ),
-        ]]
-      );
-    }
-
-    const modeTitle = {
-      safe: 'безопасная очистка',
-      probable: 'очистка вероятных ботов',
-      wave: 'очистка всего наплыва',
-    }[actionModeFromType(started.action_type)] || 'очистка';
-
-    const deliveryUpdate = backgroundUpdateForUser(
-      started.requested_by
+    await render(
+      update,
+      `━━━━━━━━━━━━━━\n` +
+      `🧹 Очистка началась\n\n` +
+      `Подготавливаю список кандидатов и проверяю доступ.\n` +
+      `Прогресс будет обновляться в этой карточке.\n\n` +
+      `Не нажимайте кнопку повторно.\n` +
+      `━━━━━━━━━━━━━━`,
+      [],
+      'Очистка началась'
     );
 
-    try {
-      await render(
-        update,
-        `━━━━━━━━━━━━━━\n` +
-        `🧹 ${modeTitle} запущена\n\n` +
-        `LinkRay проверит каждого кандидата через MAX и ` +
-        `выполнит удаление в фоне.\n\n` +
-        `Готовый результат придёт отдельным сообщением.\n` +
-        `━━━━━━━━━━━━━━`,
-        [[
-          callbackButton(
-            '⬅️ Вернуться к наплыву',
-            `fraud:wave:${started.wave_id}`
-          ),
-        ]],
-        'Очистка запущена'
-      );
-    } catch (startError) {
-      await query(`
-        UPDATE lr_antifraud_actions
-        SET status='pending'
-        WHERE id=$1
-          AND status='running'
-      `, [started.id]).catch(() => {});
+    const deliveryUpdate = originalMessageId
+      ? {
+          ...backgroundUpdateForUser(actor),
+          _edit_message_id: originalMessageId,
+          _do_not_send_new_message: true,
+        }
+      : backgroundUpdateForUser(actor);
 
-      throw startError;
-    }
+    const timer = setTimeout(async () => {
+      try {
+        const action = rows(await query(`
+          SELECT *
+          FROM lr_antifraud_actions
+          WHERE action_token=$1::text
+          LIMIT 1
+        `, [safeToken]))[0];
 
-    const timer = setTimeout(() => {
-      runRemovalAction(
-        started.id,
-        deliveryUpdate
-      ).catch((workerError) => {
-        error(
-          `removal action ${started.id} unhandled:`,
-          workerError?.stack ||
-          workerError?.message ||
-          workerError
+        if (!action) {
+          await render(
+            deliveryUpdate,
+            `━━━━━━━━━━━━━━\n` +
+            `⚠️ Подтверждение очистки не найдено\n\n` +
+            `Откройте карточку наплыва и создайте ` +
+            `подтверждение заново.\n` +
+            `━━━━━━━━━━━━━━`,
+            [[
+              callbackButton('⬅️ К каналам', 'fraud:menu'),
+            ]]
+          );
+          return;
+        }
+
+        if (
+          String(action.requested_by || ownerId()) !==
+          String(actor)
+        ) {
+          await render(
+            deliveryUpdate,
+            `━━━━━━━━━━━━━━\n` +
+            `⛔ Подтверждение создано другим пользователем\n\n` +
+            `Участники не удалялись.\n` +
+            `━━━━━━━━━━━━━━`,
+            [[
+              callbackButton('⬅️ К каналам', 'fraud:menu'),
+            ]]
+          );
+          return;
+        }
+
+        const allowed = await userCanManageChannel(
+          {
+            user_id: String(actor),
+            chat_id: String(actor),
+          },
+          action.channel_id
         );
-      });
+
+        if (!allowed) {
+          await render(
+            deliveryUpdate,
+            `━━━━━━━━━━━━━━\n` +
+            `⛔ Нет доступа к очистке этого канала\n\n` +
+            `Участники не удалялись.\n` +
+            `━━━━━━━━━━━━━━`,
+            [[
+              callbackButton(
+                '⬅️ К моим каналам',
+                'fraud:menu'
+              ),
+            ]]
+          );
+          return;
+        }
+
+        if (action.status === 'running') {
+          if (runningRemovalActions.has(action.id)) {
+            await render(
+              deliveryUpdate,
+              `━━━━━━━━━━━━━━\n` +
+              `🧹 Очистка уже выполняется\n\n` +
+              `Текущий процесс продолжает работу.\n` +
+              `Не запускайте его повторно.\n` +
+              `━━━━━━━━━━━━━━`,
+              []
+            );
+            return;
+          }
+
+          await runRemovalAction(
+            action.id,
+            deliveryUpdate
+          );
+          return;
+        }
+
+        if (action.status === 'completed') {
+          await render(
+            deliveryUpdate,
+            `━━━━━━━━━━━━━━\n` +
+            `✅ Эта очистка уже завершена\n\n` +
+            `Откройте наплыв для актуальных показателей.\n` +
+            `━━━━━━━━━━━━━━`,
+            [[
+              callbackButton(
+                '🔎 Открыть наплыв',
+                `fraud:wave:${action.wave_id}`
+              ),
+            ]]
+          );
+          return;
+        }
+
+        if (
+          action.status !== 'pending' ||
+          new Date(action.expires_at).getTime() <= Date.now()
+        ) {
+          await render(
+            deliveryUpdate,
+            `━━━━━━━━━━━━━━\n` +
+            `⚠️ Подтверждение устарело\n\n` +
+            `Участники не удалялись. ` +
+            `Откройте очистку заново.\n` +
+            `━━━━━━━━━━━━━━`,
+            [[
+              callbackButton(
+                '⬅️ К наплыву',
+                `fraud:wave:${action.wave_id}`
+              ),
+            ]]
+          );
+          return;
+        }
+
+        const started = rows(await query(`
+          UPDATE lr_antifraud_actions
+          SET
+            status='running',
+            result=
+              COALESCE(result, '{}'::jsonb) ||
+              jsonb_build_object(
+                'started_at',
+                now()::text
+              )
+          WHERE id=$1
+            AND status='pending'
+            AND expires_at>now()
+          RETURNING *
+        `, [action.id]))[0];
+
+        if (!started) {
+          await render(
+            deliveryUpdate,
+            `━━━━━━━━━━━━━━\n` +
+            `⚠️ Не удалось запустить очистку\n\n` +
+            `Состояние подтверждения изменилось. ` +
+            `Откройте очистку заново.\n` +
+            `━━━━━━━━━━━━━━`,
+            [[
+              callbackButton(
+                '⬅️ К наплыву',
+                `fraud:wave:${action.wave_id}`
+              ),
+            ]]
+          );
+          return;
+        }
+
+        await runRemovalAction(
+          started.id,
+          deliveryUpdate
+        );
+      } catch (launchError) {
+        error(
+          'cleanup progress launch failed:',
+          launchError?.stack ||
+          launchError?.message ||
+          launchError
+        );
+
+        await render(
+          deliveryUpdate,
+          `━━━━━━━━━━━━━━\n` +
+          `⚠️ Не удалось запустить очистку\n\n` +
+          `Участники не были удалены автоматически.\n` +
+          `Причина записана в журнал AntiFraud.\n` +
+          `━━━━━━━━━━━━━━`,
+          [[
+            callbackButton('⬅️ К каналам', 'fraud:menu'),
+          ]]
+        ).catch(() => {});
+      }
     }, 0);
 
     timer.unref?.();
@@ -3348,7 +3468,7 @@ async function startWaveRescore(update, waveId) {
       return true;
     }
 
-    const protectedChannelId = await callbackChannelForAccess(parts);
+    if (action === 'remove_confirm') { await executeRemoval(update, parts.slice(2).join(':')); return true; } const protectedChannelId = await callbackChannelForAccess(parts);
     if (
       protectedChannelId &&
       !(await userCanManageChannel(update, protectedChannelId))
