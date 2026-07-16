@@ -12708,16 +12708,65 @@ function __lrCh3BadTitle(value) {
 }
 
 function __lrCh3PrivateChatId(update) {
-  return __lrCh3Clean(
-    update?.chatId ||
-    update?.chat_id ||
-    update?.body?.chatId ||
-    update?.body?.chat_id ||
-    update?.message?.recipient?.chat_id ||
-    update?.message?.recipient?.id ||
-    update?.body?.message?.recipient?.chat_id ||
-    update?.body?.message?.recipient?.id
-  );
+  /* LR_CHANNEL_NOTIFY_V4_2_PRIVATE_CHAT */
+  const candidates = [
+    update?.message?.recipient?.chat_id,
+    update?.message?.recipient?.chatId,
+    update?.body?.message?.recipient?.chat_id,
+    update?.body?.message?.recipient?.chatId,
+    update?.callback?.message?.recipient?.chat_id,
+    update?.callback?.message?.recipient?.chatId,
+    update?.body?.callback?.message?.recipient?.chat_id,
+    update?.body?.callback?.message?.recipient?.chatId,
+    update?.recipient?.chat_id,
+    update?.recipient?.chatId,
+    update?.chat_id,
+    update?.chatId,
+    update?.body?.chat_id,
+    update?.body?.chatId,
+  ];
+
+  for (const value of candidates) {
+    const id = __lrCh3Clean(value, 100);
+
+    if (/^\d{5,}$/.test(id)) {
+      return id;
+    }
+  }
+
+  try {
+    if (typeof getChatId === 'function') {
+      const id = __lrCh3Clean(
+        getChatId(update),
+        100
+      );
+
+      if (/^\d{5,}$/.test(id)) {
+        return id;
+      }
+    }
+  } catch {}
+
+  const senderCandidates = [
+    update?.message?.sender?.user_id,
+    update?.message?.sender?.userId,
+    update?.body?.message?.sender?.user_id,
+    update?.body?.message?.sender?.userId,
+    update?.sender?.user_id,
+    update?.sender?.userId,
+    update?.user?.user_id,
+    update?.user?.userId,
+  ];
+
+  for (const value of senderCandidates) {
+    const id = __lrCh3Clean(value, 100);
+
+    if (/^\d{5,}$/.test(id)) {
+      return id;
+    }
+  }
+
+  return '';
 }
 
 function __lrCh3AnyChatId(update) {
@@ -13721,31 +13770,152 @@ if (!globalThis.__lrCh41RepairTimerInstalled) {
 
 
 async function __lrCh3Notify(chatId, text) {
-  const id = __lrCh3Clean(chatId) || '405954311';
+  /* LR_CHANNEL_NOTIFY_V4_2_FALLBACK_CHAIN */
+  const id = __lrCh3Clean(chatId, 100);
 
-  if (typeof msg === 'function') {
-    return msg(
-      id,
-      text,
-      [[callbackButton('⬅️ В меню', 'main:menu')]],
-      'html'
-    ).catch((e) => {
-      console.error('[channel add v3] notify failed', e?.message || e);
-    });
+  if (!/^\d{5,}$/.test(id)) {
+    console.error(
+      '[channel notify v4.2] invalid private chat id',
+      JSON.stringify({
+        chatId: String(chatId || ''),
+      })
+    );
+    return false;
   }
 
-  if (typeof sendMaxMessage === 'function') {
-    return sendMaxMessage({
+  const rows = [
+    [
+      callbackButton(
+        '⬅️ В меню',
+        'main:menu'
+      ),
+    ],
+  ];
+
+  const errors = [];
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    if (typeof sendMaxMessage === 'function') {
+      try {
+        await sendMaxMessage({
+          chatId: id,
+          text,
+          format: 'html',
+          attachments:
+            typeof inlineKeyboard === 'function'
+              ? inlineKeyboard(rows)
+              : [],
+        });
+
+        console.log(
+          '[channel notify v4.2] sent',
+          JSON.stringify({
+            chatId: id,
+            transport: 'sendMaxMessage',
+            attempt,
+          })
+        );
+
+        return true;
+      } catch (error) {
+        errors.push(
+          `sendMaxMessage:${error?.message || error}`
+        );
+      }
+    }
+
+    if (typeof sendMessage === 'function') {
+      try {
+        await sendMessage(id, {
+          text,
+          buttons: rows,
+        });
+
+        console.log(
+          '[channel notify v4.2] sent',
+          JSON.stringify({
+            chatId: id,
+            transport: 'sendMessage',
+            attempt,
+          })
+        );
+
+        return true;
+      } catch (error) {
+        errors.push(
+          `sendMessage:${error?.message || error}`
+        );
+      }
+    }
+
+    if (typeof msg === 'function') {
+      try {
+        await msg(
+          id,
+          text,
+          rows,
+          'html'
+        );
+
+        console.log(
+          '[channel notify v4.2] sent',
+          JSON.stringify({
+            chatId: id,
+            transport: 'msg',
+            attempt,
+          })
+        );
+
+        return true;
+      } catch (error) {
+        errors.push(
+          `msg:${error?.message || error}`
+        );
+      }
+    }
+
+    if (attempt < 2) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 700);
+      });
+    }
+  }
+
+  console.error(
+    '[channel notify v4.2] all transports failed',
+    JSON.stringify({
       chatId: id,
-      text,
-      format: 'html',
-      attachments: typeof inlineKeyboard === 'function'
-        ? inlineKeyboard([[callbackButton('⬅️ В меню', 'main:menu')]])
-        : undefined
-    }).catch((e) => {
-      console.error('[channel add v3] notify sendMaxMessage failed', e?.message || e);
-    });
-  }
+      errors,
+    })
+  );
+
+  try {
+    await query(
+      `INSERT INTO lr_bot_state(
+         key,
+         value,
+         updated_at
+       )
+       VALUES(
+         'channel_notify_last_error',
+         $1,
+         now()
+       )
+       ON CONFLICT(key)
+       DO UPDATE SET
+         value=EXCLUDED.value,
+         updated_at=now()`,
+      [
+        JSON.stringify({
+          chatId: id,
+          errors,
+          at: new Date().toISOString(),
+        }),
+      ]
+    );
+  } catch {}
+
+  return false;
 }
 
 async function __lrCh3NotifyTargets() {
@@ -14074,6 +14244,41 @@ async function __lrCh3BusyPostingSession(update) {
 }
 
 async function __lrCh3HandleForward(update) {
+
+  /* LR_CHANNEL_NOTIFY_V4_2_REMEMBER_TARGET */
+  const __lrCh42PrivateTarget =
+    __lrCh3PrivateChatId(update);
+
+  if (__lrCh42PrivateTarget) {
+    globalThis.__lrLastPrivateChatId =
+      String(__lrCh42PrivateTarget);
+
+    try {
+      await query(
+        `INSERT INTO lr_bot_state(
+           key,
+           value,
+           updated_at
+         )
+         VALUES(
+           'last_private_chat_id',
+           $1,
+           now()
+         )
+         ON CONFLICT(key)
+         DO UPDATE SET
+           value=EXCLUDED.value,
+           updated_at=now()`,
+        [String(__lrCh42PrivateTarget)]
+      );
+    } catch (error) {
+      console.error(
+        '[channel notify v4.2] remember target failed',
+        error?.message || error
+      );
+    }
+  }
+
   const type = __lrCh3Type(update);
   const text = __lrCh3Text(update);
   const privateChatId = __lrCh3PrivateChatId(update) || '405954311';
