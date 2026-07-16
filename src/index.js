@@ -11089,40 +11089,9 @@ function lrV31StopWatcher() {
 }
 
 function lrV31StartWatcher(state) {
+  /* LR_CHANNEL_V4_DISABLE_LEGACY_WATCHER */
   lrV31StopWatcher();
-
-  globalThis.__lrV31WatcherTimer = setInterval(async () => {
-    try {
-      const st = globalThis.__lrV31AddWait;
-      if (!st) {
-        lrV31StopWatcher();
-        return;
-      }
-
-      if (Date.now() - Number(st.ts || 0) > 3 * 60 * 1000) {
-        console.log('[v31 core] watcher timeout', JSON.stringify({ privateChatId: st.privateChatId }));
-        lrV31StopWatcher();
-        await lrV31DelAddStates();
-        return;
-      }
-
-      const channel = await lrV31LatestChannelSince(new Date(st.startedAt || st.iso || Date.now()), Number(st.baselineId || 0));
-      if (channel) {
-        await lrV31NotifyConnected(String(st.privateChatId || st.chatId), String(st.key || st.privateChatId || st.chatId), channel);
-        lrV31StopWatcher();
-      }
-    } catch (e) {
-      console.error('[v31 core] watcher failed', e?.stack || e?.message || e);
-    }
-  }, 1000);
-
-  try { globalThis.__lrV31WatcherTimer.unref?.(); } catch {}
-
-  console.log('[v31 core] watcher started', JSON.stringify({
-    privateChatId: state.privateChatId,
-    key: state.key,
-    baselineId: state.baselineId
-  }));
+  return null;
 }
 
 async function lrV31SetAddMode(privateChatId, key = '') {
@@ -11208,98 +11177,21 @@ async function lrV31GetAddMode(privateChatId, key) {
 }
 
 async function lrV31HandleAddForward(update) {
-  const type = lrV31Type(update);
-  if (String(type).includes('callback')) return false;
-
-  const key = lrV31Key(update);
-  const incomingChatId = lrV31ChatId(update, key);
-  const privateChatId = lrV31PrivateChatId(update, incomingChatId || key);
-  const state = await lrV31GetAddMode(privateChatId || incomingChatId, key);
-
-  if (!state) return false;
-
-  const targetPrivate = lrV31Clean(state.privateChatId || state.chatId || privateChatId || incomingChatId || key || '405954311') || '405954311';
-  const targetKey = lrV31Clean(state.key || key || targetPrivate) || targetPrivate;
-
-  console.log('[v31 core] add forward intercepted', JSON.stringify({
-    incomingChatId,
-    privateChatId,
-    targetPrivate,
-    key,
-    targetKey,
-    type
-  }));
-
-  const startedAt = new Date();
-  let channel = null;
-  let errText = '';
-
-  try {
-    if (typeof maybeRegisterChannel === 'function') {
-      const result = await maybeRegisterChannel(update);
-      if (result && typeof result === 'object' && !Array.isArray(result)) channel = result;
-      console.log('[v31 core] maybeRegisterChannel result', JSON.stringify({ resultType: typeof result, hasChannel: Boolean(channel) }));
-    }
-  } catch (e) {
-    errText = e?.message || String(e);
-    console.error('[v31 core] maybeRegisterChannel failed', e?.stack || e?.message || e);
-  }
-
-  if (!channel || !lrV31Clean(channel.title || '')) {
-    channel = await lrV31LatestChannelSince(startedAt, Number(state.baselineId || 0));
-  }
-
-  if (channel) {
-    await lrV31NotifyConnected(targetPrivate, targetKey, channel);
-    return true;
-  }
-
-  setTimeout(async () => {
-    try {
-      const late = await lrV31LatestChannelSince(startedAt, Number(state.baselineId || 0));
-      if (late) {
-        await lrV31NotifyConnected(targetPrivate, targetKey, late);
-      } else {
-        await lrV31NotifyFailed(targetPrivate, errText);
-        await lrV31DelAddStates();
-      }
-    } catch (e) {
-      console.error('[v31 core] late add confirmation failed', e?.stack || e?.message || e);
-    }
-  }, 2200).unref?.();
-
-  return true;
+  /* LR_CHANNEL_V4_DISABLE_LEGACY_FORWARD */
+  // Точный forwarded-post обрабатывает __lrCh3HandleForward().
+  return false;
 }
 
 async function lrV31HandleBotAdded(update) {
-  const chatId = lrV31ChatId(update);
-  if (!chatId) return false;
-
-  const privateChatId = lrV31PrivateChatId(update);
-  const isChannel = update?.is_channel !== false && update?.body?.is_channel !== false;
-
-  console.log('[v31 core] bot_added received', JSON.stringify({ chatId, privateChatId, isChannel }));
-
-  const info = await lrV31FetchChatInfo(chatId);
-  const channel = await lrV31UpsertChannel(chatId, info.title || update?.chat?.title || update?.title || '', info.link || '', isChannel);
-
-  await lrV31NotifyConnected(privateChatId, String(privateChatId), channel);
-
-  return true;
+  /* LR_CHANNEL_V4_DISABLE_LEGACY_BOT_ADDED */
+  // Событие сохраняет действующий __lrCh3HandleBotAdded().
+  return false;
 }
 
 async function lrV31HandleBotRemoved(update) {
-  const chatId = lrV31ChatId(update);
-  if (!chatId) return false;
-
-  const privateChatId = lrV31PrivateChatId(update);
-  const channel = await lrV31DeactivateChannel(chatId);
-
-  console.log('[v31 core] bot_removed received', JSON.stringify({ chatId, privateChatId }));
-
-  if (channel) await lrV31NotifyRemoved(privateChatId, channel);
-
-  return true;
+  /* LR_CHANNEL_V4_DISABLE_LEGACY_BOT_REMOVED */
+  // Событие обрабатывает действующий __lrCh3HandleBotRemoved().
+  return false;
 }
 
 async function lrV31HandleTitleChanged(update) {
@@ -14353,69 +14245,9 @@ async function lrV34ClearAddMode(chatId, key) {
 }
 
 async function lrV34ConfirmAfterRegister(update, result, startedAt) {
-  try {
-    if (!(await lrV34IsAddMode(update))) return false;
-
-    let channel = null;
-    if (result && typeof result === 'object' && !Array.isArray(result)) {
-      channel = result;
-    }
-
-    if (!channel || !lrV34Clean(channel.title || channel.name || '', 300)) {
-      channel = await lrV34LatestChannelSince(startedAt);
-    }
-
-    if (!channel) {
-      console.log('[v34 confirm] no channel after register');
-      return false;
-    }
-
-    const chatId = lrV34ReplyChatId(update);
-    const key = lrV34SessionKey(update, chatId);
-    const title = lrV34Clean(channel.title || channel.name || channel.channel_title || 'канал', 300) || 'канал';
-    const savedId = lrV34Clean(channel.id || channel.channel_id || channel.max_chat_id || channel.maxChatId || title, 120);
-    const lockKey = `lr_v34_add_confirm_sent:${chatId}:${savedId}`;
-
-    try {
-      const rows = lrV34Rows(await query(
-        `SELECT key FROM lr_bot_state
-         WHERE key=$1 AND updated_at > now() - interval '2 minutes'
-         LIMIT 1`,
-        [lockKey]
-      ));
-
-      if (rows[0]) {
-        console.log('[v34 confirm] duplicate skip', JSON.stringify({ chatId, title }));
-        return true;
-      }
-    } catch {}
-
-    const notificationText = `✅ <b>Канал подключён к LinkRay</b>
-
-${lrV34Esc(title)}
-
-Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`;
-
-    const okNormal = await lrV34Send(chatId, notificationText);
-    const okDirect = await lrV37DirectNotifyUser(notificationText, lrV37ButtonRows(), update);
-    const ok = Boolean(okNormal || okDirect);
-
-    if (ok) {
-      await lrV34PutState(lockKey, { chatId, key, savedId, title, ts: Date.now() }).catch(() => {});
-      await lrV34ClearAddMode(chatId, key);
-
-      try {
-        if (typeof clearSession === 'function') await clearSession(key);
-      } catch {}
-
-      console.log('[v34 confirm] connected notification done', JSON.stringify({ chatId, key, savedId, title }));
-    }
-
-    return ok;
-  } catch (e) {
-    console.error('[v34 confirm] failed', e?.stack || e?.message || e);
-    return false;
-  }
+  /* LR_CHANNEL_V4_DISABLE_DUPLICATE_CONFIRM */
+  // Подтверждение отправляет только Channel Add V3.
+  return false;
 }
 /* LR_WRAP_MAYBE_REGISTER_CONFIRM_V34_END */
 /* LR_DIRECT_USER_NOTIFY_V36_START */
