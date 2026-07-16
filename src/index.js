@@ -21548,48 +21548,138 @@ ${has ? 'Пост принят.' : 'Сначала выберите канал.'
 ━━━━━━━━━━━━━━`;
 }
 
-async function lrV47ShowChannelSelect(chatId, key, draft = null, multi = false) {
+async function lrV47ShowChannelSelect(
+  chatId,
+  key,
+  draft = null,
+  multi = false,
+  callbackId = null
+) {
+  /* LR_V47_MULTI_SAME_MESSAGE_V47_3 */
   const channels = await lrV47Channels();
   const d = draft || lrV47EmptyDraft();
-  d.channelIds = Array.isArray(d.channelIds) ? d.channelIds : [];
+
+  d.channelIds = Array.isArray(d.channelIds)
+    ? d.channelIds
+    : [];
+
+  const render = async (text, rows) => {
+    if (callbackId) {
+      return lrV47Cb(
+        callbackId,
+        chatId,
+        text,
+        rows,
+        'html'
+      );
+    }
+
+    return lrV47Msg(
+      chatId,
+      text,
+      rows,
+      'html'
+    );
+  };
 
   if (!channels.length) {
-    await lrV47SetSession(key, 'select_channels', { draft: d });
-    return lrV47Msg(chatId, `━━━━━━━━━━━━━━
-🔗 <b>Подключить канал</b>
+    await lrV47SetSession(
+      key,
+      'select_channels',
+      { draft: d }
+    );
+
+    return render(
+      `━━━━━━━━━━━━━━
+🔗 Подключить канал
 
 Сначала добавьте канал в LinkRay.
-━━━━━━━━━━━━━━`, [
-      [lrV47Btn('🔗 Добавить канал', 'post:add_channel')],
-      [lrV47Btn('⬅️ В меню', 'main:menu')]
-    ], 'html');
+━━━━━━━━━━━━━━`,
+      [
+        [
+          lrV47Btn(
+            '🔗 Добавить канал',
+            'post:add_channel'
+          ),
+        ],
+        [
+          lrV47Btn(
+            '⬅️ В меню',
+            'main:menu'
+          ),
+        ],
+      ]
+    );
   }
 
   const rows = [];
 
   for (const ch of channels) {
-    const selected = d.channelIds.includes(Number(ch.id));
+    const channelId = Number(ch.id);
+    const selected = d.channelIds
+      .map(Number)
+      .includes(channelId);
+
     rows.push([
       lrV47Btn(
         lrV47ChannelButtonText(ch, selected),
-        multi ? `post:toggle:${ch.id}` : `post:single:${ch.id}`
-      )
+        multi
+          ? `post:toggle:${ch.id}`
+          : `post:single:${ch.id}`
+      ),
     ]);
   }
 
   rows.push([
-    lrV47Btn('🧩 Выбрать несколько', 'post:multi'),
-    lrV47Btn('🌐 Все каналы', 'post:all_channels')
+    lrV47Btn(
+      '🧩 Выбрать несколько',
+      'post:multi'
+    ),
+    lrV47Btn(
+      '🌐 Все каналы',
+      'post:all_channels'
+    ),
   ]);
 
-  if (multi) rows.push([lrV47Btn('➡️ Далее', 'post:channels_next')]);
+  if (multi) {
+    rows.push([
+      lrV47Btn(
+        '➡️ Далее',
+        'post:channels_next'
+      ),
+    ]);
+  }
 
-  rows.push([lrV47Btn('🔗 Добавить канал', 'post:add_channel')]);
-  rows.push([lrV47Btn('⬅️ Назад', 'main:posting'), lrV47Btn('❌ Отмена', 'post:cancel')]);
+  rows.push([
+    lrV47Btn(
+      '🔗 Добавить канал',
+      'post:add_channel'
+    ),
+  ]);
 
-  await lrV47SetSession(key, multi ? 'select_channels_multi' : 'select_channels', { draft: d });
+  rows.push([
+    lrV47Btn(
+      '⬅️ Назад',
+      'main:posting'
+    ),
+    lrV47Btn(
+      '❌ Отмена',
+      'post:cancel'
+    ),
+  ]);
 
-  return lrV47Msg(chatId, lrV47SelectText(d), rows, 'html');
+  await lrV47SetSession(
+    key,
+    multi
+      ? 'select_channels_multi'
+      : 'select_channels',
+    { draft: d }
+  );
+
+  return render(
+    lrV47SelectText(d),
+    rows
+  );
 }
 
 async function lrV47AskContent(chatId, key, draft) {
@@ -21916,7 +22006,10 @@ async function lrV47HandleMainForward(update) {
   return true;
 }
 
-async function lrV47HandleSelectedChannels(update, payload) {
+async function lrV47HandleSelectedChannels(
+  update,
+  payload
+) {
   const callbackId = lrV47CallbackId(update);
   const chatId = lrV47PrivateChatId(update);
   const key = lrV47Key(update);
@@ -21925,66 +22018,157 @@ async function lrV47HandleSelectedChannels(update, payload) {
 
   if (payload.startsWith('post:single:')) {
     const id = Number(payload.split(':')[2]);
-    draft.channelIds = Number.isFinite(id) ? [id] : [];
 
-    console.log('[v47 final] channel selected', JSON.stringify({
+    draft.channelIds = Number.isFinite(id)
+      ? [id]
+      : [];
+
+    console.log(
+      '[v47 final] channel selected',
+      JSON.stringify({
+        chatId,
+        key,
+        id,
+        hasContent: lrV47DraftHasContent(draft),
+      })
+    );
+
+    await lrV47Ack(
+      callbackId,
+      'Канал выбран'
+    );
+
+    if (lrV47DraftHasContent(draft)) {
+      return lrV47OpenEditor(
+        chatId,
+        key,
+        draft
+      );
+    }
+
+    return lrV47AskContent(
       chatId,
       key,
-      id,
-      hasContent: lrV47DraftHasContent(draft)
-    }));
-
-    await lrV47Ack(callbackId, 'Канал выбран');
-
-    if (lrV47DraftHasContent(draft)) return lrV47OpenEditor(chatId, key, draft);
-    return lrV47AskContent(chatId, key, draft);
+      draft
+    );
   }
 
   if (payload === 'post:all_channels') {
     const channels = await lrV47Channels();
-    draft.channelIds = channels.map(ch => Number(ch.id)).filter(Number.isFinite);
 
-    console.log('[v47 final] all channels selected', JSON.stringify({
+    draft.channelIds = channels
+      .map((ch) => Number(ch.id))
+      .filter(Number.isFinite);
+
+    console.log(
+      '[v47 final] all channels selected',
+      JSON.stringify({
+        chatId,
+        key,
+        count: draft.channelIds.length,
+        hasContent: lrV47DraftHasContent(draft),
+      })
+    );
+
+    await lrV47Ack(
+      callbackId,
+      'Все каналы выбраны'
+    );
+
+    if (lrV47DraftHasContent(draft)) {
+      return lrV47OpenEditor(
+        chatId,
+        key,
+        draft
+      );
+    }
+
+    return lrV47AskContent(
       chatId,
       key,
-      count: draft.channelIds.length,
-      hasContent: lrV47DraftHasContent(draft)
-    }));
-
-    await lrV47Ack(callbackId, 'Все каналы выбраны');
-
-    if (lrV47DraftHasContent(draft)) return lrV47OpenEditor(chatId, key, draft);
-    return lrV47AskContent(chatId, key, draft);
+      draft
+    );
   }
 
   if (payload === 'post:multi') {
-    await lrV47Ack(callbackId, 'Выберите несколько каналов');
-    return lrV47ShowChannelSelect(chatId, key, draft, true);
+    await lrV47Ack(
+      callbackId,
+      'Выберите несколько каналов'
+    );
+
+    return lrV47ShowChannelSelect(
+      chatId,
+      key,
+      draft,
+      true,
+      callbackId
+    );
   }
 
   if (payload.startsWith('post:toggle:')) {
     const id = Number(payload.split(':')[2]);
-    draft.channelIds = Array.isArray(draft.channelIds) ? draft.channelIds : [];
+
+    draft.channelIds = Array.isArray(draft.channelIds)
+      ? draft.channelIds.map(Number)
+      : [];
 
     if (Number.isFinite(id)) {
-      if (draft.channelIds.includes(id)) draft.channelIds = draft.channelIds.filter(x => Number(x) !== id);
-      else draft.channelIds.push(id);
+      if (draft.channelIds.includes(id)) {
+        draft.channelIds = draft.channelIds.filter(
+          (selectedId) => Number(selectedId) !== id
+        );
+      } else {
+        draft.channelIds.push(id);
+      }
     }
 
-    await lrV47Ack(callbackId, 'Выбор обновлён');
-    return lrV47ShowChannelSelect(chatId, key, draft, true);
+    await lrV47Ack(
+      callbackId,
+      'Выбор обновлён'
+    );
+
+    return lrV47ShowChannelSelect(
+      chatId,
+      key,
+      draft,
+      true,
+      callbackId
+    );
   }
 
   if (payload === 'post:channels_next') {
-    draft.channelIds = Array.isArray(draft.channelIds) ? draft.channelIds : [];
+    draft.channelIds = Array.isArray(draft.channelIds)
+      ? draft.channelIds.map(Number)
+      : [];
 
     if (!draft.channelIds.length) {
-      await lrV47Ack(callbackId, 'Сначала выберите канал');
-      return lrV47ShowChannelSelect(chatId, key, draft, true);
+      await lrV47Ack(
+        callbackId,
+        'Сначала выберите канал'
+      );
+
+      return lrV47ShowChannelSelect(
+        chatId,
+        key,
+        draft,
+        true,
+        callbackId
+      );
     }
 
-    if (lrV47DraftHasContent(draft)) return lrV47OpenEditor(chatId, key, draft);
-    return lrV47AskContent(chatId, key, draft);
+    if (lrV47DraftHasContent(draft)) {
+      return lrV47OpenEditor(
+        chatId,
+        key,
+        draft
+      );
+    }
+
+    return lrV47AskContent(
+      chatId,
+      key,
+      draft
+    );
   }
 
   return false;
