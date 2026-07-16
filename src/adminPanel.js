@@ -1,3 +1,4 @@
+/* LR_ADMIN_REAL_USERS_VIEW_V3 */
 /* LR_ADMIN_USERS_DYNAMIC_VIEW_V2 */
 /* LR_ADMIN_USERS_VIEW_FINAL_V1 */
 /* LR_ADMIN_VERIFIED_USERS_VIEW_STAGE1_2 */
@@ -124,6 +125,39 @@ async function audit(adminId, action, targetId = null, details = {}) {
     VALUES($1,$2,$3,$4::jsonb)`, [adminId, action, targetId ? String(targetId) : null, JSON.stringify(details)]).catch(() => {});
 }
 async function touchUser(u, id) {
+/* LR_ADMIN_SKIP_CHANNEL_USER_REGISTRATION_V3 */
+  const __lrEventTypeV3 = String(
+    u?.update_type ||
+    u?.type ||
+    u?.event_type ||
+    u?.event?.type ||
+    u?.body?.update_type ||
+    u?.body?.type ||
+    ''
+  ).trim().toLowerCase();
+
+  const __lrChannelEventV3 = [
+    'user_added',
+    'user_removed',
+    'bot_added',
+    'bot_removed',
+    'chat_title_changed',
+    'chat_created',
+    'chat_deleted',
+    'message_removed',
+  ].includes(__lrEventTypeV3);
+
+  const __lrChannelContextV3 = Boolean(
+    u?.is_channel === true ||
+    u?.chat?.type === 'channel' ||
+    u?.message?.recipient?.chat_type === 'channel' ||
+    u?.body?.message?.recipient?.chat_type === 'channel'
+  );
+
+  if (__lrChannelEventV3 || __lrChannelContextV3) {
+    return null;
+  }
+
 /* LR_ADMIN_SKIP_CHANNEL_EVENTS_FINAL_V1 */
   const __lrAdminEventTypeFinalV1 = String(
     u?.update_type ||

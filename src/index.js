@@ -3120,6 +3120,39 @@ async function lrProfileEnsureSchema() {
 }
 
 async function lrProfileTouch(update) {
+/* LR_SKIP_CHANNEL_USER_REGISTRATION_V3 */
+  const __lrEventTypeV3 = String(
+    update?.update_type ||
+    update?.type ||
+    update?.event_type ||
+    update?.event?.type ||
+    update?.body?.update_type ||
+    update?.body?.type ||
+    ''
+  ).trim().toLowerCase();
+
+  const __lrChannelEventV3 = [
+    'user_added',
+    'user_removed',
+    'bot_added',
+    'bot_removed',
+    'chat_title_changed',
+    'chat_created',
+    'chat_deleted',
+    'message_removed',
+  ].includes(__lrEventTypeV3);
+
+  const __lrChannelContextV3 = Boolean(
+    update?.is_channel === true ||
+    update?.chat?.type === 'channel' ||
+    update?.message?.recipient?.chat_type === 'channel' ||
+    update?.body?.message?.recipient?.chat_type === 'channel'
+  );
+
+  if (__lrChannelEventV3 || __lrChannelContextV3) {
+    return null;
+  }
+
 /* LR_PROFILE_SKIP_CHANNEL_EVENTS_FINAL_V1 */
   const __lrProfileEventTypeFinalV1 = String(
     update?.update_type ||
