@@ -1,3 +1,5 @@
+/* LR_ADMIN_TOOLS_USERS_VIEW_FINAL_V1 */
+/* LR_ADMIN_TOOLS_VERIFIED_USERS_VIEW_STAGE1_2 */
 /* LR_SUPPORT_CENTER_INSTALL_V1 */
 /* LR_ADMIN_BROADCAST_CANCEL_FULL_MENU_V1 */
 /* LR_ADMIN_SEARCH_WAIT_GATE_FIX_V1 */
@@ -300,12 +302,12 @@ async function dashboardStats() {
   const base = (
     await safe(`
       SELECT
-        (SELECT COUNT(*) FROM public.lr_users
+        (SELECT COUNT(*) FROM public.lr_admin_users
           WHERE COALESCE(is_blocked,false)=false
             AND max_user_id ~ '^\\d+$'
             AND LOWER(COALESCE(display_name,''))<>'пользователь max'
         )::integer AS users,
-        (SELECT COUNT(*) FROM public.lr_users
+        (SELECT COUNT(*) FROM public.lr_admin_users
           WHERE COALESCE(is_blocked,false)=false
             AND last_seen_at>=now()-interval '24 hours'
         )::integer AS active_today,
@@ -399,7 +401,7 @@ async function showMenu(update, adminId) {
 async function loadUser(userDbId) {
   const user = (
     await safe(
-      `SELECT * FROM public.lr_users WHERE id=$1 LIMIT 1`,
+      `SELECT * FROM public.lr_admin_users WHERE id=$1 LIMIT 1`,
       [Number(userDbId)],
     )
   )[0];
@@ -442,7 +444,7 @@ async function showUsers(update, adminId) {
       u.id,u.profile_number,u.max_user_id,u.display_name,
       u.last_seen_at,u.is_blocked,
       COUNT(DISTINCT uc.channel_id)::integer AS channels
-    FROM public.lr_users u
+    FROM public.lr_admin_users u
     LEFT JOIN public.lr_user_channels uc ON uc.user_id=u.id
     WHERE u.max_user_id ~ '^\\d+$'
       AND COALESCE(u.raw_profile->>'is_bot','false')<>'true'
@@ -604,7 +606,7 @@ async function askBlock(update, adminId, userDbId) {
 async function setBlocked(update, adminId, userDbId, blocked) {
   const user = (
     await safe(
-      `UPDATE public.lr_users SET is_blocked=$2,updated_at=now()
+      `UPDATE public.lr_admin_users SET is_blocked=$2,updated_at=now()
        WHERE id=$1 RETURNING *`,
       [Number(userDbId), Boolean(blocked)],
     )
@@ -672,7 +674,7 @@ async function loadChannel(channelDbId) {
        u.id,u.profile_number,u.max_user_id,u.display_name,u.is_blocked,
        uc.role,uc.access_source,uc.last_verified_at
      FROM public.lr_user_channels uc
-     JOIN public.lr_users u ON u.id=uc.user_id
+     JOIN public.lr_admin_users u ON u.id=uc.user_id
      WHERE uc.channel_id=$1
      ORDER BY
        CASE WHEN uc.role='owner' THEN 0 WHEN uc.role='admin' THEN 1 ELSE 2 END,
@@ -1197,7 +1199,7 @@ async function handleDirectMessage(update, adminId, session) {
 
   const target = (
     await safe(
-      `SELECT id,profile_number,max_user_id,display_name,is_blocked FROM public.lr_users WHERE id=$1 LIMIT 1`,
+      `SELECT id,profile_number,max_user_id,display_name,is_blocked FROM public.lr_admin_users WHERE id=$1 LIMIT 1`,
       [Number(session?.data?.user_id)],
     )
   )[0];

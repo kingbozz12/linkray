@@ -3120,6 +3120,42 @@ async function lrProfileEnsureSchema() {
 }
 
 async function lrProfileTouch(update) {
+/* LR_PROFILE_SKIP_CHANNEL_EVENTS_FINAL_V1 */
+  const __lrProfileEventTypeFinalV1 = String(
+    update?.update_type ||
+    update?.type ||
+    update?.event_type ||
+    update?.event?.type ||
+    update?.body?.update_type ||
+    update?.body?.type ||
+    ''
+  ).trim().toLowerCase();
+
+  const __lrProfileChannelEventFinalV1 = [
+    'user_added',
+    'user_removed',
+    'bot_added',
+    'bot_removed',
+    'chat_title_changed',
+    'chat_created',
+    'chat_deleted',
+    'message_removed',
+  ].includes(__lrProfileEventTypeFinalV1);
+
+  const __lrProfileChannelContextFinalV1 = Boolean(
+    update?.is_channel === true ||
+    update?.chat?.type === 'channel' ||
+    update?.message?.recipient?.chat_type === 'channel' ||
+    update?.body?.message?.recipient?.chat_type === 'channel'
+  );
+
+  if (
+    __lrProfileChannelEventFinalV1 ||
+    __lrProfileChannelContextFinalV1
+  ) {
+    return null;
+  }
+
   /* LR_VERIFIED_USER_REGISTRATION_V1 */
 
   const maxUserId = lrProfileClean(

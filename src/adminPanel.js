@@ -1,3 +1,5 @@
+/* LR_ADMIN_USERS_VIEW_FINAL_V1 */
+/* LR_ADMIN_VERIFIED_USERS_VIEW_STAGE1_2 */
 /* LR_ADMIN_TOOLS_SEPARATE_MIDDLEWARE_V1 */
 import { installAdminPanelTools } from './adminPanelTools.js';
 import { query } from './db.js';
@@ -121,6 +123,36 @@ async function audit(adminId, action, targetId = null, details = {}) {
     VALUES($1,$2,$3,$4::jsonb)`, [adminId, action, targetId ? String(targetId) : null, JSON.stringify(details)]).catch(() => {});
 }
 async function touchUser(u, id) {
+/* LR_ADMIN_SKIP_CHANNEL_EVENTS_FINAL_V1 */
+  const __lrAdminEventTypeFinalV1 = String(
+    u?.update_type ||
+    u?.type ||
+    u?.event_type ||
+    u?.event?.type ||
+    u?.body?.update_type ||
+    u?.body?.type ||
+    ''
+  ).trim().toLowerCase();
+
+  if (
+    [
+      'user_added',
+      'user_removed',
+      'bot_added',
+      'bot_removed',
+      'chat_title_changed',
+      'chat_created',
+      'chat_deleted',
+      'message_removed',
+    ].includes(__lrAdminEventTypeFinalV1) ||
+    u?.is_channel === true ||
+    u?.chat?.type === 'channel' ||
+    u?.message?.recipient?.chat_type === 'channel' ||
+    u?.body?.message?.recipient?.chat_type === 'channel'
+  ) {
+    return null;
+  }
+
   /* LR_ADMIN_VERIFIED_USER_REGISTRATION_V1 */
 
   const safeUserId = S(id, 100);
@@ -131,7 +163,7 @@ async function touchUser(u, id) {
 
   const existingUser = R(await query(`
     SELECT *
-    FROM public.lr_users
+    FROM public.lr_admin_users
     WHERE max_user_id=$1
     LIMIT 1
   `, [safeUserId]))[0] || null;
@@ -299,7 +331,7 @@ async function bootstrap(u, id) {
   await schema();
   await touchUser(u, id).catch(() => null);
   if (R(await query(`SELECT 1 FROM public.lr_admins WHERE is_active=true LIMIT 1`)).length) return;
-  const people = R(await query(`SELECT id,max_user_id FROM public.lr_users
+  const people = R(await query(`SELECT id,max_user_id FROM public.lr_admin_users
     WHERE COALESCE(is_blocked,false)=false AND max_user_id ~ '^\\d+$'
       AND COALESCE(raw_profile->>'is_bot','false')<>'true'
       AND LOWER(COALESCE(username,'')) NOT LIKE '%\\_bot' ESCAPE '\\'
@@ -351,8 +383,8 @@ const mainRows = () => [
 ];
 async function menu(u, id) {
   const s = R(await query(`SELECT
-    (SELECT COUNT(*) FROM public.lr_users WHERE COALESCE(is_blocked,false)=false AND max_user_id ~ '^\\d+$')::int users,
-    (SELECT COUNT(*) FROM public.lr_users WHERE registered_at>=now()-interval '1 day')::int new_users,
+    (SELECT COUNT(*) FROM public.lr_admin_users WHERE COALESCE(is_blocked,false)=false AND max_user_id ~ '^\\d+$')::int users,
+    (SELECT COUNT(*) FROM public.lr_admin_users WHERE registered_at>=now()-interval '1 day')::int new_users,
     (SELECT COUNT(*) FROM public.channels WHERE COALESCE(is_active,true)=true)::int channels,
     (SELECT COUNT(*) FROM public.lr_broadcasts WHERE status IN('queued','running'))::int active_broadcasts`))[0] || {};
   await respond(u, id, [
@@ -560,7 +592,7 @@ async function confirmBroadcast(u, id) {
   const b = R(await query(`INSERT INTO public.lr_broadcasts(admin_user_id,status,body)
     VALUES($1,'queued',$2::jsonb) RETURNING *`, [id, JSON.stringify(c)]))[0];
   await query(`INSERT INTO public.lr_broadcast_recipients(broadcast_id,user_id)
-    SELECT $1,u.id FROM public.lr_users u
+    SELECT $1,u.id FROM public.lr_admin_users u
     WHERE COALESCE(u.is_blocked,false)=false AND u.max_user_id ~ '^\\d+$'
       AND COALESCE(u.raw_profile->>'is_bot','false')<>'true'
       AND LOWER(COALESCE(u.username,'')) NOT LIKE '%\\_bot' ESCAPE '\\'
@@ -919,7 +951,7 @@ async function users(u, id) {
       u.is_blocked,
       COUNT(DISTINCT uc.channel_id)::int AS channels
 
-    FROM public.lr_users u
+    FROM public.lr_admin_users u
 
     LEFT JOIN public.lr_user_channels uc
       ON uc.user_id=u.id
@@ -1168,7 +1200,7 @@ async function channels(u, id) {
         u.display_name,
         u.max_user_id
 
-      FROM public.lr_users u
+      FROM public.lr_admin_users u
 
       WHERE
         u.max_user_id::text =
@@ -1442,7 +1474,7 @@ async function work() {
     if (!b) return;
     await query(`UPDATE public.lr_broadcasts SET status='running',started_at=COALESCE(started_at,now()),updated_at=now() WHERE id=$1`, [b.id]);
     const rec = R(await query(`SELECT r.user_id,r.attempts,u.max_user_id FROM public.lr_broadcast_recipients r
-      JOIN public.lr_users u ON u.id=r.user_id WHERE r.broadcast_id=$1 AND r.status='pending'
+      JOIN public.lr_admin_users u ON u.id=r.user_id WHERE r.broadcast_id=$1 AND r.status='pending'
       AND r.next_attempt_at<=now() AND COALESCE(u.is_blocked,false)=false ORDER BY r.user_id LIMIT 8`, [b.id]));
     if (!rec.length) { await recount(b.id); return; }
     for (const x of rec) {
