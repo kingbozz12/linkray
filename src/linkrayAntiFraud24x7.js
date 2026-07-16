@@ -3,7 +3,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '3.4.1';
+const MODULE_VERSION = '3.6.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -712,25 +712,79 @@ export async function installLinkRayAntiFraud({
     return result[0] || null;
   }
 
-  async function createWave(config, decision) {
+  
+async function createWave(config, decision) {
     let participants = null;
-    try { participants = await getMaxParticipantCount(config.max_chat_id); }
-    catch (e) { warn('participants count failed:', e?.message || e); }
+
+    try {
+      participants = await getMaxParticipantCount(
+        config.max_chat_id
+      );
+    } catch (participantError) {
+      warn(
+        'participants count failed:',
+        participantError?.message || participantError
+      );
+    }
 
     const before = participants === null
       ? null
-      : Math.max(0, participants - num(decision.counts.c5));
+      : Math.max(
+          0,
+          participants - num(decision.counts.c5)
+        );
 
     const result = rows(await query(`
-      INSERT INTO lr_antifraud_waves(
-        channel_id,max_chat_id,started_at,last_event_at,status,
-        participants_before,participants_after,baseline,updated_at
+      WITH channel_lock AS MATERIALIZED (
+        SELECT pg_advisory_xact_lock($1::bigint) AS locked
+      ),
+      existing AS MATERIALIZED (
+        SELECT
+          w.*,
+          false AS created_now
+        FROM lr_antifraud_waves w
+        CROSS JOIN channel_lock
+        WHERE w.channel_id=$1
+          AND w.status IN ('detected','review')
+          AND w.last_event_at >=
+            now() - interval '20 minutes'
+        ORDER BY w.id DESC
+        LIMIT 1
+      ),
+      inserted AS (
+        INSERT INTO lr_antifraud_waves(
+          channel_id,
+          max_chat_id,
+          started_at,
+          last_event_at,
+          status,
+          participants_before,
+          participants_after,
+          baseline,
+          updated_at
+        )
+        SELECT
+          $1,
+          $2,
+          now() - interval '5 minutes',
+          now(),
+          'detected',
+          $3,
+          $4,
+          $5::jsonb,
+          now()
+        FROM channel_lock
+        WHERE NOT EXISTS (
+          SELECT 1 FROM existing
+        )
+        RETURNING
+          lr_antifraud_waves.*,
+          true AS created_now
       )
-      VALUES(
-        $1,$2,now() - interval '5 minutes',now(),'detected',
-        $3,$4,$5::jsonb,now()
-      )
-      RETURNING *
+      SELECT * FROM existing
+      UNION ALL
+      SELECT * FROM inserted
+      LIMIT 1
     `, [
       config.channel_id,
       config.max_chat_id,
@@ -738,7 +792,8 @@ export async function installLinkRayAntiFraud({
       participants,
       JSON.stringify(decision),
     ]));
-    return result[0];
+
+    return result[0] || null;
   }
 
   async function scoreJoin({ config, user, eventAt, wave, decision }) {
@@ -943,25 +998,29 @@ export async function installLinkRayAntiFraud({
 
   let alertDeliverySchemaPromise = null;
 
-  function ensureAlertDeliverySchema() {
-    if (alertDeliverySchemaPromise) return alertDeliverySchemaPromise;
+  
+async function ensureAlertDeliverySchema() {
+    if (alertDeliverySchemaPromise) {
+      return alertDeliverySchemaPromise;
+    }
 
     alertDeliverySchemaPromise = (async () => {
       await query(`
-        CREATE TABLE IF NOT EXISTS public.lr_antifraud_alert_deliveries (
-          wave_id bigint NOT NULL
-            REFERENCES public.lr_antifraud_waves(id)
-            ON DELETE CASCADE,
-          channel_id bigint NOT NULL,
-          user_id text NOT NULL,
-          status text NOT NULL DEFAULT 'pending',
-          attempts integer NOT NULL DEFAULT 0,
-          last_error text,
-          sent_at timestamptz,
-          created_at timestamptz NOT NULL DEFAULT now(),
-          updated_at timestamptz NOT NULL DEFAULT now(),
-          PRIMARY KEY (wave_id, user_id)
-        )
+        CREATE TABLE IF NOT EXISTS
+          public.lr_antifraud_alert_deliveries (
+            wave_id bigint NOT NULL
+              REFERENCES public.lr_antifraud_waves(id)
+              ON DELETE CASCADE,
+            channel_id bigint NOT NULL,
+            user_id text NOT NULL,
+            status text NOT NULL DEFAULT 'pending',
+            attempts integer NOT NULL DEFAULT 0,
+            last_error text,
+            sent_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (wave_id, user_id)
+          )
       `);
 
       await query(`
@@ -972,6 +1031,40 @@ export async function installLinkRayAntiFraud({
           updated_at DESC
         )
       `);
+
+      /* LR_ANTIFRAUD_SINGLE_SIMPLE_ALERT_V12_START */
+      /*
+       * Отдельное состояние канала устраняет гонку, когда несколько
+       * webhook вступления почти одновременно создают/обновляют волну.
+       * Один пользователь получает не более одного уведомления
+       * по каналу за 30 минут. Неуспешную отправку можно повторить.
+       */
+      await query(`
+        CREATE TABLE IF NOT EXISTS
+          public.lr_antifraud_channel_alert_state (
+            channel_id bigint NOT NULL,
+            user_id text NOT NULL,
+            last_wave_id bigint NOT NULL,
+            status text NOT NULL DEFAULT 'pending',
+            attempts integer NOT NULL DEFAULT 0,
+            last_error text,
+            last_attempt_at timestamptz NOT NULL DEFAULT now(),
+            last_sent_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (channel_id, user_id)
+          )
+      `);
+
+      await query(`
+        CREATE INDEX IF NOT EXISTS
+          lr_antifraud_channel_alert_state_time_idx
+        ON public.lr_antifraud_channel_alert_state(
+          last_sent_at DESC,
+          updated_at DESC
+        )
+      `);
+      /* LR_ANTIFRAUD_SINGLE_SIMPLE_ALERT_V12_END */
     })().catch((schemaError) => {
       alertDeliverySchemaPromise = null;
       throw schemaError;
@@ -1011,8 +1104,65 @@ export async function installLinkRayAntiFraud({
     return fallback ? [fallback] : [];
   }
 
-  async function claimAlertDelivery(waveId, channelId, userId) {
+  
+async function claimAlertDelivery(waveId, channelId, userId) {
+    const safeUserId = String(userId);
+
     const claimed = rows(await query(`
+      INSERT INTO public.lr_antifraud_channel_alert_state(
+        channel_id,
+        user_id,
+        last_wave_id,
+        status,
+        attempts,
+        last_attempt_at,
+        updated_at
+      )
+      VALUES(
+        $1,
+        $2,
+        $3,
+        'pending',
+        1,
+        now(),
+        now()
+      )
+      ON CONFLICT(channel_id,user_id)
+      DO UPDATE SET
+        last_wave_id=EXCLUDED.last_wave_id,
+        status='pending',
+        attempts=
+          lr_antifraud_channel_alert_state.attempts + 1,
+        last_error=NULL,
+        last_attempt_at=now(),
+        updated_at=now()
+      WHERE
+        (
+          lr_antifraud_channel_alert_state.status='failed'
+          AND
+          lr_antifraud_channel_alert_state.last_wave_id=
+            EXCLUDED.last_wave_id
+        )
+        OR
+        (
+          lr_antifraud_channel_alert_state.last_wave_id<>
+            EXCLUDED.last_wave_id
+          AND
+          COALESCE(
+            lr_antifraud_channel_alert_state.last_sent_at,
+            '-infinity'::timestamptz
+          ) < now() - interval '30 minutes'
+        )
+      RETURNING *
+    `, [
+      channelId,
+      safeUserId,
+      waveId,
+    ]));
+
+    if (!claimed[0]) return false;
+
+    await query(`
       INSERT INTO public.lr_antifraud_alert_deliveries(
         wave_id,
         channel_id,
@@ -1025,36 +1175,71 @@ export async function installLinkRayAntiFraud({
       ON CONFLICT(wave_id,user_id)
       DO UPDATE SET
         status='pending',
-        attempts=lr_antifraud_alert_deliveries.attempts+1,
+        attempts=
+          lr_antifraud_alert_deliveries.attempts + 1,
         last_error=NULL,
         updated_at=now()
-      WHERE lr_antifraud_alert_deliveries.status<>'sent'
-      RETURNING *
-    `, [waveId, channelId, String(userId)]));
+      WHERE
+        lr_antifraud_alert_deliveries.status<>'sent'
+    `, [
+      waveId,
+      channelId,
+      safeUserId,
+    ]);
 
-    return Boolean(claimed[0]);
+    return true;
   }
 
-  async function finishAlertDelivery(
+  
+async function finishAlertDelivery(
     waveId,
     userId,
     status,
     lastError = null
   ) {
+    const safeUserId = String(userId);
+    const safeError = lastError
+      ? text(lastError, 1500)
+      : null;
+
     await query(`
       UPDATE public.lr_antifraud_alert_deliveries
       SET
         status=$3,
         last_error=$4,
-        sent_at=CASE WHEN $3='sent' THEN now() ELSE sent_at END,
+        sent_at=
+          CASE
+            WHEN $3='sent' THEN now()
+            ELSE sent_at
+          END,
         updated_at=now()
       WHERE wave_id=$1
         AND user_id=$2
     `, [
       waveId,
-      String(userId),
+      safeUserId,
       status,
-      lastError ? text(lastError, 1500) : null,
+      safeError,
+    ]);
+
+    await query(`
+      UPDATE public.lr_antifraud_channel_alert_state
+      SET
+        status=$3,
+        last_error=$4,
+        last_sent_at=
+          CASE
+            WHEN $3='sent' THEN now()
+            ELSE last_sent_at
+          END,
+        updated_at=now()
+      WHERE last_wave_id=$1
+        AND user_id=$2
+    `, [
+      waveId,
+      safeUserId,
+      status,
+      safeError,
     ]);
   }
 
@@ -1086,47 +1271,18 @@ export async function installLinkRayAntiFraud({
     };
   }
 
-  function unsafeAlertButtons(wave) {
-    const buttons = [
-      [
-        callbackButton(
-          '🔎 Открыть наплыв',
-          `fraud:wave:${wave.id}`
-        ),
-      ],
-    ];
-
-    if (num(wave.high_count) > 0) {
-      buttons.push([
-        callbackButton(
-          `🚨 Высокий риск — ${num(wave.high_count)}`,
-          `fraud:list:${wave.id}:high:0`
-        ),
-      ]);
-    }
-
-    if (num(wave.medium_count) > 0) {
-      buttons.push([
-        callbackButton(
-          `⚠️ Средний риск — ${num(wave.medium_count)}`,
-          `fraud:list:${wave.id}:medium:0`
-        ),
-      ]);
-    }
-
-    if (num(wave.eligible_count) > 0) {
-      buttons.push([
-        callbackButton(
-          `🧹 Проверить очистку — ${num(wave.eligible_count)}`,
-          `fraud:remove_prompt:${wave.id}`
-        ),
-      ]);
-    }
-
-    return buttons;
+  
+function unsafeAlertButtons(wave) {
+    return [[
+      callbackButton(
+        '🔎 Открыть наплыв',
+        `fraud:wave:${wave.id}`
+      ),
+    ]];
   }
 
-  async function notifyWave(wave) {
+  
+async function notifyWave(wave) {
     if (!wave || wave.status === 'ignored') return;
 
     const decision = unsafeWaveDecision(wave);
@@ -1134,41 +1290,31 @@ export async function installLinkRayAntiFraud({
 
     await ensureAlertDeliverySchema();
 
-    const channel = await configByChannelId(wave.channel_id);
-    const recipients = await channelAlertRecipients(wave.channel_id);
-    const level = waveLevel(wave);
+    const channel = await configByChannelId(
+      wave.channel_id
+    );
+    const recipients = await channelAlertRecipients(
+      wave.channel_id
+    );
 
     if (!recipients.length) {
       warn(
-        `unsafe wave ${wave.id}: no alert recipients for channel `
-        + `${wave.channel_id}`
+        `unsafe wave ${wave.id}: no alert recipients for channel ` +
+        `${wave.channel_id}`
       );
       return;
     }
 
     const textBody =
       `━━━━━━━━━━━━━━\n` +
-      `🚨 LinkRay обнаружил небезопасный наплыв\n\n` +
+      `🚨 LinkRay обнаружил небезопасный наплыв подписчиков\n\n` +
       `Канал: ${esc(
         channel?.current_title ||
         channel?.title ||
         wave.max_chat_id
-      )}\n` +
-      `Начало: ${formatDate(wave.started_at)}\n\n` +
-      `ПДП до наплыва: ${
-        wave.participants_before ?? 'уточняется'
-      }\n` +
-      `ПДП сейчас: ${
-        wave.participants_after ?? 'уточняется'
-      }\n` +
-      `Пришло: +${decision.joined}\n\n` +
-      `🚨 Высокий риск: ${decision.high}\n` +
-      `⚠️ Средний риск: ${decision.medium}\n` +
-      `✅ Вероятно живые: ${num(wave.normal_count)}\n` +
-      `🤖 Боты MAX: ${num(wave.max_bot_count)}\n` +
-      `🧹 Можно проверить для очистки: ${decision.eligible}\n\n` +
-      `Уровень угрозы: ${level}\n` +
-      `Никто не удалён автоматически.\n` +
+      )}\n\n` +
+      `Зафиксирован аномальный приток подписчиков.\n` +
+      `Никто не удалён автоматически.\n\n` +
       `Откройте наплыв и проверьте участников.\n` +
       `━━━━━━━━━━━━━━`;
 
@@ -1178,6 +1324,7 @@ export async function installLinkRayAntiFraud({
 
     let delivered = 0;
     let failed = 0;
+    let suppressed = 0;
 
     for (const recipient of recipients) {
       const claimed = await claimAlertDelivery(
@@ -1186,7 +1333,10 @@ export async function installLinkRayAntiFraud({
         recipient
       );
 
-      if (!claimed) continue;
+      if (!claimed) {
+        suppressed += 1;
+        continue;
+      }
 
       try {
         await sendMaxMessage({
@@ -1202,6 +1352,7 @@ export async function installLinkRayAntiFraud({
           recipient,
           'sent'
         );
+
         delivered += 1;
       } catch (sendError) {
         const message = text(
@@ -1217,9 +1368,10 @@ export async function installLinkRayAntiFraud({
         );
 
         failed += 1;
+
         error(
-          `unsafe wave ${wave.id}: alert to `
-          + `${recipient} failed: ${message}`
+          `unsafe wave ${wave.id}: alert to ` +
+          `${recipient} failed: ${message}`
         );
       }
     }
@@ -1234,15 +1386,22 @@ export async function installLinkRayAntiFraud({
       `, [wave.id]);
 
       log(
-        `unsafe wave ${wave.id}: delivered to `
-        + `${delivered} channel user(s)`
+        `unsafe wave ${wave.id}: delivered simple alert to ` +
+        `${delivered} channel user(s)`
+      );
+    }
+
+    if (suppressed > 0) {
+      log(
+        `unsafe wave ${wave.id}: suppressed ${suppressed} ` +
+        `duplicate channel alert(s)`
       );
     }
 
     if (failed > 0) {
       warn(
-        `unsafe wave ${wave.id}: ${failed} delivery failure(s); `
-        + `they will be retried`
+        `unsafe wave ${wave.id}: ${failed} delivery failure(s); ` +
+        `they may be retried`
       );
     }
   }
@@ -1337,7 +1496,7 @@ async function recordJoin(update) {
     let createdNow = false;
     if (!wave && decision.anomalous) {
       wave = await createWave(config, decision);
-      createdNow = Boolean(wave);
+      createdNow = Boolean(wave?.created_now);
     }
 
     if (!wave) return;
