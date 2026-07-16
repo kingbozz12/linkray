@@ -1,3 +1,4 @@
+/* LR_ADMIN_TOOLS_ACTIVE_CHANNEL_COUNT_V3_1 */
 /* LR_ADMIN_TOOLS_REAL_USERS_VIEW_V3 */
 /* LR_ADMIN_TOOLS_USERS_DYNAMIC_VIEW_V2 */
 /* LR_ADMIN_TOOLS_USERS_VIEW_FINAL_V1 */
@@ -445,9 +446,14 @@ async function showUsers(update, adminId) {
     SELECT
       u.id,u.profile_number,u.max_user_id,u.display_name,
       u.last_seen_at,u.is_blocked,
-      COUNT(DISTINCT uc.channel_id)::integer AS channels
-    FROM public.lr_admin_users u
-    LEFT JOIN public.lr_user_channels uc ON uc.user_id=u.id
+      COUNT(DISTINCT c.id)
+FILTER (WHERE COALESCE(c.is_active,true)=true)
+::integer AS channels
+FROM public.lr_admin_users u
+LEFT JOIN public.lr_user_channels uc
+ON uc.user_id=u.id
+LEFT JOIN public.channels c
+ON c.id=uc.channel_id
     WHERE u.max_user_id ~ '^\\d+$'
       AND COALESCE(u.raw_profile->>'is_bot','false')<>'true'
       AND LOWER(COALESCE(u.display_name,''))<>'пользователь max'

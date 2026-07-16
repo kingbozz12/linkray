@@ -1,3 +1,4 @@
+/* LR_ADMIN_ACTIVE_CHANNEL_COUNT_V3_1 */
 /* LR_ADMIN_REAL_USERS_VIEW_V3 */
 /* LR_ADMIN_USERS_DYNAMIC_VIEW_V2 */
 /* LR_ADMIN_USERS_VIEW_FINAL_V1 */
@@ -984,12 +985,14 @@ async function users(u, id) {
       u.registered_at,
       u.last_seen_at,
       u.is_blocked,
-      COUNT(DISTINCT uc.channel_id)::int AS channels
-
-    FROM public.lr_admin_users u
-
-    LEFT JOIN public.lr_user_channels uc
-      ON uc.user_id=u.id
+      COUNT(DISTINCT c.id)
+FILTER (WHERE COALESCE(c.is_active,true)=true)
+::int AS channels
+FROM public.lr_admin_users u
+LEFT JOIN public.lr_user_channels uc
+ON uc.user_id=u.id
+LEFT JOIN public.channels c
+ON c.id=uc.channel_id
 
     WHERE u.max_user_id ~ '^\\d+$'
       AND COALESCE(
