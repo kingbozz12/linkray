@@ -3,7 +3,7 @@ import { createLinkRayCohortEngine } from './linkrayAntifraudCohortEngineV2.js';
 // LinkRay AntiFraud 24/7 v1
 // Separate channel-protection module. Does not modify autoposting or Studio.
 
-const MODULE_VERSION = '3.3.1';
+const MODULE_VERSION = '3.4.0';
 const DEFAULT_OWNER_ID = '405954311';
 const MAX_API_URL = String(
   process.env.MAX_API_URL ||
@@ -125,6 +125,31 @@ function callbackId(update) {
     ''
   );
 }
+
+/* LR_ANTIFRAUD_RESCORE_SAME_MESSAGE_V9_START */
+function messageId(update) {
+  return idText(
+    update?._edit_message_id ||
+    update?.message_id ||
+    update?.messageId ||
+    update?.mid ||
+    update?.message?.body?.mid ||
+    update?.message?.mid ||
+    update?.callback?.message?.body?.mid ||
+    update?.callback?.message?.mid ||
+    update?.message_callback?.message?.body?.mid ||
+    update?.message_callback?.message?.mid ||
+    update?.body?.message_id ||
+    update?.body?.messageId ||
+    update?.body?.mid ||
+    update?.body?.message?.body?.mid ||
+    update?.body?.message?.mid ||
+    update?.body?.callback?.message?.body?.mid ||
+    update?.body?.callback?.message?.mid ||
+    ''
+  );
+}
+/* LR_ANTIFRAUD_RESCORE_SAME_MESSAGE_V9_END */
 
 function chatId(update) {
   return idText(
@@ -1412,10 +1437,33 @@ async function recordJoin(update) {
     return Boolean(actor && actor === ownerId());
   }
 
-  async function render(update, body, buttons = [], notification = '') {
+  
+async function render(update, body, buttons = [], notification = '') {
     const cbId = callbackId(update);
     const actor = actorId(update) || ownerId();
-    const attachments = buttons?.length ? inlineKeyboard(buttons) : [];
+    const attachments = buttons?.length
+      ? inlineKeyboard(buttons)
+      : [];
+
+    const editMessageId = idText(
+      update?._edit_message_id
+    );
+
+    if (editMessageId) {
+      return maxFetch('/messages', {
+        method: 'PUT',
+        query: {
+          message_id: editMessageId,
+        },
+        body: {
+          text: body,
+          format: 'html',
+          attachments,
+          notify: false,
+        },
+      });
+    }
+
     if (cbId) {
       return answerCallback({
         callbackId: cbId,
@@ -1425,6 +1473,17 @@ async function recordJoin(update) {
         notification,
       });
     }
+
+    if (update?._do_not_send_new_message) {
+      log(
+        'render skipped new message: original message id unavailable'
+      );
+      return {
+        success: false,
+        skipped: true,
+      };
+    }
+
     return sendMaxMessage({
       userId: actor,
       text: body,
@@ -3124,6 +3183,7 @@ async function executeRemoval(update, actionToken) {
   }
 
   
+
 async function startWaveRescore(update, waveId) {
     const safeWaveId = num(waveId);
 
@@ -3136,12 +3196,12 @@ async function startWaveRescore(update, waveId) {
         update,
         `━━━━━━━━━━━━━━\n` +
         `🔄 Пересчёт уже выполняется\n\n` +
-        `Дождитесь сообщения с результатом.\n` +
+        `Текущая карточка обновится автоматически.\n` +
         `Повторный процесс не запущен.\n` +
         `━━━━━━━━━━━━━━`,
         [[
           callbackButton(
-            '⬅️ К наплыву',
+            '⬅️ Открыть сохранённую карточку',
             `fraud:wave:${safeWaveId}`
           ),
         ]],
@@ -3151,23 +3211,20 @@ async function startWaveRescore(update, waveId) {
 
     runningWaveRescores.add(safeWaveId);
 
-    const deliveryUpdate = backgroundUpdateForUser(
-      actorId(update) ||
-      chatId(update) ||
-      ownerId()
-    );
+    const originalMessageId = messageId(update);
 
     try {
       await render(
         update,
         `━━━━━━━━━━━━━━\n` +
-        `🔄 Пересчёт наплыва запущен\n\n` +
-        `Обновление ПДП и анализ участников идут в фоне.\n` +
-        `Готовая карточка придёт отдельным сообщением.\n` +
+        `🔄 Пересчитываю наплыв\n\n` +
+        `Обновляю ПДП и повторно анализирую участников.\n` +
+        `Карточка обновится здесь же после завершения.\n\n` +
+        `Не нажимайте кнопку повторно.\n` +
         `━━━━━━━━━━━━━━`,
         [[
           callbackButton(
-            '⬅️ Вернуться к наплыву',
+            '⬅️ Показать сохранённые данные',
             `fraud:wave:${safeWaveId}`
           ),
         ]],
@@ -3177,6 +3234,16 @@ async function startWaveRescore(update, waveId) {
       runningWaveRescores.delete(safeWaveId);
       throw startError;
     }
+
+    const editUpdate = {
+      ...backgroundUpdateForUser(
+        actorId(update) ||
+        chatId(update) ||
+        ownerId()
+      ),
+      _edit_message_id: originalMessageId,
+      _do_not_send_new_message: true,
+    };
 
     const timer = setTimeout(async () => {
       const failures = [];
@@ -3225,53 +3292,26 @@ async function startWaveRescore(update, waveId) {
           }
         }
 
-        await showWave(deliveryUpdate, safeWaveId);
+        await showWave(editUpdate, safeWaveId);
 
         if (failures.length) {
-          await render(
-            deliveryUpdate,
-            `━━━━━━━━━━━━━━\n` +
-            `⚠️ Пересчёт завершён частично\n\n` +
-            failures.map(
-              (failure) => `• ${failure}`
-            ).join('\n') +
-            `\n\nСохранённая карточка доступна. ` +
-            `Другие части AntiFraud продолжают работать.\n` +
-            `━━━━━━━━━━━━━━`,
-            [[
-              callbackButton(
-                '⬅️ Открыть наплыв',
-                `fraud:wave:${safeWaveId}`
-              ),
-            ]]
+          warn(
+            `wave ${safeWaveId}: rescore completed with ` +
+            `${failures.length} partial failure(s): ` +
+            failures.join(' | ')
+          );
+        } else {
+          log(
+            `wave ${safeWaveId}: rescore completed in same message`
           );
         }
-
-        log(
-          `wave ${safeWaveId}: background rescore completed; ` +
-          `failures=${failures.length}`
-        );
       } catch (deliveryError) {
         error(
-          `wave ${safeWaveId}: delivery failed:`,
+          `wave ${safeWaveId}: same-message update failed:`,
           deliveryError?.stack ||
           deliveryError?.message ||
           deliveryError
         );
-
-        await render(
-          deliveryUpdate,
-          `━━━━━━━━━━━━━━\n` +
-          `⚠️ Пересчёт выполнен, но карточку не удалось отправить\n\n` +
-          `Откройте наплыв повторно из истории.\n` +
-          `━━━━━━━━━━━━━━`,
-          [[
-            callbackButton(
-              '⬅️ Открыть наплыв',
-              `fraud:wave:${safeWaveId}`
-            ),
-          ]]
-        ).catch(() => {});
       } finally {
         runningWaveRescores.delete(safeWaveId);
       }

@@ -263,7 +263,7 @@ export function createLinkRayAntifraudBaselineV3({
           OR raw #>> '{chat,id}'=$2
           OR raw #>> '{chat,chat,id}'=$2
           OR raw #>> '{chat,channel_id}'=$2
-          OR ($3<>'' AND link=$3)
+          OR ($3::text<>'' AND link::text=$3::text)
         )
       ORDER BY captured_at DESC
       LIMIT 1
@@ -287,7 +287,9 @@ export function createLinkRayAntifraudBaselineV3({
     };
   }
 
-  async function fixWave(waveId) {
+  
+async function fixWave(waveId) {
+    /* LR_ANTIFRAUD_BASELINE_EXACT_V9_START */
     await ensureSchema();
 
     let wave = rows(await query(`
@@ -308,19 +310,20 @@ export function createLinkRayAntifraudBaselineV3({
     try {
       const current = await fetchCount(wave.max_chat_id);
       currentCount = current.count;
+
       if (currentCount !== null) {
         await saveSnapshot(
           wave.channel_id,
           wave.max_chat_id,
           currentCount,
           'wave_repair_current',
-          current.raw,
+          current.raw
         );
       }
     } catch (currentError) {
       warn(
         `wave ${wave.id}: current participant count failed:`,
-        currentError?.message || currentError,
+        currentError?.message || currentError
       );
     }
 
@@ -330,53 +333,90 @@ export function createLinkRayAntifraudBaselineV3({
       : await analyticsSnapshotBefore(wave);
     const afterSnapshot = await antiSnapshotAfter(wave);
 
-    let participantsAfter = afterSnapshot
-      ? num(afterSnapshot.participants_count)
-      : currentCount;
+    let participantsAfter =
+      currentCount !== null &&
+      currentCount !== undefined
+        ? num(currentCount)
+        : afterSnapshot
+          ? num(afterSnapshot.participants_count)
+          : (
+              wave.participants_after === null ||
+              wave.participants_after === undefined
+                ? null
+                : num(wave.participants_after)
+            );
 
-    if (participantsAfter === null || participantsAfter === undefined) {
-      participantsAfter = wave.participants_after === null
+    const reconstructedBefore =
+      participantsAfter === null ||
+      participantsAfter === undefined
         ? null
-        : num(wave.participants_after);
-    }
+        : Math.max(
+            0,
+            participantsAfter - joined + removed
+          );
+
+    const preSnapshot = beforeAnti || beforeAnalytics;
+    const snapshotBefore = preSnapshot
+      ? num(preSnapshot.participants_count)
+      : null;
 
     let participantsBefore = null;
     let beforeSource = null;
     let beforeCapturedAt = null;
-    const preSnapshot = beforeAnti || beforeAnalytics;
 
-    if (preSnapshot) {
-      participantsBefore = num(preSnapshot.participants_count);
-      beforeSource = clean(preSnapshot.source || 'snapshot', 100);
-      beforeCapturedAt = preSnapshot.captured_at || null;
-    } else if (participantsAfter !== null) {
-      participantsBefore = Math.max(
-        0,
-        participantsAfter - joined + removed,
+    if (
+      reconstructedBefore !== null &&
+      snapshotBefore !== null
+    ) {
+      if (reconstructedBefore <= snapshotBefore) {
+        participantsBefore = reconstructedBefore;
+        beforeSource =
+          'reconstructed_from_current_and_all_wave_events';
+      } else {
+        participantsBefore = snapshotBefore;
+        beforeSource = clean(
+          preSnapshot.source || 'snapshot',
+          100
+        );
+        beforeCapturedAt = preSnapshot.captured_at || null;
+      }
+    } else if (reconstructedBefore !== null) {
+      participantsBefore = reconstructedBefore;
+      beforeSource =
+        'reconstructed_from_current_and_all_wave_events';
+    } else if (snapshotBefore !== null) {
+      participantsBefore = snapshotBefore;
+      beforeSource = clean(
+        preSnapshot.source || 'snapshot',
+        100
       );
-      beforeSource = 'reconstructed_from_current_and_wave_events';
+      beforeCapturedAt = preSnapshot.captured_at || null;
     } else if (
       wave.participants_before !== null &&
       wave.participants_before !== undefined
     ) {
       participantsBefore = num(wave.participants_before);
-      beforeSource = wave.participants_before_source || 'legacy';
-      beforeCapturedAt = wave.participants_before_captured_at || null;
+      beforeSource =
+        wave.participants_before_source || 'legacy';
+      beforeCapturedAt =
+        wave.participants_before_captured_at || null;
     }
 
     wave = rows(await query(`
       UPDATE public.lr_antifraud_waves
       SET
-        participants_before=$2,
-        participants_after=$3,
-        participants_before_source=$4,
-        participants_before_captured_at=$5,
-        participants_after_captured_at=CASE
-          WHEN $3 IS NULL THEN participants_after_captured_at
-          ELSE now()
-        END,
-        joined_count=$6,
-        removed_count=$7,
+        participants_before=$2::integer,
+        participants_after=$3::integer,
+        participants_before_source=$4::text,
+        participants_before_captured_at=$5::timestamptz,
+        participants_after_captured_at=
+          CASE
+            WHEN $3::integer IS NULL
+              THEN participants_after_captured_at
+            ELSE now()
+          END,
+        joined_count=$6::integer,
+        removed_count=$7::integer,
         updated_at=now()
       WHERE id=$1
       RETURNING *
@@ -392,10 +432,12 @@ export function createLinkRayAntifraudBaselineV3({
 
     log(
       `wave ${wave.id}: before=${participantsBefore} ` +
-      `after=${participantsAfter} source=${beforeSource}`,
+      `after=${participantsAfter} joined=${joined} ` +
+      `removed=${removed} source=${beforeSource}`
     );
 
     return wave;
+    /* LR_ANTIFRAUD_BASELINE_EXACT_V9_END */
   }
 
   async function fixRecent(hours = 24, limit = 100) {
