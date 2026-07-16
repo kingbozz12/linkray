@@ -13377,49 +13377,105 @@ async function __lrCh3StorePending(maxChatId, title, link = null) {
 }
 
 async function __lrCh3UpsertChannel(maxChatId, title, link = null) {
+  /* LR_CHANNEL_ADD_V4_1_UPSERT_NO_UNBOUND_UPDATE */
   await __lrCh3EnsureDb();
 
   const id = __lrCh3Clean(maxChatId);
   const name = __lrCh3Clean(title, 300);
   const url = __lrCh3Clean(link, 1200);
 
-  if (!id || !name || __lrCh3BadTitle(name)) return null;
+  if (!id || !name || __lrCh3BadTitle(name)) {
+    return null;
+  }
 
   const result = await query(
-    `INSERT INTO channels(max_chat_id, title, link, is_public, is_channel, is_active, bot_added_at, updated_at)
-     VALUES($1, $2, $3, $4, true, true, now(), now())
-     ON CONFLICT(max_chat_id) DO UPDATE
-       SET title = COALESCE(EXCLUDED.title, channels.title),
-           link = COALESCE(EXCLUDED.link, channels.link),
-           is_public = COALESCE(EXCLUDED.is_public, channels.is_public),
-           is_channel = true,
-           is_active = true,
-           bot_added_at = COALESCE(channels.bot_added_at, now()),
-           updated_at = now()
-     RETURNING id, max_chat_id, title, link, is_active`,
-    [String(id), name, url || null, Boolean(url)]
-  ).catch((e) => {
-    console.error('[channel add v3] upsert failed', e?.message || e);
+    `INSERT INTO channels(
+       max_chat_id,
+       title,
+       link,
+       is_public,
+       is_channel,
+       is_active,
+       bot_added_at,
+       updated_at
+     )
+     VALUES($1,$2,$3,$4,true,true,now(),now())
+     ON CONFLICT(max_chat_id)
+     DO UPDATE SET
+       title=EXCLUDED.title,
+       link=COALESCE(EXCLUDED.link,channels.link),
+       is_public=COALESCE(EXCLUDED.is_public,channels.is_public),
+       is_channel=true,
+       is_active=true,
+       bot_added_at=COALESCE(channels.bot_added_at,now()),
+       updated_at=now()
+     RETURNING
+       id,
+       max_chat_id,
+       title,
+       link,
+       is_active`,
+    [
+      String(id),
+      name,
+      url || null,
+      Boolean(url),
+    ]
+  ).catch((error) => {
+    console.error(
+      '[channel add v4.1] upsert failed',
+      error?.stack || error?.message || error
+    );
     return [];
   });
 
-  const saved = __lrCh3Rows(result)[0] || {
-    max_chat_id: String(id),
-    title: name,
-    link: url || null,
-    is_active: true
-  };
+  const saved = __lrCh3Rows(result)[0] || null;
 
-  await query(`DELETE FROM lr_pending_channels WHERE max_chat_id = $1`, [String(id)]).catch(() => {});
+  if (!saved) return null;
 
-  console.log('[channel add v3] saved channel', JSON.stringify({
-    id: saved.id || null,
-    max_chat_id: saved.max_chat_id,
-    title: saved.title,
-    link: saved.link || null
-  }));
-await lrV35ConfirmSavedChannel(update, saved, 'channel_add_v3_saved').catch(e => console.error('[v35 confirm] call failed', e?.stack || e?.message || e));
-        return saved;
+  await query(
+    `DELETE FROM lr_pending_channels
+     WHERE max_chat_id=$1`,
+    [String(id)]
+  ).catch(() => {});
+
+  await query(
+    `DELETE FROM lr_bot_state
+     WHERE key IN (
+       'lr_v34_add_wait_global',
+       'lr_v31_add_wait_global',
+       'lr_v30_add_wait_global',
+       'lr_v29_add_wait_global'
+     )
+     OR key LIKE 'lr_v34_add_wait:%'
+     OR key LIKE 'lr_v31_add_wait:%'
+     OR key LIKE 'lr_v30_add_wait:%'
+     OR key LIKE 'lr_v29_add_wait:%'
+     OR key LIKE 'lr_add_channel_wait:%'
+     OR key LIKE 'pending_channel_add:%'`
+  ).catch(() => {});
+
+  await query(
+    `DELETE FROM bot_sessions
+     WHERE state='wait_add_channel'`
+  ).catch(() => {});
+
+  globalThis.__lrV34AddWait = null;
+  globalThis.__lrV31AddWait = null;
+  globalThis.__lrV30AddWait = null;
+  globalThis.__lrV29AddWait = null;
+
+  console.log(
+    '[channel add v4.1] saved channel',
+    JSON.stringify({
+      id: saved.id || null,
+      max_chat_id: saved.max_chat_id,
+      title: saved.title,
+      link: saved.link || null,
+    })
+  );
+
+  return saved;
 }
 
 async function __lrCh3FindPending(candidates) {
@@ -13459,25 +13515,66 @@ async function __lrCh3FindPending(candidates) {
 }
 
 async function __lrCh3ResolveByLink(candidate) {
-  const variants = [...new Set([
-    candidate?.id,
-    candidate?.link
-  ].filter(Boolean).flatMap(__lrCh3LinkVariants))];
+  /* LR_CHANNEL_ADD_V4_1_RESOLVE_API_TITLE */
+  const variants = [...new Set(
+    [
+      candidate?.id,
+      candidate?.link,
+    ]
+      .filter(Boolean)
+      .flatMap(__lrCh3LinkVariants)
+  )];
 
-  for (const v of variants) {
-    const r = await __lrCh3ApiGet(`/chats/${encodeURIComponent(v)}`);
-    if (!r.ok) continue;
+  for (const variant of variants) {
+    const response = await __lrCh3ApiGet(
+      `/chats/${encodeURIComponent(variant)}`
+    );
 
-    const info = r.data?.chat || r.data?.result || r.data;
-    const chatId = __lrCh3Clean(info?.chat_id || info?.chatId || info?.id || info?.chat?.chat_id || info?.chat?.id);
-    const title = __lrCh3Clean(info?.title || info?.name || info?.chat?.title || info?.chat?.name || candidate?.title, 300);
-    const link = __lrCh3Clean(info?.link || info?.chat?.link || candidate?.link || candidate?.id, 1200);
+    if (!response.ok) continue;
 
-    if (chatId && title && !__lrCh3BadTitle(title)) {
+    const info =
+      response.data?.chat ||
+      response.data?.result ||
+      response.data;
+
+    const chatId = __lrCh3Clean(
+      info?.chat_id ||
+      info?.chatId ||
+      info?.id ||
+      info?.chat?.chat_id ||
+      info?.chat?.chatId ||
+      info?.chat?.id
+    );
+
+    // Название разрешено брать только из ответа MAX API.
+    // Текст пересланного поста здесь не используется.
+    const apiTitle = __lrCh3Clean(
+      info?.title ||
+      info?.name ||
+      info?.chat?.title ||
+      info?.chat?.name,
+      300
+    );
+
+    const apiLink = __lrCh3Clean(
+      info?.link ||
+      info?.invite_link ||
+      info?.inviteLink ||
+      info?.chat?.link ||
+      candidate?.link ||
+      '',
+      1200
+    );
+
+    if (
+      chatId &&
+      apiTitle &&
+      !__lrCh3BadTitle(apiTitle)
+    ) {
       return {
-        max_chat_id: chatId,
-        title,
-        link: link || null
+        max_chat_id: String(chatId),
+        title: apiTitle,
+        link: apiLink || null,
       };
     }
   }
@@ -13486,20 +13583,142 @@ async function __lrCh3ResolveByLink(candidate) {
 }
 
 async function __lrCh3ResolveCandidate(candidate) {
+  /* LR_CHANNEL_ADD_V4_1_NO_POST_TEXT_TITLE */
   const id = __lrCh3Clean(candidate?.id);
-  const title = __lrCh3Clean(candidate?.title, 300);
   const link = __lrCh3Clean(candidate?.link, 1200);
 
-  if (/^-?\d+$/.test(id) && title && !__lrCh3BadTitle(title)) {
-    return {
-      max_chat_id: id,
-      title,
-      link: link || null
-    };
-  }
+  if (!id && !link) return null;
 
-  return await __lrCh3ResolveByLink(candidate);
+  // Даже если forwarded update уже содержит числовой chat_id,
+  // обязательно запрашиваем /chats/{id}.
+  return await __lrCh3ResolveByLink({
+    ...candidate,
+    id,
+    link,
+    title: '',
+  });
 }
+
+/* LR_CHANNEL_ADD_V4_1_REPAIR_TITLES */
+async function __lrCh41RepairChannelTitles() {
+  if (globalThis.__lrCh41RepairRunning) return;
+
+  globalThis.__lrCh41RepairRunning = true;
+
+  try {
+    const rows = __lrCh3Rows(
+      await query(
+        `SELECT id,max_chat_id,title,link
+         FROM channels
+         WHERE COALESCE(is_active,true)=true
+         ORDER BY id`
+      )
+    );
+
+    for (const channel of rows) {
+      const maxChatId = __lrCh3Clean(
+        channel?.max_chat_id
+      );
+
+      if (!maxChatId) continue;
+
+      const response = await __lrCh3ApiGet(
+        `/chats/${encodeURIComponent(maxChatId)}`
+      );
+
+      if (!response.ok) continue;
+
+      const info =
+        response.data?.chat ||
+        response.data?.result ||
+        response.data;
+
+      const apiTitle = __lrCh3Clean(
+        info?.title ||
+        info?.name ||
+        info?.chat?.title ||
+        info?.chat?.name,
+        300
+      );
+
+      const apiLink = __lrCh3Clean(
+        info?.link ||
+        info?.invite_link ||
+        info?.inviteLink ||
+        info?.chat?.link ||
+        '',
+        1200
+      );
+
+      if (
+        !apiTitle ||
+        __lrCh3BadTitle(apiTitle)
+      ) {
+        continue;
+      }
+
+      const oldTitle = __lrCh3Clean(
+        channel?.title,
+        300
+      );
+
+      await query(
+        `UPDATE channels
+         SET
+           title=$2,
+           link=COALESCE(NULLIF($3,''),link),
+           is_public=CASE
+             WHEN COALESCE(NULLIF($3,''),link) IS NOT NULL
+             THEN true
+             ELSE is_public
+           END,
+           updated_at=CASE
+             WHEN title IS DISTINCT FROM $2
+             THEN now()
+             ELSE updated_at
+           END
+         WHERE id=$1`,
+        [
+          Number(channel.id),
+          apiTitle,
+          apiLink || '',
+        ]
+      );
+
+      if (oldTitle !== apiTitle) {
+        console.log(
+          '[channel add v4.1] repaired title',
+          JSON.stringify({
+            id: channel.id,
+            maxChatId,
+            oldTitle,
+            apiTitle,
+          })
+        );
+      }
+    }
+  } catch (error) {
+    console.error(
+      '[channel add v4.1] title repair failed',
+      error?.stack || error?.message || error
+    );
+  } finally {
+    globalThis.__lrCh41RepairRunning = false;
+  }
+}
+
+if (!globalThis.__lrCh41RepairTimerInstalled) {
+  globalThis.__lrCh41RepairTimerInstalled = true;
+
+  setTimeout(() => {
+    __lrCh41RepairChannelTitles().catch(() => {});
+  }, 4000).unref?.();
+
+  setInterval(() => {
+    __lrCh41RepairChannelTitles().catch(() => {});
+  }, 6 * 60 * 60 * 1000).unref?.();
+}
+
 
 async function __lrCh3Notify(chatId, text) {
   const id = __lrCh3Clean(chatId) || '405954311';
@@ -13638,23 +13857,82 @@ async function __lrCh3DeleteChannels(ids, reason = 'removed') {
 }
 
 async function __lrCh3HandleBotAdded(update) {
+  /* LR_CHANNEL_ADD_V4_1_BOT_ADDED_META */
   if (!__lrCh3IsBotAdded(update)) return false;
 
   const privateId = __lrCh3PrivateChatId(update);
-  const id = __lrCh3AnyChatId(update);
-  const title = __lrCh3GetTitle(update);
-  const link = __lrCh3GetLink(update);
+  const eventChatId = __lrCh3AnyChatId(update);
 
-  if (!id || !title || __lrCh3BadTitle(title)) return false;
-  if (privateId && String(privateId) === String(id)) return false;
+  if (!eventChatId) return false;
 
-  await __lrCh3StorePending(id, title, link);
+  if (
+    privateId &&
+    String(privateId) === String(eventChatId)
+  ) {
+    return false;
+  }
 
-  console.log('[channel add v3] bot_added stored pending only', JSON.stringify({
-    id,
+  let title = '';
+  let link = '';
+
+  const response = await __lrCh3ApiGet(
+    `/chats/${encodeURIComponent(eventChatId)}`
+  );
+
+  if (response.ok) {
+    const info =
+      response.data?.chat ||
+      response.data?.result ||
+      response.data;
+
+    title = __lrCh3Clean(
+      info?.title ||
+      info?.name ||
+      info?.chat?.title ||
+      info?.chat?.name,
+      300
+    );
+
+    link = __lrCh3Clean(
+      info?.link ||
+      info?.invite_link ||
+      info?.inviteLink ||
+      info?.chat?.link ||
+      '',
+      1200
+    );
+  }
+
+  if (!title) {
+    title = __lrCh3GetTitle(update);
+  }
+
+  if (!link) {
+    link = __lrCh3GetLink(update);
+  }
+
+  if (!title || __lrCh3BadTitle(title)) {
+    console.log(
+      '[channel add v4.1] bot_added without verified title',
+      JSON.stringify({ eventChatId })
+    );
+    return false;
+  }
+
+  await __lrCh3StorePending(
+    eventChatId,
     title,
-    link: link || null
-  }));
+    link || null
+  );
+
+  console.log(
+    '[channel add v4.1] bot_added pending',
+    JSON.stringify({
+      eventChatId,
+      title,
+      link: link || null,
+    })
+  );
 
   return false;
 }
