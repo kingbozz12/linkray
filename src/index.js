@@ -20648,7 +20648,179 @@ async function handleMessage(update) {
     await clearSession(key);
     return sendMain(chatId);
   }
-  const session = await getSession(key); const draft = safeDraft(session.data);
+  /* LR_V47_PENDING_DRAFT_CONSUMER_V47_6 */
+const __lrV476RawIds = [
+  String(key || '').trim(),
+  String(chatId || '').trim(),
+].filter(Boolean);
+
+const __lrV476Ids = [
+  ...new Set(
+    __lrV476RawIds.flatMap((value) => {
+      const plain = value.replace(/^user:/, '');
+
+      return [
+        value,
+        plain,
+        `user:${plain}`,
+      ];
+    })
+  ),
+];
+
+const __lrV476PendingKeys = __lrV476Ids.map(
+  (id) => `lr_v47_pending_post_content:${id}`
+);
+
+let __lrV476PendingDraft = null;
+let __lrV476PendingSessionKey = String(key || '');
+
+if (__lrV476PendingKeys.length) {
+  try {
+    const __lrV476RowsResult = await query(
+      `SELECT key,value,updated_at
+         FROM lr_bot_state
+        WHERE key = ANY($1::text[])
+          AND updated_at > now() - interval '30 minutes'
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [__lrV476PendingKeys]
+    );
+
+    const __lrV476Rows = Array.isArray(__lrV476RowsResult)
+      ? __lrV476RowsResult
+      : (__lrV476RowsResult?.rows || []);
+
+    const __lrV476Row = __lrV476Rows[0];
+
+    if (__lrV476Row) {
+      const __lrV476Value =
+        typeof __lrV476Row.value === 'string'
+          ? JSON.parse(__lrV476Row.value)
+          : (__lrV476Row.value || {});
+
+      __lrV476PendingDraft =
+        __lrV476Value?.draft || null;
+
+      __lrV476PendingSessionKey = String(
+        __lrV476Value?.sessionKey
+        || key
+        || chatId
+        || ''
+      );
+    }
+  } catch (error) {
+    console.error(
+      '[v47.6 pending] load failed',
+      error?.stack || error?.message || error
+    );
+  }
+}
+
+if (
+  __lrV476PendingDraft
+  && !String(text || '').trim().startsWith('/')
+) {
+  const __lrV476SelectedIds = Array.isArray(
+    __lrV476PendingDraft?.channelIds
+  )
+    ? __lrV476PendingDraft.channelIds
+        .map(Number)
+        .filter(Number.isFinite)
+    : [];
+
+  const __lrV476Content =
+    await lrSafeHydrateContent(update);
+
+  const __lrV476HasContent = Boolean(
+    String(__lrV476Content?.text || '').trim()
+    || (
+      Array.isArray(__lrV476Content?.attachments)
+      && __lrV476Content.attachments.length
+    )
+    || __lrV476Content?.link
+    || __lrV476Content?.hasRealBody
+  );
+
+  if (
+    __lrV476SelectedIds.length
+    && __lrV476HasContent
+  ) {
+    const __lrV476Draft = safeDraft({
+      draft: __lrV476PendingDraft,
+    });
+
+    __lrV476Draft.channelIds =
+      __lrV476SelectedIds;
+
+    __lrV476Draft.content = {
+      ...(__lrV476Draft.content || {}),
+      ...(__lrV476Content || {}),
+    };
+
+    lrApplyEditorPostFormat(
+      __lrV476Draft,
+      __lrV476Content
+    );
+
+    __lrV476Draft.previewMessageId = null;
+
+    const __lrV476PreviewId =
+      await sendDraftPreview(
+        chatId,
+        __lrV476Draft
+      );
+
+    if (__lrV476PreviewId) {
+      __lrV476Draft.previewMessageId =
+        __lrV476PreviewId;
+    }
+
+    const __lrV476EffectiveKey =
+      __lrV476PendingSessionKey
+      || String(key || chatId || '');
+
+    await setSession(
+      __lrV476EffectiveKey,
+      __lrV476Draft.postId
+        ? 'edit_existing'
+        : 'edit_draft',
+      { draft: __lrV476Draft }
+    );
+
+    try {
+      await query(
+        `DELETE FROM lr_bot_state
+          WHERE key = ANY($1::text[])`,
+        [__lrV476PendingKeys]
+      );
+    } catch (error) {
+      console.error(
+        '[v47.6 pending] clear failed',
+        error?.stack || error?.message || error
+      );
+    }
+
+    console.log(
+      '[v47.6 pending] consumed -> editor',
+      JSON.stringify({
+        chatId,
+        key,
+        effectiveKey: __lrV476EffectiveKey,
+        channelIds: __lrV476Draft.channelIds,
+      })
+    );
+
+    return msg(
+      chatId,
+      editorMenuText(),
+      editorMenuRows(__lrV476Draft)
+    );
+  }
+}
+
+const session = await getSession(key);
+const draft = safeDraft(session.data);
   if (session.state === 'wait_post_content') { 
 
   const content = await lrSafeHydrateContent(update); draft.content = { ...draft.content, ...content }; lrApplyEditorPostFormat(draft, content); draft.previewMessageId = null; const mid = await sendDraftPreview(chatId, draft); if (mid) draft.previewMessageId = mid; await setSession(key, 'edit_draft', { draft }); return msg(chatId, editorMenuText(), editorMenuRows(draft)); }
@@ -21889,25 +22061,104 @@ async function lrV47ShowChannelSelect(
 }
 
 async function lrV47AskContent(chatId, key, draft) {
+  /* LR_V47_PENDING_DRAFT_ROUTE_V47_6 */
   const d = draft || lrV47EmptyDraft();
 
-  await lrV47SetSession(key, 'wait_post_content', { draft: d });
+  d.channelIds = Array.isArray(d.channelIds)
+    ? d.channelIds.map(Number).filter(Number.isFinite)
+    : [];
+
+  await lrV47SetSession(
+    key,
+    'wait_post_content',
+    { draft: d }
+  );
+
+  const rawIds = [
+    String(key || '').trim(),
+    String(chatId || '').trim(),
+  ].filter(Boolean);
+
+  const pendingIds = [
+    ...new Set(
+      rawIds.flatMap((value) => {
+        const plain = value.replace(/^user:/, '');
+
+        return [
+          value,
+          plain,
+          `user:${plain}`,
+        ];
+      })
+    ),
+  ];
+
+  const pendingValue = {
+    draft: d,
+    chatId: String(chatId || ''),
+    sessionKey: String(key || ''),
+    ts: Date.now(),
+  };
+
+  for (const id of pendingIds) {
+    await lrV47StateSet(
+      `lr_v47_pending_post_content:${id}`,
+      pendingValue
+    );
+  }
+
+  console.log(
+    '[v47.6 pending] selected draft saved',
+    JSON.stringify({
+      chatId,
+      key,
+      pendingIds,
+      channelIds: d.channelIds,
+    })
+  );
 
   const channels = await lrV47Channels();
-  const selected = channels.filter(ch => d.channelIds?.includes(Number(ch.id)));
-  const list = selected.length ? selected.map(ch => `• ${lrV47Esc(lrV47ChannelName(ch))}`).join('\n') : '—';
 
-  return lrV47Msg(chatId, `━━━━━━━━━━━━━━
-📨 <b>Отправьте пост</b>
+  const selected = channels.filter((channel) =>
+    d.channelIds.includes(Number(channel.id))
+  );
+
+  const list = selected.length
+    ? selected
+        .map(
+          (channel) =>
+            `• ${lrV47Esc(lrV47ChannelName(channel))}`
+        )
+        .join('\n')
+    : '—';
+
+  return lrV47Msg(
+    chatId,
+    `━━━━━━━━━━━━━━
+📨 Отправьте пост
 
 Каналы:
 ${list}
 
-Можно отправить текст, фото, видео, файл или пересланный пост.
-━━━━━━━━━━━━━━`, [
-    [lrV47Btn('⬅️ К каналам', 'post:create')],
-    [lrV47Btn('❌ Отмена', 'post:cancel')]
-  ], 'html');
+Можно отправить текст, фото, видео,
+файл или пересланный пост.
+━━━━━━━━━━━━━━`,
+    [
+      [
+        lrV47Btn(
+          '⬅️ К каналам',
+          'post:change_channels'
+        ),
+      ],
+      [
+        lrV47Btn(
+          '❌ Отмена',
+          'post:cancel'
+        ),
+      ],
+    ],
+    'html'
+  );
 }
 
 function lrV47EditorRows(draft) {
@@ -22030,13 +22281,21 @@ function lrV47LooksForwarded(update) {
 
 async function lrV47ClearTempDrafts(key) {
   const k = String(key || '').trim();
-  if (!k) return;
+
+  if (!k) {
+    return;
+  }
+
+  const plain = k.replace(/^user:/, '');
 
   await lrV47StateDelLike([
     `lr_v44_forward_draft:${k}`,
     `lr_v43_forward_draft:${k}`,
     `lr_v45_forward_draft:${k}`,
-    `lr_v47_forward_draft:${k}`
+    `lr_v47_forward_draft:${k}`,
+    `lr_v47_pending_post_content:${k}`,
+    `lr_v47_pending_post_content:${plain}`,
+    `lr_v47_pending_post_content:user:${plain}`,
   ]);
 }
 
