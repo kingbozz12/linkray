@@ -22286,7 +22286,7 @@ async function lrV47HandleCallback(update) {
 }
 
 async function lrV47HandleMessageCreated(update) {
-  /* LR_V47_POST_CONTENT_ROUTE_V47_4 */
+  /* LR_V47_POST_SESSION_ROUTE_V47_5 */
   if (await lrV47HandleBotRemoved(update)) {
     return true;
   }
@@ -22295,24 +22295,123 @@ async function lrV47HandleMessageCreated(update) {
     return true;
   }
 
-  const key = lrV47Key(update);
-  const session = await lrV47GetSession(key);
-  const state = String(session?.state || '');
+  const chatId = lrV47PrivateChatId(update);
+  const senderId = lrV47SenderId(update);
+  const recipientChatId = lrV47ChatId(update);
+
+  let nativeKey = '';
+
+  try {
+    nativeKey =
+      typeof getSessionKey === 'function'
+        ? String(getSessionKey(update) || '')
+        : '';
+  } catch (_) {}
+
+  const candidates = [
+    nativeKey,
+    lrV47Key(update),
+    chatId,
+    senderId,
+    recipientChatId,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  const expandedCandidates = [
+    ...new Set(
+      candidates.flatMap((value) => {
+        const plain = value.replace(/^user:/, '');
+
+        return [
+          value,
+          plain,
+          `user:${plain}`,
+        ];
+      })
+    ),
+  ];
+
+  let key = expandedCandidates[0] || chatId;
+  let session = null;
 
   /*
-   * После выбора каналов содержимое поста принимается здесь,
-   * до старых bridge/forward-обработчиков.
-   *
-   * Иначе пересланный пост повторно распознаётся как начало
-   * нового сценария и снова открывает выбор каналов.
+   * Callback выбора каналов и следующее message_created
+   * могут возвращать разные ключи. Ищем именно активную
+   * wait_post_content-сессию по всем ID этого пользователя.
    */
-  if (state === 'wait_post_content') {
-    const chatId = lrV47PrivateChatId(update);
+  for (const candidate of expandedCandidates) {
+    const current =
+      await lrV47GetSession(candidate).catch(() => null);
 
-    const draft =
-      typeof safeDraft === 'function'
-        ? safeDraft(session?.data)
-        : lrV47SessionDraft(session);
+    if (!current) {
+      continue;
+    }
+
+    const currentState = String(current?.state || '');
+
+    if (currentState === 'wait_post_content') {
+      key = String(current?.user_id || candidate);
+      session = current;
+      break;
+    }
+
+    if (!session) {
+      key = String(current?.user_id || candidate);
+      session = current;
+    }
+  }
+
+  /*
+   * Дополнительная точная DB-проверка по тому же набору
+   * ключей. Чужая недавняя сессия здесь не выбирается.
+   */
+  if (
+    String(session?.state || '') !== 'wait_post_content'
+    && expandedCandidates.length
+  ) {
+    try {
+      const rows = lrV47Rows(
+        await query(
+          `SELECT user_id,state,data,updated_at
+             FROM bot_sessions
+            WHERE state='wait_post_content'
+              AND user_id::text = ANY($1::text[])
+            ORDER BY updated_at DESC
+            LIMIT 1`,
+          [expandedCandidates]
+        )
+      );
+
+      if (rows[0]) {
+        session = rows[0];
+        key = String(rows[0].user_id || key);
+      }
+    } catch (error) {
+      console.error(
+        '[v47.5 session route] candidate DB lookup failed',
+        error?.stack || error?.message || error
+      );
+    }
+  }
+
+  const state = String(session?.state || '');
+
+  console.log(
+    '[v47.5 session route] resolved',
+    JSON.stringify({
+      chatId,
+      senderId,
+      recipientChatId,
+      nativeKey,
+      candidates: expandedCandidates,
+      resolvedKey: key,
+      state,
+    })
+  );
+
+  if (state === 'wait_post_content') {
+    const draft = lrV47SessionDraft(session);
 
     const selectedChannelIds = Array.isArray(
       draft?.channelIds
@@ -22324,7 +22423,7 @@ async function lrV47HandleMessageCreated(update) {
 
     if (!selectedChannelIds.length) {
       console.error(
-        '[v47.4 content route] selected channels lost',
+        '[v47.5 session route] selected channels lost',
         JSON.stringify({
           chatId,
           key,
@@ -22342,73 +22441,41 @@ async function lrV47HandleMessageCreated(update) {
       return true;
     }
 
-    const content = await lrSafeHydrateContent(update);
+    const incomingDraft =
+      await lrV47ExtractDraft(update);
 
     draft.content = {
       ...(draft.content || {}),
-      ...(content || {}),
+      ...(incomingDraft?.content || {}),
     };
 
-    lrApplyEditorPostFormat(
-      draft,
-      content || {}
-    );
+    if (
+      Array.isArray(incomingDraft?.buttons)
+      && incomingDraft.buttons.length
+    ) {
+      draft.buttons = incomingDraft.buttons;
+    }
 
     /*
-     * channelIds уже выбраны пользователем.
-     * Их нельзя заменять данными пересланного источника.
+     * Каналы берём только из сделанного пользователем выбора.
+     * Источник пересланного поста не может их заменить.
      */
     draft.channelIds = selectedChannelIds;
     draft.previewMessageId = null;
 
-    const previewMessageId =
-      await sendDraftPreview(
-        chatId,
-        draft
-      );
-
-    if (previewMessageId) {
-      draft.previewMessageId =
-        previewMessageId;
-    }
-
-    await lrV47SetSession(
-      key,
-      'edit_draft',
-      { draft }
-    );
-
-    await lrV47Msg(
+    await lrV47OpenEditor(
       chatId,
-      editorMenuText(),
-      editorMenuRows(draft),
-      'html'
+      key,
+      draft
     );
 
     console.log(
-      '[v47.4 content route] post opened in editor',
+      '[v47.5 session route] opened existing editor',
       JSON.stringify({
         chatId,
         key,
         channelIds: draft.channelIds,
-        hasText: Boolean(
-          String(
-            draft?.content?.text || ''
-          ).trim()
-        ),
-        attachments:
-          Array.isArray(
-            draft?.content?.attachments
-          )
-            ? draft.content.attachments.length
-            : 0,
-        forwarded: Boolean(
-          draft?.content?.forward
-          || draft?.content?.forwarded
-          || draft?.content?.message_id
-          || draft?.content?.messageId
-          || draft?.content?.raw
-        ),
+        hasContent: lrV47DraftHasContent(draft),
       })
     );
 
@@ -22416,8 +22483,9 @@ async function lrV47HandleMessageCreated(update) {
   }
 
   /*
-   * Остальные состояния редактора остаются у существующего
-   * родного обработчика и не изменяются этим патчем.
+   * Другие состояния редактора остаются у уже существующих
+   * обработчиков. С главного меню пересланный пост по-прежнему
+   * начинает новый сценарий с выбора каналов.
    */
   if (
     [
