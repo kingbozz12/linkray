@@ -22286,13 +22286,146 @@ async function lrV47HandleCallback(update) {
 }
 
 async function lrV47HandleMessageCreated(update) {
-  if (await lrV47HandleBotRemoved(update)) return true;
-  if (await lrV47HandleAddForward(update)) return true;
+  /* LR_V47_POST_CONTENT_ROUTE_V47_4 */
+  if (await lrV47HandleBotRemoved(update)) {
+    return true;
+  }
 
-  const session = await lrV47GetSession(lrV47Key(update));
+  if (await lrV47HandleAddForward(update)) {
+    return true;
+  }
 
-  // Если пользователь уже в ожидании контента, не перехватываем — пусть родной редактор принимает пост.
-  if (['wait_post_content', 'post_content', 'wait_content', 'wait_post_media'].includes(String(session?.state || ''))) {
+  const key = lrV47Key(update);
+  const session = await lrV47GetSession(key);
+  const state = String(session?.state || '');
+
+  /*
+   * После выбора каналов содержимое поста принимается здесь,
+   * до старых bridge/forward-обработчиков.
+   *
+   * Иначе пересланный пост повторно распознаётся как начало
+   * нового сценария и снова открывает выбор каналов.
+   */
+  if (state === 'wait_post_content') {
+    const chatId = lrV47PrivateChatId(update);
+
+    const draft =
+      typeof safeDraft === 'function'
+        ? safeDraft(session?.data)
+        : lrV47SessionDraft(session);
+
+    const selectedChannelIds = Array.isArray(
+      draft?.channelIds
+    )
+      ? draft.channelIds
+          .map(Number)
+          .filter(Number.isFinite)
+      : [];
+
+    if (!selectedChannelIds.length) {
+      console.error(
+        '[v47.4 content route] selected channels lost',
+        JSON.stringify({
+          chatId,
+          key,
+          state,
+        })
+      );
+
+      await lrV47ShowChannelSelect(
+        chatId,
+        key,
+        draft,
+        true
+      );
+
+      return true;
+    }
+
+    const content = await lrSafeHydrateContent(update);
+
+    draft.content = {
+      ...(draft.content || {}),
+      ...(content || {}),
+    };
+
+    lrApplyEditorPostFormat(
+      draft,
+      content || {}
+    );
+
+    /*
+     * channelIds уже выбраны пользователем.
+     * Их нельзя заменять данными пересланного источника.
+     */
+    draft.channelIds = selectedChannelIds;
+    draft.previewMessageId = null;
+
+    const previewMessageId =
+      await sendDraftPreview(
+        chatId,
+        draft
+      );
+
+    if (previewMessageId) {
+      draft.previewMessageId =
+        previewMessageId;
+    }
+
+    await lrV47SetSession(
+      key,
+      'edit_draft',
+      { draft }
+    );
+
+    await lrV47Msg(
+      chatId,
+      editorMenuText(),
+      editorMenuRows(draft),
+      'html'
+    );
+
+    console.log(
+      '[v47.4 content route] post opened in editor',
+      JSON.stringify({
+        chatId,
+        key,
+        channelIds: draft.channelIds,
+        hasText: Boolean(
+          String(
+            draft?.content?.text || ''
+          ).trim()
+        ),
+        attachments:
+          Array.isArray(
+            draft?.content?.attachments
+          )
+            ? draft.content.attachments.length
+            : 0,
+        forwarded: Boolean(
+          draft?.content?.forward
+          || draft?.content?.forwarded
+          || draft?.content?.message_id
+          || draft?.content?.messageId
+          || draft?.content?.raw
+        ),
+      })
+    );
+
+    return true;
+  }
+
+  /*
+   * Остальные состояния редактора остаются у существующего
+   * родного обработчика и не изменяются этим патчем.
+   */
+  if (
+    [
+      'post_content',
+      'wait_content',
+      'wait_post_media',
+    ].includes(state)
+  ) {
     return false;
   }
 
