@@ -20773,61 +20773,267 @@ ${error.message || error}`);
   if (session.state === 'wait_post_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время.'); await query(`UPDATE scheduled_posts SET publish_at=$2, updated_at=now() WHERE id=$1`, [session.data.postId, publishAt]); await clearSession(key); return msg(chatId, '✅ Время обновлено.', [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
   
 /* LR_NATIVE_HANDLEMESSAGE_SELECT_V20_START */
-  if (session && session.state === 'wait_add_channel') {
-    console.log('[v20 native] wait_add_channel -> channel add', JSON.stringify({ chatId, key }));
-    return lrV15HandleAddChannelForward(update, chatId, key);
+/* LR_NATIVE_KEEP_SELECTED_CHANNELS_V20_1 */
+if (session && session.state === 'wait_add_channel') {
+  console.log(
+    '[v20.1 native] wait_add_channel -> channel add',
+    JSON.stringify({ chatId, key })
+  );
+
+  return lrV15HandleAddChannelForward(
+    update,
+    chatId,
+    key
+  );
+}
+
+const content = await lrSafeHydrateContent(update);
+
+const __lrPostInputState = String(
+  (session && session.state) || ''
+);
+
+const __lrPostHasContent = Boolean(
+  String(content.text || '').trim()
+  || (
+    Array.isArray(content.attachments)
+    && content.attachments.length
+  )
+  || content.link
+  || content.hasRealBody
+);
+
+const __lrIsCommandLike = String(text || '')
+  .trim()
+  .startsWith('/');
+
+const __lrMainPostState =
+  !__lrPostInputState
+  || [
+    'idle',
+    'main',
+    'menu',
+    'start',
+  ].includes(__lrPostInputState);
+
+const __lrSelectedChannelIds = [
+  ...new Set(
+    (
+      Array.isArray(draft?.channelIds)
+        ? draft.channelIds
+        : (
+          draft?.channelId
+            ? [draft.channelId]
+            : []
+        )
+    )
+      .map(Number)
+      .filter(Number.isFinite)
+  ),
+];
+
+const __lrHasSelectedChannels =
+  __lrSelectedChannelIds.length > 0;
+
+const __lrSelectedPostFlow = [
+  'wait_post_content',
+  'post_content',
+  'wait_content',
+  'wait_post_media',
+  'select_channels',
+  'select_channels_multi',
+].includes(__lrPostInputState);
+
+/*
+ * Главный ремонт:
+ * если каналы уже выбраны, входящий пост добавляется
+ * в существующий draft и сразу открывается редактор.
+ *
+ * emptyDraft() здесь использовать нельзя — он стирал
+ * channelIds и повторно открывал выбор каналов.
+ */
+if (
+  __lrSelectedPostFlow
+  && __lrHasSelectedChannels
+  && __lrPostHasContent
+) {
+  draft.channelIds = __lrSelectedChannelIds;
+
+  draft.content = {
+    ...(draft.content || {}),
+    ...content,
+  };
+
+  if (typeof lrApplyEditorPostFormat === 'function') {
+    lrApplyEditorPostFormat(draft, content);
   }
 
-  const content = await lrSafeHydrateContent(update);
-  const __lrPostInputState = String((session && session.state) || '');
-  const __lrPostHasContent = Boolean(
-    String(content.text || '').trim() ||
-    (Array.isArray(content.attachments) && content.attachments.length) ||
-    content.link ||
-    content.hasRealBody
+  draft.previewMessageId = null;
+
+  const previewMessageId =
+    await sendDraftPreview(chatId, draft);
+
+  if (previewMessageId) {
+    draft.previewMessageId = previewMessageId;
+  }
+
+  await setSession(
+    key,
+    draft.postId
+      ? 'edit_existing'
+      : 'edit_draft',
+    { draft }
   );
-  const __lrIsCommandLike = String(text || '').trim().startsWith('/');
-  const __lrMainPostState = !__lrPostInputState || ['idle','main','menu','start'].includes(__lrPostInputState);
-  const __lrCanAcceptPostInput =
-    ['wait_post_content','post_content','wait_content','wait_post_media','select_channels','select_channels_multi'].includes(__lrPostInputState) ||
-    (__lrMainPostState && __lrPostHasContent && !__lrIsCommandLike);
 
-  if (__lrCanAcceptPostInput && __lrPostHasContent) {
-    const d = emptyDraft();
-    d.content = { ...d.content, ...content };
-    if (typeof lrApplyEditorPostFormat === 'function') lrApplyEditorPostFormat(d, content);
-    d.previewMessageId = null;
+  console.log(
+    '[v20.1 native] selected channels preserved -> editor',
+    JSON.stringify({
+      chatId,
+      key,
+      state: __lrPostInputState,
+      channelIds: draft.channelIds,
+      textLength: String(
+        draft.content?.text || ''
+      ).length,
+      attachments:
+        Array.isArray(draft.content?.attachments)
+          ? draft.content.attachments.length
+          : 0,
+    })
+  );
 
-    console.log('[v20 native] post content -> full channel select', JSON.stringify({
+  return msg(
+    chatId,
+    editorMenuText(),
+    editorMenuRows(draft)
+  );
+}
+
+/*
+ * Старое разрешённое поведение сохраняется:
+ * - пост из главного меню сначала открывает выбор каналов;
+ * - если канал ещё не выбран, также показывается выбор.
+ */
+const __lrCanAcceptPostInput =
+  [
+    'wait_post_content',
+    'post_content',
+    'wait_content',
+    'wait_post_media',
+    'select_channels',
+    'select_channels_multi',
+  ].includes(__lrPostInputState)
+  || (
+    __lrMainPostState
+    && __lrPostHasContent
+    && !__lrIsCommandLike
+  );
+
+if (
+  __lrCanAcceptPostInput
+  && __lrPostHasContent
+) {
+  const d = emptyDraft();
+
+  d.content = {
+    ...d.content,
+    ...content,
+  };
+
+  if (typeof lrApplyEditorPostFormat === 'function') {
+    lrApplyEditorPostFormat(d, content);
+  }
+
+  d.previewMessageId = null;
+
+  console.log(
+    '[v20.1 native] no selected channels -> channel select',
+    JSON.stringify({
       chatId,
       key,
       state: __lrPostInputState,
       fromMain: __lrMainPostState,
-      textLength: String(d.content?.text || '').length,
-      attachments: Array.isArray(d.content?.attachments) ? d.content.attachments.length : 0
-    }));
+      selectedChannels:
+        __lrSelectedChannelIds.length,
+      textLength: String(
+        d.content?.text || ''
+      ).length,
+      attachments:
+        Array.isArray(d.content?.attachments)
+          ? d.content.attachments.length
+          : 0,
+    })
+  );
 
-    if (typeof lrV15SendChannelSelect === 'function') {
-      return lrV15SendChannelSelect(chatId, key, d, false);
-    }
+  if (typeof lrV15SendChannelSelect === 'function') {
+    return lrV15SendChannelSelect(
+      chatId,
+      key,
+      d,
+      false
+    );
+  }
 
-    const channels = await getChannels();
-    const rows = [];
-    for (const ch of channels) {
-      rows.push([callbackButton(`📡 ${channelName(ch)}`, `post:single:${ch.id}`)]);
-    }
-    rows.push([callbackButton('🧩 Выбрать несколько', 'post:multi'), callbackButton('🌐 Все каналы', 'post:all_channels')]);
-    rows.push([callbackButton('🔗 Добавить канал', 'post:add_channel')]);
-    rows.push([callbackButton('⬅️ Назад', 'main:posting'), callbackButton('❌ Отмена', 'post:cancel')]);
-    await setSession(key, 'select_channels', { draft: d });
-    return msg(chatId, `━━━━━━━━━━━━━━
-📡 <b>Куда выпустить пост?</b>
+  const channels = await getChannels();
+  const rows = [];
+
+  for (const ch of channels) {
+    rows.push([
+      callbackButton(
+        `📡 ${channelName(ch)}`,
+        `post:single:${ch.id}`
+      ),
+    ]);
+  }
+
+  rows.push([
+    callbackButton(
+      '🧩 Выбрать несколько',
+      'post:multi'
+    ),
+    callbackButton(
+      '🌐 Все каналы',
+      'post:all_channels'
+    ),
+  ]);
+
+  rows.push([
+    callbackButton(
+      '🔗 Добавить канал',
+      'post:add_channel'
+    ),
+  ]);
+
+  rows.push([
+    callbackButton(
+      '⬅️ Назад',
+      'main:posting'
+    ),
+    callbackButton(
+      '❌ Отмена',
+      'post:cancel'
+    ),
+  ]);
+
+  await setSession(
+    key,
+    'select_channels',
+    { draft: d }
+  );
+
+  return msg(
+    chatId,
+    `━━━━━━━━━━━━━━
+📡 Куда выпустить пост?
 
 Пост принят.
 Выберите канал.
-━━━━━━━━━━━━━━`, rows, 'html');
-  }
-  /* LR_NATIVE_HANDLEMESSAGE_SELECT_V20_END */
+━━━━━━━━━━━━━━`,
+    rows,
+    'html'
+  );
+}
+/* LR_NATIVE_HANDLEMESSAGE_SELECT_V20_END */
 return msg(chatId, 'Команда не найдена. Нажмите /start.');
 }
 async function sendStudioEditorMessage(chatId, draft) {
