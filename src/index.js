@@ -28006,3 +28006,848 @@ try {
   );
 }
 /* LR_CHANNEL_TEAM_ACCESS_END */
+
+/* LR_POST_FLOW_FINAL_V77_START */
+/*
+ * Финальный изолированный маршрут создания поста.
+ * Существующие функции не удаляются и не переписываются:
+ * меняются только ссылки на три обработчика после загрузки файла.
+ */
+const lrV77OriginalSenderId =
+  lrV47SenderId;
+
+const lrV77OriginalAskContent =
+  lrV47AskContent;
+
+const lrV77OriginalMessageCreated =
+  lrV47HandleMessageCreated;
+
+const lrV77OriginalClearTempDrafts =
+  lrV47ClearTempDrafts;
+
+function lrV77CleanId(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/^user:/, '')
+    .slice(0, 180);
+}
+
+function lrV77IdentityIds(update, extras = []) {
+  const values = [
+    ...extras,
+
+    update?.user_id,
+    update?.userId,
+    update?.user?.user_id,
+    update?.user?.userId,
+    update?.user?.id,
+
+    update?.sender?.user_id,
+    update?.sender?.userId,
+    update?.sender?.id,
+
+    update?.callback?.user_id,
+    update?.callback?.userId,
+    update?.callback?.user?.user_id,
+    update?.callback?.user?.userId,
+    update?.callback?.user?.id,
+
+    update?.message_callback?.user_id,
+    update?.message_callback?.userId,
+    update?.message_callback?.user?.user_id,
+    update?.message_callback?.user?.userId,
+    update?.message_callback?.user?.id,
+
+    update?.message?.sender?.user_id,
+    update?.message?.sender?.userId,
+    update?.message?.sender?.id,
+
+    update?.message?.recipient?.chat_id,
+    update?.message?.recipient?.chatId,
+    update?.message?.recipient?.id,
+
+    update?.chat_id,
+    update?.chatId,
+
+    update?.body?.user_id,
+    update?.body?.userId,
+    update?.body?.user?.user_id,
+    update?.body?.user?.userId,
+    update?.body?.user?.id,
+
+    update?.body?.callback?.user_id,
+    update?.body?.callback?.userId,
+    update?.body?.callback?.user?.user_id,
+    update?.body?.callback?.user?.userId,
+    update?.body?.callback?.user?.id,
+
+    update?.body?.message?.sender?.user_id,
+    update?.body?.message?.sender?.userId,
+    update?.body?.message?.sender?.id,
+
+    update?.body?.message?.recipient?.chat_id,
+    update?.body?.message?.recipient?.chatId,
+    update?.body?.message?.recipient?.id,
+  ];
+
+  try {
+    values.push(lrV47ChatId(update));
+  } catch (_) {}
+
+  try {
+    values.push(lrV47PrivateChatId(update));
+  } catch (_) {}
+
+  try {
+    values.push(lrV47Key(update));
+  } catch (_) {}
+
+  try {
+    if (typeof getSessionKey === 'function') {
+      values.push(getSessionKey(update));
+    }
+  } catch (_) {}
+
+  const ids = new Set();
+
+  for (const value of values) {
+    const plain = lrV77CleanId(value);
+
+    if (!plain || plain === '0') {
+      continue;
+    }
+
+    ids.add(plain);
+    ids.add(`user:${plain}`);
+  }
+
+  return [...ids];
+}
+
+function lrV77PendingKey(id) {
+  return `lr_v77_pending_post:${String(id || '').slice(0, 190)}`;
+}
+
+function lrV77MessageId(update) {
+  const values = [
+    update?.message_id,
+    update?.messageId,
+
+    update?.message?.message_id,
+    update?.message?.messageId,
+    update?.message?.id,
+    update?.message?.body?.mid,
+    update?.message?.body?.message_id,
+    update?.message?.body?.messageId,
+
+    update?.body?.message_id,
+    update?.body?.messageId,
+    update?.body?.message?.message_id,
+    update?.body?.message?.messageId,
+    update?.body?.message?.id,
+    update?.body?.message?.body?.mid,
+
+    update?.callback?.message_id,
+    update?.callback?.messageId,
+  ];
+
+  for (const value of values) {
+    const id = String(value ?? '').trim();
+
+    if (id && id !== '0') {
+      return id;
+    }
+  }
+
+  return '';
+}
+
+function lrV77EventFingerprint(update) {
+  const ids = lrV77IdentityIds(update);
+  const messageId = lrV77MessageId(update);
+
+  const timestamp = String(
+    update?.timestamp
+    ?? update?.message?.timestamp
+    ?? update?.body?.timestamp
+    ?? ''
+  );
+
+  const linkedId = String(
+    update?.message?.link?.message?.body?.mid
+    ?? update?.message?.link?.message?.message_id
+    ?? update?.message?.link?.message?.id
+    ?? update?.body?.message?.link?.message?.body?.mid
+    ?? update?.body?.message?.link?.message?.message_id
+    ?? ''
+  );
+
+  const text = String(
+    update?.message?.body?.text
+    ?? update?.message?.text
+    ?? update?.body?.message?.body?.text
+    ?? update?.body?.message?.text
+    ?? update?.body?.text
+    ?? ''
+  )
+    .trim()
+    .slice(0, 180);
+
+  return [
+    messageId,
+    linkedId,
+    timestamp,
+    ids[0] || '',
+    text,
+  ]
+    .join('|')
+    .slice(0, 760);
+}
+
+async function lrV77IsClaimed(update) {
+  const fingerprint =
+    lrV77EventFingerprint(update);
+
+  if (!fingerprint.replace(/\|/g, '')) {
+    return false;
+  }
+
+  const key =
+    `lr_v77_post_event:${fingerprint}`;
+
+  try {
+    const rows = lrV47Rows(
+      await query(
+        `SELECT 1
+           FROM lr_bot_state
+          WHERE key=$1
+            AND updated_at > now() - interval '30 minutes'
+          LIMIT 1`,
+        [key]
+      )
+    );
+
+    return Boolean(rows[0]);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function lrV77Claim(update) {
+  const fingerprint =
+    lrV77EventFingerprint(update);
+
+  if (!fingerprint.replace(/\|/g, '')) {
+    return true;
+  }
+
+  const key =
+    `lr_v77_post_event:${fingerprint}`;
+
+  try {
+    const rows = lrV47Rows(
+      await query(
+        `INSERT INTO lr_bot_state(key,value,updated_at)
+         VALUES($1,$2,now())
+         ON CONFLICT(key) DO NOTHING
+         RETURNING key`,
+        [
+          key,
+          JSON.stringify({
+            fingerprint,
+            ts: Date.now(),
+          }),
+        ]
+      )
+    );
+
+    return Boolean(rows[0]);
+  } catch (error) {
+    console.error(
+      '[v77 post flow] claim failed',
+      error?.stack
+      || error?.message
+      || error
+    );
+
+    return true;
+  }
+}
+
+async function lrV77SavePending(
+  update,
+  chatId,
+  sessionKey,
+  draft
+) {
+  const ids = lrV77IdentityIds(
+    update,
+    [chatId, sessionKey]
+  );
+
+  const value = {
+    draft,
+    ids,
+    chatId: String(chatId || ''),
+    sessionKey: String(sessionKey || ''),
+    ts: Date.now(),
+  };
+
+  for (const id of ids) {
+    await lrV47StateSet(
+      lrV77PendingKey(id),
+      value
+    );
+  }
+
+  console.log(
+    '[v77 post flow] pending saved',
+    JSON.stringify({
+      chatId,
+      sessionKey,
+      ids,
+      channelIds:
+        Array.isArray(draft?.channelIds)
+          ? draft.channelIds
+          : [],
+    })
+  );
+
+  return value;
+}
+
+async function lrV77LoadPending(update) {
+  const ids = lrV77IdentityIds(update);
+
+  for (const id of ids) {
+    const value = await lrV47StateGet(
+      lrV77PendingKey(id)
+    );
+
+    if (
+      value?.draft
+      && Number(value?.ts || 0)
+        > Date.now() - 30 * 60 * 1000
+    ) {
+      return {
+        ...value,
+        matchedBy: id,
+      };
+    }
+  }
+
+  /*
+   * Резерв используется только при единственном
+   * незавершённом draft за последние 30 минут.
+   * При нескольких пользователях чужой draft
+   * автоматически не выбирается.
+   */
+  try {
+    const rows = lrV47Rows(
+      await query(
+        `SELECT key,value,updated_at
+           FROM lr_bot_state
+          WHERE key LIKE 'lr_v77_pending_post:%'
+            AND updated_at > now() - interval '30 minutes'
+          ORDER BY updated_at DESC
+          LIMIT 20`
+      )
+    );
+
+    const unique = new Map();
+
+    for (const row of rows) {
+      let value = row?.value || {};
+
+      if (typeof value === 'string') {
+        try {
+          value = JSON.parse(value);
+        } catch (_) {
+          value = {};
+        }
+      }
+
+      if (!value?.draft) {
+        continue;
+      }
+
+      const signature = JSON.stringify({
+        sessionKey: value?.sessionKey || '',
+        chatId: value?.chatId || '',
+        channelIds: value?.draft?.channelIds || [],
+        ts: value?.ts || 0,
+      });
+
+      unique.set(signature, value);
+    }
+
+    if (unique.size === 1) {
+      return {
+        ...[...unique.values()][0],
+        matchedBy: 'single-recent-pending',
+      };
+    }
+  } catch (error) {
+    console.error(
+      '[v77 post flow] pending fallback failed',
+      error?.stack
+      || error?.message
+      || error
+    );
+  }
+
+  return null;
+}
+
+async function lrV77ClearPending(
+  pending,
+  update
+) {
+  const ids = new Set([
+    ...(
+      Array.isArray(pending?.ids)
+        ? pending.ids
+        : []
+    ),
+    ...lrV77IdentityIds(
+      update,
+      [
+        pending?.chatId,
+        pending?.sessionKey,
+      ]
+    ),
+  ]);
+
+  for (const id of ids) {
+    try {
+      await query(
+        `DELETE FROM lr_bot_state
+          WHERE key=$1`,
+        [lrV77PendingKey(id)]
+      );
+    } catch (_) {}
+  }
+}
+
+async function lrV77FindSession(update) {
+  const ids = lrV77IdentityIds(update);
+
+  for (const id of ids) {
+    const session = await lrV47GetSession(id)
+      .catch(() => null);
+
+    if (
+      session
+      && String(session?.state || '')
+        === 'wait_post_content'
+    ) {
+      return {
+        session,
+        key: String(
+          session?.user_id || id
+        ),
+        matchedBy: id,
+      };
+    }
+  }
+
+  try {
+    const rows = lrV47Rows(
+      await query(
+        `SELECT user_id,state,data,updated_at
+           FROM bot_sessions
+          WHERE state='wait_post_content'
+            AND updated_at > now() - interval '30 minutes'
+          ORDER BY updated_at DESC
+          LIMIT 2`
+      )
+    );
+
+    if (rows.length === 1) {
+      return {
+        session: rows[0],
+        key: String(
+          rows[0]?.user_id || ''
+        ),
+        matchedBy: 'single-recent-session',
+      };
+    }
+  } catch (error) {
+    console.error(
+      '[v77 post flow] session fallback failed',
+      error?.stack
+      || error?.message
+      || error
+    );
+  }
+
+  return null;
+}
+
+lrV47SenderId = function lrV47SenderIdV77(
+  update
+) {
+  const ids = lrV77IdentityIds(update);
+
+  for (const id of ids) {
+    if (!String(id).startsWith('user:')) {
+      return id;
+    }
+  }
+
+  try {
+    return String(
+      lrV77OriginalSenderId(update)
+      || ''
+    );
+  } catch (_) {
+    return '';
+  }
+};
+
+lrV47AskContent =
+async function lrV47AskContentV77(
+  chatId,
+  key,
+  draft
+) {
+  const d = draft || lrV47EmptyDraft();
+
+  d.channelIds = Array.isArray(d.channelIds)
+    ? [
+        ...new Set(
+          d.channelIds
+            .map(Number)
+            .filter(Number.isFinite)
+        ),
+      ]
+    : [];
+
+  await lrV47SetSession(
+    key,
+    'wait_post_content',
+    { draft: d }
+  );
+
+  await lrV77SavePending(
+    globalThis.__lastUpdate || {},
+    chatId,
+    key,
+    d
+  );
+
+  const channels =
+    await lrV47Channels();
+
+  const selected = channels.filter(
+    (channel) =>
+      d.channelIds.includes(
+        Number(channel.id)
+      )
+  );
+
+  const list = selected.length
+    ? selected
+        .map(
+          (channel) =>
+            `• ${lrV47Esc(
+              lrV47ChannelName(channel)
+            )}`
+        )
+        .join('\n')
+    : '—';
+
+  return lrV47Msg(
+    chatId,
+    `━━━━━━━━━━━━━━
+📨 Отправьте пост
+
+Каналы:
+${list}
+
+Можно отправить текст, фото, видео,
+файл или пересланный пост.
+━━━━━━━━━━━━━━`,
+    [
+      [
+        lrV47Btn(
+          '⬅️ К каналам',
+          'post:change_channels'
+        ),
+      ],
+      [
+        lrV47Btn(
+          '❌ Отмена',
+          'post:cancel'
+        ),
+      ],
+    ],
+    'html'
+  );
+};
+
+lrV47ClearTempDrafts =
+async function lrV47ClearTempDraftsV77(
+  key
+) {
+  await lrV77OriginalClearTempDrafts(key);
+
+  const plain = lrV77CleanId(key);
+  const ids = [
+    plain,
+    plain ? `user:${plain}` : '',
+  ].filter(Boolean);
+
+  for (const id of ids) {
+    try {
+      await query(
+        `DELETE FROM lr_bot_state
+          WHERE key=$1`,
+        [lrV77PendingKey(id)]
+      );
+    } catch (_) {}
+  }
+};
+
+lrV47HandleMessageCreated =
+async function lrV47HandleMessageCreatedV77(
+  update
+) {
+  /*
+   * Сохраняем существующую обработку удаления
+   * и добавления каналов.
+   */
+  if (await lrV47HandleBotRemoved(update)) {
+    return true;
+  }
+
+  if (await lrV47HandleAddForward(update)) {
+    return true;
+  }
+
+  const chatId =
+    lrV47PrivateChatId(update);
+
+  /*
+   * Второй webhook того же сообщения не должен
+   * запускать новый сценарий после edit_draft.
+   */
+  if (await lrV77IsClaimed(update)) {
+    console.log(
+      '[v77 post flow] duplicate ignored',
+      JSON.stringify({
+        chatId,
+        messageId:
+          lrV77MessageId(update),
+      })
+    );
+
+    return true;
+  }
+
+  const pending =
+    await lrV77LoadPending(update);
+
+  const foundSession =
+    await lrV77FindSession(update);
+
+  let key = String(
+    pending?.sessionKey
+    || foundSession?.key
+    || lrV47Key(update)
+    || chatId
+    || ''
+  );
+
+  let draft =
+    pending?.draft
+    || (
+      foundSession?.session
+        ? lrV47SessionDraft(
+            foundSession.session
+          )
+        : null
+    );
+
+  const selectedChannelIds =
+    Array.isArray(draft?.channelIds)
+      ? [
+          ...new Set(
+            draft.channelIds
+              .map(Number)
+              .filter(Number.isFinite)
+          ),
+        ]
+      : [];
+
+  if (
+    draft
+    && selectedChannelIds.length
+  ) {
+    const claimed =
+      await lrV77Claim(update);
+
+    if (!claimed) {
+      return true;
+    }
+
+    const incomingDraft =
+      await lrV47ExtractDraft(update);
+
+    draft.content = {
+      ...(draft.content || {}),
+      ...(incomingDraft?.content || {}),
+    };
+
+    if (
+      Array.isArray(
+        incomingDraft?.buttons
+      )
+      && incomingDraft.buttons.length
+    ) {
+      draft.buttons =
+        incomingDraft.buttons;
+    }
+
+    draft.channelIds =
+      selectedChannelIds;
+
+    draft.previewMessageId = null;
+
+    await lrV77ClearPending(
+      pending || {
+        sessionKey: key,
+        chatId,
+        ids: lrV77IdentityIds(update),
+      },
+      update
+    );
+
+    await lrV47OpenEditor(
+      chatId,
+      key,
+      draft
+    );
+
+    console.log(
+      '[v77 post flow] opened editor',
+      JSON.stringify({
+        chatId,
+        key,
+        pending:
+          pending?.matchedBy || null,
+        session:
+          foundSession?.matchedBy || null,
+        channelIds:
+          draft.channelIds,
+        messageId:
+          lrV77MessageId(update),
+      })
+    );
+
+    return true;
+  }
+
+  const ids =
+    lrV77IdentityIds(update);
+
+  let currentSession = null;
+
+  for (const id of ids) {
+    currentSession =
+      await lrV47GetSession(id)
+        .catch(() => null);
+
+    if (currentSession) {
+      key = String(
+        currentSession?.user_id
+        || id
+      );
+
+      break;
+    }
+  }
+
+  const state = String(
+    currentSession?.state || ''
+  );
+
+  /*
+   * Эти состояния не имеют права превращать
+   * входящее сообщение в новый пост.
+   */
+  const protectedStates = new Set([
+    'select_channels',
+    'select_channels_multi',
+    'edit_draft',
+    'edit_existing',
+  ]);
+
+  if (protectedStates.has(state)) {
+    console.log(
+      '[v77 post flow] protected state',
+      JSON.stringify({
+        chatId,
+        key,
+        state,
+      })
+    );
+
+    return true;
+  }
+
+  /*
+   * Эти состояния должен продолжать обрабатывать
+   * старый действующий handleMessage.
+   */
+  const nativeInputStates = new Set([
+    'wait_edit_text',
+    'wait_edit_media',
+    'wait_button',
+    'wait_signature',
+    'wait_cpm',
+    'wait_schedule',
+    'wait_post_time',
+    'wait_auto_delete',
+  ]);
+
+  if (nativeInputStates.has(state)) {
+    return false;
+  }
+
+  const mainStates = new Set([
+    '',
+    'idle',
+    'main',
+    'menu',
+    'start',
+  ]);
+
+  if (mainStates.has(state)) {
+    return lrV47HandleMainForward(
+      update
+    );
+  }
+
+  /*
+   * Любое неизвестное активное состояние
+   * не передаём в новый выбор каналов.
+   */
+  console.log(
+    '[v77 post flow] non-main state ignored',
+    JSON.stringify({
+      chatId,
+      key,
+      state,
+    })
+  );
+
+  return false;
+};
+
+console.log(
+  '[v77 post flow] installed: '
+  + 'selected channels persist; '
+  + 'duplicates cannot reopen channel selection'
+);
+/* LR_POST_FLOW_FINAL_V77_END */
