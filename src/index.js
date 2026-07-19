@@ -20634,7 +20634,146 @@ async function handleMessage(update) {
 
   await __lrRememberPrivateChatId(chatId, update);
   await __lrNotifyNewChannels(chatId, update);
- const key = getSessionKey(update); const text = getMessageText(update); const n = norm(text); log('message', { chatId, key, text: text.slice(0,80) });
+ const key = getSessionKey(update);
+const text = getMessageText(update);
+const n = norm(text);
+
+/* LR_POST_FIRST_FLOW_V78_MESSAGE */
+const __lrV78Command = [
+  '/start',
+  'start',
+  '/menu',
+  'меню',
+  'начать',
+].includes(n)
+  || String(text || '').trim().startsWith('/');
+
+if (!__lrV78Command) {
+  const __lrV78Wait = await lrV78LoadWait(
+    update,
+    [chatId, key]
+  );
+
+  if (__lrV78Wait?.draft) {
+    const __lrV78Content =
+      await lrSafeHydrateContent(update);
+
+    const __lrV78Draft = safeDraft({
+      draft: __lrV78Wait.draft,
+    });
+
+    __lrV78Draft.content = {
+      ...(__lrV78Draft.content || {}),
+      ...(__lrV78Content || {}),
+    };
+
+    if (
+      typeof lrApplyEditorPostFormat
+        === 'function'
+    ) {
+      lrApplyEditorPostFormat(
+        __lrV78Draft,
+        __lrV78Content
+      );
+    }
+
+    const __lrV78HasContent = Boolean(
+      String(
+        __lrV78Draft?.content?.text || ''
+      ).trim()
+      || (
+        Array.isArray(
+          __lrV78Draft?.content?.attachments
+        )
+        && __lrV78Draft.content.attachments.length
+      )
+      || __lrV78Draft?.content?.link
+      || __lrV78Draft?.content?.raw
+    );
+
+    if (__lrV78HasContent) {
+      const __lrV78Key = String(
+        __lrV78Wait.sessionKey
+        || key
+        || chatId
+        || ''
+      );
+
+      __lrV78Draft.channelIds = [];
+
+      await lrV78ClearWait(
+        __lrV78Wait,
+        update
+      );
+
+      /*
+       * Сохраняем материал в действующий draft.
+       * После выбора каналов существующий обработчик
+       * увидит контент и откроет редактор.
+       */
+      await lrV47StateSet(
+        `lr_v44_forward_draft:${__lrV78Key}`,
+        {
+          draft: __lrV78Draft,
+          reason: 'post_first_v78',
+          ts: Date.now(),
+        }
+      );
+
+      await lrV47SetSession(
+        __lrV78Key,
+        'select_channels',
+        {
+          draft: __lrV78Draft,
+        }
+      );
+
+      console.log(
+        '[post first v78] content -> channel select',
+        JSON.stringify({
+          chatId,
+          key,
+          effectiveKey: __lrV78Key,
+          matchedBy:
+            __lrV78Wait.matchedBy || null,
+          textLength: String(
+            __lrV78Draft?.content?.text || ''
+          ).length,
+          attachments:
+            Array.isArray(
+              __lrV78Draft?.content?.attachments
+            )
+              ? __lrV78Draft.content.attachments.length
+              : 0,
+        })
+      );
+
+      return lrV47ShowChannelSelect(
+        chatId,
+        __lrV78Key,
+        __lrV78Draft,
+        false
+      );
+    }
+
+    return lrV47Msg(
+      chatId,
+      `⚠️ Не удалось получить содержимое поста.
+
+Отправьте текст, фото, видео, файл
+или перешлите готовый пост ещё раз.`,
+      [
+        [
+          lrV47Btn(
+            '❌ Отмена',
+            'post:cancel'
+          ),
+        ],
+      ],
+      'html'
+    );
+  }
+} log('message', { chatId, key, text: text.slice(0,80) });
   await writeFile('/tmp/linkray_last_update.json', JSON.stringify(update, null, 2)).catch(()=>{});
   if (['/start','start','/menu','меню','начать'].includes(n) || String(getUpdateType(update) || '').toLowerCase().includes('bot_started')) {
     const now = Date.now();
@@ -20945,6 +21084,7 @@ ${error.message || error}`);
   if (session.state === 'wait_post_time') { const publishAt = parseSchedule(text); if (!publishAt) return msg(chatId, 'Не понял время.'); await query(`UPDATE scheduled_posts SET publish_at=$2, updated_at=now() WHERE id=$1`, [session.data.postId, publishAt]); await clearSession(key); return msg(chatId, '✅ Время обновлено.', [[callbackButton('👁 Открыть пост', `post:open:${session.data.postId}`)]]); }
   
 /* LR_NATIVE_HANDLEMESSAGE_SELECT_V20_START */
+/* LR_POST_FIRST_FLOW_V78_V20_GUARD */
 /* LR_NATIVE_KEEP_SELECTED_CHANNELS_V20_1 */
 if (session && session.state === 'wait_add_channel') {
   console.log(
@@ -21092,8 +21232,6 @@ const __lrCanAcceptPostInput =
     'post_content',
     'wait_content',
     'wait_post_media',
-    'select_channels',
-    'select_channels_multi',
   ].includes(__lrPostInputState)
   || (
     __lrMainPostState
@@ -22299,7 +22437,242 @@ async function lrV47ClearTempDrafts(key) {
   ]);
 }
 
+/* LR_POST_FIRST_FLOW_V78_HELPERS_START */
+/* LR_POST_FIRST_FLOW_V78 */
+function lrV78CleanId(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/^user:/, '')
+    .slice(0, 180);
+}
+
+function lrV78IdentityIds(update, extras = []) {
+  const values = [
+    ...extras,
+
+    update?.user_id,
+    update?.userId,
+    update?.user?.user_id,
+    update?.user?.userId,
+    update?.user?.id,
+
+    update?.sender?.user_id,
+    update?.sender?.userId,
+    update?.sender?.id,
+
+    update?.callback?.user_id,
+    update?.callback?.userId,
+    update?.callback?.user?.user_id,
+    update?.callback?.user?.userId,
+    update?.callback?.user?.id,
+
+    update?.message_callback?.user_id,
+    update?.message_callback?.userId,
+    update?.message_callback?.user?.user_id,
+    update?.message_callback?.user?.userId,
+    update?.message_callback?.user?.id,
+
+    update?.message?.sender?.user_id,
+    update?.message?.sender?.userId,
+    update?.message?.sender?.id,
+
+    update?.message?.recipient?.chat_id,
+    update?.message?.recipient?.chatId,
+    update?.message?.recipient?.id,
+
+    update?.chat_id,
+    update?.chatId,
+
+    update?.body?.user_id,
+    update?.body?.userId,
+    update?.body?.user?.user_id,
+    update?.body?.user?.userId,
+    update?.body?.user?.id,
+
+    update?.body?.callback?.user_id,
+    update?.body?.callback?.userId,
+    update?.body?.callback?.user?.user_id,
+    update?.body?.callback?.user?.userId,
+    update?.body?.callback?.user?.id,
+
+    update?.body?.message?.sender?.user_id,
+    update?.body?.message?.sender?.userId,
+    update?.body?.message?.sender?.id,
+
+    update?.body?.message?.recipient?.chat_id,
+    update?.body?.message?.recipient?.chatId,
+    update?.body?.message?.recipient?.id,
+  ];
+
+  try {
+    values.push(lrV47SenderId(update));
+  } catch (_) {}
+
+  try {
+    values.push(lrV47ChatId(update));
+  } catch (_) {}
+
+  try {
+    values.push(lrV47PrivateChatId(update));
+  } catch (_) {}
+
+  try {
+    values.push(lrV47Key(update));
+  } catch (_) {}
+
+  try {
+    if (typeof getSessionKey === 'function') {
+      values.push(getSessionKey(update));
+    }
+  } catch (_) {}
+
+  const ids = new Set();
+
+  for (const value of values) {
+    const plain = lrV78CleanId(value);
+
+    if (!plain || plain === '0') {
+      continue;
+    }
+
+    ids.add(plain);
+    ids.add(`user:${plain}`);
+  }
+
+  return [...ids];
+}
+
+function lrV78WaitKey(id) {
+  return `lr_v78_wait_post:${String(id || '').slice(0, 190)}`;
+}
+
+async function lrV78SaveWait(update, chatId, key, draft) {
+  const ids = lrV78IdentityIds(
+    update,
+    [chatId, key]
+  );
+
+  const value = {
+    draft,
+    ids,
+    chatId: String(chatId || ''),
+    sessionKey: String(key || ''),
+    ts: Date.now(),
+  };
+
+  for (const id of ids) {
+    await lrV47StateSet(
+      lrV78WaitKey(id),
+      value
+    );
+  }
+
+  return value;
+}
+
+async function lrV78LoadWait(update, extras = []) {
+  const ids = lrV78IdentityIds(
+    update,
+    extras
+  );
+
+  for (const id of ids) {
+    const value = await lrV47StateGet(
+      lrV78WaitKey(id)
+    );
+
+    if (
+      value?.draft
+      && Number(value?.ts || 0)
+        > Date.now() - 30 * 60 * 1000
+    ) {
+      return {
+        ...value,
+        matchedBy: id,
+      };
+    }
+  }
+
+  /*
+   * Резерв допустим только при одном незавершённом
+   * создании поста за последние 30 минут.
+   */
+  try {
+    const rows = lrV47Rows(
+      await query(
+        `SELECT key,value,updated_at
+           FROM lr_bot_state
+          WHERE key LIKE 'lr_v78_wait_post:%'
+            AND updated_at > now() - interval '30 minutes'
+          ORDER BY updated_at DESC
+          LIMIT 20`
+      )
+    );
+
+    const unique = new Map();
+
+    for (const row of rows) {
+      let value = row?.value || {};
+
+      if (typeof value === 'string') {
+        try {
+          value = JSON.parse(value);
+        } catch (_) {
+          value = {};
+        }
+      }
+
+      if (!value?.draft) {
+        continue;
+      }
+
+      const signature = JSON.stringify({
+        chatId: value?.chatId || '',
+        sessionKey: value?.sessionKey || '',
+        ts: value?.ts || 0,
+      });
+
+      unique.set(signature, value);
+    }
+
+    if (unique.size === 1) {
+      return {
+        ...[...unique.values()][0],
+        matchedBy: 'single-recent-wait',
+      };
+    }
+  } catch (error) {
+    console.error(
+      '[post first v78] fallback failed',
+      error?.stack || error?.message || error
+    );
+  }
+
+  return null;
+}
+
+async function lrV78ClearWait(wait, update) {
+  const ids = new Set([
+    ...(Array.isArray(wait?.ids) ? wait.ids : []),
+    ...lrV78IdentityIds(
+      update,
+      [wait?.chatId, wait?.sessionKey]
+    ),
+  ]);
+
+  for (const id of ids) {
+    try {
+      await query(
+        `DELETE FROM lr_bot_state WHERE key=$1`,
+        [lrV78WaitKey(id)]
+      );
+    } catch (_) {}
+  }
+}
+/* LR_POST_FIRST_FLOW_V78_HELPERS_END */
 async function lrV47StartCreate(update) {
+  /* LR_POST_FIRST_FLOW_V78 */
+  const callbackId = lrV47CallbackId(update);
   const chatId = lrV47PrivateChatId(update);
   const key = lrV47Key(update);
   const draft = lrV47EmptyDraft();
@@ -22307,9 +22680,90 @@ async function lrV47StartCreate(update) {
   await lrV47ClearTempDrafts(key);
   await lrV47ClearSession(key);
 
-  console.log('[v47 final] post:create clean start', JSON.stringify({ chatId, key }));
+  /*
+   * Старые pending-записи больше не должны влиять
+   * на новый порядок создания поста.
+   */
+  const ids = lrV78IdentityIds(
+    update,
+    [chatId, key]
+  );
 
-  return lrV47ShowChannelSelect(chatId, key, draft, false);
+  for (const id of ids) {
+    try {
+      await query(
+        `DELETE FROM lr_bot_state
+          WHERE key=$1
+             OR key=$2
+             OR key=$3`,
+        [
+          `lr_v47_pending_post_content:${id}`,
+          `lr_v77_pending_post:${id}`,
+          `lr_v44_forward_draft:${id}`,
+        ]
+      );
+    } catch (_) {}
+  }
+
+  await lrV47SetSession(
+    key,
+    'wait_post_first_v78',
+    {
+      draft,
+      mode: 'post_first',
+      ts: Date.now(),
+    }
+  );
+
+  await lrV78SaveWait(
+    update,
+    chatId,
+    key,
+    draft
+  );
+
+  await lrV47Ack(
+    callbackId,
+    'Отправьте пост'
+  );
+
+  console.log(
+    '[post first v78] waiting content',
+    JSON.stringify({
+      chatId,
+      key,
+      ids,
+    })
+  );
+
+  return lrV47Cb(
+    callbackId,
+    chatId,
+    `━━━━━━━━━━━━━━
+📨 Отправьте пост
+
+Сначала отправьте текст, фото, видео,
+файл или перешлите готовый пост.
+
+После этого LinkRay один раз покажет
+выбор каналов и откроет редактор.
+━━━━━━━━━━━━━━`,
+    [
+      [
+        lrV47Btn(
+          '⬅️ В Studio',
+          'main:posting'
+        ),
+      ],
+      [
+        lrV47Btn(
+          '❌ Отмена',
+          'post:cancel'
+        ),
+      ],
+    ],
+    'html'
+  );
 }
 
 async function lrV47ShowAddChannel(update) {
