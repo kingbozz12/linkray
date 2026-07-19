@@ -6862,15 +6862,21 @@ async function lrV73SendDailyGroup(
             audienceUrl
           ),
         format: 'html',
-        attachments:
-          lrMenuButtons([[
+        attachments: lrMenuButtons([
+          [
             {
               type: 'link',
-              text:
-                '🌐 Подписки и отписки за 24 часа',
+              text: '🌐 Подписки и отписки за 24 часа',
               url: audienceUrl,
             },
-          ]]),
+          ],
+          [
+            lrCb(
+              '🏠 Главное меню',
+              'main:menu'
+            ),
+          ],
+        ]) /* LR_DAILY_PDP_MAIN_MENU_V79_1 */,
       });
 
       console.log(
