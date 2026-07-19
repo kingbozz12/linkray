@@ -593,16 +593,18 @@ function lrV16PickNumber(row, names) {
 }
 
 async function lrV16LoadFromSnapshots(link) {
+  /* LR_TRUTHFUL_VIEWS_ER_V80_2 */
   const needles = lrV16LinkNeedles(link);
   const likeNeedles = needles.map((x) => `%${x}%`);
 
   try {
     const exact = rows(await query(
       `SELECT *
-         FROM public.lr_channel_analytics_snapshots
-        WHERE link = ANY($1::text[])
-        ORDER BY captured_at DESC
-        LIMIT 1`,
+       FROM public.lr_channel_analytics_snapshots
+       WHERE link = ANY($1::text[])
+         AND collection_source='max_api_collector_v1'
+       ORDER BY captured_at DESC
+       LIMIT 1`,
       [needles]
     ).catch(() => []))[0];
 
@@ -610,15 +612,21 @@ async function lrV16LoadFromSnapshots(link) {
 
     const byLike = rows(await query(
       `SELECT *
-         FROM public.lr_channel_analytics_snapshots
-        WHERE link ILIKE ANY($1::text[])
-        ORDER BY captured_at DESC
-        LIMIT 1`,
+       FROM public.lr_channel_analytics_snapshots
+       WHERE link ILIKE ANY($1::text[])
+         AND collection_source='max_api_collector_v1'
+       ORDER BY captured_at DESC
+       LIMIT 1`,
       [likeNeedles]
     ).catch(() => []))[0];
 
     return byLike || {};
-  } catch {
+  } catch (error) {
+    console.error(
+      '[LR_TRUTHFUL_VIEWS_ER_V80_2_SNAPSHOT]',
+      error?.message || error
+    );
+
     return {};
   }
 }
@@ -678,62 +686,116 @@ async function lrV16LoadFromChannelsTable(link) {
 }
 
 async function lrV16KnownChannelData(link) {
+  /* LR_TRUTHFUL_VIEWS_ER_V80_2 */
   const snap = await lrV16LoadFromSnapshots(link);
   const channel = await lrV16LoadFromChannelsTable(link);
 
-  const merged = { ...snap, ...channel };
+  /*
+   * Название, аватар и резервное число подписчиков
+   * разрешено брать из channels.
+   *
+   * Просмотры и ER берутся только из снимка
+   * collection_source=max_api_collector_v1.
+   */
+  const title =
+    lrV16Pick(channel, [
+      'title',
+      'name',
+      'channel_title',
+      'chat_title',
+      'display_name',
+      'channel_name',
+      'chat_name',
+    ])
+    || lrV16Pick(snap, [
+      'title',
+      'name',
+      'channel_title',
+      'chat_title',
+      'display_name',
+      'channel_name',
+      'chat_name',
+    ]);
 
-  const title = lrV16Pick(merged, [
-    'title', 'name', 'channel_title', 'chat_title', 'display_name',
-    'channel_name', 'chat_name'
-  ]);
+  const avatar =
+    lrV16Pick(channel, [
+      'avatar_url',
+      'photo_url',
+      'image_url',
+      'icon_url',
+      'picture_url',
+      'avatar',
+      'photo',
+    ])
+    || lrV16Pick(snap, [
+      'avatar_url',
+      'photo_url',
+      'image_url',
+      'icon_url',
+      'picture_url',
+      'avatar',
+      'photo',
+    ]);
 
-  const avatar = lrV16Pick(merged, [
-    'avatar_url', 'photo_url', 'image_url', 'icon_url',
-    'picture_url', 'avatar', 'photo'
-  ]);
+  const snapshotSubscribers =
+    lrV16PickNumber(snap, ['subscribers']);
 
-  const subscribers = lrV16PickNumber(merged, [
-    'subscribers', 'subscriber_count', 'subscribers_count',
-    'members', 'members_count', 'participants_count',
-    'followers', 'followers_count'
-  ]);
+  const channelSubscribers =
+    lrV16PickNumber(channel, [
+      'subscribers',
+      'subscriber_count',
+      'subscribers_count',
+      'members',
+      'members_count',
+      'participants_count',
+      'followers',
+      'followers_count',
+    ]);
 
-  const views24 = lrV16PickNumber(merged, [
-    'views24', 'views_24', 'views24h', 'views_24h',
-    'views_day', 'views_last_day', 'views', 'view_count'
-  ]);
+  const out = {
+    collection_source:
+      String(snap?.collection_source || ''),
 
-  const views48 = lrV16PickNumber(merged, [
-    'views48', 'views_48', 'views48h', 'views_48h'
-  ]);
+    subscribers:
+      snapshotSubscribers > 0
+        ? snapshotSubscribers
+        : channelSubscribers,
 
-  const views72 = lrV16PickNumber(merged, [
-    'views72', 'views_72', 'views72h', 'views_72h'
-  ]);
+    views24: num(snap?.views24),
+    views48: num(snap?.views48),
+    views72: num(snap?.views72),
+    views_total: num(snap?.views_total),
 
-  const er24 = Number(lrV16Pick(merged, [
-    'er24', 'er_24', 'er24h', 'er_24h', 'engagement_rate'
-  ]) || 0);
+    posts24: num(snap?.posts24),
+    posts48: num(snap?.posts48),
+    posts72: num(snap?.posts72),
 
-  const out = {};
+    er24: Number(snap?.er24 || 0),
+    delta_day: num(snap?.delta_day),
+
+    joined_24h: num(snap?.joined_24h),
+    left_24h: num(snap?.left_24h),
+    joined_7d: num(snap?.joined_7d),
+    left_7d: num(snap?.left_7d),
+  };
 
   if (title) out.title = title;
   if (avatar) out.avatar_url = avatar;
-  if (subscribers > 0) out.subscribers = subscribers;
-  if (views24 > 0) out.views24 = views24;
-  if (views48 > 0) out.views48 = views48;
-  if (views72 > 0) out.views72 = views72;
-  if (er24 > 0) out.er24 = er24;
 
-  if (Object.keys(out).length) {
-    console.log('[LR_KNOWN_CHANNEL_V16]', lrV16NormalizeLink(link), JSON.stringify({
-      title: out.title || '',
-      avatar: !!out.avatar_url,
-      subscribers: out.subscribers || 0,
-      views24: out.views24 || 0,
-    }));
-  }
+  console.log(
+    '[LR_TRUTHFUL_VIEWS_ER_V80_2_SOURCE]',
+    lrV16NormalizeLink(link),
+    JSON.stringify({
+      source: out.collection_source || 'none',
+      subscribers: out.subscribers,
+      averageViewsTotal: out.views_total,
+      averageViews24: out.views24,
+      averageViews48: out.views48,
+      averageViews72: out.views72,
+      posts24: out.posts24,
+      er24: out.er24,
+    })
+  );
 
   return out;
 }
@@ -964,29 +1026,51 @@ function lrV22SafeExtraRawForChannel(extraRaw, known, cleanLink) {
 /* LR_SAFE_AVATAR_PRIORITY_V22_END */
 
 async function resolveChannel(link, extraRaw = {}) {
+  /* LR_TRUTHFUL_VIEWS_ER_V80_2 */
   await ensureTables();
 
   const cleanLink = lrV16NormalizeLink(link);
   const channelKey = hash(cleanLink);
 
   if (
-    extraRaw &&
-    typeof extraRaw === 'object' &&
-    (extraRaw.message || extraRaw.callback || extraRaw.update_id || extraRaw.recipient || extraRaw.body)
+    extraRaw
+    && typeof extraRaw === 'object'
+    && (
+      extraRaw.message
+      || extraRaw.callback
+      || extraRaw.update_id
+      || extraRaw.recipient
+      || extraRaw.body
+    )
   ) {
     extraRaw = {};
   }
 
   const idx = Number(extraRaw?._lrIndex || 0);
 
-  const known = await lrV16KnownChannelData(cleanLink);
-  const lrV22ExtraRaw = lrV22SafeExtraRawForChannel(extraRaw, known, cleanLink);
-  const preview = lrV19CleanPreviewAvatar(await lrV16FetchMaxPreview(cleanLink));
-  const fromMax = await callMaxForStats(cleanLink);
+  const known =
+    await lrV16KnownChannelData(cleanLink);
 
-  // ВАЖНО:
-  // known — это база LinkRay / сохранённые каналы, она главнее.
-  // preview MAX часто отдаёт общий заголовок приложения или первое превью.
+  const lrV22ExtraRaw =
+    lrV22SafeExtraRawForChannel(
+      extraRaw,
+      known,
+      cleanLink
+    );
+
+  const preview =
+    lrV19CleanPreviewAvatar(
+      await lrV16FetchMaxPreview(cleanLink)
+    );
+
+  const fromMax =
+    await callMaxForStats(cleanLink);
+
+  /*
+   * MAX preview/fromMax остаются только резервом
+   * для названия, аватара и подписчиков.
+   * Просмотры и ER из них не принимаются.
+   */
   const rawMerged = {
     ...fromMax,
     ...preview,
@@ -994,103 +1078,190 @@ async function resolveChannel(link, extraRaw = {}) {
     ...lrV22ExtraRaw,
   };
 
-  const normalized = normalizeStats(cleanLink, rawMerged);
+  const normalized =
+    normalizeStats(cleanLink, rawMerged);
 
-  const realTitle = lrV17PickRealTitle(known, lrV22ExtraRaw, fromMax, preview, normalized);
-  const realAvatar = lrV17PickRealAvatar(known, lrV22ExtraRaw, fromMax, preview, normalized);
-
-  normalized.title = realTitle || lrV16CleanTitle(normalized.title, cleanLink, idx);
-  normalized.avatarUrl = realAvatar || normalized.avatarUrl || normalized.avatar_url || '';
-
-  normalized.subscribers = lrV17PickPositiveNumber(
-    known.subscribers,
-    known.subscriber_count,
-    known.members_count,
-    fromMax.subscribers,
-    fromMax.subscriber_count,
-    preview.subscribers,
-    normalized.subscribers
+  const realTitle = lrV17PickRealTitle(
+    known,
+    lrV22ExtraRaw,
+    fromMax,
+    preview,
+    normalized
   );
 
-  normalized.views24 = lrV17PickPositiveNumber(
-    known.views24,
-    known.views_24,
-    known.views24h,
-    fromMax.views24,
-    fromMax.views_24,
-    normalized.views24
+  const realAvatar = lrV17PickRealAvatar(
+    known,
+    lrV22ExtraRaw,
+    fromMax,
+    preview,
+    normalized
   );
 
-  normalized.views48 = lrV17PickPositiveNumber(
-    known.views48,
-    known.views_48,
-    fromMax.views48,
-    fromMax.views_48,
-    normalized.views48,
-    normalized.views24
-  );
-
-  normalized.views72 = lrV17PickPositiveNumber(
-    known.views72,
-    known.views_72,
-    fromMax.views72,
-    fromMax.views_72,
-    normalized.views72,
-    normalized.views48,
-    normalized.views24
-  );
-
-  const prev = rows(await query(
-    ` SELECT subscribers
-        FROM public.lr_channel_analytics_snapshots
-       WHERE channel_key=$1
-       ORDER BY captured_at DESC
-       LIMIT 1 `,
-    [channelKey]
-  ).catch(() => []))[0];
-
-  const deltaDay = normalized.subscribers - num(prev?.subscribers);
-
-  const saved = rows(await query(
-    ` INSERT INTO public.lr_channel_analytics_snapshots
-        (channel_key, link, title, avatar_url, subscribers, views24, views48, views72, er24, delta_day, raw)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-      RETURNING * `,
-    [
-      channelKey,
-      cleanLink,
+  normalized.title =
+    realTitle
+    || lrV16CleanTitle(
       normalized.title,
-      normalized.avatarUrl || '',
-      normalized.subscribers,
-      normalized.views24,
-      normalized.views48,
-      normalized.views72,
-      normalized.er24 || 0,
-      deltaDay,
-      JSON.stringify({ known, preview, fromMax, extraRaw: lrV22ExtraRaw } || {}),
-    ]
-  ))[0];
+      cleanLink,
+      idx
+    );
 
-  console.log('[LR_CHANNEL_RESOLVED_V17]', JSON.stringify({
-    link: cleanLink,
-    title: saved.title,
-    avatar: !!saved.avatar_url,
-    subscribers: num(saved.subscribers),
-    views24: num(saved.views24),
-  }));
+  normalized.avatarUrl =
+    realAvatar
+    || normalized.avatarUrl
+    || normalized.avatar_url
+    || '';
+
+  normalized.subscribers =
+    lrV17PickPositiveNumber(
+      known.subscribers,
+      known.subscriber_count,
+      known.members_count,
+      fromMax.subscribers,
+      fromMax.subscriber_count,
+      preview.subscribers,
+      normalized.subscribers
+    );
+
+  /*
+   * Здесь специально нет PickPositiveNumber.
+   * Реальный ноль нельзя заменять legacy-числом.
+   */
+  normalized.views24 = num(known.views24);
+  normalized.views48 = num(known.views48);
+  normalized.views72 = num(known.views72);
+  normalized.viewsTotal = num(known.views_total);
+
+  normalized.posts24 = num(known.posts24);
+  normalized.posts48 = num(known.posts48);
+  normalized.posts72 = num(known.posts72);
+
+  normalized.er24 = Number(known.er24 || 0);
+  normalized.deltaDay = num(known.delta_day);
+
+  const saved = rows(await query(`
+    INSERT INTO public.lr_channel_analytics_snapshots (
+      channel_key,
+      link,
+      title,
+      avatar_url,
+      subscribers,
+      views24,
+      views48,
+      views72,
+      er24,
+      delta_day,
+      raw,
+      views_total,
+      posts24,
+      posts48,
+      posts72,
+      collection_source
+    )
+    VALUES (
+      $1,$2,$3,$4,$5,
+      $6,$7,$8,$9,$10,$11::jsonb,
+      $12,$13,$14,$15,
+      'render_v80_2'
+    )
+    RETURNING *
+  `, [
+    channelKey,
+    cleanLink,
+    normalized.title,
+    normalized.avatarUrl || '',
+    normalized.subscribers,
+
+    normalized.views24,
+    normalized.views48,
+    normalized.views72,
+    normalized.er24,
+    normalized.deltaDay,
+
+    JSON.stringify({
+      source: 'render_v80_2',
+      trustedSnapshot: known,
+      preview,
+      fromMaxMetadataOnly: {
+        title:
+          fromMax?.title
+          || fromMax?.name
+          || '',
+        subscribers:
+          fromMax?.subscribers
+          || fromMax?.subscriber_count
+          || 0,
+      },
+      extraRaw: lrV22ExtraRaw,
+    }),
+
+    normalized.viewsTotal,
+    normalized.posts24,
+    normalized.posts48,
+    normalized.posts72,
+  ]))[0];
+
+  console.log(
+    '[LR_TRUTHFUL_VIEWS_ER_V80_2_RESOLVED]',
+    JSON.stringify({
+      link: cleanLink,
+      title: saved.title,
+      subscribers: num(saved.subscribers),
+      averageViewsTotal: num(saved.views_total),
+      averageViews24: num(saved.views24),
+      averageViews48: num(saved.views48),
+      averageViews72: num(saved.views72),
+      posts24: num(saved.posts24),
+      er24: Number(saved.er24 || 0),
+    })
+  );
 
   return {
     key: channelKey,
     link: cleanLink,
+
     title: saved.title,
-    avatarUrl: saved.avatar_url || '',
-    avatar_url: saved.avatar_url || '',
-    subscribers: num(saved.subscribers),
-    views24: num(saved.views24),
-    views48: num(saved.views48),
-    views72: num(saved.views72),
-    er24: Number(saved.er24 || 0),
-    deltaDay: num(saved.delta_day),
+
+    avatarUrl:
+      saved.avatar_url || '',
+
+    avatar_url:
+      saved.avatar_url || '',
+
+    subscribers:
+      num(saved.subscribers),
+
+    viewsTotal:
+      num(saved.views_total),
+
+    views_total:
+      num(saved.views_total),
+
+    views24:
+      num(saved.views24),
+
+    views48:
+      num(saved.views48),
+
+    views72:
+      num(saved.views72),
+
+    posts24:
+      num(saved.posts24),
+
+    posts48:
+      num(saved.posts48),
+
+    posts72:
+      num(saved.posts72),
+
+    er24:
+      Number(saved.er24 || 0),
+
+    deltaDay:
+      num(saved.delta_day),
+
+    delta_day:
+      num(saved.delta_day),
   };
 }
 

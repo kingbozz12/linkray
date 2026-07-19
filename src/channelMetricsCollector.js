@@ -535,15 +535,55 @@ async function savePostMetrics(channelId, messages) {
 }
 
 async function postSummary(channelId) {
+  /* LR_TRUTHFUL_VIEWS_ER_V80_2 */
   const result = rows(await query(`
     SELECT
-      COALESCE(SUM(views), 0)::bigint AS views_total,
-      COALESCE(SUM(views) FILTER (WHERE published_at >= now() - interval '24 hours'), 0)::bigint AS views24,
-      COALESCE(SUM(views) FILTER (WHERE published_at >= now() - interval '48 hours'), 0)::bigint AS views48,
-      COALESCE(SUM(views) FILTER (WHERE published_at >= now() - interval '72 hours'), 0)::bigint AS views72,
-      COUNT(*) FILTER (WHERE published_at >= now() - interval '24 hours')::integer AS posts24,
-      COUNT(*) FILTER (WHERE published_at >= now() - interval '48 hours')::integer AS posts48,
-      COUNT(*) FILTER (WHERE published_at >= now() - interval '72 hours')::integer AS posts72
+      COALESCE(
+        ROUND(AVG(views)),
+        0
+      )::bigint AS views_total,
+
+      COALESCE(
+        ROUND(
+          AVG(views) FILTER (
+            WHERE published_at >= now() - interval '24 hours'
+          )
+        ),
+        0
+      )::bigint AS views24,
+
+      COALESCE(
+        ROUND(
+          AVG(views) FILTER (
+            WHERE published_at >= now() - interval '48 hours'
+          )
+        ),
+        0
+      )::bigint AS views48,
+
+      COALESCE(
+        ROUND(
+          AVG(views) FILTER (
+            WHERE published_at >= now() - interval '72 hours'
+          )
+        ),
+        0
+      )::bigint AS views72,
+
+      COUNT(*)::integer AS posts_total,
+
+      COUNT(*) FILTER (
+        WHERE published_at >= now() - interval '24 hours'
+      )::integer AS posts24,
+
+      COUNT(*) FILTER (
+        WHERE published_at >= now() - interval '48 hours'
+      )::integer AS posts48,
+
+      COUNT(*) FILTER (
+        WHERE published_at >= now() - interval '72 hours'
+      )::integer AS posts72
+
     FROM public.lr_channel_post_metrics
     WHERE channel_id=$1
       AND published_at >= COALESCE(
@@ -557,10 +597,16 @@ async function postSummary(channelId) {
   `, [channelId]))[0] || {};
 
   return {
+    /*
+     * Все показатели views — среднее число просмотров
+     * одного поста, а не сумма просмотров публикаций.
+     */
     viewsTotal: int(result.views_total),
     views24: int(result.views24),
     views48: int(result.views48),
     views72: int(result.views72),
+
+    postsTotal: int(result.posts_total),
     posts24: int(result.posts24),
     posts48: int(result.posts48),
     posts72: int(result.posts72),
@@ -755,13 +801,28 @@ function chatAvatar(chatInfo, fallback = '') {
   );
 }
 
-async function saveSnapshot(channel, chatInfo, posts, events, memberCountFromScan = null) {
+async function saveSnapshot(
+  channel,
+  chatInfo,
+  posts,
+  events,
+  memberCountFromScan = null
+) {
+  /* LR_TRUTHFUL_VIEWS_ER_V80_2 */
   const subscribers = Math.max(
     0,
-    int(chatInfo?.participants_count, memberCountFromScan ?? 0)
+    int(
+      chatInfo?.participants_count,
+      memberCountFromScan ?? 0
+    )
   );
+
   const snapshotKey = channelKey(
-    clean(chatInfo?.link || channel.link || `max://chat/${channel.channelId}`),
+    clean(
+      chatInfo?.link
+      || channel.link
+      || `max://chat/${channel.channelId}`
+    ),
     channel.channelId
   );
 
@@ -769,28 +830,59 @@ async function saveSnapshot(channel, chatInfo, posts, events, memberCountFromSca
     SELECT subscribers
     FROM public.lr_channel_analytics_snapshots
     WHERE channel_key=$1
+      AND collection_source='max_api_collector_v1'
       AND captured_at <= now() - interval '23 hours'
     ORDER BY captured_at DESC
     LIMIT 1
-  `, [snapshotKey]))[0];
+  `, [snapshotKey]).catch(() => []))[0];
 
   const latest = rows(await query(`
     SELECT subscribers
     FROM public.lr_channel_analytics_snapshots
     WHERE channel_key=$1
+      AND collection_source='max_api_collector_v1'
     ORDER BY captured_at DESC
     LIMIT 1
-  `, [snapshotKey]))[0];
+  `, [snapshotKey]).catch(() => []))[0];
 
-  const baseSubscribers = previousDay?.subscribers ?? latest?.subscribers ?? subscribers;
-  const deltaDay = subscribers - int(baseSubscribers, subscribers);
-  const er24 = subscribers > 0 ? (posts.views24 / subscribers) * 100 : 0;
-  const title = clean(chatInfo?.title || channel.title || 'Канал MAX');
-  const link = clean(chatInfo?.link || channel.link || `max://chat/${channel.channelId}`);
-  const avatarUrl = chatAvatar(chatInfo, channel.avatarUrl);
+  const baseSubscribers =
+    previousDay?.subscribers
+    ?? latest?.subscribers
+    ?? subscribers;
+
+  const deltaDay =
+    subscribers - int(baseSubscribers, subscribers);
+
+  /*
+   * ER24 = средние просмотры одного поста
+   * из 24-часового окна / подписчики.
+   * При отсутствии постов ER равен нулю.
+   */
+  const er24 =
+    subscribers > 0 && posts.posts24 > 0
+      ? (posts.views24 / subscribers) * 100
+      : 0;
+
+  const title = clean(
+    chatInfo?.title
+    || channel.title
+    || 'Канал MAX'
+  );
+
+  const link = clean(
+    chatInfo?.link
+    || channel.link
+    || `max://chat/${channel.channelId}`
+  );
+
+  const avatarUrl = chatAvatar(
+    chatInfo,
+    channel.avatarUrl
+  );
 
   const raw = {
     source: 'max_api_collector_v1',
+    views_semantics: 'average_views_per_post',
     chat: chatInfo,
     metrics: {
       subscribers,
@@ -803,16 +895,33 @@ async function saveSnapshot(channel, chatInfo, posts, events, memberCountFromSca
 
   await query(`
     INSERT INTO public.lr_channel_analytics_snapshots (
-      channel_key, link, title, avatar_url, subscribers,
-      views24, views48, views72, er24, delta_day, raw,
-      joined_24h, left_24h, joined_7d, left_7d,
-      views_total, posts24, posts48, posts72, collection_source
+      channel_key,
+      link,
+      title,
+      avatar_url,
+      subscribers,
+      views24,
+      views48,
+      views72,
+      er24,
+      delta_day,
+      raw,
+      joined_24h,
+      left_24h,
+      joined_7d,
+      left_7d,
+      views_total,
+      posts24,
+      posts48,
+      posts72,
+      collection_source
     )
     VALUES (
       $1,$2,$3,$4,$5,
       $6,$7,$8,$9,$10,$11::jsonb,
       $12,$13,$14,$15,
-      $16,$17,$18,$19,'max_api_collector_v1'
+      $16,$17,$18,$19,
+      'max_api_collector_v1'
     )
   `, [
     snapshotKey,
@@ -820,16 +929,19 @@ async function saveSnapshot(channel, chatInfo, posts, events, memberCountFromSca
     title,
     avatarUrl,
     subscribers,
+
     posts.views24,
     posts.views48,
     posts.views72,
     er24,
     deltaDay,
     JSON.stringify(raw),
+
     events.joined24,
     events.left24,
     events.joined7d,
     events.left7d,
+
     posts.viewsTotal,
     posts.posts24,
     posts.posts48,
