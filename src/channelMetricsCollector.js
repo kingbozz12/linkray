@@ -448,15 +448,34 @@ function messageId(message) {
 }
 
 function messageViews(message) {
-  return deepNumber(message?.stat || message, [
-    'views',
-    'view_count',
-    'views_count',
-    'unique_views',
-    'unique_view_count',
-    'users',
-    'reach',
-  ]);
+  /* LR_EXACT_MESSAGE_VIEWS_V80_3_1 */
+
+  /*
+   * Официальный MessageStat MAX содержит поле views.
+   * Нельзя выбирать максимум среди users/reach/participants:
+   * это другие показатели и они завышают просмотры.
+   */
+  const raw = message?.stat?.views;
+
+  if (
+    raw === undefined
+    || raw === null
+    || raw === ''
+  ) {
+    return null;
+  }
+
+  const parsed = Number(
+    String(raw)
+      .replace(/\s+/g, '')
+      .replace(',', '.')
+  );
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return Math.round(parsed);
 }
 
 async function fetchMessageWindow(channelId, newerMs, olderMs, depth = 0) {
@@ -508,19 +527,59 @@ async function fetchRecentMessages(channelId) {
 }
 
 async function savePostMetrics(channelId, messages) {
+  /* LR_EXACT_MESSAGE_VIEWS_V80_3_1 */
+
   for (const message of messages) {
     const id = messageId(message);
-    const publishedMs = unixMs(message?.timestamp || message?.created_at || message?.date);
-    if (!id || !publishedMs) continue;
+
+    const publishedMs = unixMs(
+      message?.timestamp
+      || message?.created_at
+      || message?.date
+    );
 
     const views = messageViews(message);
+
+    /*
+     * В расчёт попадают только реальные посты канала,
+     * для которых MAX вернул MessageStat.views.
+     */
+    if (!id || !publishedMs || views === null) {
+      continue;
+    }
+
     await query(`
-      INSERT INTO public.lr_channel_post_metrics
-        (channel_id, message_id, published_at, views, url, raw_stat, last_checked_at)
-      VALUES ($1, $2, to_timestamp($3 / 1000.0), $4, $5, $6::jsonb, now())
-      ON CONFLICT (channel_id, message_id) DO UPDATE SET
-        views = GREATEST(public.lr_channel_post_metrics.views, EXCLUDED.views),
-        url = COALESCE(NULLIF(EXCLUDED.url, ''), public.lr_channel_post_metrics.url),
+      INSERT INTO public.lr_channel_post_metrics (
+        channel_id,
+        message_id,
+        published_at,
+        views,
+        url,
+        raw_stat,
+        last_checked_at
+      )
+      VALUES (
+        $1,
+        $2,
+        to_timestamp($3 / 1000.0),
+        $4,
+        $5,
+        $6::jsonb,
+        now()
+      )
+      ON CONFLICT (channel_id, message_id)
+      DO UPDATE SET
+        /*
+         * Не используем GREATEST.
+         * Если раньше reach/users ошибочно попали в views,
+         * точный ответ MAX должен иметь право уменьшить число.
+         */
+        views = EXCLUDED.views,
+        published_at = EXCLUDED.published_at,
+        url = COALESCE(
+          NULLIF(EXCLUDED.url, ''),
+          public.lr_channel_post_metrics.url
+        ),
         raw_stat = EXCLUDED.raw_stat,
         last_checked_at = now()
     `, [
@@ -529,84 +588,96 @@ async function savePostMetrics(channelId, messages) {
       publishedMs,
       views,
       clean(message?.url),
-      JSON.stringify(message?.stat || {}),
+      JSON.stringify(message?.stat),
     ]);
   }
 }
 
 async function postSummary(channelId) {
-  /* LR_TRUTHFUL_VIEWS_ER_V80_2 */
+  /* LR_EXACT_MESSAGE_VIEWS_V80_3_1 */
+
   const result = rows(await query(`
+    WITH exact_metrics AS (
+      SELECT
+        views,
+        published_at
+      FROM public.lr_channel_post_metrics
+      WHERE channel_id=$1
+        AND raw_stat ? 'views'
+        AND published_at >= COALESCE(
+          (
+            SELECT first_seen_at
+            FROM public.lr_channel_metrics_state
+            WHERE channel_id=$1
+          ),
+          now()
+        )
+    ),
+    calculated AS (
+      SELECT
+        COALESCE(
+          ROUND(
+            AVG(views) FILTER (
+              WHERE published_at >= now() - interval '24 hours'
+            )
+          ),
+          0
+        )::bigint AS exact24,
+
+        COALESCE(
+          ROUND(
+            AVG(views) FILTER (
+              WHERE published_at >= now() - interval '48 hours'
+            )
+          ),
+          0
+        )::bigint AS exact48,
+
+        COALESCE(
+          ROUND(
+            AVG(views) FILTER (
+              WHERE published_at >= now() - interval '72 hours'
+            )
+          ),
+          0
+        )::bigint AS exact72,
+
+        COUNT(*) FILTER (
+          WHERE published_at >= now() - interval '24 hours'
+        )::integer AS posts24,
+
+        COUNT(*) FILTER (
+          WHERE published_at >= now() - interval '48 hours'
+        )::integer AS posts48,
+
+        COUNT(*) FILTER (
+          WHERE published_at >= now() - interval '72 hours'
+        )::integer AS posts72
+
+      FROM exact_metrics
+    )
     SELECT
-      COALESCE(
-        ROUND(AVG(views)),
-        0
-      )::bigint AS views_total,
-
-      COALESCE(
-        ROUND(
-          AVG(views) FILTER (
-            WHERE published_at >= now() - interval '24 hours'
-          )
-        ),
-        0
-      )::bigint AS views24,
-
-      COALESCE(
-        ROUND(
-          AVG(views) FILTER (
-            WHERE published_at >= now() - interval '48 hours'
-          )
-        ),
-        0
-      )::bigint AS views48,
-
-      COALESCE(
-        ROUND(
-          AVG(views) FILTER (
-            WHERE published_at >= now() - interval '72 hours'
-          )
-        ),
-        0
-      )::bigint AS views72,
-
-      COUNT(*)::integer AS posts_total,
-
-      COUNT(*) FILTER (
-        WHERE published_at >= now() - interval '24 hours'
-      )::integer AS posts24,
-
-      COUNT(*) FILTER (
-        WHERE published_at >= now() - interval '48 hours'
-      )::integer AS posts48,
-
-      COUNT(*) FILTER (
-        WHERE published_at >= now() - interval '72 hours'
-      )::integer AS posts72
-
-    FROM public.lr_channel_post_metrics
-    WHERE channel_id=$1
-      AND published_at >= COALESCE(
-        (
-          SELECT first_seen_at
-          FROM public.lr_channel_metrics_state
-          WHERE channel_id=$1
-        ),
-        now()
-      )
+      /*
+       * По требованию карточки «Всего» и «24 часа»
+       * являются одним и тем же показателем.
+       */
+      exact24 AS views_total,
+      exact24 AS views24,
+      exact48 AS views48,
+      exact72 AS views72,
+      posts24,
+      posts48,
+      posts72
+    FROM calculated
   `, [channelId]))[0] || {};
 
   return {
-    /*
-     * Все показатели views — среднее число просмотров
-     * одного поста, а не сумма просмотров публикаций.
-     */
     viewsTotal: int(result.views_total),
     views24: int(result.views24),
     views48: int(result.views48),
     views72: int(result.views72),
 
-    postsTotal: int(result.posts_total),
+    postsTotal: int(result.posts24),
     posts24: int(result.posts24),
     posts48: int(result.posts48),
     posts72: int(result.posts72),
