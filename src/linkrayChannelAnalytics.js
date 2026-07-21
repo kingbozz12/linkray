@@ -4423,6 +4423,7 @@ async function renderPng(html, name) {
   return { filePath, publicUrl };
 }
 
+/* LR_ANALYTICS_NEW_MAIN_MESSAGE_V83_1 */
 async function sendImage(chatId, image, caption) {
   const text = caption || 'LinkRay Analytics';
 
@@ -4438,7 +4439,7 @@ async function sendImage(chatId, image, caption) {
             url: image.publicUrl,
           },
         },
-        ...lrMenuButtons([[lrCb('🏠 Главное меню', 'main:menu')]]),
+        ...lrMenuButtons([[lrCb('🏠 Главное меню', 'lrchan:main:new')]]),
       ],
     });
   } catch (error) {
@@ -4495,7 +4496,7 @@ async function sendImage(chatId, image, caption) {
       text: `${text}\n\n${image.publicUrl}`,
       format: 'html',
       attachments: lrMenuButtons([
-        [lrCb('🏠 Главное меню', 'main:menu')],
+        [lrCb('🏠 Главное меню', 'lrchan:main:new')],
       ]),
     });
   }

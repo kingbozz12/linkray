@@ -609,75 +609,58 @@ async function savePostMetrics(channelId, messages) {
 }
 
 async function postSummary(channelId) {
-  /* LR_AGE_BUCKET_REACH_V81 */
-
+  /* LR_CUMULATIVE_REACH_V83_1
+   *
+   * Накопительные окна публикаций:
+   * 24ч — посты, опубликованные за последние 24 часа;
+   * 48ч — посты, опубликованные за последние 48 часов;
+   * 72ч — посты, опубликованные за последние 72 часа.
+   *
+   * Используется только точный MAX MessageStat.views.
+   */
   const result = rows(await query(`
     WITH exact_metrics AS (
-      SELECT
-        views,
-        published_at
+      SELECT views, published_at
       FROM public.lr_channel_post_metrics
       WHERE channel_id=$1
         AND raw_stat ? 'views'
-        AND published_at >= now() - interval '96 hours'
-        AND published_at < now() - interval '24 hours'
+        AND published_at >= now() - interval '72 hours'
+        AND published_at <= now()
     ),
     calculated AS (
       SELECT
-        /*
-         * Охват за 24 часа:
-         * средние текущие просмотры постов,
-         * которым уже исполнилось 24 часа,
-         * но ещё не исполнилось 48 часов.
-         *
-         * Так свежие публикации не занижают
-         * показатель и ER24.
-         */
         COALESCE(
-          ROUND(
-            AVG(views) FILTER (
-              WHERE published_at >= now() - interval '48 hours'
-                AND published_at < now() - interval '24 hours'
-            )
-          ),
+          ROUND(AVG(views) FILTER (
+            WHERE published_at >= now() - interval '24 hours'
+          )),
           0
         )::bigint AS reach24,
 
         COALESCE(
-          ROUND(
-            AVG(views) FILTER (
-              WHERE published_at >= now() - interval '72 hours'
-                AND published_at < now() - interval '48 hours'
-            )
-          ),
+          ROUND(AVG(views) FILTER (
+            WHERE published_at >= now() - interval '48 hours'
+          )),
           0
         )::bigint AS reach48,
 
         COALESCE(
-          ROUND(
-            AVG(views) FILTER (
-              WHERE published_at >= now() - interval '96 hours'
-                AND published_at < now() - interval '72 hours'
-            )
-          ),
+          ROUND(AVG(views) FILTER (
+            WHERE published_at >= now() - interval '72 hours'
+          )),
           0
         )::bigint AS reach72,
 
         COUNT(*) FILTER (
-          WHERE published_at >= now() - interval '48 hours'
-            AND published_at < now() - interval '24 hours'
+          WHERE published_at >= now() - interval '24 hours'
         )::integer AS posts24,
 
         COUNT(*) FILTER (
-          WHERE published_at >= now() - interval '72 hours'
-            AND published_at < now() - interval '48 hours'
+          WHERE published_at >= now() - interval '48 hours'
         )::integer AS posts48,
 
         COUNT(*) FILTER (
-          WHERE published_at >= now() - interval '96 hours'
-            AND published_at < now() - interval '72 hours'
+          WHERE published_at >= now() - interval '72 hours'
         )::integer AS posts72
-
       FROM exact_metrics
     )
     SELECT
@@ -692,15 +675,10 @@ async function postSummary(channelId) {
   `, [channelId]))[0] || {};
 
   return {
-    /*
-     * «Всего» в карточке — это основной
-     * охват публикации за первые 24 часа.
-     */
     viewsTotal: int(result.views24),
     views24: int(result.views24),
     views48: int(result.views48),
     views72: int(result.views72),
-
     postsTotal: int(result.posts24),
     posts24: int(result.posts24),
     posts48: int(result.posts48),

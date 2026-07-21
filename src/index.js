@@ -4336,7 +4336,13 @@ app.use(async function lrForceStartMenuV7(req, res, next) {
     const chatId = getChatId(update);
 
     const isStart = /^\/start(?:\s|$)/i.test(text);
-    const isMainMenu = payload === 'main:menu' || payload === 'menu:main' || payload === 'start:menu';
+    const isMainMenuNew = payload === 'lrchan:main:new';
+      const isMainMenu =
+        payload === 'main:menu' ||
+        payload === 'menu:main' ||
+        payload === 'start:menu' ||
+        isMainMenuNew;
+      /* LR_ANALYTICS_NEW_MAIN_MESSAGE_V83_1 */
 
     if (!isStart && !isMainMenu) return next();
 
@@ -4344,21 +4350,38 @@ app.use(async function lrForceStartMenuV7(req, res, next) {
     const rows = __lrForceMainMenuRowsV7();
     const attachments = __lrForceMenuAttachmentsV7(rows);
 
-    if (callbackId) {
-      await answerCallback({
-        callbackId,
-        text: menuText,
-        format: 'html',
-        attachments
-      });
-    } else if (chatId) {
-      await sendMaxMessage({
-        chatId,
-        text: menuText,
-        format: 'html',
-        attachments
-      });
-    } else {
+    if (isMainMenuNew && callbackId && chatId) {
+        await answerCallback({
+          callbackId,
+          notification: 'Главное меню открыто',
+        }).catch((error) => {
+          console.error(
+            '[LR_ANALYTICS_NEW_MAIN_MESSAGE_V83_1_ACK]',
+            error?.message || error
+          );
+        });
+
+        await sendMaxMessage({
+          chatId,
+          text: menuText,
+          format: 'html',
+          attachments,
+        });
+      } else if (callbackId) {
+        await answerCallback({
+          callbackId,
+          text: menuText,
+          format: 'html',
+          attachments,
+        });
+      } else if (chatId) {
+        await sendMaxMessage({
+          chatId,
+          text: menuText,
+          format: 'html',
+          attachments,
+        });
+      } else {
       return next();
     }
 
