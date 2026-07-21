@@ -244,10 +244,37 @@ async function ensureTables() {
     )
   `);
 
-  await query(`
+  
+await query(`
     CREATE INDEX IF NOT EXISTS idx_lr_channel_post_metrics_channel_published
     ON public.lr_channel_post_metrics(channel_id, published_at DESC)
   `);
+await query(`
+  CREATE TABLE IF NOT EXISTS public.lr_channel_post_metric_history (
+    id bigserial PRIMARY KEY,
+    channel_id text NOT NULL,
+    message_id text NOT NULL,
+    published_at timestamptz NOT NULL,
+    views integer NOT NULL DEFAULT 0,
+    captured_at timestamptz NOT NULL DEFAULT now()
+  )
+`);
+await query(`
+  CREATE INDEX IF NOT EXISTS idx_lr_post_metric_history_target
+  ON public.lr_channel_post_metric_history(
+    channel_id,
+    message_id,
+    captured_at
+  )
+`);
+await query(`
+  CREATE INDEX IF NOT EXISTS idx_lr_post_metric_history_published
+  ON public.lr_channel_post_metric_history(
+    channel_id,
+    published_at
+  )
+`);
+
 
   await query(`
     CREATE TABLE IF NOT EXISTS public.lr_channel_metrics_state (
@@ -542,26 +569,21 @@ async function fetchRecentMessages(channelId) {
 }
 
 async function savePostMetrics(channelId, messages) {
-  /* LR_EXACT_MESSAGE_VIEWS_V80_3_1 */
-
+  /* LR_EXACT_AGE_SNAPSHOTS_V85 */
   for (const message of messages) {
     const id = messageId(message);
-
     const publishedMs = unixMs(
-      message?.timestamp
-      || message?.created_at
-      || message?.date
+      message?.timestamp ||
+      message?.created_at ||
+      message?.date
     );
-
     const views = messageViews(message);
 
-    /*
-     * В расчёт попадают только реальные посты канала,
-     * для которых MAX вернул MessageStat.views.
-     */
     if (!id || !publishedMs || views === null) {
       continue;
     }
+
+    const rawStat = JSON.stringify(message?.stat || {});
 
     await query(`
       INSERT INTO public.lr_channel_post_metrics (
@@ -584,11 +606,6 @@ async function savePostMetrics(channelId, messages) {
       )
       ON CONFLICT (channel_id, message_id)
       DO UPDATE SET
-        /*
-         * Не используем GREATEST.
-         * Если раньше reach/users ошибочно попали в views,
-         * точный ответ MAX должен иметь право уменьшить число.
-         */
         views = EXCLUDED.views,
         published_at = EXCLUDED.published_at,
         url = COALESCE(
@@ -603,86 +620,175 @@ async function savePostMetrics(channelId, messages) {
       publishedMs,
       views,
       clean(message?.url),
-      JSON.stringify(message?.stat),
+      rawStat,
+    ]);
+
+    await query(`
+      INSERT INTO public.lr_channel_post_metric_history (
+        channel_id,
+        message_id,
+        published_at,
+        views,
+        captured_at
+      )
+      VALUES (
+        $1,
+        $2,
+        to_timestamp($3 / 1000.0),
+        $4,
+        now()
+      )
+    `, [
+      channelId,
+      id,
+      publishedMs,
+      views,
     ]);
   }
+
+  await query(`
+    DELETE FROM public.lr_channel_post_metric_history
+    WHERE captured_at < now() - interval '14 days'
+  `).catch(() => {});
 }
 
 async function postSummary(channelId) {
-  /* LR_CUMULATIVE_REACH_V83_1
+  /* LR_EXACT_AGE_SNAPSHOTS_V85
    *
-   * Накопительные окна публикаций:
-   * 24ч — посты, опубликованные за последние 24 часа;
-   * 48ч — посты, опубликованные за последние 48 часов;
-   * 72ч — посты, опубликованные за последние 72 часа.
-   *
-   * Используется только точный MAX MessageStat.views.
+   * 24ч = среднее MessageStat.views у постов
+   *       в момент достижения возраста 24 часа.
+   * 48ч = то же в возрасте 48 часов.
+   * 72ч = то же в возрасте 72 часа.
    */
-  const result = rows(await query(`
-    WITH exact_metrics AS (
-      SELECT views, published_at
-      FROM public.lr_channel_post_metrics
-      WHERE channel_id=$1
-        AND raw_stat ? 'views'
-        AND published_at >= now() - interval '72 hours'
-        AND published_at <= now()
+  const exact = rows(await query(`
+    WITH targets(hours) AS (
+      VALUES (24), (48), (72)
     ),
-    calculated AS (
+    candidates AS (
       SELECT
-        COALESCE(
-          ROUND(AVG(views) FILTER (
-            WHERE published_at >= now() - interval '24 hours'
-          )),
-          0
-        )::bigint AS reach24,
-
-        COALESCE(
-          ROUND(AVG(views) FILTER (
-            WHERE published_at >= now() - interval '48 hours'
-          )),
-          0
-        )::bigint AS reach48,
-
-        COALESCE(
-          ROUND(AVG(views) FILTER (
-            WHERE published_at >= now() - interval '72 hours'
-          )),
-          0
-        )::bigint AS reach72,
-
-        COUNT(*) FILTER (
-          WHERE published_at >= now() - interval '24 hours'
-        )::integer AS posts24,
-
-        COUNT(*) FILTER (
-          WHERE published_at >= now() - interval '48 hours'
-        )::integer AS posts48,
-
-        COUNT(*) FILTER (
-          WHERE published_at >= now() - interval '72 hours'
-        )::integer AS posts72
-      FROM exact_metrics
+        h.message_id,
+        t.hours,
+        h.views,
+        h.captured_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY h.message_id, t.hours
+          ORDER BY h.captured_at ASC
+        ) AS rn
+      FROM public.lr_channel_post_metric_history h
+      CROSS JOIN targets t
+      WHERE h.channel_id = $1
+        AND h.captured_at >=
+          h.published_at + (t.hours::text || ' hours')::interval
+        AND h.captured_at <
+          h.published_at + (t.hours::text || ' hours')::interval
+          + interval '90 minutes'
+    ),
+    selected AS (
+      SELECT message_id, hours, views
+      FROM candidates
+      WHERE rn = 1
     )
     SELECT
-      reach24 AS views_total,
-      reach24 AS views24,
-      reach48 AS views48,
-      reach72 AS views72,
-      posts24,
-      posts48,
-      posts72
-    FROM calculated
+      COALESCE(
+        ROUND(AVG(views) FILTER (WHERE hours = 24)),
+        0
+      )::bigint AS views24,
+      COALESCE(
+        ROUND(AVG(views) FILTER (WHERE hours = 48)),
+        0
+      )::bigint AS views48,
+      COALESCE(
+        ROUND(AVG(views) FILTER (WHERE hours = 72)),
+        0
+      )::bigint AS views72,
+      COUNT(*) FILTER (WHERE hours = 24)::integer AS posts24,
+      COUNT(*) FILTER (WHERE hours = 48)::integer AS posts48,
+      COUNT(*) FILTER (WHERE hours = 72)::integer AS posts72
+    FROM selected
   `, [channelId]))[0] || {};
 
+  const fallback = rows(await query(`
+    WITH current_metrics AS (
+      SELECT views, published_at
+      FROM public.lr_channel_post_metrics
+      WHERE channel_id = $1
+        AND raw_stat ? 'views'
+        AND published_at >= now() - interval '96 hours'
+        AND published_at < now() - interval '24 hours'
+    )
+    SELECT
+      COALESCE(
+        ROUND(AVG(views) FILTER (
+          WHERE published_at >= now() - interval '48 hours'
+            AND published_at < now() - interval '24 hours'
+        )),
+        0
+      )::bigint AS views24,
+      COALESCE(
+        ROUND(AVG(views) FILTER (
+          WHERE published_at >= now() - interval '72 hours'
+            AND published_at < now() - interval '48 hours'
+        )),
+        0
+      )::bigint AS views48,
+      COALESCE(
+        ROUND(AVG(views) FILTER (
+          WHERE published_at >= now() - interval '96 hours'
+            AND published_at < now() - interval '72 hours'
+        )),
+        0
+      )::bigint AS views72,
+      COUNT(*) FILTER (
+        WHERE published_at >= now() - interval '48 hours'
+          AND published_at < now() - interval '24 hours'
+      )::integer AS posts24,
+      COUNT(*) FILTER (
+        WHERE published_at >= now() - interval '72 hours'
+          AND published_at < now() - interval '48 hours'
+      )::integer AS posts48,
+      COUNT(*) FILTER (
+        WHERE published_at >= now() - interval '96 hours'
+          AND published_at < now() - interval '72 hours'
+      )::integer AS posts72
+    FROM current_metrics
+  `, [channelId]))[0] || {};
+
+  const exactPosts24 = int(exact.posts24);
+  const exactPosts48 = int(exact.posts48);
+  const exactPosts72 = int(exact.posts72);
+
+  const views24 = exactPosts24 > 0
+    ? int(exact.views24)
+    : int(fallback.views24);
+
+  const views48 = exactPosts48 > 0
+    ? int(exact.views48)
+    : int(fallback.views48);
+
+  const views72 = exactPosts72 > 0
+    ? int(exact.views72)
+    : int(fallback.views72);
+
   return {
-    viewsTotal: int(result.views24),
-    views24: int(result.views24),
-    views48: int(result.views48),
-    views72: int(result.views72),
-    postsTotal: int(result.posts24),
-    posts24: int(result.posts24),
-    posts48: int(result.posts48),
-    posts72: int(result.posts72),
+    viewsTotal: views24,
+    views24,
+    views48,
+    views72,
+    postsTotal: exactPosts24 > 0
+      ? exactPosts24
+      : int(fallback.posts24),
+    posts24: exactPosts24 > 0
+      ? exactPosts24
+      : int(fallback.posts24),
+    posts48: exactPosts48 > 0
+      ? exactPosts48
+      : int(fallback.posts48),
+    posts72: exactPosts72 > 0
+      ? exactPosts72
+      : int(fallback.posts72),
+    exact24: exactPosts24 > 0,
+    exact48: exactPosts48 > 0,
+    exact72: exactPosts72 > 0,
   };
 }
 
@@ -966,7 +1072,7 @@ const latest = rows(await query(`
 
   const raw = {
     source: 'max_api_collector_v1',
-    views_semantics: 'average_views_per_post',
+    views_semantics: 'exact_message_views_at_post_age_v85',
     chat: chatInfo,
     metrics: {
       subscribers,
