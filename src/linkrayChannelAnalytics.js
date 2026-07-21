@@ -765,7 +765,7 @@ async function lrV16KnownChannelData(link) {
     views24: num(snap?.views24),
     views48: num(snap?.views48),
     views72: num(snap?.views72),
-    views_total: num(snap?.views_total),
+    views_total: num(snap?.views24),
 
     posts24: num(snap?.posts24),
     posts48: num(snap?.posts48),
@@ -1130,7 +1130,7 @@ async function resolveChannel(link, extraRaw = {}) {
   normalized.views24 = num(known.views24);
   normalized.views48 = num(known.views48);
   normalized.views72 = num(known.views72);
-  normalized.viewsTotal = num(known.views_total);
+  normalized.viewsTotal = normalized.views24;
 
   normalized.posts24 = num(known.posts24);
   normalized.posts48 = num(known.posts48);
@@ -1970,7 +1970,7 @@ async function lrSafeSaveSvgPngV3(svg, name) {
   const fileName = `${name}-${Date.now()}.png`;
   const filePath = path.join(OUT_DIR, fileName);
 
-  await sharp(Buffer.from(svg))
+  await sharp(Buffer.from(lrV82BrightNegativeSvg(svg)))
     .png()
     .toFile(filePath);
 
@@ -4374,7 +4374,7 @@ async function renderNetwork(...args) {
     const sharpMod = await import('sharp');
     const sharp = sharpMod.default || sharpMod;
 
-    return await sharp(Buffer.from(svg))
+    return await sharp(Buffer.from(lrV82BrightNegativeSvg(svg)))
       .png()
       .toBuffer();
   } catch (e) {
@@ -4383,6 +4383,24 @@ async function renderNetwork(...args) {
   }
 
   /* LR_NETWORK_RENDERER_V32_END */
+}
+
+
+/* LR_VIEWS_RED_MENU_V82 */
+function lrV82BrightNegativeSvg(svg) {
+  return String(svg || '').replace(
+    /<(text|tspan)\b([^>]*)>(\s*-\s*[\d\s.,%]+)\s*<\/\1>/gi,
+    (full, tag, attrs, value) => {
+      const cleanAttrs = String(attrs || '')
+        .replace(/\sfill=(["']).*?\1/gi, '')
+        .replace(/\sstroke=(["']).*?\1/gi, '')
+        .replace(/\sstroke-width=(["']).*?\1/gi, '')
+        .replace(/\spaint-order=(["']).*?\1/gi, '')
+        .replace(/\sfont-weight=(["']).*?\1/gi, '');
+
+      return `<${tag}${cleanAttrs} fill="#ff1744" stroke="#4a0010" stroke-width="0.9" paint-order="stroke" font-weight="1000">${value}</${tag}>`;
+    }
+  );
 }
 
 async function renderPng(html, name) {
@@ -4398,7 +4416,7 @@ async function renderPng(html, name) {
     </foreignObject>
   </svg>`;
 
-  await sharp(Buffer.from(svg)).png().toFile(filePath);
+  await sharp(Buffer.from(lrV82BrightNegativeSvg(svg))).png().toFile(filePath);
 
   const publicUrl = `${PUBLIC_BASE_URL.replace(/\/+$/, '')}/generated/channel-analytics/${fileName}`;
 
@@ -4420,6 +4438,7 @@ async function sendImage(chatId, image, caption) {
             url: image.publicUrl,
           },
         },
+        ...lrMenuButtons([[lrCb('🏠 Главное меню', 'main:menu')]]),
       ],
     });
   } catch (error) {
@@ -4475,6 +4494,9 @@ async function sendImage(chatId, image, caption) {
       chatId,
       text: `${text}\n\n${image.publicUrl}`,
       format: 'html',
+      attachments: lrMenuButtons([
+        [lrCb('🏠 Главное меню', 'main:menu')],
+      ]),
     });
   }
 }
@@ -4980,6 +5002,11 @@ async function handleAnalyticsMenu(update) {
 
   const keys = lrIdentityKeys(update, chatId);
   const payload = lrPayloadDeep(update);
+
+  // Полное главное меню открывает центральный обработчик LinkRay.
+  // Возвращаем false, чтобы аналитика не подменяла его резервным меню.
+  if (payload === 'main:menu') return false;
+
   const text = getText(update);
   const links = lrLinksDeep(update, text);
   /* LR_CHANNEL_READY_REFRESH_V1 */
@@ -5730,7 +5757,7 @@ async function lrV37RenderPrettyNetworkPng(channels = []) {
     visible: visible.map(x => ({ title: x.title, avatar: Boolean(x.avatar) }))
   }));
 
-  return await sharp(Buffer.from(svg)).png().toBuffer();
+  return await sharp(Buffer.from(lrV82BrightNegativeSvg(svg))).png().toBuffer();
 }
 /* LR_SAFE_NETWORK_CARD_V37_END */
 
@@ -5961,7 +5988,7 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
     visible: visible.map(x => ({ title: x.title, avatar: Boolean(x.avatar) }))
   }));
 
-  return await sharp(Buffer.from(svg)).png().toBuffer();
+  return await sharp(Buffer.from(lrV82BrightNegativeSvg(svg))).png().toBuffer();
 }
 /* LR_NETWORK_CARD_LAYOUT_V38_END */
 
@@ -6363,7 +6390,7 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
     visible: visible.map(x => ({ title: x.title, link: x.link }))
   }));
 
-  return await sharp(Buffer.from(svg)).png().toBuffer();
+  return await sharp(Buffer.from(lrV82BrightNegativeSvg(svg))).png().toBuffer();
 }
 /* LR_NETWORK_CARD_FINAL_V40_END */
 
