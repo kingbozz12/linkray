@@ -1,4 +1,5 @@
 /* LR_MAX_API2_AUTH_HEADER_ONLY_V1 */
+/* LR_AGE_BUCKET_REACH_V81 */
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -1459,7 +1460,7 @@ linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-siz
 .row{display:grid;grid-template-columns:42px 1fr 70px 56px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #e9f0f7}
 .row:last-child{border-bottom:0}
 .row .name{font-weight:950;color:#263447;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.row b{text-align:right;color:#168eea}.row em{font-style:normal;text-align:right;font-weight:900}.plus{color:#20c77b}.minus{color:#d9635d}
+.row b{text-align:right;color:#168eea}.row em{font-style:normal;text-align:right;font-weight:900}.plus{color:#20c77b}.minus{color:#ff334d}
 .txt{display:grid;grid-template-columns:1fr auto;gap:14px;color:#fff;align-items:end}
 .cap{font-size:24px;line-height:1.24}
 .cap .red{color:#d9635d;font-weight:900;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
@@ -2000,12 +2001,12 @@ async function lrSafeRenderSingleV3(ch) {
     <text x="162" y="286" font-size="24" font-weight="900" fill="#cde8ef">MAX-канал · отчёт сформирован LinkRay</text>
 
     ${lrMetricBoxV3(66, 330, 260, 118, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
-    ${lrMetricBoxV3(350, 330, 260, 118, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrMetricBoxV3(350, 330, 260, 118, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff334d' : '#31f2cc')}
     ${lrMetricBoxV3(634, 330, 260, 118, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
     ${lrMetricBoxV3(918, 330, 282, 118, 'ER24', pct(ch.er24), '#27d9ff')}
 
     <text x="66" y="500" font-size="32" font-weight="900" fill="#fff">Динамика подписчиков</text>
-    ${lrLineChartV3(subValues, subLabels, 66, 525, 690, 200, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrLineChartV3(subValues, subLabels, 66, 525, 690, 200, ch.deltaDay < 0 ? '#ff334d' : '#31f2cc')}
 
     <text x="800" y="500" font-size="32" font-weight="900" fill="#fff">Охваты</text>
     ${lrBarsV3([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 800, 525, 400, 200)}
@@ -2058,7 +2059,7 @@ async function lrSafeRenderNetworkV3(channels) {
     ${lrMetricBoxV3(918, 200, 282, 118, 'Каналов', String(channels.length), '#31f2cc')}
 
     <text x="66" y="385" font-size="32" font-weight="900" fill="#fff">График подписчиков</text>
-    ${lrLineChartV3(histValues, histLabels, 66, 410, 560, 300, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrLineChartV3(histValues, histLabels, 66, 410, 560, 300, totalDelta < 0 ? '#ff334d' : '#31f2cc')}
 
     <rect x="660" y="410" width="540" height="300" rx="26" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
     <text x="696" y="455" font-size="31" font-weight="900" fill="#102033">Каналы</text>
@@ -2226,12 +2227,12 @@ async function lrSafeRenderSingleV4(ch) {
     <text x="170" y="229" font-size="18" font-weight="900" fill="#d1edf1">MAX-канал · отчёт сформирован LinkRay</text>
 
     ${lrMetricBoxV4(70, 262, 250, 96, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
-    ${lrMetricBoxV4(342, 262, 250, 96, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrMetricBoxV4(342, 262, 250, 96, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff334d' : '#31f2cc')}
     ${lrMetricBoxV4(614, 262, 250, 96, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
     ${lrMetricBoxV4(886, 262, 300, 96, 'ER24', pct(ch.er24), '#27d9ff')}
 
     <text x="70" y="406" font-size="26" font-weight="1000" fill="#fff">Динамика подписчиков</text>
-    ${lrLineChartCompactV4(subValues, subLabels, 70, 426, 610, 140, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrLineChartCompactV4(subValues, subLabels, 70, 426, 610, 140, ch.deltaDay < 0 ? '#ff334d' : '#31f2cc')}
 
     <text x="724" y="406" font-size="26" font-weight="1000" fill="#fff">Охваты</text>
     ${lrBarsCompactV4([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 724, 426, 462, 140)}
@@ -2285,7 +2286,7 @@ async function lrSafeRenderNetworkV4(channels) {
     ${lrMetricBoxV4(886, 154, 300, 96, 'Каналов', String(channels.length), '#31f2cc')}
 
     <text x="70" y="306" font-size="26" font-weight="1000" fill="#fff">График подписчиков</text>
-    ${lrLineChartCompactV4(histValues, histLabels, 70, 326, 590, 210, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrLineChartCompactV4(histValues, histLabels, 70, 326, 590, 210, totalDelta < 0 ? '#ff334d' : '#31f2cc')}
 
     <rect x="696" y="326" width="490" height="210" rx="22" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
     <text x="724" y="365" font-size="25" font-weight="1000" fill="#102033">Топ каналов</text>
@@ -2386,12 +2387,12 @@ async function lrSafeRenderSingleV5(ch) {
     <text x="168" y="224" font-size="18" font-weight="900" fill="#d1edf1">MAX-канал · отчёт сформирован LinkRay</text>
 
     ${lrMetricBoxV4(70, 258, 250, 96, 'Подписчики', fmt(ch.subscribers), '#27d9ff')}
-    ${lrMetricBoxV4(342, 258, 250, 96, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrMetricBoxV4(342, 258, 250, 96, 'За сутки', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff334d' : '#31f2cc')}
     ${lrMetricBoxV4(614, 258, 250, 96, 'Охват 24ч', fmt(ch.views24), '#31f2cc')}
     ${lrMetricBoxV4(886, 258, 300, 96, 'ER24', pct(ch.er24), '#27d9ff')}
 
     <text x="70" y="398" font-size="25" font-weight="1000" fill="#fff">Динамика подписчиков</text>
-    ${lrLineChartCompactV4(subValues, subLabels, 70, 418, 610, 138, ch.deltaDay < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrLineChartCompactV4(subValues, subLabels, 70, 418, 610, 138, ch.deltaDay < 0 ? '#ff334d' : '#31f2cc')}
 
     <text x="724" y="398" font-size="25" font-weight="1000" fill="#fff">Охваты</text>
     ${lrBarsCompactV4([ch.views24, ch.views48, ch.views72], ['24ч', '48ч', '72ч'], 724, 418, 462, 138)}
@@ -2446,7 +2447,7 @@ async function lrSafeRenderNetworkV5(channels) {
     ${lrMetricBoxV4(886, 154, 300, 96, 'Каналов', String(channels.length), '#31f2cc')}
 
     <text x="70" y="302" font-size="25" font-weight="1000" fill="#fff">График подписчиков</text>
-    ${lrLineChartCompactV4(histValues, histLabels, 70, 322, 590, 208, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrLineChartCompactV4(histValues, histLabels, 70, 322, 590, 208, totalDelta < 0 ? '#ff334d' : '#31f2cc')}
 
     <rect x="696" y="322" width="490" height="208" rx="22" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
     <text x="724" y="360" font-size="24" font-weight="1000" fill="#102033">Топ каналов</text>
@@ -3221,14 +3222,14 @@ ${avatar}
 <text x="202" y="292" font-size="24" font-weight="900" fill="#c4d9e4">карточка канала · данные LinkRay</text>
 
 ${lrMetricSvg(84, 340, 330, 145, 'Подписчики', fmt(ch.subscribers), '#24d9ff')}
-${lrMetricSvg(442, 340, 330, 145, 'Сегодня', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff7280' : '#27e6c7')}
+${lrMetricSvg(442, 340, 330, 145, 'Сегодня', `${ch.deltaDay > 0 ? '+' : ''}${fmt(ch.deltaDay)}`, ch.deltaDay < 0 ? '#ff334d' : '#27e6c7')}
 ${lrMetricSvg(800, 340, 330, 145, 'Охват 24ч', fmt(ch.views24), '#27e6c7')}
 ${lrMetricSvg(1158, 340, 350, 145, 'ER24', pct(ch.er24), '#24d9ff')}
 
 <rect x="84" y="525" width="938" height="320" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
 <text x="128" y="580" font-size="31" font-weight="900" fill="#102033">Динамика подписчиков</text>
 <text x="128" y="615" font-size="21" font-weight="900" fill="#6d7f90">реальный график по ежедневным замерам</text>
-${lrChartSvg(subValues, subLabels, 128, 640, 850, 170, ch.deltaDay < 0 ? '#ff7280' : '#27e6c7')}
+${lrChartSvg(subValues, subLabels, 128, 640, 850, 170, ch.deltaDay < 0 ? '#ff334d' : '#27e6c7')}
 
 <rect x="1050" y="525" width="458" height="320" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
 <text x="1092" y="580" font-size="31" font-weight="900" fill="#102033">Охваты поста</text>
@@ -3326,7 +3327,7 @@ async function lrSafeRenderNetworkV7(channels) {
     ${lrMetricBoxNetV7(886, 160, 300, 96, 'Каналов', String(channels.length), '#31f2cc')}
 
     <text x="70" y="314" font-size="27" font-weight="1000" fill="#fff">График подписчиков</text>
-    ${lrLineChartCompactV4(histValues, histLabels, 70, 340, 590, 300, totalDelta < 0 ? '#ff7280' : '#31f2cc')}
+    ${lrLineChartCompactV4(histValues, histLabels, 70, 340, 590, 300, totalDelta < 0 ? '#ff334d' : '#31f2cc')}
 
     <rect x="682" y="308" width="520" height="402" rx="24" fill="#f7fcff" stroke="#d7edf5" stroke-width="2"/>
     <text x="712" y="350" font-size="27" font-weight="1000" fill="#102033">Каналы сети</text>
@@ -3914,7 +3915,7 @@ ${lrMetricSvg(1158, 320, 350, 145, 'Каналов', String(channels.length), '#
 <rect x="84" y="505" width="704" height="340" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
 <text x="126" y="560" font-size="31" font-weight="900" fill="#102033">Общий график подписчиков</text>
 <text x="126" y="595" font-size="21" font-weight="900" fill="#6d7f90">рост и падение по всем каналам</text>
-${lrChartSvg(histValues, histLabels, 126, 620, 620, 170, totalDelta < 0 ? '#ff7280' : '#27e6c7')}
+${lrChartSvg(histValues, histLabels, 126, 620, 620, 170, totalDelta < 0 ? '#ff334d' : '#27e6c7')}
 
 <rect x="814" y="505" width="694" height="340" rx="30" fill="#f8fcff" stroke="#dcecf3" stroke-width="2"/>
 <text x="852" y="560" font-size="31" font-weight="900" fill="#102033">Каналы</text>

@@ -512,14 +512,29 @@ async function fetchMessageWindow(channelId, newerMs, olderMs, depth = 0) {
 }
 
 async function fetchRecentMessages(channelId) {
+  /* LR_AGE_BUCKET_REACH_V81 */
+
+  /*
+   * Для показателей 24/48/72 часов нужны три
+   * завершённых возрастных окна:
+   *
+   * 24ч -> возраст поста 24–48 часов
+   * 48ч -> возраст поста 48–72 часа
+   * 72ч -> возраст поста 72–96 часов
+   */
   const now = Date.now();
-  const older = now - 72 * 60 * 60_000;
-  const messages = await fetchMessageWindow(channelId, now, older);
+  const older = now - 96 * 60 * 60_000;
+
+  const messages =
+    await fetchMessageWindow(channelId, now, older);
+
   const unique = new Map();
 
   for (const message of messages) {
     const id = messageId(message);
+
     if (!id) continue;
+
     unique.set(id, message);
   }
 
@@ -594,7 +609,7 @@ async function savePostMetrics(channelId, messages) {
 }
 
 async function postSummary(channelId) {
-  /* LR_EXACT_MESSAGE_VIEWS_V80_3_1 */
+  /* LR_AGE_BUCKET_REACH_V81 */
 
   const result = rows(await query(`
     WITH exact_metrics AS (
@@ -604,67 +619,72 @@ async function postSummary(channelId) {
       FROM public.lr_channel_post_metrics
       WHERE channel_id=$1
         AND raw_stat ? 'views'
-        AND published_at >= COALESCE(
-          (
-            SELECT first_seen_at
-            FROM public.lr_channel_metrics_state
-            WHERE channel_id=$1
-          ),
-          now()
-        )
+        AND published_at >= now() - interval '96 hours'
+        AND published_at < now() - interval '24 hours'
     ),
     calculated AS (
       SELECT
-        COALESCE(
-          ROUND(
-            AVG(views) FILTER (
-              WHERE published_at >= now() - interval '24 hours'
-            )
-          ),
-          0
-        )::bigint AS exact24,
-
+        /*
+         * Охват за 24 часа:
+         * средние текущие просмотры постов,
+         * которым уже исполнилось 24 часа,
+         * но ещё не исполнилось 48 часов.
+         *
+         * Так свежие публикации не занижают
+         * показатель и ER24.
+         */
         COALESCE(
           ROUND(
             AVG(views) FILTER (
               WHERE published_at >= now() - interval '48 hours'
+                AND published_at < now() - interval '24 hours'
             )
           ),
           0
-        )::bigint AS exact48,
+        )::bigint AS reach24,
 
         COALESCE(
           ROUND(
             AVG(views) FILTER (
               WHERE published_at >= now() - interval '72 hours'
+                AND published_at < now() - interval '48 hours'
             )
           ),
           0
-        )::bigint AS exact72,
+        )::bigint AS reach48,
 
-        COUNT(*) FILTER (
-          WHERE published_at >= now() - interval '24 hours'
-        )::integer AS posts24,
+        COALESCE(
+          ROUND(
+            AVG(views) FILTER (
+              WHERE published_at >= now() - interval '96 hours'
+                AND published_at < now() - interval '72 hours'
+            )
+          ),
+          0
+        )::bigint AS reach72,
 
         COUNT(*) FILTER (
           WHERE published_at >= now() - interval '48 hours'
-        )::integer AS posts48,
+            AND published_at < now() - interval '24 hours'
+        )::integer AS posts24,
 
         COUNT(*) FILTER (
           WHERE published_at >= now() - interval '72 hours'
+            AND published_at < now() - interval '48 hours'
+        )::integer AS posts48,
+
+        COUNT(*) FILTER (
+          WHERE published_at >= now() - interval '96 hours'
+            AND published_at < now() - interval '72 hours'
         )::integer AS posts72
 
       FROM exact_metrics
     )
     SELECT
-      /*
-       * По требованию карточки «Всего» и «24 часа»
-       * являются одним и тем же показателем.
-       */
-      exact24 AS views_total,
-      exact24 AS views24,
-      exact48 AS views48,
-      exact72 AS views72,
+      reach24 AS views_total,
+      reach24 AS views24,
+      reach48 AS views48,
+      reach72 AS views72,
       posts24,
       posts48,
       posts72
@@ -672,7 +692,11 @@ async function postSummary(channelId) {
   `, [channelId]))[0] || {};
 
   return {
-    viewsTotal: int(result.views_total),
+    /*
+     * «Всего» в карточке — это основной
+     * охват публикации за первые 24 часа.
+     */
+    viewsTotal: int(result.views24),
     views24: int(result.views24),
     views48: int(result.views48),
     views72: int(result.views72),
@@ -902,12 +926,23 @@ async function saveSnapshot(
     FROM public.lr_channel_analytics_snapshots
     WHERE channel_key=$1
       AND collection_source='max_api_collector_v1'
-      AND captured_at <= now() - interval '23 hours'
+      AND captured_at >= (
+        date_trunc(
+          'day',
+          now() AT TIME ZONE 'Europe/Moscow'
+        ) - interval '1 day'
+      ) AT TIME ZONE 'Europe/Moscow'
+      AND captured_at < (
+        date_trunc(
+          'day',
+          now() AT TIME ZONE 'Europe/Moscow'
+        )
+      ) AT TIME ZONE 'Europe/Moscow'
     ORDER BY captured_at DESC
     LIMIT 1
   `, [snapshotKey]).catch(() => []))[0];
 
-  const latest = rows(await query(`
+const latest = rows(await query(`
     SELECT subscribers
     FROM public.lr_channel_analytics_snapshots
     WHERE channel_key=$1
