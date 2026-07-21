@@ -2918,7 +2918,7 @@ async function showChannelSummary(
       {
         from,
         to,
-        expiresDays: 14,
+        expiresDays: 2, /* LR_SHORT_LIVED_AUDIENCE_LINKS_V86 */
       }
     );
 

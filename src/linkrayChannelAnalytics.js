@@ -6727,26 +6727,44 @@ function lrV74MskDateTime(value) {
   }).replace(',', '');
 }
 
+let lrV86LastDailyCleanupAt = 0;
+
 async function lrV74EnsureDailyPdpReportTable() {
   await query(`
-    CREATE TABLE IF NOT EXISTS
-      public.lr_channel_daily_pdp_reports (
-        owner_chat_id text NOT NULL,
-        channel_id bigint NOT NULL,
-        report_date date NOT NULL,
-        period_started_at timestamptz NOT NULL,
-        period_finished_at timestamptz NOT NULL,
-        joined_count integer NOT NULL DEFAULT 0,
-        left_count integer NOT NULL DEFAULT 0,
-        subscribers_total integer NOT NULL DEFAULT 0,
-        sent_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (
-          owner_chat_id,
-          channel_id,
-          report_date
-        )
-      )
+    CREATE TABLE IF NOT EXISTS public.lr_channel_daily_pdp_reports (
+      owner_chat_id text NOT NULL,
+      channel_id bigint NOT NULL,
+      report_date date NOT NULL,
+      period_started_at timestamptz NOT NULL,
+      period_finished_at timestamptz NOT NULL,
+      joined_count integer NOT NULL DEFAULT 0,
+      left_count integer NOT NULL DEFAULT 0,
+      subscribers_total integer NOT NULL DEFAULT 0,
+      sent_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (owner_chat_id, channel_id, report_date)
+    )
   `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS lr_channel_daily_pdp_reports_date_idx
+    ON public.lr_channel_daily_pdp_reports(report_date)
+  `).catch(() => {});
+
+  const now = Date.now();
+  if (now - lrV86LastDailyCleanupAt >= 6 * 60 * 60_000) {
+    lrV86LastDailyCleanupAt = now;
+
+    await query(`
+      DELETE FROM public.lr_channel_daily_pdp_reports
+      WHERE report_date <
+        ((now() AT TIME ZONE 'Europe/Moscow')::date - 7)
+    `).catch((error) => {
+      console.error(
+        '[LR_SHORT_LIVED_AUDIENCE_LINKS_V86_CLEANUP]',
+        error?.message || error
+      );
+    });
+  }
 }
 
 async function lrV74DailyWindow() {
@@ -6959,13 +6977,8 @@ async function lrV74ReleaseDailyReport(
   ]).catch(() => {});
 }
 
-function lrV74DailyPdpText(
-  stats,
-  audienceUrl = ''
-) {
-  const net =
-    stats.joined - stats.left;
-
+function lrV74DailyPdpText(stats) {
+  const net = stats.joined - stats.left;
   const lines = [
     '📊 Ежедневный отчёт ПДП',
     '',
@@ -6976,17 +6989,9 @@ function lrV74DailyPdpText(
     `➖ Отписались: ${fmt(stats.left)}`,
     `📈 Изменение: ${lrV74Signed(net)}`,
     '',
-    `🕒 Период: ${lrV74MskDateTime(stats.periodStart)} — ` +
+    `🕘 Период: ${lrV74MskDateTime(stats.periodStart)} — ` +
       `${lrV74MskDateTime(stats.periodEnd)} МСК`,
   ];
-
-  if (audienceUrl) {
-    lines.push(
-      '',
-      '🌐 Подписки и отписки подробно:',
-      audienceUrl
-    );
-  }
 
   return lines.join('\n');
 }
@@ -7049,7 +7054,7 @@ async function lrV73SendDailyGroup(
           {
             from: stats.periodStart,
             to: stats.periodEnd,
-            expiresDays: 30,
+            expiresDays: 2, /* LR_SHORT_LIVED_AUDIENCE_LINKS_V86 */
           }
         );
 
