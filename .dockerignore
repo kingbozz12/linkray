@@ -1,0 +1,9 @@
+.git
+.env
+node_modules
+*.log
+*.bak
+*.bak_*
+*.bak-*
+src/*.bak*
+src/**/*.bak*
