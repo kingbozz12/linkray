@@ -22042,28 +22042,73 @@ function lrV47DraftHasContent(draft) {
   return false;
 }
 
-async function lrV47Channels() {
-  try {
-    if (typeof getChannels === 'function') {
-      const rows = await getChannels();
-      return Array.isArray(rows) ? rows : lrV47Rows(rows);
-    }
-  } catch (e) {
-    console.error('[v47 final] getChannels native failed', e?.message || e);
+async function lrV47Channels(subjectId = '') {
+  /* LR_USER_SCOPED_STUDIO_CHANNELS_V87_5
+   *
+   * Изолированная фильтрация только списка каналов Studio.
+   * Добавление каналов, редактор, публикация, аналитика,
+   * AntiFraud и закупы не изменяются.
+   */
+  const subject = String(subjectId || '')
+    .replace(/^user:/, '')
+    .trim();
+
+  if (!/^\d+$/.test(subject)) {
+    console.error(
+      '[v87.5 studio channels] invalid user context',
+      JSON.stringify({ subjectId })
+    );
+    return [];
   }
 
   try {
-    return lrV47Rows(await query(
-      `SELECT id, max_chat_id, title, link, is_active, updated_at
-       FROM channels
-       WHERE COALESCE(is_active,true)=true
-       ORDER BY COALESCE(updated_at, bot_added_at, now()) DESC, id DESC`
-    ));
-  } catch (e) {
-    console.error('[v47 final] getChannels DB failed', e?.stack || e?.message || e);
+    return lrV47Rows(await query(`
+      SELECT DISTINCT
+        channel.id,
+        channel.max_chat_id,
+        channel.title,
+        channel.link,
+        channel.is_active,
+        channel.updated_at
+      FROM public.channels channel
+      JOIN public.lr_user_channels access
+        ON access.channel_id=channel.id
+      JOIN public.lr_users user_account
+        ON user_account.id=access.user_id
+      WHERE (
+          user_account.max_user_id::text=$1
+          OR user_account.private_chat_id::text=$1
+        )
+        AND COALESCE(user_account.is_blocked, false)=false
+        AND COALESCE(channel.is_active, true)=true
+        AND LOWER(COALESCE(access.role, '')) IN (
+          'owner',
+          'admin',
+          'administrator'
+        )
+        AND (
+          COALESCE(access.access_source, '')='workspace'
+          OR access.last_verified_at >=
+             now() - interval '30 minutes'
+        )
+      ORDER BY
+        channel.updated_at DESC NULLS LAST,
+        channel.id DESC
+    `, [subject]));
+  } catch (error) {
+    /*
+     * При ошибке возвращаем пустой список.
+     * Общий список чужих каналов как fallback запрещён.
+     */
+    console.error(
+      '[v87.5 studio channels] scoped query failed',
+      error?.stack || error?.message || error
+    );
     return [];
   }
 }
+
+
 
 function lrV47ChannelName(ch) {
   try {
@@ -22095,7 +22140,7 @@ async function lrV47ShowChannelSelect(
   callbackId = null
 ) {
   /* LR_V47_MULTI_SAME_MESSAGE_V47_3 */
-  const channels = await lrV47Channels();
+  const channels = await lrV47Channels(key || chatId);
   const d = draft || lrV47EmptyDraft();
 
   d.channelIds = Array.isArray(d.channelIds)
@@ -22278,7 +22323,7 @@ async function lrV47AskContent(chatId, key, draft) {
     })
   );
 
-  const channels = await lrV47Channels();
+  const channels = await lrV47Channels(key || chatId);
 
   const selected = channels.filter((channel) =>
     d.channelIds.includes(Number(channel.id))
@@ -22996,7 +23041,7 @@ async function lrV47HandleSelectedChannels(
   }
 
   if (payload === 'post:all_channels') {
-    const channels = await lrV47Channels();
+    const channels = await lrV47Channels(key || chatId);
 
     draft.channelIds = channels
       .map((ch) => Number(ch.id))
@@ -29014,7 +29059,7 @@ async function lrV47AskContentV77(
   );
 
   const channels =
-    await lrV47Channels();
+    await lrV47Channels(key || chatId);
 
   const selected = channels.filter(
     (channel) =>
