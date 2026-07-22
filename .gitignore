@@ -27,3 +27,6 @@ src/*backup_*
 src/*broken_*
 
 # Local temp/build artifacts
+
+# Temporary MAX API diagnostic status
+api2_last_check.status
