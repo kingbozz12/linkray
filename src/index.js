@@ -4289,6 +4289,66 @@ lrProfileEnsureSchema().catch((error) => {
 /* LR_ADMIN_PANEL_V1_INSTALL */
 installLinkRayAdminPanel(app);
 
+
+/* LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893_INDEX_START */
+app.use(async function lrSummaryReportNewMainMenuV893(req, res, next) {
+  try {
+    if (req.method !== 'POST') return next();
+
+    const update = req.body || {};
+    const payload = String(getCallbackPayload(update) || '');
+
+    if (payload !== 'main:menu:new') return next();
+
+    const callbackId = getCallbackId(update);
+    const chatId = getChatId(update);
+
+    if (!chatId) return next();
+
+    const menuText = __lrForceMainMenuTextV7();
+    const rows = __lrForceMainMenuRowsV7();
+    const attachments = __lrForceMenuAttachmentsV7(rows);
+
+    await sendMaxMessage({
+      chatId,
+      text: menuText,
+      format: 'html',
+      attachments,
+    });
+
+    if (callbackId) {
+      try {
+        await answerCallback({
+          callbackId,
+          notification: 'Главное меню открыто',
+        });
+      } catch (ackError) {
+        console.error(
+          '[LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893] callback ack failed',
+          ackError?.message || ackError
+        );
+      }
+    }
+
+    console.log(
+      '[LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893] separate menu sent',
+      JSON.stringify({
+        chatId: String(chatId),
+        payload,
+      })
+    );
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error(
+      '[LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893]',
+      error?.stack || error?.message || error
+    );
+    return next();
+  }
+});
+/* LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893_INDEX_END */
+
 app.use(async function lrForceStartMenuV7(req, res, next) {
   try {
     if (req.method !== 'POST') return next();

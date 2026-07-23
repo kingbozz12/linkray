@@ -239,11 +239,109 @@ function lrStripServicePreviewsV3(body) {
   return cleaned;
 }
 
+
+/* LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893_MAXCLIENT_START */
+function lrV893SummaryReportAttachments(text, attachments = []) {
+  const current = cleanAttachments(attachments);
+
+  const plain = String(text || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const isSummaryReport =
+    /Итоговая\s+стоимость\s*:/i.test(plain) &&
+    /Публикации\s*:/i.test(plain) &&
+    /Ссылка\s+на\s+отч[её]т\s*:/i.test(plain);
+
+  if (!isSummaryReport) {
+    return current;
+  }
+
+  const menuButton = {
+    type: 'callback',
+    text: '🏠 Главное меню',
+    payload: 'main:menu:new',
+  };
+
+  let keyboardFound = false;
+  let menuButtonFound = false;
+
+  const patched = current.map((attachment) => {
+    if (
+      !attachment ||
+      typeof attachment !== 'object' ||
+      Array.isArray(attachment) ||
+      String(attachment.type || '') !== 'inline_keyboard'
+    ) {
+      return attachment;
+    }
+
+    const buttons = attachment?.payload?.buttons;
+    if (!Array.isArray(buttons)) {
+      return attachment;
+    }
+
+    keyboardFound = true;
+
+    const alreadyPresent = buttons.some((row) =>
+      Array.isArray(row) &&
+      row.some(
+        (button) =>
+          String(button?.payload || '') === 'main:menu:new'
+      )
+    );
+
+    if (alreadyPresent) {
+      menuButtonFound = true;
+      return attachment;
+    }
+
+    if (menuButtonFound) {
+      return attachment;
+    }
+
+    menuButtonFound = true;
+
+    return {
+      ...attachment,
+      payload: {
+        ...(attachment.payload || {}),
+        buttons: [
+          ...buttons,
+          [menuButton],
+        ],
+      },
+    };
+  });
+
+  if (!keyboardFound) {
+    patched.push({
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [[menuButton]],
+      },
+    });
+
+    menuButtonFound = true;
+  }
+
+  if (menuButtonFound) {
+    console.log(
+      '[LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893] main menu button attached'
+    );
+  }
+
+  return patched;
+}
+/* LR_SUMMARY_REPORT_NEW_MAIN_MENU_V893_MAXCLIENT_END */
+
 function buildMessageBody({ text = '', format = 'html', attachments = [], markup = [] } = {}) {
   const body = {
     text: String(text || ''),
     format: format || 'html',
-    attachments: cleanAttachments(attachments)
+    attachments: lrV893SummaryReportAttachments(text, attachments)
   };
 
   const fixedMarkup = cleanMarkup(markup, body.text);
