@@ -2006,6 +2006,107 @@ app.use(async function lrContentPlanV51Router(req, res, next) {
     }
 
 
+    
+if (payload.startsWith(
+      'lr_plan_v51:edit_datetime:'
+    )) {
+      const ctx =
+        lrV57ParseCtxFromPayload(payload);
+
+      const target =
+        lrV57PostTargetFromVirtual(
+          ctx.virtualId
+        );
+
+      const post =
+        await lrV90_2LoadScheduledPost(
+          target
+        );
+
+      if (
+        !post ||
+        !post.publish_at ||
+        lrV90_2IsTerminalStatus(post.status)
+      ) {
+        await lrV57Send(
+          chatId,
+          [
+            '━━━━━━━━━━━━━━',
+            '⚠️ Дату можно изменить только у отложенного поста.',
+            '━━━━━━━━━━━━━━',
+          ].join('\n'),
+          [
+            [
+              lrV57Btn(
+                '⬅️ К редактору',
+                lrV57OpenPayload(ctx)
+              ),
+            ],
+          ]
+        );
+
+        if (res && !res.headersSent) {
+          return res.json({
+            ok: true,
+            handled:
+              'lr_v90_2_datetime_not_available',
+          });
+        }
+
+        return;
+      }
+
+      await lrV57SetSession(
+        key,
+        'content_plan_v90_2_wait_datetime',
+        ctx
+      );
+
+      await lrV57Send(
+        chatId,
+        [
+          '━━━━━━━━━━━━━━',
+          '📅 Изменить дату и время',
+          '',
+          `Сейчас: ${lrV90_2FormatMoscow(post.publish_at)}`,
+          '',
+          'Отправьте новую дату и время следующим сообщением:',
+          '24.07.2026 18:30',
+          '',
+          'Также поддерживается:',
+          '2026-07-24 18:30',
+          '━━━━━━━━━━━━━━',
+        ].join('\n'),
+        [
+          [
+            lrV57Btn(
+              '⬅️ К редактору',
+              lrV57OpenPayload(ctx)
+            ),
+          ],
+        ]
+      );
+
+      console.log(
+        '[LR_SCHEDULED_POST_DATETIME_EDIT_V90_2] wait input',
+        JSON.stringify({
+          chatId,
+          key,
+          postId: Number(target.id),
+        })
+      );
+
+      if (res && !res.headersSent) {
+        return res.json({
+          ok: true,
+          handled:
+            'lr_v90_2_wait_datetime',
+        });
+      }
+
+      return;
+    }
+
     if (payload.startsWith('lr_plan_v51:edit_text:')) {
       const parts = payload.split(':');
       await lrV51SetState(key, 'content_plan_v53_wait_text', {
@@ -23944,7 +24045,7 @@ async function lrV57SendPreview(chatId, row, ctx) {
   }
   return lrV57Send(chatId, lrV57Esc(text), []);
 }
-function lrV57EditorRows(ctx) {
+function lrV57EditorRowsBaseV90_2(ctx) {
   return [
     [
       lrV57Btn('✏️ Изменить текст', lrV57ActionPayload('edit_text', ctx)),
@@ -23962,6 +24063,55 @@ function lrV57EditorRows(ctx) {
     ]
   ];
 }
+
+/* LR_SCHEDULED_POST_DATETIME_EDIT_V90_2 */
+function lrV57EditorRows(ctx, row = null) {
+  const rows = lrV57EditorRowsBaseV90_2(ctx);
+
+  const target = lrV57PostTargetFromVirtual(
+    ctx?.virtualId || ''
+  );
+
+  const status = String(
+    row?.__v51Status ||
+    row?.status ||
+    ''
+  ).trim().toLowerCase();
+
+  const terminalStatuses = new Set([
+    'published',
+    'sent',
+    'posted',
+    'done',
+    'success',
+    'canceled',
+    'cancelled',
+    'deleted',
+    'failed',
+  ]);
+
+  if (
+    target?.table === 'scheduled_posts' &&
+    !terminalStatuses.has(status)
+  ) {
+    rows.splice(
+      Math.max(0, rows.length - 2),
+      0,
+      [
+        lrV57Btn(
+          '📅 Изменить дату и время',
+          lrV57ActionPayload(
+            'edit_datetime',
+            ctx
+          )
+        ),
+      ]
+    );
+  }
+
+  return rows;
+}
+
 function lrV57EditorText(row, channels, ctx) {
   const ch = lrV57ChannelTitle(row, channels, ctx.channelKey);
   const status = row?.__v51Status === 'published' ? 'опубликован' : 'отложен';
@@ -23979,6 +24129,326 @@ function lrV57EditorText(row, channels, ctx) {
     'Настройте пост и нажмите «Сохранить пост».\n' +
     '━━━━━━━━━━━━━━';
 }
+
+function lrV90_2Ctx(value) {
+  const data = lrV57Json(value, {});
+
+  return {
+    virtualId: data.virtualId || '',
+    channelKey: data.channelKey || 'all',
+    day: data.day || lrV57Today(),
+    filter: data.filter || 'all',
+    page: Number(data.page || 0) || 0,
+  };
+}
+
+function lrV90_2ParseDateTime(value) {
+  const raw = String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+
+  let match = raw.match(
+    /^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2})[:.](\d{2})$/
+  );
+
+  let year;
+  let month;
+  let day;
+  let hour;
+  let minute;
+
+  if (match) {
+    day = Number(match[1]);
+    month = Number(match[2]);
+    year = Number(match[3]);
+    hour = Number(match[4]);
+    minute = Number(match[5]);
+  } else {
+    match = raw.match(
+      /^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2})[:.](\d{2})$/
+    );
+
+    if (!match) {
+      return null;
+    }
+
+    year = Number(match[1]);
+    month = Number(match[2]);
+    day = Number(match[3]);
+    hour = Number(match[4]);
+    minute = Number(match[5]);
+  }
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute)
+  ) {
+    return null;
+  }
+
+  if (
+    year < 2020 ||
+    year > 2100 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    return null;
+  }
+
+  const calendarCheck = new Date(
+    Date.UTC(
+      year,
+      month - 1,
+      day,
+      12,
+      0,
+      0
+    )
+  );
+
+  if (
+    calendarCheck.getUTCFullYear() !== year ||
+    calendarCheck.getUTCMonth() + 1 !== month ||
+    calendarCheck.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  const dayKey =
+    `${String(year).padStart(4, '0')}-` +
+    `${String(month).padStart(2, '0')}-` +
+    `${String(day).padStart(2, '0')}`;
+
+  const timeKey =
+    `${String(hour).padStart(2, '0')}:` +
+    `${String(minute).padStart(2, '0')}`;
+
+  const date = new Date(
+    `${dayKey}T${timeKey}:00+03:00`
+  );
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return {
+    date,
+    dayKey,
+    timeKey,
+    iso: date.toISOString(),
+  };
+}
+
+function lrV90_2FormatMoscow(value) {
+  const date = value instanceof Date
+    ? value
+    : new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'дата не определена';
+  }
+
+  return date.toLocaleString(
+    'ru-RU',
+    {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }
+  ) + ' МСК';
+}
+
+function lrV90_2IsTerminalStatus(value) {
+  return /^(published|sent|posted|done|success|canceled|cancelled|deleted|failed)$/i
+    .test(String(value || '').trim());
+}
+
+async function lrV90_2LoadScheduledPost(target) {
+  if (
+    !target ||
+    target.table !== 'scheduled_posts' ||
+    !Number.isFinite(Number(target.id))
+  ) {
+    return null;
+  }
+
+  const rows = lrV57Rows(
+    await query(
+      `
+        SELECT
+          id,
+          channel_id,
+          status,
+          publish_at
+        FROM public.scheduled_posts
+        WHERE id=$1
+        LIMIT 1
+      `,
+      [Number(target.id)]
+    )
+  );
+
+  return rows[0] || null;
+}
+
+async function lrV90_2UpdateScheduledPostDateTime(
+  target,
+  parsed
+) {
+  const post =
+    await lrV90_2LoadScheduledPost(target);
+
+  if (!post) {
+    return {
+      ok: false,
+      reason: 'not_found',
+    };
+  }
+
+  if (
+    !post.publish_at ||
+    lrV90_2IsTerminalStatus(post.status)
+  ) {
+    return {
+      ok: false,
+      reason: 'not_scheduled',
+      post,
+    };
+  }
+
+  if (parsed.date.getTime() <= Date.now()) {
+    return {
+      ok: false,
+      reason: 'past',
+      post,
+    };
+  }
+
+  const conflicts = lrV57Rows(
+    await query(
+      `
+        SELECT id
+        FROM public.scheduled_posts
+        WHERE id<>$1
+          AND channel_id=$2
+          AND publish_at=$3::timestamptz
+          AND NOT (
+            LOWER(
+              COALESCE(status, 'scheduled')
+            ) = ANY(
+              ARRAY[
+                'published',
+                'sent',
+                'posted',
+                'done',
+                'success',
+                'canceled',
+                'cancelled',
+                'deleted',
+                'failed'
+              ]::text[]
+            )
+          )
+        LIMIT 1
+      `,
+      [
+        Number(target.id),
+        post.channel_id,
+        parsed.iso,
+      ]
+    )
+  );
+
+  if (conflicts.length) {
+    return {
+      ok: false,
+      reason: 'conflict',
+      post,
+    };
+  }
+
+  const updated = lrV57Rows(
+    await query(
+      `
+        UPDATE public.scheduled_posts
+        SET
+          publish_at=$1::timestamptz,
+          draft=
+            CASE
+              WHEN draft IS NULL THEN NULL
+              ELSE
+                COALESCE(
+                  draft,
+                  '{}'::jsonb
+                )
+                || jsonb_build_object(
+                  'publishAt',
+                  $1::timestamptz,
+                  'publish_at',
+                  $1::timestamptz,
+                  'scheduleDate',
+                  $1::timestamptz
+                )
+            END,
+          updated_at=now()
+        WHERE id=$2
+          AND publish_at IS NOT NULL
+          AND NOT (
+            LOWER(
+              COALESCE(status, 'scheduled')
+            ) = ANY(
+              ARRAY[
+                'published',
+                'sent',
+                'posted',
+                'done',
+                'success',
+                'canceled',
+                'cancelled',
+                'deleted',
+                'failed'
+              ]::text[]
+            )
+          )
+        RETURNING
+          id,
+          channel_id,
+          status,
+          publish_at
+      `,
+      [
+        parsed.iso,
+        Number(target.id),
+      ]
+    )
+  );
+
+  if (!updated[0]) {
+    return {
+      ok: false,
+      reason: 'not_scheduled',
+      post,
+    };
+  }
+
+  return {
+    ok: true,
+    post: updated[0],
+  };
+}
+
 async function lrV57OpenPost(callbackId, chatId, key, virtualId, channelKey, day, filter, page) {
   const ctx = {
     virtualId: lrV57PayloadRead(virtualId || ''),
@@ -24006,7 +24476,7 @@ async function lrV57OpenPost(callbackId, chatId, key, virtualId, channelKey, day
   // Важно: сначала сам пост, потом меню. Не редактируем старое сообщение списка,
   // чтобы порядок был как в редакторе публикации: превью сверху, управление снизу.
   await lrV57SendPreview(chatId, row, ctx);
-  await lrV57Send(chatId, lrV57EditorText(row, channels, ctx), lrV57EditorRows(ctx));
+  await lrV57Send(chatId, lrV57EditorText(row, channels, ctx), lrV57EditorRows(ctx, row));
   console.log('[v57 plan preview] editor sent below preview', JSON.stringify({ chatId, key, id: row.__v51Id }));
   return true;
 }
@@ -24050,6 +24520,174 @@ async function lrV57UpdateText(target, text) {
 }
 async function lrV57HandleTextInput(update, chatId, key, session) {
   const state = String(session?.state || '');
+  if (state === 'content_plan_v90_2_wait_datetime') {
+    const text = lrV57Text(update);
+
+    if (!text || text.startsWith('/')) {
+      return false;
+    }
+
+    const ctx = lrV90_2Ctx(session?.data);
+
+    const target = lrV57PostTargetFromVirtual(
+      ctx.virtualId
+    );
+
+    const parsed =
+      lrV90_2ParseDateTime(text);
+
+    if (
+      !target ||
+      target.table !== 'scheduled_posts'
+    ) {
+      await lrV57ClearSession(key);
+
+      await lrV57Send(
+        chatId,
+        [
+          '━━━━━━━━━━━━━━',
+          '⚠️ Дату можно изменить только у отложенного поста.',
+          '━━━━━━━━━━━━━━',
+        ].join('\n'),
+        [
+          [
+            lrV57Btn(
+              '⬅️ К редактору',
+              lrV57OpenPayload(ctx)
+            ),
+          ],
+        ]
+      );
+
+      return true;
+    }
+
+    if (!parsed) {
+      await lrV57Send(
+        chatId,
+        [
+          '━━━━━━━━━━━━━━',
+          '⚠️ Не удалось распознать дату и время.',
+          '',
+          'Отправьте следующим сообщением:',
+          '24.07.2026 18:30',
+          '',
+          'Также поддерживается:',
+          '2026-07-24 18:30',
+          '━━━━━━━━━━━━━━',
+        ].join('\n'),
+        [
+          [
+            lrV57Btn(
+              '⬅️ К редактору',
+              lrV57OpenPayload(ctx)
+            ),
+          ],
+        ]
+      );
+
+      return true;
+    }
+
+    const result =
+      await lrV90_2UpdateScheduledPostDateTime(
+        target,
+        parsed
+      );
+
+    if (!result.ok) {
+      let message =
+        '⚠️ Не удалось изменить дату и время.';
+
+      if (result.reason === 'past') {
+        message =
+          '⚠️ Указанная дата или время уже прошли.';
+      } else if (
+        result.reason === 'conflict'
+      ) {
+        message =
+          '⚠️ На это время в канале уже запланирован другой пост.';
+      } else if (
+        result.reason === 'not_scheduled'
+      ) {
+        message =
+          '⚠️ Пост уже опубликован, отменён или больше не находится в очереди.';
+      } else if (
+        result.reason === 'not_found'
+      ) {
+        message =
+          '⚠️ Отложенный пост не найден.';
+      }
+
+      await lrV57Send(
+        chatId,
+        [
+          '━━━━━━━━━━━━━━',
+          message,
+          '',
+          'Введите другую дату и время:',
+          '24.07.2026 18:30',
+          '━━━━━━━━━━━━━━',
+        ].join('\n'),
+        [
+          [
+            lrV57Btn(
+              '⬅️ К редактору',
+              lrV57OpenPayload(ctx)
+            ),
+          ],
+        ]
+      );
+
+      return true;
+    }
+
+    await lrV57ClearSession(key);
+
+    const nextCtx = {
+      ...ctx,
+      day: parsed.dayKey,
+    };
+
+    await lrV57Send(
+      chatId,
+      [
+        '━━━━━━━━━━━━━━',
+        '✅ Дата и время изменены',
+        '',
+        `Новая публикация: ${lrV90_2FormatMoscow(parsed.date)}`,
+        '',
+        'Пост остался в очереди.',
+        '━━━━━━━━━━━━━━',
+      ].join('\n'),
+      []
+    );
+
+    await lrV57OpenPost(
+      null,
+      chatId,
+      key,
+      nextCtx.virtualId,
+      nextCtx.channelKey,
+      nextCtx.day,
+      nextCtx.filter,
+      nextCtx.page
+    );
+
+    console.log(
+      '[LR_SCHEDULED_POST_DATETIME_EDIT_V90_2] updated',
+      JSON.stringify({
+        chatId,
+        key,
+        postId: Number(target.id),
+        publishAt: parsed.iso,
+      })
+    );
+
+    return true;
+  }
+
+
   if (!['content_plan_v57_wait_text', 'content_plan_v56_wait_text', 'content_plan_v53_wait_text'].includes(state)) return false;
   const text = lrV57Text(update);
   if (!text || text.startsWith('/')) return false;
