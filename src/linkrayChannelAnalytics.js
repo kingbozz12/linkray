@@ -7078,7 +7078,7 @@ async function lrV73SendDailyGroup(
           [
             lrCb(
               '🏠 Главное меню',
-              'main:menu'
+              'lrchan:main:new'
             ),
           ],
         ]) /* LR_DAILY_PDP_MAIN_MENU_V79_1 */,
