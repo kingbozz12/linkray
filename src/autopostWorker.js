@@ -157,6 +157,30 @@ async function getViewsForPost(post) {
   }
 }
 
+
+/* LR_CHANNEL_SERVICE_GUARD_V91_1 */
+function lrV911IsServicePayload(value) {
+  const text = plain(value)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+  if (!text) return false;
+
+  const markers = [
+    'в аналитике произошла ошибка при создании картинки',
+    'ссылка не будет отправлена в публикацию',
+    'попробуйте ещё раз через пару секунд',
+  ];
+
+  const hits = markers.reduce(
+    (count, phrase) => count + (text.includes(phrase) ? 1 : 0),
+    0
+  );
+
+  return hits >= 2;
+}
+
 async function publishDue() {
   const posts = await query(`
     SELECT sp.*, c.max_chat_id, c.title AS channel_title
@@ -169,11 +193,37 @@ async function publishDue() {
 
   for (const post of posts) {
     try {
+      const outgoingText = String(post.text || '').trim();
+
+      if (lrV911IsServicePayload(outgoingText)) {
+        const reason = 'LINKRAY_SERVICE_PAYLOAD_BLOCKED';
+
+        console.error(
+          '[LR_CHANNEL_GUARD_V91_1]',
+          JSON.stringify({
+            id: post.id,
+            channel: post.channel_title,
+            reason,
+          })
+        );
+
+        await query(
+          `UPDATE scheduled_posts
+           SET status='error',
+               error_message=$2,
+               updated_at=now()
+           WHERE id=$1`,
+          [post.id, reason]
+        ).catch(() => {});
+
+        continue;
+      }
+
       await query(`UPDATE scheduled_posts SET status='publishing', updated_at=now() WHERE id=$1 AND status::text='scheduled'`, [post.id]);
 
       const sent = await sendMaxMessage({
         chatId: post.max_chat_id,
-        text: post.text || '',
+        text: outgoingText,
         format: post.format || 'html',
         attachments: finalAttachments(post),
       });
