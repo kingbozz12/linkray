@@ -68,6 +68,9 @@ import {
   deleteMaxMessage,
 } from './maxClient.js';
 
+/* LR_PUBLIC_WEBSITE_V1_1_1_IMPORT */
+import { mountLinkRayWebsiteRoutes } from './linkrayWebsiteRoutes.js';
+
 // LR_AUTOSIG_FINAL_START
 function lrAutoSigFinalDecode(value) {
   return String(value ?? '')
@@ -802,6 +805,8 @@ globalThis.__lrSigRichV13 = (() => {
 // LR_SIG_RICH_V13_END
 
 const app = express();
+/* LR_PUBLIC_WEBSITE_V1_1_1_MOUNT */
+mountLinkRayWebsiteRoutes(app);
 
 /* LR_GENERATED_STATIC_V34_START */
 try {
