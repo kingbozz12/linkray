@@ -1,0 +1,17 @@
+{
+  "name": "LinkRay",
+  "short_name": "LinkRay",
+  "description": "Управление каналами MAX",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05131d",
+  "theme_color": "#071b29",
+  "icons": [
+    {
+      "src": "/linkray-site/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

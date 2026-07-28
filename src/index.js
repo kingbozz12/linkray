@@ -1,3 +1,4 @@
+import { mountLinkRayWebsiteRoutes } from './linkrayWebsiteRoutes.js';
 /* LR_MAIN_MENU_PURCHASES_PROFILE_TEXT_V1 */
 import { installLinkRayPurchases } from './linkrayPurchases.js';
 import { installLinkRayProofReports } from './linkrayProofReports.js';
@@ -69,7 +70,6 @@ import {
 } from './maxClient.js';
 
 /* LR_PUBLIC_WEBSITE_V1_1_1_IMPORT */
-import { mountLinkRayWebsiteRoutes } from './linkrayWebsiteRoutes.js';
 
 // LR_AUTOSIG_FINAL_START
 function lrAutoSigFinalDecode(value) {
@@ -805,8 +805,11 @@ globalThis.__lrSigRichV13 = (() => {
 // LR_SIG_RICH_V13_END
 
 const app = express();
-/* LR_PUBLIC_WEBSITE_V1_1_1_MOUNT */
+/* LR_WEBSITE_MOBILE_V1_START */
 mountLinkRayWebsiteRoutes(app);
+/* LR_WEBSITE_MOBILE_V1_END */
+
+/* LR_PUBLIC_WEBSITE_V1_1_1_MOUNT */
 
 /* LR_GENERATED_STATIC_V34_START */
 try {
