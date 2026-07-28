@@ -1872,3 +1872,395 @@ button,
   }
 }
 /* LR_MOBILE_LAYOUT_FIX_V2_END */
+
+/* LR_SITE_MOBILE_LOGO_FIX_V3_START */
+
+/*
+ * Изолированный слой мобильной адаптации.
+ * Он расположен в самом конце CSS и не меняет сервер, Studio,
+ * автопостинг, аналитику, AntiFraud и другие модули бота.
+ */
+
+html {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+img,
+svg,
+video,
+canvas,
+picture {
+  max-width: 100%;
+}
+
+img,
+video {
+  height: auto;
+}
+
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+a,
+span,
+li {
+  overflow-wrap: anywhere;
+}
+
+.site-header img,
+.header-brand img,
+.brand img,
+.logo img,
+.site-logo img,
+a[class*="brand"] img,
+a[class*="logo"] img {
+  object-fit: contain;
+  object-position: center;
+}
+
+.browser,
+.browser-frame,
+.browser-window,
+.dashboard,
+.dashboard-shell,
+.dashboard-preview,
+.dashboard-window,
+.app-preview,
+.product-preview,
+.interface-preview,
+.workspace-preview,
+.mockup,
+.mockup-shell,
+.demo,
+.demo-shell,
+[class*="browser"],
+[class*="dashboard"],
+[class*="mockup"],
+[class*="preview-shell"] {
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .container,
+  .section-inner,
+  .header-inner,
+  .footer-inner,
+  .hero-inner,
+  .content-inner,
+  main > div,
+  section > div {
+    max-width: 100%;
+  }
+
+  .hero-grid,
+  .features-grid,
+  .feature-grid,
+  .benefits-grid,
+  .steps-grid,
+  .cta-grid,
+  .footer-grid,
+  [class*="hero"][class*="grid"],
+  [class*="feature"][class*="grid"],
+  [class*="benefit"][class*="grid"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --lr-mobile-side: 18px;
+    --lr-mobile-gap: 16px;
+  }
+
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  body {
+    min-width: 320px;
+  }
+
+  header,
+  main,
+  footer,
+  section {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .container,
+  .section-inner,
+  .header-inner,
+  .footer-inner,
+  .hero-inner,
+  .content-inner,
+  [class$="-container"],
+  [class$="-inner"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    padding-left: var(--lr-mobile-side) !important;
+    padding-right: var(--lr-mobile-side) !important;
+  }
+
+  .site-header,
+  .header,
+  header {
+    min-height: auto;
+  }
+
+  .site-header .brand,
+  .header-brand,
+  header .brand,
+  header [class*="logo"] {
+    max-width: calc(100vw - 112px);
+  }
+
+  .site-header img,
+  .header-brand img,
+  header .brand img,
+  header [class*="logo"] img {
+    max-height: 64px;
+    width: auto;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 10.5vw, 3.25rem) !important;
+    line-height: 1.04 !important;
+    letter-spacing: -0.035em;
+  }
+
+  h2 {
+    font-size: clamp(1.65rem, 7.5vw, 2.35rem) !important;
+    line-height: 1.1 !important;
+  }
+
+  h3 {
+    font-size: clamp(1.2rem, 5.6vw, 1.65rem) !important;
+    line-height: 1.18 !important;
+  }
+
+  p,
+  li {
+    line-height: 1.55;
+  }
+
+  .hero,
+  .hero-grid,
+  .features,
+  .features-grid,
+  .feature-grid,
+  .feature-row,
+  .feature-item,
+  .benefits-grid,
+  .steps-grid,
+  .cta-grid,
+  .footer-grid {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .hero-grid,
+  .features-grid,
+  .feature-grid,
+  .benefits-grid,
+  .steps-grid,
+  .cta-grid,
+  .footer-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .feature-row,
+  .feature-item,
+  .step-row,
+  .benefit-row {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 14px !important;
+  }
+
+  .feature-number,
+  .step-number,
+  [class*="feature-number"],
+  [class*="step-number"] {
+    position: static !important;
+    transform: none !important;
+    width: fit-content !important;
+    max-width: 100% !important;
+  }
+
+  .browser,
+  .browser-frame,
+  .browser-window,
+  .dashboard,
+  .dashboard-shell,
+  .dashboard-preview,
+  .dashboard-window,
+  .app-preview,
+  .product-preview,
+  .interface-preview,
+  .workspace-preview,
+  .mockup,
+  .mockup-shell,
+  .demo,
+  .demo-shell,
+  [class*="browser"],
+  [class*="dashboard"],
+  [class*="mockup"],
+  [class*="preview-shell"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    transform: none !important;
+    overflow: hidden !important;
+  }
+
+  .dashboard-body,
+  .dashboard-grid,
+  .dashboard-content,
+  .mockup-body,
+  .mockup-grid,
+  .preview-body,
+  .preview-grid,
+  [class*="dashboard"] [class*="body"],
+  [class*="dashboard"] [class*="grid"],
+  [class*="mockup"] [class*="body"],
+  [class*="mockup"] [class*="grid"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .dashboard-sidebar,
+  .mockup-sidebar,
+  .preview-sidebar,
+  .demo-sidebar,
+  [class*="dashboard"] > [class*="sidebar"],
+  [class*="mockup"] > [class*="sidebar"],
+  [class*="preview"] > [class*="sidebar"] {
+    display: none !important;
+  }
+
+  .dashboard-main,
+  .mockup-main,
+  .preview-main,
+  .demo-main,
+  [class*="dashboard"] [class*="main"],
+  [class*="mockup"] [class*="main"],
+  [class*="preview"] [class*="main"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    grid-column: 1 / -1 !important;
+  }
+
+  .dashboard-card,
+  .metric-card,
+  .chart-card,
+  .preview-card,
+  .mock-card,
+  [class*="dashboard"] [class*="card"],
+  [class*="mockup"] [class*="card"] {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .browser-bar,
+  .browser-toolbar,
+  .mockup-toolbar,
+  [class*="browser"] [class*="bar"],
+  [class*="browser"] [class*="toolbar"] {
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .browser-bar span,
+  .browser-toolbar span,
+  .mockup-toolbar span {
+    max-width: calc(100% - 72px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  button,
+  .button,
+  .btn,
+  a[class*="button"],
+  a[class*="btn"] {
+    max-width: 100%;
+  }
+
+  .cta-actions,
+  .hero-actions,
+  .button-group,
+  [class*="actions"] {
+    flex-wrap: wrap !important;
+  }
+}
+
+@media (max-width: 430px) {
+  :root {
+    --lr-mobile-side: 14px;
+  }
+
+  .site-header img,
+  .header-brand img,
+  header .brand img,
+  header [class*="logo"] img {
+    max-height: 56px;
+  }
+
+  .browser,
+  .browser-frame,
+  .dashboard,
+  .dashboard-shell,
+  .dashboard-preview,
+  .app-preview,
+  .product-preview,
+  .mockup,
+  .demo {
+    border-radius: 22px !important;
+  }
+
+  .dashboard-main,
+  .mockup-main,
+  .preview-main,
+  .demo-main {
+    padding: 14px !important;
+  }
+}
+
+/* LR_SITE_MOBILE_LOGO_FIX_V3_END */
