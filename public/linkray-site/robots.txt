@@ -1,4 +1,8 @@
 User-agent: *
 Allow: /
+Disallow: /api/
+Disallow: /analytics/
+Disallow: /r/
 
+Host: linkray.ru
 Sitemap: https://linkray.ru/sitemap.xml
