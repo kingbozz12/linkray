@@ -4,8 +4,8 @@
   "description": "Управление каналами MAX",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#05131d",
-  "theme_color": "#071b29",
+  "background_color": "#071d28",
+  "theme_color": "#071d28",
   "icons": [
     {
       "src": "/linkray-site/logo.svg",
