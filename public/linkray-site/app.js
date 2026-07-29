@@ -89,7 +89,7 @@
 
 /* LR_MOBILE_LAYOUT_FIX_V2_START */
 (() => {
-  const OFFICIAL_LOGO = '/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-2';
+  const OFFICIAL_LOGO = '/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-4-1ac20ba95b';
   const MOBILE_LIMIT = 760;
   let resizeTimer = null;
 

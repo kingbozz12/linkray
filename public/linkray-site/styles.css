@@ -2554,7 +2554,7 @@ button,
 [class*="brand-logo"] img,
 [class*="brand-mark"] img,
 [class*="logo-mark"] img {
-  content: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-2") !important;
+  content: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-4-1ac20ba95b") !important;
   object-fit: contain !important;
   object-position: center !important;
 }
@@ -2566,3 +2566,23 @@ button,
   display: none !important;
 }
 /* LR_LOGO_V4_2_CSS_END */
+
+/* LR_EXACT_LOGO_CSS_V4_4_START */
+header [class*="brand"] img,
+header [class*="logo"] img,
+footer [class*="brand"] img,
+footer [class*="logo"] img,
+[class*="dashboard"] [class*="brand"] img,
+[class*="dashboard"] [class*="logo"] img,
+[class*="mock"] [class*="brand"] img,
+[class*="mock"] [class*="logo"] img,
+[class*="panel"] [class*="brand"] img,
+[class*="panel"] [class*="logo"] img,
+img[data-linkray-exact-logo="1"],
+.lr-exact-logo-v4-4 {
+  content: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-4-1ac20ba95b") !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  background-image: none !important;
+}
+/* LR_EXACT_LOGO_CSS_V4_4_END */
