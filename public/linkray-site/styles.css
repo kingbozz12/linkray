@@ -2544,3 +2544,25 @@ button,
 }
 
 /* LR_SITE_MOBILE_SEO_V4_END */
+
+/* LR_LOGO_V4_2_CSS_START */
+.lr-exact-logo,
+.lr-m-brand img,
+.lr-m-hero-logo,
+[class*="site-logo"] img,
+[class*="header-logo"] img,
+[class*="brand-logo"] img,
+[class*="brand-mark"] img,
+[class*="logo-mark"] img {
+  content: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-2") !important;
+  object-fit: contain !important;
+  object-position: center !important;
+}
+[class*="site-logo"] > svg,
+[class*="header-logo"] > svg,
+[class*="brand-logo"] > svg,
+[class*="brand-mark"] > svg,
+[class*="logo-mark"] > svg {
+  display: none !important;
+}
+/* LR_LOGO_V4_2_CSS_END */

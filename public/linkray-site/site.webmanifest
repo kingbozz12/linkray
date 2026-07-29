@@ -1,8 +1,7 @@
 {
-  "name": "LinkRay — управление каналами MAX",
+  "name": "LinkRay",
   "short_name": "LinkRay",
-  "description": "Автопостинг, аналитика, рекламные закупы и защита каналов MAX.",
-  "lang": "ru-RU",
+  "description": "Автопостинг, аналитика и защита каналов MAX",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -10,15 +9,9 @@
   "theme_color": "#03131d",
   "icons": [
     {
-      "src": "/linkray-site/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/linkray-site/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
+      "src": "/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-2",
+      "sizes": "any",
+      "type": "image/webp",
       "purpose": "any maskable"
     }
   ]
