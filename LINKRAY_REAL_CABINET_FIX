@@ -1,0 +1,1708 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd /opt/linkray
+
+VERSION="20260730-real-cabinet-1"
+ROUTES="src/linkrayWebsiteRoutes.js"
+APP="public/linkray-site/app.js"
+CSS="public/linkray-site/styles.css"
+
+echo "[1/7] Подключаю реальный API кабинета"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+start_marker = "// LINKRAY_REAL_CABINET_API_V1_START"
+end_marker = "// LINKRAY_REAL_CABINET_API_V1_END"
+
+block = r'''
+// LINKRAY_REAL_CABINET_API_V1_START
+const lrCabinetColumnsCache = new Map();
+
+function lrCabinetRows(result) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.rows)) return result.rows;
+  return [];
+}
+
+function lrCabinetFirst(result) {
+  return lrCabinetRows(result)[0] ?? null;
+}
+
+function lrCabinetQuoteIdentifier(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+function lrCabinetPick(object, names, fallback = null) {
+  if (!object || typeof object !== 'object') return fallback;
+
+  for (const name of names) {
+    const value = object[name];
+
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+
+  return fallback;
+}
+
+function lrCabinetNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function lrCabinetBoolean(value, fallback = false) {
+  if (value === true || value === 1 || value === '1') return true;
+  if (value === false || value === 0 || value === '0') return false;
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+
+  if (['true', 'yes', 'on', 'enabled', 'active'].includes(normalized)) {
+    return true;
+  }
+
+  if (['false', 'no', 'off', 'disabled', 'inactive'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+async function lrCabinetTableColumns(tableName) {
+  if (lrCabinetColumnsCache.has(tableName)) {
+    return lrCabinetColumnsCache.get(tableName);
+  }
+
+  const result = await query(
+    `
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = $1
+      ORDER BY ordinal_position
+    `,
+    [tableName],
+  );
+
+  const columns = new Map(
+    lrCabinetRows(result).map((row) => [
+      String(row.column_name),
+      String(row.data_type ?? ''),
+    ]),
+  );
+
+  lrCabinetColumnsCache.set(tableName, columns);
+  return columns;
+}
+
+function lrCabinetColumn(columns, names) {
+  for (const name of names) {
+    if (columns.has(name)) return name;
+  }
+
+  return null;
+}
+
+async function lrCabinetResolveSession(req) {
+  const rawCookie = String(req.headers.cookie ?? '');
+
+  const cookieValues = rawCookie
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separator = entry.indexOf('=');
+      return separator >= 0 ? entry.slice(separator + 1) : '';
+    })
+    .filter(Boolean)
+    .map((value) => {
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    });
+
+  if (!cookieValues.length) return null;
+
+  const { createHash } = await import('node:crypto');
+
+  const hashes = [...new Set(
+    cookieValues.map((value) =>
+      createHash('sha256').update(String(value)).digest('hex'),
+    ),
+  )];
+
+  if (!hashes.length) return null;
+
+  const session = lrCabinetFirst(
+    await query(
+      `
+        SELECT *
+        FROM public.lr_web_sessions
+        WHERE token_hash = ANY($1::text[])
+          AND (expires_at IS NULL OR expires_at > NOW())
+          AND revoked_at IS NULL
+        ORDER BY created_at DESC NULLS LAST, id DESC
+        LIMIT 1
+      `,
+      [hashes],
+    ),
+  );
+
+  if (!session) return null;
+
+  try {
+    await query(
+      `
+        UPDATE public.lr_web_sessions
+        SET last_seen_at = NOW()
+        WHERE id = $1
+      `,
+      [session.id],
+    );
+  } catch (error) {
+    console.warn('[LinkRay cabinet] last_seen update failed:', error?.message);
+  }
+
+  return session;
+}
+
+async function lrCabinetLatestByChannel(tableName, channelId) {
+  try {
+    const columns = await lrCabinetTableColumns(tableName);
+    if (!columns.size) return null;
+
+    const channelColumn = lrCabinetColumn(columns, [
+      'channel_id',
+      'max_chat_id',
+      'chat_id',
+      'channel_chat_id',
+      'max_channel_id',
+    ]);
+
+    if (!channelColumn) return null;
+
+    const orderColumn = lrCabinetColumn(columns, [
+      'snapshot_at',
+      'captured_at',
+      'measured_at',
+      'updated_at',
+      'created_at',
+      'date',
+      'id',
+    ]);
+
+    const orderSql = orderColumn
+      ? `ORDER BY ${lrCabinetQuoteIdentifier(orderColumn)} DESC NULLS LAST`
+      : '';
+
+    return lrCabinetFirst(
+      await query(
+        `
+          SELECT *
+          FROM public.${lrCabinetQuoteIdentifier(tableName)}
+          WHERE CAST(${lrCabinetQuoteIdentifier(channelColumn)} AS TEXT) = $1
+          ${orderSql}
+          LIMIT 1
+        `,
+        [String(channelId)],
+      ),
+    );
+  } catch (error) {
+    console.warn(
+      `[LinkRay cabinet] ${tableName} lookup failed:`,
+      error?.message,
+    );
+    return null;
+  }
+}
+
+async function lrCabinetAntifraudEventCount(channelId) {
+  try {
+    const columns = await lrCabinetTableColumns('lr_antifraud_events');
+    if (!columns.size) return 0;
+
+    const channelColumn = lrCabinetColumn(columns, [
+      'channel_id',
+      'max_chat_id',
+      'chat_id',
+      'channel_chat_id',
+    ]);
+
+    if (!channelColumn) return 0;
+
+    const timeColumn = lrCabinetColumn(columns, [
+      'detected_at',
+      'event_at',
+      'created_at',
+      'updated_at',
+      'started_at',
+    ]);
+
+    const timeSql = timeColumn
+      ? `AND ${lrCabinetQuoteIdentifier(timeColumn)} >= NOW() - INTERVAL '24 hours'`
+      : '';
+
+    const row = lrCabinetFirst(
+      await query(
+        `
+          SELECT COUNT(*)::int AS count
+          FROM public.lr_antifraud_events
+          WHERE CAST(${lrCabinetQuoteIdentifier(channelColumn)} AS TEXT) = $1
+          ${timeSql}
+        `,
+        [String(channelId)],
+      ),
+    );
+
+    return lrCabinetNumber(row?.count);
+  } catch (error) {
+    console.warn(
+      '[LinkRay cabinet] antifraud event count failed:',
+      error?.message,
+    );
+    return 0;
+  }
+}
+
+async function lrCabinetUserChannels(userId) {
+  const columns = await lrCabinetTableColumns('lr_user_channels');
+
+  if (!columns.size) return [];
+
+  const userColumn = lrCabinetColumn(columns, [
+    'user_id',
+    'linkray_user_id',
+    'owner_user_id',
+    'admin_user_id',
+  ]);
+
+  if (!userColumn) return [];
+
+  const orderColumn = lrCabinetColumn(columns, [
+    'created_at',
+    'added_at',
+    'updated_at',
+    'id',
+  ]);
+
+  const orderSql = orderColumn
+    ? `ORDER BY ${lrCabinetQuoteIdentifier(orderColumn)} ASC NULLS LAST`
+    : '';
+
+  return lrCabinetRows(
+    await query(
+      `
+        SELECT *
+        FROM public.lr_user_channels
+        WHERE ${lrCabinetQuoteIdentifier(userColumn)} = $1
+        ${orderSql}
+      `,
+      [userId],
+    ),
+  );
+}
+
+function lrCabinetSafeAvatar(value) {
+  const avatar = String(value ?? '').trim();
+
+  if (
+    avatar.startsWith('https://') ||
+    avatar.startsWith('http://') ||
+    avatar.startsWith('/')
+  ) {
+    return avatar;
+  }
+
+  return null;
+}
+
+app.get(
+  '/api/website/cabinet/overview',
+  applyWebsiteHeaders,
+  asyncRoute(async (req, res) => {
+    const session = await lrCabinetResolveSession(req);
+
+    if (!session?.user_id) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Сессия истекла. Войдите заново.',
+      });
+    }
+
+    const user =
+      lrCabinetFirst(
+        await query(
+          `
+            SELECT *
+            FROM public.lr_users
+            WHERE id = $1
+            LIMIT 1
+          `,
+          [session.user_id],
+        ),
+      ) ??
+      lrCabinetFirst(
+        await query(
+          `
+            SELECT *
+            FROM public.lr_real_users
+            WHERE id = $1
+            LIMIT 1
+          `,
+          [session.user_id],
+        ),
+      );
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Профиль LinkRay не найден.',
+      });
+    }
+
+    const membershipRows = await lrCabinetUserChannels(session.user_id);
+    const channels = [];
+
+    for (const membership of membershipRows) {
+      const channelId = lrCabinetPick(membership, [
+        'channel_id',
+        'max_chat_id',
+        'chat_id',
+        'channel_chat_id',
+        'max_channel_id',
+      ]);
+
+      if (channelId === null || channelId === undefined) continue;
+
+      const [
+        analytics,
+        metrics,
+        settings,
+        antifraud,
+        avatarRow,
+      ] = await Promise.all([
+        lrCabinetLatestByChannel(
+          'lr_channel_analytics_snapshots',
+          channelId,
+        ),
+        lrCabinetLatestByChannel('lr_channel_metrics_state', channelId),
+        lrCabinetLatestByChannel(
+          'lr_channel_analytics_settings',
+          channelId,
+        ),
+        lrCabinetLatestByChannel('lr_antifraud_channels', channelId),
+        lrCabinetLatestByChannel('lr_channel_avatar_cache', channelId),
+      ]);
+
+      const combined = {
+        ...settings,
+        ...metrics,
+        ...analytics,
+        ...membership,
+      };
+
+      const title = String(
+        lrCabinetPick(combined, [
+          'channel_title',
+          'title',
+          'channel_name',
+          'name',
+          'display_name',
+        ], `Канал ${channelId}`),
+      );
+
+      const subscribers = lrCabinetNumber(
+        lrCabinetPick(combined, [
+          'subscribers',
+          'subscriber_count',
+          'members',
+          'member_count',
+          'participants_count',
+          'current_members',
+          'total_members',
+          'audience',
+        ]),
+      );
+
+      const views24 = lrCabinetNumber(
+        lrCabinetPick(combined, [
+          'views24',
+          'views_24',
+          'views_24h',
+          'views24h',
+          'views_last_24h',
+          'post_views_24h',
+        ]),
+      );
+
+      const joined24 = lrCabinetNumber(
+        lrCabinetPick(combined, [
+          'joined24',
+          'joined_24',
+          'joined_24h',
+          'subscribed_24h',
+          'subscriptions_24h',
+          'new_members_24h',
+        ]),
+      );
+
+      const left24 = lrCabinetNumber(
+        lrCabinetPick(combined, [
+          'left24',
+          'left_24',
+          'left_24h',
+          'unsubscribed_24h',
+          'unsubscriptions_24h',
+          'lost_members_24h',
+        ]),
+      );
+
+      const storedEr = lrCabinetNumber(
+        lrCabinetPick(combined, [
+          'er',
+          'er_percent',
+          'engagement_rate',
+          'engagement_rate_percent',
+        ]),
+        Number.NaN,
+      );
+
+      const er = Number.isFinite(storedEr)
+        ? storedEr
+        : subscribers > 0
+          ? (views24 / subscribers) * 100
+          : 0;
+
+      const antifraudEnabled = lrCabinetBoolean(
+        lrCabinetPick(antifraud, [
+          'enabled',
+          'is_enabled',
+          'active',
+          'is_active',
+          'protection_enabled',
+        ]),
+      );
+
+      const antifraudStatus = String(
+        lrCabinetPick(antifraud, [
+          'status',
+          'state',
+          'protection_status',
+        ], antifraudEnabled ? 'Защита включена' : 'Защита выключена'),
+      );
+
+      const alertCount24 = await lrCabinetAntifraudEventCount(channelId);
+
+      const avatar = lrCabinetSafeAvatar(
+        lrCabinetPick(
+          {
+            ...avatarRow,
+            ...combined,
+          },
+          [
+            'avatar_url',
+            'photo_url',
+            'image_url',
+            'avatar',
+            'photo',
+          ],
+        ),
+      );
+
+      channels.push({
+        id: String(channelId),
+        title,
+        avatar,
+        role: String(
+          lrCabinetPick(membership, [
+            'role',
+            'access_role',
+            'member_role',
+          ], 'Администратор'),
+        ),
+        subscribers,
+        views24,
+        joined24,
+        left24,
+        net24: joined24 - left24,
+        er: Number(er.toFixed(2)),
+        antifraudEnabled,
+        antifraudStatus,
+        alertCount24,
+      });
+    }
+
+    const displayName = String(
+      lrCabinetPick(user, [
+        'display_name',
+        'full_name',
+        'name',
+        'first_name',
+        'username',
+      ], 'Пользователь LinkRay'),
+    );
+
+    const rawLinkRayId = lrCabinetPick(user, [
+      'linkray_id',
+      'profile_number',
+      'public_id',
+      'number',
+      'id',
+    ], session.user_id);
+
+    const numericLinkRayId = Number(rawLinkRayId);
+    const linkrayId = Number.isFinite(numericLinkRayId)
+      ? String(numericLinkRayId).padStart(6, '0')
+      : String(rawLinkRayId);
+
+    const totalSubscribers = channels.reduce(
+      (sum, channel) => sum + channel.subscribers,
+      0,
+    );
+
+    const totalViews24 = channels.reduce(
+      (sum, channel) => sum + channel.views24,
+      0,
+    );
+
+    const totalNet24 = channels.reduce(
+      (sum, channel) => sum + channel.net24,
+      0,
+    );
+
+    const protectedChannels = channels.filter(
+      (channel) => channel.antifraudEnabled,
+    ).length;
+
+    const alerts24 = channels.reduce(
+      (sum, channel) => sum + channel.alertCount24,
+      0,
+    );
+
+    return res.json({
+      ok: true,
+      user: {
+        id: String(user.id ?? session.user_id),
+        linkrayId,
+        displayName,
+        maxUserId: String(
+          lrCabinetPick(user, ['max_user_id', 'maxUserId'], ''),
+        ),
+      },
+      summary: {
+        channels: channels.length,
+        subscribers: totalSubscribers,
+        views24: totalViews24,
+        net24: totalNet24,
+        protectedChannels,
+        alerts24,
+      },
+      channels,
+      studioUrl: 'https://max.ru/se13353901_bot',
+      updatedAt: new Date().toISOString(),
+    });
+  }),
+);
+// LINKRAY_REAL_CABINET_API_V1_END
+'''
+
+if start_marker in source and end_marker in source:
+    before = source.split(start_marker, 1)[0]
+    after = source.split(end_marker, 1)[1]
+    source = before + block + after
+else:
+    needles = [
+        "app.get('/cabinet'",
+        'app.get("/cabinet"',
+        "app.get(\n  '/cabinet'",
+        'app.get(\n  "/cabinet"',
+    ]
+
+    position = -1
+    for needle in needles:
+        position = source.find(needle)
+        if position >= 0:
+            break
+
+    if position < 0:
+        raise SystemExit("Не найден маршрут /cabinet для безопасной вставки API")
+
+    source = source[:position] + block + "\n\n" + source[position:]
+
+path.write_text(source, encoding="utf-8")
+print("API /api/website/cabinet/overview подключён")
+PY
+
+echo "[2/7] Подключаю кабинет к API"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("public/linkray-site/app.js")
+source = path.read_text(encoding="utf-8")
+
+start_marker = "/* LINKRAY_REAL_CABINET_FRONTEND_V1_START */"
+end_marker = "/* LINKRAY_REAL_CABINET_FRONTEND_V1_END */"
+
+block = r'''
+/* LINKRAY_REAL_CABINET_FRONTEND_V1_START */
+(() => {
+  if (window.location.pathname !== '/cabinet') return;
+
+  const API_URL = '/api/website/cabinet/overview';
+  const STUDIO_URL = 'https://max.ru/se13353901_bot';
+
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+  const formatNumber = (value) =>
+    new Intl.NumberFormat('ru-RU').format(Number(value) || 0);
+
+  const formatSigned = (value) => {
+    const number = Number(value) || 0;
+    return `${number > 0 ? '+' : ''}${formatNumber(number)}`;
+  };
+
+  const findBottomNav = () => {
+    const candidates = [
+      ...document.querySelectorAll('nav, footer, [role="navigation"], div'),
+    ];
+
+    return candidates
+      .filter((element) => {
+        const text = String(element.textContent || '').toLowerCase();
+        return (
+          text.includes('обзор') &&
+          text.includes('каналы') &&
+          text.includes('studio')
+        );
+      })
+      .sort(
+        (left, right) =>
+          left.querySelectorAll('*').length -
+          right.querySelectorAll('*').length,
+      )[0] || null;
+  };
+
+  const findContentHost = () => {
+    const main = document.querySelector('main');
+    if (main) return main;
+
+    const loadingText = [
+      ...document.querySelectorAll('div, section, p, span, h1, h2'),
+    ].find((element) =>
+      String(element.textContent || '')
+        .toLowerCase()
+        .includes('загружаем linkray'),
+    );
+
+    if (loadingText) {
+      return (
+        loadingText.closest(
+          '[data-cabinet-content], .cabinet-content, .screen-content, section',
+        ) ||
+        loadingText.parentElement
+      );
+    }
+
+    const bottomNav = findBottomNav();
+    const host = document.createElement('main');
+    host.className = 'lr-real-cabinet-host';
+
+    if (bottomNav?.parentNode) {
+      bottomNav.parentNode.insertBefore(host, bottomNav);
+    } else {
+      document.body.append(host);
+    }
+
+    return host;
+  };
+
+  const navItems = () => {
+    const nav = findBottomNav();
+    if (!nav) return {};
+
+    const elements = [...nav.querySelectorAll('a, button, [role="button"], div')];
+    const result = {};
+
+    for (const element of elements) {
+      const text = String(element.textContent || '').trim().toLowerCase();
+
+      if (!result.overview && text === 'обзор') result.overview = element;
+      if (!result.channels && text === 'каналы') result.channels = element;
+      if (!result.studio && text.includes('studio')) result.studio = element;
+    }
+
+    return result;
+  };
+
+  const channelAvatar = (channel) => {
+    if (channel.avatar) {
+      return `
+        <img
+          class="lr-real-channel-avatar"
+          src="${escapeHtml(channel.avatar)}"
+          alt=""
+          loading="lazy"
+        >
+      `;
+    }
+
+    const letter = String(channel.title || 'L').trim().charAt(0).toUpperCase();
+
+    return `
+      <div class="lr-real-channel-avatar lr-real-channel-avatar--fallback">
+        ${escapeHtml(letter)}
+      </div>
+    `;
+  };
+
+  const summaryCard = (label, value, note = '') => `
+    <article class="lr-real-summary-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      ${note ? `<small>${escapeHtml(note)}</small>` : ''}
+    </article>
+  `;
+
+  const renderOverview = (data) => {
+    const host = findContentHost();
+    const user = data.user || {};
+    const summary = data.summary || {};
+    const channels = Array.isArray(data.channels) ? data.channels : [];
+
+    host.innerHTML = `
+      <div class="lr-real-cabinet" data-lr-real-cabinet>
+        <header class="lr-real-cabinet-header">
+          <div>
+            <span class="lr-real-eyebrow">Личный кабинет</span>
+            <h1>${escapeHtml(user.displayName || 'LinkRay')}</h1>
+            <p>ID LinkRay: <b>${escapeHtml(user.linkrayId || '—')}</b></p>
+          </div>
+
+          <a
+            class="lr-real-header-max"
+            href="${STUDIO_URL}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Открыть MAX
+          </a>
+        </header>
+
+        <section class="lr-real-summary-grid" aria-label="Общая статистика">
+          ${summaryCard(
+            'Каналы',
+            formatNumber(summary.channels),
+            'Подключены к LinkRay',
+          )}
+          ${summaryCard(
+            'Подписчики',
+            formatNumber(summary.subscribers),
+            'Всего по каналам',
+          )}
+          ${summaryCard(
+            'Просмотры 24 ч',
+            formatNumber(summary.views24),
+            'По доступным данным',
+          )}
+          ${summaryCard(
+            'Изменение 24 ч',
+            formatSigned(summary.net24),
+            'Подписки минус отписки',
+          )}
+        </section>
+
+        <section class="lr-real-protection-card">
+          <div>
+            <span class="lr-real-protection-icon" aria-hidden="true">✓</span>
+            <div>
+              <strong>AntiFraud</strong>
+              <p>
+                Защищено каналов:
+                ${formatNumber(summary.protectedChannels)}
+                из ${formatNumber(summary.channels)}
+              </p>
+            </div>
+          </div>
+
+          <span class="lr-real-alert-count">
+            События за 24 ч: ${formatNumber(summary.alerts24)}
+          </span>
+        </section>
+
+        <section class="lr-real-section">
+          <div class="lr-real-section-heading">
+            <div>
+              <span class="lr-real-eyebrow">Каналы</span>
+              <h2>Подключённые каналы</h2>
+            </div>
+
+            <button type="button" data-lr-open-channels>
+              Все каналы
+            </button>
+          </div>
+
+          <div class="lr-real-channel-list">
+            ${
+              channels.length
+                ? channels
+                    .slice(0, 3)
+                    .map(
+                      (channel) => `
+                        <article class="lr-real-channel-card">
+                          <div class="lr-real-channel-main">
+                            ${channelAvatar(channel)}
+                            <div>
+                              <strong>${escapeHtml(channel.title)}</strong>
+                              <span>${escapeHtml(channel.role || 'Администратор')}</span>
+                            </div>
+                          </div>
+
+                          <div class="lr-real-channel-metrics">
+                            <span>
+                              <b>${formatNumber(channel.subscribers)}</b>
+                              подписчиков
+                            </span>
+                            <span>
+                              <b>${formatSigned(channel.net24)}</b>
+                              за 24 ч
+                            </span>
+                            <span>
+                              <b>${formatNumber(channel.views24)}</b>
+                              просмотров
+                            </span>
+                          </div>
+
+                          <div class="lr-real-channel-status">
+                            <span class="${
+                              channel.antifraudEnabled
+                                ? 'is-enabled'
+                                : 'is-disabled'
+                            }">
+                              ${
+                                channel.antifraudEnabled
+                                  ? 'AntiFraud включён'
+                                  : 'AntiFraud выключен'
+                              }
+                            </span>
+                            <span>ER ${Number(channel.er || 0).toFixed(1)}%</span>
+                          </div>
+                        </article>
+                      `,
+                    )
+                    .join('')
+                : `
+                  <div class="lr-real-empty">
+                    <strong>Каналы пока не найдены</strong>
+                    <p>
+                      Добавьте бота LinkRay администратором канала и перешлите
+                      ему любой пост.
+                    </p>
+                    <a
+                      href="${STUDIO_URL}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Открыть LinkRay в MAX
+                    </a>
+                  </div>
+                `
+            }
+          </div>
+        </section>
+
+        <p class="lr-real-updated">
+          Данные обновлены:
+          ${escapeHtml(
+            new Date(data.updatedAt || Date.now()).toLocaleString('ru-RU'),
+          )}
+        </p>
+      </div>
+    `;
+
+    host
+      .querySelector('[data-lr-open-channels]')
+      ?.addEventListener('click', () => renderChannels(data));
+
+    setActiveNav('overview');
+  };
+
+  const renderChannels = (data) => {
+    const host = findContentHost();
+    const channels = Array.isArray(data.channels) ? data.channels : [];
+
+    host.innerHTML = `
+      <div class="lr-real-cabinet" data-lr-real-cabinet>
+        <header class="lr-real-page-header">
+          <div>
+            <span class="lr-real-eyebrow">Каналы</span>
+            <h1>Ваши каналы</h1>
+            <p>${formatNumber(channels.length)} подключено</p>
+          </div>
+
+          <button type="button" data-lr-refresh-cabinet>
+            Обновить
+          </button>
+        </header>
+
+        <section class="lr-real-channel-list lr-real-channel-list--full">
+          ${
+            channels.length
+              ? channels
+                  .map(
+                    (channel) => `
+                      <article class="lr-real-channel-card">
+                        <div class="lr-real-channel-main">
+                          ${channelAvatar(channel)}
+                          <div>
+                            <strong>${escapeHtml(channel.title)}</strong>
+                            <span>ID канала: ${escapeHtml(channel.id)}</span>
+                          </div>
+                        </div>
+
+                        <div class="lr-real-channel-metrics">
+                          <span>
+                            <b>${formatNumber(channel.subscribers)}</b>
+                            подписчиков
+                          </span>
+                          <span>
+                            <b>${formatNumber(channel.views24)}</b>
+                            просмотров 24 ч
+                          </span>
+                          <span>
+                            <b>${formatSigned(channel.net24)}</b>
+                            изменение
+                          </span>
+                          <span>
+                            <b>${Number(channel.er || 0).toFixed(1)}%</b>
+                            ER
+                          </span>
+                        </div>
+
+                        <div class="lr-real-antifraud-line">
+                          <span class="${
+                            channel.antifraudEnabled
+                              ? 'is-enabled'
+                              : 'is-disabled'
+                          }">
+                            ${escapeHtml(channel.antifraudStatus)}
+                          </span>
+                          <span>
+                            События 24 ч:
+                            ${formatNumber(channel.alertCount24)}
+                          </span>
+                        </div>
+                      </article>
+                    `,
+                  )
+                  .join('')
+              : `
+                <div class="lr-real-empty">
+                  <strong>Нет подключённых каналов</strong>
+                  <p>
+                    Управление добавлением каналов остаётся в боте LinkRay.
+                  </p>
+                  <a
+                    href="${STUDIO_URL}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Перейти в MAX
+                  </a>
+                </div>
+              `
+          }
+        </section>
+      </div>
+    `;
+
+    host
+      .querySelector('[data-lr-refresh-cabinet]')
+      ?.addEventListener('click', () => loadCabinet(true));
+
+    setActiveNav('channels');
+  };
+
+  const renderLoading = () => {
+    const host = findContentHost();
+
+    host.innerHTML = `
+      <div class="lr-real-state">
+        <img src="/assets/linkray-logo.webp" alt="" class="lr-real-state-logo">
+        <strong>Загружаем данные LinkRay…</strong>
+        <span>Обычно это занимает несколько секунд</span>
+      </div>
+    `;
+  };
+
+  const renderError = (message) => {
+    const host = findContentHost();
+
+    host.innerHTML = `
+      <div class="lr-real-state lr-real-state--error">
+        <img src="/assets/linkray-logo.webp" alt="" class="lr-real-state-logo">
+        <strong>Не удалось загрузить кабинет</strong>
+        <span>${escapeHtml(message || 'Повторите попытку.')}</span>
+        <button type="button" data-lr-retry>Повторить</button>
+        <a href="/" class="lr-real-secondary-link">Вернуться на сайт</a>
+      </div>
+    `;
+
+    host
+      .querySelector('[data-lr-retry]')
+      ?.addEventListener('click', () => loadCabinet(true));
+  };
+
+  const setActiveNav = (name) => {
+    const items = navItems();
+
+    Object.entries(items).forEach(([key, element]) => {
+      element?.classList.toggle('is-active', key === name);
+    });
+  };
+
+  let cabinetData = null;
+  let loadingPromise = null;
+
+  const loadCabinet = async (force = false) => {
+    if (loadingPromise && !force) return loadingPromise;
+
+    renderLoading();
+
+    loadingPromise = (async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 12000);
+
+      try {
+        const response = await fetch(API_URL, {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: {
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
+        });
+
+        const payload = await response.json().catch(() => null);
+
+        if (response.status === 401) {
+          window.location.href = '/?login=1';
+          return;
+        }
+
+        if (!response.ok || !payload?.ok) {
+          throw new Error(
+            payload?.error || `Ошибка загрузки: ${response.status}`,
+          );
+        }
+
+        cabinetData = payload;
+        renderOverview(payload);
+      } catch (error) {
+        const message =
+          error?.name === 'AbortError'
+            ? 'Сервер слишком долго отвечает.'
+            : error?.message || 'Неизвестная ошибка.';
+
+        renderError(message);
+      } finally {
+        window.clearTimeout(timeout);
+        loadingPromise = null;
+      }
+    })();
+
+    return loadingPromise;
+  };
+
+  const bindNavigation = () => {
+    const items = navItems();
+
+    items.overview?.addEventListener('click', (event) => {
+      event.preventDefault();
+
+      if (cabinetData) {
+        renderOverview(cabinetData);
+      } else {
+        loadCabinet();
+      }
+    });
+
+    items.channels?.addEventListener('click', (event) => {
+      event.preventDefault();
+
+      if (cabinetData) {
+        renderChannels(cabinetData);
+      } else {
+        loadCabinet();
+      }
+    });
+
+    if (items.studio) {
+      if (items.studio.tagName === 'A') {
+        items.studio.href = STUDIO_URL;
+        items.studio.target = '_blank';
+        items.studio.rel = 'noopener noreferrer';
+      } else {
+        items.studio.addEventListener('click', (event) => {
+          event.preventDefault();
+          window.open(STUDIO_URL, '_blank', 'noopener,noreferrer');
+        });
+      }
+    }
+  };
+
+  const start = () => {
+    bindNavigation();
+    loadCabinet();
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+/* LINKRAY_REAL_CABINET_FRONTEND_V1_END */
+'''
+
+if start_marker in source and end_marker in source:
+    before = source.split(start_marker, 1)[0]
+    after = source.split(end_marker, 1)[1]
+    source = before + block + after
+else:
+    source = source.rstrip() + "\n\n" + block + "\n"
+
+path.write_text(source, encoding="utf-8")
+print("Кабинет подключён к реальному API")
+PY
+
+echo "[3/7] Добавляю стили реального кабинета"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("public/linkray-site/styles.css")
+source = path.read_text(encoding="utf-8")
+
+start_marker = "/* LINKRAY_REAL_CABINET_STYLES_V1_START */"
+end_marker = "/* LINKRAY_REAL_CABINET_STYLES_V1_END */"
+
+block = r'''
+/* LINKRAY_REAL_CABINET_STYLES_V1_START */
+.lr-real-cabinet-host,
+body > main {
+  min-height: calc(100dvh - 110px);
+}
+
+.lr-real-cabinet {
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 42px 0 120px;
+}
+
+.lr-real-cabinet-header,
+.lr-real-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 26px;
+}
+
+.lr-real-cabinet-header h1,
+.lr-real-page-header h1 {
+  margin: 5px 0 6px;
+  font-size: clamp(28px, 5vw, 46px);
+  line-height: 1.05;
+}
+
+.lr-real-cabinet-header p,
+.lr-real-page-header p {
+  margin: 0;
+  color: #91a4b7;
+}
+
+.lr-real-eyebrow {
+  color: #6ee7a8;
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.lr-real-header-max,
+.lr-real-page-header button,
+.lr-real-section-heading button {
+  min-height: 46px;
+  padding: 0 17px;
+  border: 1px solid rgba(110, 231, 168, .25);
+  border-radius: 14px;
+  background: rgba(110, 231, 168, .09);
+  color: #bff5d8;
+  font: inherit;
+  font-weight: 760;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.lr-real-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.lr-real-summary-card,
+.lr-real-protection-card,
+.lr-real-channel-card,
+.lr-real-empty {
+  border: 1px solid rgba(145, 164, 183, .17);
+  background:
+    linear-gradient(145deg, rgba(17, 43, 57, .92), rgba(7, 25, 38, .96));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .16);
+}
+
+.lr-real-summary-card {
+  min-height: 128px;
+  padding: 19px;
+  border-radius: 19px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.lr-real-summary-card span,
+.lr-real-summary-card small {
+  color: #91a4b7;
+}
+
+.lr-real-summary-card strong {
+  margin: 8px 0;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.lr-real-summary-card small {
+  font-size: 12px;
+}
+
+.lr-real-protection-card {
+  margin-top: 14px;
+  padding: 18px 20px;
+  border-radius: 19px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.lr-real-protection-card > div {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.lr-real-protection-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: rgba(110, 231, 168, .14);
+  color: #6ee7a8;
+  font-weight: 900;
+}
+
+.lr-real-protection-card p {
+  margin: 3px 0 0;
+  color: #91a4b7;
+  font-size: 14px;
+}
+
+.lr-real-alert-count {
+  color: #b8c7d5;
+  font-size: 14px;
+}
+
+.lr-real-section {
+  margin-top: 30px;
+}
+
+.lr-real-section-heading {
+  margin-bottom: 15px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.lr-real-section-heading h2 {
+  margin: 4px 0 0;
+  font-size: 25px;
+}
+
+.lr-real-channel-list {
+  display: grid;
+  gap: 13px;
+}
+
+.lr-real-channel-list--full {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lr-real-channel-card {
+  padding: 18px;
+  border-radius: 19px;
+}
+
+.lr-real-channel-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lr-real-channel-main > div:last-child {
+  min-width: 0;
+}
+
+.lr-real-channel-main strong,
+.lr-real-channel-main span {
+  display: block;
+}
+
+.lr-real-channel-main strong {
+  overflow: hidden;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lr-real-channel-main span {
+  margin-top: 3px;
+  color: #91a4b7;
+  font-size: 13px;
+}
+
+.lr-real-channel-avatar {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-radius: 15px;
+  object-fit: cover;
+}
+
+.lr-real-channel-avatar--fallback {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #244b61, #163247);
+  color: #dff8ec;
+  font-size: 19px;
+  font-weight: 850;
+}
+
+.lr-real-channel-metrics {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.lr-real-channel-list--full .lr-real-channel-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lr-real-channel-metrics span {
+  min-width: 0;
+  padding: 11px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .035);
+  color: #91a4b7;
+  font-size: 11px;
+}
+
+.lr-real-channel-metrics b {
+  display: block;
+  margin-bottom: 3px;
+  color: #f4fafc;
+  font-size: 16px;
+}
+
+.lr-real-channel-status,
+.lr-real-antifraud-line {
+  margin-top: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #91a4b7;
+  font-size: 12px;
+}
+
+.lr-real-channel-status .is-enabled,
+.lr-real-antifraud-line .is-enabled {
+  color: #75e4ac;
+}
+
+.lr-real-channel-status .is-disabled,
+.lr-real-antifraud-line .is-disabled {
+  color: #e7a9b6;
+}
+
+.lr-real-empty {
+  padding: 27px 22px;
+  border-radius: 19px;
+  text-align: center;
+}
+
+.lr-real-empty p {
+  margin: 8px auto 17px;
+  max-width: 520px;
+  color: #91a4b7;
+}
+
+.lr-real-empty a {
+  color: #75e4ac;
+  font-weight: 760;
+}
+
+.lr-real-updated {
+  margin: 18px 0 0;
+  color: #71879a;
+  font-size: 12px;
+  text-align: center;
+}
+
+.lr-real-state {
+  min-height: calc(100dvh - 130px);
+  padding: 50px 24px 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.lr-real-state-logo {
+  width: 112px;
+  height: 112px;
+  margin-bottom: 25px;
+  border-radius: 25px;
+}
+
+.lr-real-state strong {
+  font-size: 22px;
+}
+
+.lr-real-state span {
+  margin-top: 8px;
+  color: #91a4b7;
+}
+
+.lr-real-state button {
+  min-width: 180px;
+  min-height: 50px;
+  margin-top: 22px;
+  border: 0;
+  border-radius: 15px;
+  background: linear-gradient(135deg, #6ee7a8, #37c98a);
+  color: #052116;
+  font: inherit;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.lr-real-secondary-link {
+  margin-top: 15px;
+  color: #91a4b7;
+}
+
+@media (max-width: 760px) {
+  .lr-real-cabinet {
+    width: min(100% - 24px, 620px);
+    padding: 24px 0 108px;
+  }
+
+  .lr-real-cabinet-header,
+  .lr-real-page-header {
+    align-items: center;
+  }
+
+  .lr-real-cabinet-header h1,
+  .lr-real-page-header h1 {
+    font-size: 31px;
+  }
+
+  .lr-real-header-max {
+    min-height: 42px;
+    padding: 0 13px;
+    font-size: 12px;
+  }
+
+  .lr-real-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .lr-real-summary-card {
+    min-height: 112px;
+    padding: 15px;
+    border-radius: 17px;
+  }
+
+  .lr-real-summary-card strong {
+    font-size: 25px;
+  }
+
+  .lr-real-protection-card {
+    align-items: flex-start;
+    flex-direction: column;
+    border-radius: 17px;
+  }
+
+  .lr-real-section-heading h2 {
+    font-size: 21px;
+  }
+
+  .lr-real-section-heading button {
+    min-height: 41px;
+    padding: 0 13px;
+    font-size: 12px;
+  }
+
+  .lr-real-channel-list--full {
+    grid-template-columns: 1fr;
+  }
+
+  .lr-real-channel-card {
+    padding: 15px;
+    border-radius: 17px;
+  }
+
+  .lr-real-channel-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .lr-real-channel-list--full .lr-real-channel-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lr-real-channel-metrics span {
+    padding: 9px 8px;
+    font-size: 10px;
+  }
+
+  .lr-real-channel-metrics b {
+    font-size: 14px;
+  }
+
+  .lr-real-state {
+    min-height: calc(100dvh - 110px);
+  }
+}
+
+@media (max-width: 380px) {
+  .lr-real-cabinet-header,
+  .lr-real-page-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .lr-real-summary-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .lr-real-channel-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .lr-real-channel-list--full .lr-real-channel-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+/* LINKRAY_REAL_CABINET_STYLES_V1_END */
+'''
+
+if start_marker in source and end_marker in source:
+    before = source.split(start_marker, 1)[0]
+    after = source.split(end_marker, 1)[1]
+    source = before + block + after
+else:
+    source = source.rstrip() + "\n\n" + block + "\n"
+
+path.write_text(source, encoding="utf-8")
+print("Стили кабинета добавлены")
+PY
+
+echo "[4/7] Обновляю версии CSS и JavaScript"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+version = "20260730-real-cabinet-1"
+
+for path in Path("public/linkray-site").rglob("*.html"):
+    source = path.read_text(encoding="utf-8")
+
+    source = re.sub(
+        r'(?P<path>(?:\.\./)?styles\.css)(?:\?v=[^"\']*)?',
+        rf'\g<path>?v={version}',
+        source,
+    )
+
+    source = re.sub(
+        r'(?P<path>(?:\.\./)?app\.js)(?:\?v=[^"\']*)?',
+        rf'\g<path>?v={version}',
+        source,
+    )
+
+    path.write_text(source, encoding="utf-8")
+
+print("Кэш ресурсов обновлён")
+PY
+
+echo "[5/7] Проверяю синтаксис Node.js"
+
+node --check "$ROUTES"
+node --check "$APP"
+
+echo "[6/7] Сохраняю изменения в GitHub и пересобираю приложение"
+
+git add -A -- "$ROUTES" "$APP" "$CSS" public/linkray-site/index.html public/linkray-site/pages
+
+if ! git diff --cached --quiet; then
+  git commit -m "Connect LinkRay cabinet to real data"
+  git push origin HEAD:main
+fi
+
+docker compose up -d --build app
+sleep 15
+
+echo "[7/7] Проверяю кабинет без изменения сессии"
+
+echo "Главная: $(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/)"
+echo "Кабинет: $(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/cabinet)"
+echo "CSS: $(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/styles.css?v=$VERSION")"
+echo "JavaScript: $(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/app.js?v=$VERSION")"
+echo "API без cookie: $(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/website/cabinet/overview)"
+
+echo
+echo "=============================================================="
+echo "РЕАЛЬНЫЙ КАБИНЕТ LINKRAY ПОДКЛЮЧЁН"
+echo "API без cookie должен показать 401 — это правильная защита"
+echo "Текущая сессия пользователя не удалялась и новый код не создавался"
+echo "Обнови страницу /cabinet"
+echo "=============================================================="
