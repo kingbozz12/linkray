@@ -2587,29 +2587,80 @@ img[data-linkray-exact-logo="1"],
 }
 /* LR_EXACT_LOGO_CSS_V4_4_END */
 
-/* LR_LOGO_ENFORCER_CSS_V4_5_START */
-img[data-lr-exact-logo="1"],
-.lr-exact-logo-v4-5 {
-  content: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-5-1ac20ba95b") !important;
+/* LR_BRAND_LOGO_CSS_V4_6_START */
+
+/*
+ * Только маленький брендовый значок в шапке и подвале.
+ * Широкая исходная картинка визуально обрезается до квадрата по центру.
+ * Родительский блок с надписью LinkRay больше не получает фон.
+ */
+.lr-brand-logo-v4-6 {
+  display: block !important;
+  width: 68px !important;
+  height: 68px !important;
+  min-width: 68px !important;
+  max-width: 68px !important;
+  min-height: 68px !important;
+  max-height: 68px !important;
+  aspect-ratio: 1 / 1 !important;
   object-fit: cover !important;
-  object-position: center !important;
+  object-position: 50% 50% !important;
+  border-radius: 20px !important;
   background: transparent !important;
-  -webkit-mask: none !important;
-  mask: none !important;
+  box-shadow:
+    0 0 0 1px rgba(85, 225, 213, 0.22),
+    0 10px 28px rgba(0, 0, 0, 0.22) !important;
+  flex: 0 0 68px !important;
+  overflow: hidden !important;
 }
 
-.lr-exact-logo-background-v4-5 {
-  background-image: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-5-1ac20ba95b") !important;
-  background-position: center !important;
-  background-repeat: no-repeat !important;
-  background-size: cover !important;
-  -webkit-mask: none !important;
-  mask: none !important;
+footer .lr-brand-logo-v4-6 {
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  min-height: 56px !important;
+  max-height: 56px !important;
+  border-radius: 17px !important;
+  flex-basis: 56px !important;
 }
 
-.lr-exact-logo-background-v4-5 > svg,
-.lr-exact-logo-background-v4-5 > picture,
-.lr-exact-logo-background-v4-5 > canvas {
-  display: none !important;
+.lr-brand-root-v4-6 {
+  background-image: none !important;
+  background-color: transparent !important;
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
 }
-/* LR_LOGO_ENFORCER_CSS_V4_5_END */
+
+.lr-brand-root-v4-6::before,
+.lr-brand-root-v4-6::after {
+  background-image: none !important;
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+
+@media (max-width: 640px) {
+  header .lr-brand-logo-v4-6 {
+    width: 64px !important;
+    height: 64px !important;
+    min-width: 64px !important;
+    max-width: 64px !important;
+    min-height: 64px !important;
+    max-height: 64px !important;
+    border-radius: 19px !important;
+    flex-basis: 64px !important;
+  }
+
+  footer .lr-brand-logo-v4-6 {
+    width: 54px !important;
+    height: 54px !important;
+    min-width: 54px !important;
+    max-width: 54px !important;
+    min-height: 54px !important;
+    max-height: 54px !important;
+    border-radius: 16px !important;
+    flex-basis: 54px !important;
+  }
+}
+
+/* LR_BRAND_LOGO_CSS_V4_6_END */
