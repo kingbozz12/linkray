@@ -133,3 +133,31 @@
     min-height: 52px;
   }
 }
+
+
+/* LINKRAY_REQUEST_NEW_CODE_STYLES_V1 */
+.linkray-request-new-code-button {
+  width: 100%;
+  min-height: 54px;
+  margin: 12px 0 0;
+  padding: 0 18px;
+  border: 1px solid rgba(110, 231, 168, .24);
+  border-radius: 16px;
+  background: rgba(110, 231, 168, .08);
+  color: #bff5d8;
+  font: inherit;
+  font-weight: 780;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.linkray-request-new-code-button:active {
+  transform: translateY(1px);
+}
+
+@media (max-width: 700px) {
+  .linkray-request-new-code-button {
+    min-height: 52px;
+    font-size: 15px;
+  }
+}

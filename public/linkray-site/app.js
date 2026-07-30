@@ -292,3 +292,171 @@ checkSession();
     buildCleanMobileActions();
   }
 })();
+
+
+/* LINKRAY_REQUEST_NEW_CODE_V1 */
+(() => {
+  const STORAGE_KEY = 'linkrayWebsiteLoginIdentifier';
+
+  const normalize = (value) =>
+    String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const originalFetch = window.fetch.bind(window);
+
+  window.fetch = async (input, init = {}) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input && typeof input.url === 'string'
+          ? input.url
+          : '';
+
+    if (url.includes('/api/website/auth/request-code')) {
+      try {
+        const body =
+          typeof init.body === 'string'
+            ? JSON.parse(init.body)
+            : init.body || {};
+
+        const identifier =
+          body.id ??
+          body.identifier ??
+          body.linkrayId ??
+          body.linkray_id ??
+          body.maxUserId ??
+          body.max_user_id;
+
+        if (identifier !== undefined && identifier !== null) {
+          sessionStorage.setItem(STORAGE_KEY, String(identifier).trim());
+        }
+      } catch (_) {
+        // Не мешаем штатному запросу входа.
+      }
+    }
+
+    return originalFetch(input, init);
+  };
+
+  const findButton = (textPart) =>
+    [...document.querySelectorAll('button, a')].find((element) =>
+      normalize(element.textContent).includes(normalize(textPart))
+    );
+
+  const requestAgainThroughExistingFlow = () => {
+    const savedIdentifier = sessionStorage.getItem(STORAGE_KEY) || '';
+
+    const changeIdButton = findButton('изменить id');
+    if (!changeIdButton) return;
+
+    changeIdButton.click();
+
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+
+      const input =
+        document.querySelector(
+          'input[name="identifier"], input[name="id"], input[name="linkrayId"]'
+        ) ||
+        [...document.querySelectorAll('input')].find((element) => {
+          const placeholder = normalize(element.placeholder);
+          return (
+            placeholder.includes('linkray') ||
+            placeholder.includes('max id') ||
+            element.type === 'text'
+          );
+        });
+
+      const requestButton =
+        findButton('получить код') ||
+        findButton('получить код в max');
+
+      if (input && requestButton) {
+        window.clearInterval(timer);
+
+        if (savedIdentifier) {
+          const nativeSetter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            'value'
+          )?.set;
+
+          if (nativeSetter) {
+            nativeSetter.call(input, savedIdentifier);
+          } else {
+            input.value = savedIdentifier;
+          }
+
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        requestButton.click();
+        return;
+      }
+
+      if (attempts >= 30) {
+        window.clearInterval(timer);
+      }
+    }, 100);
+  };
+
+  const addRequestButton = () => {
+    const title = [...document.querySelectorAll('h1, h2, h3')].find((element) =>
+      normalize(element.textContent).includes('подтверждение входа')
+    );
+
+    if (!title) return;
+
+    const modal =
+      title.closest('.modal-card, .auth-card, .login-card, form, section, div');
+
+    if (!modal || modal.querySelector('[data-linkray-request-new-code]')) {
+      return;
+    }
+
+    const changeIdButton = [...modal.querySelectorAll('button, a')].find(
+      (element) => normalize(element.textContent).includes('изменить id')
+    );
+
+    if (!changeIdButton) return;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'linkray-request-new-code-button';
+    button.setAttribute('data-linkray-request-new-code', '');
+    button.textContent = 'Запросить новый код';
+    button.addEventListener('click', requestAgainThroughExistingFlow);
+
+    changeIdButton.insertAdjacentElement('beforebegin', button);
+  };
+
+  const replaceMisleadingErrors = () => {
+    [...document.querySelectorAll('div, p, span')].forEach((element) => {
+      const text = normalize(element.textContent);
+
+      if (
+        text === 'код истёк. запросите новый код.' ||
+        text === 'код истек. запросите новый код.'
+      ) {
+        element.textContent =
+          'Код неверен, истёк или был заменён новым.';
+      }
+    });
+  };
+
+  const refresh = () => {
+    addRequestButton();
+    replaceMisleadingErrors();
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refresh);
+  } else {
+    refresh();
+  }
+
+  new MutationObserver(refresh).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+})();
