@@ -191,3 +191,104 @@ $$('.dash-nav button[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{
 $$('#openCabinetDemo,#openCabinetDemo2').forEach(button=>button?.addEventListener('click',()=>state.session?.authenticated?openDash():openLogin()));
 window.addEventListener('keydown',event=>{if(event.key==='Escape'){closeLogin();closeDash()}});
 checkSession();
+
+
+/* LINKRAY_MOBILE_CLEAN_ACTIONS_V1 */
+(() => {
+  const normalizeText = (value) =>
+    String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const isNamedAction = (element) => {
+    const text = normalizeText(element.textContent);
+    return (
+      text === 'начать работу' ||
+      text === 'начать работу →' ||
+      text === 'открыть linkray в max' ||
+      text === 'личный кабинет'
+    );
+  };
+
+  const buildCleanMobileActions = () => {
+    if (document.querySelector('[data-lr-mobile-clean-actions]')) return;
+
+    const allActions = [...document.querySelectorAll('a, button')];
+    const oldActions = allActions.filter(isNamedAction);
+
+    const cabinetTrigger =
+      oldActions.find((element) =>
+        normalizeText(element.textContent).includes('личный кабинет')
+      ) ||
+      document.querySelector('[data-login]');
+
+    oldActions.forEach((element) => {
+      element.classList.add('lr-mobile-old-action');
+    });
+
+    document
+      .querySelectorAll('.lr-max-bot-button')
+      .forEach((element) => element.classList.add('lr-mobile-old-action'));
+
+    const heading = document.querySelector('main h1, .hero h1, h1');
+    const hero =
+      heading?.closest('section') ||
+      document.querySelector('.hero') ||
+      document.querySelector('main');
+
+    if (!hero) return;
+
+    const panel = document.createElement('div');
+    panel.className = 'lr-mobile-clean-actions';
+    panel.setAttribute('data-lr-mobile-clean-actions', '');
+
+    const maxLink = document.createElement('a');
+    maxLink.className = 'lr-mobile-clean-actions__max';
+    maxLink.href = 'https://max.ru/se13353901_bot';
+    maxLink.target = '_blank';
+    maxLink.rel = 'noopener noreferrer';
+    maxLink.innerHTML =
+      '<span aria-hidden="true">➤</span><span>Открыть в MAX</span>';
+
+    const cabinetButton = document.createElement('button');
+    cabinetButton.type = 'button';
+    cabinetButton.className = 'lr-mobile-clean-actions__cabinet';
+    cabinetButton.innerHTML =
+      '<span aria-hidden="true">◎</span><span>Личный кабинет</span>';
+
+    cabinetButton.addEventListener('click', () => {
+      if (cabinetTrigger) {
+        cabinetTrigger.click();
+        return;
+      }
+
+      const fallback = document.querySelector('[data-login]');
+      if (fallback) {
+        fallback.click();
+        return;
+      }
+
+      window.location.href = '/cabinet';
+    });
+
+    panel.append(maxLink, cabinetButton);
+
+    const lead =
+      hero.querySelector('.lead') ||
+      [...hero.querySelectorAll('p')].find((element) =>
+        normalizeText(element.textContent).includes('linkray помогает')
+      );
+
+    if (lead?.parentNode) {
+      lead.insertAdjacentElement('afterend', panel);
+    } else if (heading?.parentNode) {
+      heading.insertAdjacentElement('afterend', panel);
+    } else {
+      hero.prepend(panel);
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', buildCleanMobileActions);
+  } else {
+    buildCleanMobileActions();
+  }
+})();

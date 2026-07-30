@@ -353,6 +353,8 @@ export function mountLinkRayWebsiteRoutes(app) {
         req.body?.identifier ??
         req.body?.linkrayId ??
         req.body?.linkray_id ??
+        
+        req.body?.id ??
         req.body?.maxUserId ??
         req.body?.max_user_id;
 

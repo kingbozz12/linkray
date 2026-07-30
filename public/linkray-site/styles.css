@@ -48,3 +48,88 @@
     min-height: 56px;
   }
 }
+
+
+/* LINKRAY_MOBILE_CLEAN_ACTIONS_STYLES_V1 */
+.lr-mobile-clean-actions {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .lr-mobile-old-action,
+  .lr-max-bot-button {
+    display: none !important;
+  }
+
+  .lr-mobile-clean-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, .72fr);
+    gap: 10px;
+    width: 100%;
+    margin: 26px 0 20px;
+  }
+
+  .lr-mobile-clean-actions > a,
+  .lr-mobile-clean-actions > button {
+    min-width: 0;
+    min-height: 54px;
+    border-radius: 16px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid rgba(255, 255, 255, .11);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 820;
+    line-height: 1.15;
+    text-align: center;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .lr-mobile-clean-actions__max {
+    background: linear-gradient(135deg, #6ee7a8, #37c98a);
+    color: #052116;
+    box-shadow: 0 14px 34px rgba(55, 201, 138, .22);
+  }
+
+  .lr-mobile-clean-actions__cabinet {
+    background: rgba(255, 255, 255, .045);
+    color: #f1f7fa;
+    cursor: pointer;
+  }
+
+  .lr-mobile-clean-actions > * span:first-child {
+    flex: 0 0 auto;
+    font-size: 17px;
+  }
+
+  .lr-mobile-clean-actions > * span:last-child {
+    min-width: 0;
+  }
+
+  /* Убираем пустые промежутки от старых мобильных панелей. */
+  .hero-actions:has(.lr-mobile-old-action),
+  .mobile-actions:has(.lr-mobile-old-action),
+  .mobile-cta:has(.lr-mobile-old-action),
+  .mobile-bottom-actions:has(.lr-mobile-old-action) {
+    display: none !important;
+  }
+
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (max-width: 410px) {
+  .lr-mobile-clean-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .lr-mobile-clean-actions > a,
+  .lr-mobile-clean-actions > button {
+    min-height: 52px;
+  }
+}
