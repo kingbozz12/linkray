@@ -805,6 +805,31 @@ globalThis.__lrSigRichV13 = (() => {
 // LR_SIG_RICH_V13_END
 
 const app = express();
+// LINKRAY_STATIC_ASSETS_START
+const __linkrayStaticSite = express.static(
+  process.cwd() + '/public/linkray-site',
+  { index: false, maxAge: 0 }
+);
+
+app.use((req, res, next) => {
+  const assetPath = req.path || '';
+
+  if (
+    assetPath === '/styles.css' ||
+    assetPath === '/app.js' ||
+    assetPath === '/robots.txt' ||
+    assetPath === '/sitemap.xml' ||
+    assetPath === '/site.webmanifest' ||
+    assetPath.startsWith('/assets/') ||
+    assetPath.startsWith('/pages/')
+  ) {
+    return __linkrayStaticSite(req, res, next);
+  }
+
+  return next();
+});
+// LINKRAY_STATIC_ASSETS_END
+
 /* LR_WEBSITE_MOBILE_V1_START */
 mountLinkRayWebsiteRoutes(app);
 /* LR_WEBSITE_MOBILE_V1_END */
