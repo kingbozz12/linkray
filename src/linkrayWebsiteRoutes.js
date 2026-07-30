@@ -1,3 +1,4 @@
+import { installLinkRayWebCabinet } from './linkrayWebCabinet.js';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +38,7 @@ function sendSiteFile(res, filename, cacheControl = 'no-cache') {
 }
 
 export function mountLinkRayWebsiteRoutes(app) {
+  installLinkRayWebCabinet(app);
     if (!app || typeof app.use !== 'function' || typeof app.get !== 'function') {
         throw new TypeError('LinkRay website requires an Express application');
     }
@@ -92,9 +94,9 @@ app.get('/', applyWebsiteHeaders, (_req, res) => {
         res.json({
             ok: true,
             service: 'linkray-website',
-            version: 'mobile-v1',
+            version: 'production-v1',
         });
     });
 
-    console.log('[LinkRay Website] mobile-v1 routes mounted');
+    console.log('[LinkRay Website] production-v1 routes mounted');
 }
