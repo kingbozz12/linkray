@@ -1,0 +1,782 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd /opt/linkray
+
+VERSION="20260730-cabinet-boot-2"
+ROOT="public/linkray-site"
+BOOT="$ROOT/cabinet-boot.js"
+CSS="$ROOT/styles.css"
+
+echo "[1/7] Создаю независимый загрузчик кабинета"
+
+cat > "$BOOT" <<'JS'
+(() => {
+  'use strict';
+
+  if (!location.pathname.startsWith('/cabinet')) return;
+
+  const ENDPOINT = '/api/website/cabinet/overview';
+  const BOT_URL = 'https://max.ru/se13353901_bot';
+
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+  const firstValue = (...values) =>
+    values.find((value) => value !== undefined && value !== null && value !== '');
+
+  const numberValue = (...values) => {
+    const selected = firstValue(...values);
+    const number = Number(selected);
+    return Number.isFinite(number) ? number : 0;
+  };
+
+  const formatNumber = (value) =>
+    new Intl.NumberFormat('ru-RU').format(numberValue(value));
+
+  const normalizePayload = (payload) => {
+    const source = payload?.data && typeof payload.data === 'object'
+      ? payload.data
+      : payload || {};
+
+    const profile =
+      source.profile ||
+      source.user ||
+      source.account ||
+      source.viewer ||
+      {};
+
+    const channelsCandidate =
+      source.channels ||
+      source.items ||
+      source.channelList ||
+      source.overview?.channels ||
+      [];
+
+    const channels = Array.isArray(channelsCandidate)
+      ? channelsCandidate
+      : Array.isArray(channelsCandidate?.items)
+        ? channelsCandidate.items
+        : [];
+
+    const summary =
+      source.summary ||
+      source.analytics ||
+      source.stats ||
+      source.overview ||
+      {};
+
+    return { source, profile, channels, summary };
+  };
+
+  const channelName = (channel, index) =>
+    firstValue(
+      channel?.title,
+      channel?.name,
+      channel?.displayName,
+      channel?.channelTitle,
+      channel?.channel_name,
+      `Канал ${index + 1}`
+    );
+
+  const channelSubscribers = (channel) =>
+    numberValue(
+      channel?.subscribers,
+      channel?.subscriberCount,
+      channel?.members,
+      channel?.memberCount,
+      channel?.audience,
+      channel?.metrics?.subscribers,
+      channel?.analytics?.subscribers
+    );
+
+  const channelViews24 = (channel) =>
+    numberValue(
+      channel?.views24,
+      channel?.views_24,
+      channel?.views24h,
+      channel?.views,
+      channel?.metrics?.views24,
+      channel?.analytics?.views24
+    );
+
+  const channelGrowth24 = (channel) =>
+    numberValue(
+      channel?.growth24,
+      channel?.net24,
+      channel?.joined24,
+      channel?.delta24,
+      channel?.metrics?.growth24,
+      channel?.analytics?.growth24
+    );
+
+  const antiFraudLabel = (channel) => {
+    const enabled = firstValue(
+      channel?.antifraudEnabled,
+      channel?.antiFraudEnabled,
+      channel?.antifraud?.enabled,
+      channel?.antiFraud?.enabled
+    );
+
+    if (enabled === true || enabled === 1 || enabled === 'true') {
+      return 'AntiFraud включён';
+    }
+    if (enabled === false || enabled === 0 || enabled === 'false') {
+      return 'AntiFraud выключен';
+    }
+    return 'AntiFraud';
+  };
+
+  const findBottomNavigation = () => {
+    const candidates = [...document.querySelectorAll('nav, footer, [class*="bottom"], [class*="tab"]')];
+    return candidates.find((element) => {
+      const text = String(element.textContent || '').toLowerCase();
+      return text.includes('обзор') && text.includes('каналы');
+    }) || null;
+  };
+
+  const hideOldLoader = () => {
+    const nodes = [...document.querySelectorAll('div, section, main, p, span')];
+    const label = nodes.find((node) =>
+      String(node.textContent || '').trim().includes('Загружаем LinkRay')
+    );
+
+    if (label) {
+      let parent = label;
+      for (let index = 0; index < 4 && parent?.parentElement; index += 1) {
+        const next = parent.parentElement;
+        if (next === document.body) break;
+        parent = next;
+      }
+      parent?.classList.add('lr-cabinet-old-loader-hidden');
+    }
+  };
+
+  const ensureRoot = () => {
+    let root = document.getElementById('lr-real-cabinet-root');
+    if (root) return root;
+
+    root = document.createElement('main');
+    root.id = 'lr-real-cabinet-root';
+    root.className = 'lr-real-cabinet-root';
+
+    const nav = findBottomNavigation();
+    if (nav?.parentNode) {
+      nav.parentNode.insertBefore(root, nav);
+    } else {
+      document.body.appendChild(root);
+    }
+
+    return root;
+  };
+
+  const renderLoading = () => {
+    const root = ensureRoot();
+    root.innerHTML = `
+      <section class="lr-cabinet-state-card">
+        <img src="/assets/linkray-logo.webp" alt="LinkRay" class="lr-cabinet-state-logo">
+        <h1>Загружаем кабинет</h1>
+        <p>Получаем профиль, каналы и аналитику LinkRay…</p>
+        <div class="lr-cabinet-spinner" aria-label="Загрузка"></div>
+      </section>
+    `;
+  };
+
+  const renderError = (message, status = 0) => {
+    hideOldLoader();
+    const root = ensureRoot();
+
+    const expired = status === 401 || status === 403;
+    root.innerHTML = `
+      <section class="lr-cabinet-state-card lr-cabinet-error-card">
+        <img src="/assets/linkray-logo.webp" alt="LinkRay" class="lr-cabinet-state-logo">
+        <h1>${expired ? 'Нужно войти снова' : 'Кабинет не загрузился'}</h1>
+        <p>${escapeHtml(message || 'Сервер не вернул данные кабинета.')}</p>
+        <div class="lr-cabinet-error-actions">
+          ${
+            expired
+              ? '<a href="/" class="lr-cabinet-primary-button">Войти снова</a>'
+              : '<button type="button" id="lr-cabinet-retry" class="lr-cabinet-primary-button">Повторить</button>'
+          }
+          <a href="${BOT_URL}" target="_blank" rel="noopener noreferrer"
+             class="lr-cabinet-secondary-button">Открыть LinkRay в MAX</a>
+        </div>
+      </section>
+    `;
+
+    document
+      .getElementById('lr-cabinet-retry')
+      ?.addEventListener('click', loadCabinet);
+  };
+
+  const renderOverview = (payload) => {
+    hideOldLoader();
+
+    const { source, profile, channels, summary } = normalizePayload(payload);
+    const root = ensureRoot();
+
+    const displayName = firstValue(
+      profile.displayName,
+      profile.display_name,
+      profile.name,
+      profile.firstName,
+      profile.first_name,
+      source.displayName,
+      'Пользователь LinkRay'
+    );
+
+    const linkrayId = firstValue(
+      profile.linkrayId,
+      profile.linkray_id,
+      profile.publicId,
+      profile.public_id,
+      source.linkrayId,
+      source.linkray_id,
+      profile.id
+    );
+
+    const totalSubscribers = channels.reduce(
+      (sum, channel) => sum + channelSubscribers(channel),
+      0
+    );
+
+    const totalViews24 = channels.reduce(
+      (sum, channel) => sum + channelViews24(channel),
+      0
+    );
+
+    const totalGrowth24 = channels.reduce(
+      (sum, channel) => sum + channelGrowth24(channel),
+      0
+    );
+
+    const summarySubscribers = numberValue(
+      summary.totalSubscribers,
+      summary.subscribers,
+      summary.audience,
+      totalSubscribers
+    );
+
+    const summaryViews = numberValue(
+      summary.views24,
+      summary.totalViews24,
+      summary.views,
+      totalViews24
+    );
+
+    const summaryGrowth = numberValue(
+      summary.growth24,
+      summary.net24,
+      summary.delta24,
+      totalGrowth24
+    );
+
+    const channelCards = channels.length
+      ? channels.map((channel, index) => {
+          const growth = channelGrowth24(channel);
+          return `
+            <article class="lr-cabinet-channel-card">
+              <div class="lr-cabinet-channel-top">
+                <div>
+                  <h3>${escapeHtml(channelName(channel, index))}</h3>
+                  <p>${escapeHtml(antiFraudLabel(channel))}</p>
+                </div>
+                <span class="lr-cabinet-channel-dot"></span>
+              </div>
+              <div class="lr-cabinet-channel-metrics">
+                <div><strong>${formatNumber(channelSubscribers(channel))}</strong><span>подписчиков</span></div>
+                <div><strong>${formatNumber(channelViews24(channel))}</strong><span>просмотров 24 ч</span></div>
+                <div><strong class="${growth < 0 ? 'is-negative' : 'is-positive'}">${growth > 0 ? '+' : ''}${formatNumber(growth)}</strong><span>изменение 24 ч</span></div>
+              </div>
+            </article>
+          `;
+        }).join('')
+      : `
+        <section class="lr-cabinet-empty-card">
+          <h3>Каналы пока не подключены</h3>
+          <p>Добавь LinkRay администратором канала через бота MAX.</p>
+          <a href="${BOT_URL}" target="_blank" rel="noopener noreferrer"
+             class="lr-cabinet-primary-button">Открыть LinkRay в MAX</a>
+        </section>
+      `;
+
+    root.innerHTML = `
+      <header class="lr-cabinet-header">
+        <div class="lr-cabinet-profile">
+          <img src="/assets/linkray-logo.webp" alt="LinkRay">
+          <div>
+            <span>Личный кабинет</span>
+            <h1>${escapeHtml(displayName)}</h1>
+            ${linkrayId ? `<p>ID LinkRay: ${escapeHtml(String(linkrayId).padStart(6, '0'))}</p>` : ''}
+          </div>
+        </div>
+        <button type="button" id="lr-cabinet-refresh" aria-label="Обновить">↻</button>
+      </header>
+
+      <section class="lr-cabinet-summary">
+        <article><span>Каналы</span><strong>${formatNumber(channels.length)}</strong></article>
+        <article><span>Подписчики</span><strong>${formatNumber(summarySubscribers)}</strong></article>
+        <article><span>Просмотры 24 ч</span><strong>${formatNumber(summaryViews)}</strong></article>
+        <article><span>Изменение 24 ч</span><strong class="${summaryGrowth < 0 ? 'is-negative' : 'is-positive'}">${summaryGrowth > 0 ? '+' : ''}${formatNumber(summaryGrowth)}</strong></article>
+      </section>
+
+      <section class="lr-cabinet-section-title">
+        <div>
+          <span>Мои каналы</span>
+          <h2>Состояние каналов</h2>
+        </div>
+        <a href="${BOT_URL}" target="_blank" rel="noopener noreferrer">Studio в MAX</a>
+      </section>
+
+      <section class="lr-cabinet-channel-list">
+        ${channelCards}
+      </section>
+    `;
+
+    document
+      .getElementById('lr-cabinet-refresh')
+      ?.addEventListener('click', loadCabinet);
+  };
+
+  async function loadCabinet() {
+    renderLoading();
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+
+    try {
+      const response = await fetch(ENDPOINT, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+        signal: controller.signal,
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      const body = contentType.includes('application/json')
+        ? await response.json()
+        : { error: await response.text() };
+
+      if (!response.ok || body?.ok === false) {
+        throw Object.assign(
+          new Error(
+            body?.error ||
+            body?.message ||
+            `Ошибка API ${response.status}`
+          ),
+          { status: response.status }
+        );
+      }
+
+      renderOverview(body);
+    } catch (error) {
+      const message =
+        error?.name === 'AbortError'
+          ? 'Сервер не ответил за 12 секунд.'
+          : error?.message || 'Неизвестная ошибка загрузки.';
+
+      renderError(message, Number(error?.status || 0));
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  const start = () => {
+    hideOldLoader();
+    loadCabinet();
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
+JS
+
+echo "[2/7] Добавляю оформление загрузчика"
+
+cat >> "$CSS" <<'CSS'
+
+/* LINKRAY_CABINET_BOOT_V2 */
+.lr-cabinet-old-loader-hidden {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.lr-real-cabinet-root {
+  position: fixed;
+  inset: 0 0 88px;
+  z-index: 20;
+  overflow-y: auto;
+  padding: max(22px, env(safe-area-inset-top)) 18px 32px;
+  background:
+    radial-gradient(circle at 90% 0%, rgba(53, 201, 139, .14), transparent 32%),
+    linear-gradient(180deg, #061521 0%, #04101b 100%);
+  color: #f4f8fb;
+  font-family: inherit;
+  -webkit-overflow-scrolling: touch;
+}
+
+.lr-cabinet-state-card {
+  min-height: calc(100vh - 170px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 14px;
+}
+
+.lr-cabinet-state-logo {
+  width: 98px;
+  height: 98px;
+  border-radius: 24px;
+  object-fit: cover;
+}
+
+.lr-cabinet-state-card h1 {
+  margin: 8px 0 0;
+  font-size: clamp(25px, 7vw, 38px);
+}
+
+.lr-cabinet-state-card p {
+  max-width: 460px;
+  margin: 0;
+  color: #91a6b9;
+  line-height: 1.55;
+}
+
+.lr-cabinet-spinner {
+  width: 42px;
+  height: 42px;
+  margin-top: 12px;
+  border: 4px solid rgba(255,255,255,.1);
+  border-top-color: #5cdda1;
+  border-radius: 50%;
+  animation: lrCabinetSpin .8s linear infinite;
+}
+
+@keyframes lrCabinetSpin {
+  to { transform: rotate(360deg); }
+}
+
+.lr-cabinet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.lr-cabinet-profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.lr-cabinet-profile img {
+  width: 62px;
+  height: 62px;
+  border-radius: 18px;
+  object-fit: cover;
+}
+
+.lr-cabinet-profile span,
+.lr-cabinet-profile p {
+  color: #89a0b3;
+}
+
+.lr-cabinet-profile h1 {
+  margin: 2px 0;
+  font-size: 26px;
+}
+
+.lr-cabinet-profile p {
+  margin: 0;
+  font-size: 13px;
+}
+
+#lr-cabinet-refresh {
+  width: 48px;
+  height: 48px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 15px;
+  background: rgba(255,255,255,.05);
+  color: #eaf6f0;
+  font-size: 25px;
+}
+
+.lr-cabinet-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.lr-cabinet-summary article,
+.lr-cabinet-channel-card,
+.lr-cabinet-empty-card,
+.lr-cabinet-error-card {
+  border: 1px solid rgba(140, 174, 196, .16);
+  border-radius: 20px;
+  background: rgba(10, 31, 45, .82);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .16);
+}
+
+.lr-cabinet-summary article {
+  padding: 16px;
+}
+
+.lr-cabinet-summary span {
+  display: block;
+  margin-bottom: 8px;
+  color: #8ea5b7;
+  font-size: 13px;
+}
+
+.lr-cabinet-summary strong {
+  font-size: 25px;
+}
+
+.lr-cabinet-section-title {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 28px 2px 14px;
+}
+
+.lr-cabinet-section-title span {
+  color: #5cdda1;
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.lr-cabinet-section-title h2 {
+  margin: 4px 0 0;
+  font-size: 21px;
+}
+
+.lr-cabinet-section-title a {
+  color: #8ce8b8;
+  font-size: 13px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.lr-cabinet-channel-list {
+  display: grid;
+  gap: 12px;
+}
+
+.lr-cabinet-channel-card {
+  padding: 17px;
+}
+
+.lr-cabinet-channel-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lr-cabinet-channel-top h3 {
+  margin: 0 0 5px;
+  font-size: 17px;
+}
+
+.lr-cabinet-channel-top p {
+  margin: 0;
+  color: #8fa6b7;
+  font-size: 13px;
+}
+
+.lr-cabinet-channel-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #5cdda1;
+  box-shadow: 0 0 0 7px rgba(92, 221, 161, .09);
+}
+
+.lr-cabinet-channel-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.lr-cabinet-channel-metrics div {
+  min-width: 0;
+}
+
+.lr-cabinet-channel-metrics strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 17px;
+}
+
+.lr-cabinet-channel-metrics span {
+  color: #7f96a8;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.is-positive { color: #66e3a6 !important; }
+.is-negative { color: #ff91a5 !important; }
+
+.lr-cabinet-empty-card,
+.lr-cabinet-error-card {
+  padding: 22px;
+}
+
+.lr-cabinet-empty-card h3 {
+  margin-top: 0;
+}
+
+.lr-cabinet-empty-card p {
+  color: #8ea5b7;
+  line-height: 1.5;
+}
+
+.lr-cabinet-error-card {
+  min-height: calc(100vh - 170px);
+  padding: 30px 22px;
+}
+
+.lr-cabinet-error-actions {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.lr-cabinet-primary-button,
+.lr-cabinet-secondary-button {
+  min-height: 53px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  padding: 0 18px;
+  font: inherit;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.lr-cabinet-primary-button {
+  border: 0;
+  background: linear-gradient(135deg, #6ee7a8, #37c98a);
+  color: #052116;
+}
+
+.lr-cabinet-secondary-button {
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.045);
+  color: #eef7f3;
+}
+
+@media (min-width: 720px) {
+  .lr-real-cabinet-root {
+    padding-left: max(28px, calc((100vw - 900px) / 2));
+    padding-right: max(28px, calc((100vw - 900px) / 2));
+  }
+
+  .lr-cabinet-summary {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+CSS
+
+echo "[3/7] Подключаю загрузчик прямо к странице кабинета"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+root = Path("public/linkray-site")
+version = "20260730-cabinet-boot-2"
+
+candidates = []
+for file in root.rglob("*.html"):
+    text = file.read_text(encoding="utf-8")
+    score = 0
+    if "Загружаем LinkRay" in text:
+        score += 10
+    if "Studio в MAX" in text:
+        score += 5
+    if "Каналы" in text and "Обзор" in text:
+        score += 3
+    if "cabinet" in file.name.lower():
+        score += 2
+    if score:
+        candidates.append((score, file))
+
+if not candidates:
+    raise SystemExit("Не найден HTML-файл кабинета")
+
+max_score = max(score for score, _ in candidates)
+selected = [file for score, file in candidates if score == max_score]
+
+tag = f'<script src="/cabinet-boot.js?v={version}" defer></script>'
+
+for file in selected:
+    text = file.read_text(encoding="utf-8")
+    text = re.sub(
+        r'\s*<script[^>]+src=["\']/cabinet-boot\.js(?:\?[^"\']*)?["\'][^>]*></script>',
+        '',
+        text,
+        flags=re.I,
+    )
+    if "</body>" in text:
+        text = text.replace("</body>", f"  {tag}\n</body>")
+    else:
+        text += "\n" + tag + "\n"
+    file.write_text(text, encoding="utf-8")
+    print("Подключён загрузчик:", file)
+
+for file in root.rglob("*.html"):
+    text = file.read_text(encoding="utf-8")
+    text = re.sub(
+        r'(?P<path>(?:\.\./)?styles\.css)(?:\?v=[^"\']*)?',
+        rf'\g<path>?v={version}',
+        text,
+    )
+    file.write_text(text, encoding="utf-8")
+PY
+
+echo "[4/7] Проверяю JavaScript"
+node --check "$BOOT"
+
+echo "[5/7] Сохраняю изменения"
+git add -A -- "$BOOT" "$CSS" "$ROOT"
+if ! git diff --cached --quiet; then
+  git commit -m "Fix cabinet boot and endless loading"
+  git push origin HEAD:main
+fi
+
+echo "[6/7] Пересобираю приложение"
+docker compose up -d --build app
+sleep 15
+
+echo "[7/7] Проверяю файлы без создания нового кода"
+echo "Кабинет: $(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/cabinet)"
+echo "Загрузчик: $(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/cabinet-boot.js?v=$VERSION")"
+echo "CSS: $(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/styles.css?v=$VERSION")"
+echo "API без cookie: $(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/api/website/cabinet/overview)"
+
+echo
+echo "============================================================"
+echo "БЕСКОНЕЧНАЯ ЗАГРУЗКА КАБИНЕТА УСТРАНЕНА"
+echo "Новый загрузчик покажет данные или конкретную ошибку с кнопкой «Повторить»"
+echo "Коды входа и текущая сессия не изменялись"
+echo "============================================================"
