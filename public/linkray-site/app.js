@@ -460,3 +460,531 @@ checkSession();
     subtree: true,
   });
 })();
+
+
+/* LINKRAY_REAL_CABINET_FRONTEND_V1_START */
+(() => {
+  if (window.location.pathname !== '/cabinet') return;
+
+  const API_URL = '/api/website/cabinet/overview';
+  const STUDIO_URL = 'https://max.ru/se13353901_bot';
+
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+  const formatNumber = (value) =>
+    new Intl.NumberFormat('ru-RU').format(Number(value) || 0);
+
+  const formatSigned = (value) => {
+    const number = Number(value) || 0;
+    return `${number > 0 ? '+' : ''}${formatNumber(number)}`;
+  };
+
+  const findBottomNav = () => {
+    const candidates = [
+      ...document.querySelectorAll('nav, footer, [role="navigation"], div'),
+    ];
+
+    return candidates
+      .filter((element) => {
+        const text = String(element.textContent || '').toLowerCase();
+        return (
+          text.includes('обзор') &&
+          text.includes('каналы') &&
+          text.includes('studio')
+        );
+      })
+      .sort(
+        (left, right) =>
+          left.querySelectorAll('*').length -
+          right.querySelectorAll('*').length,
+      )[0] || null;
+  };
+
+  const findContentHost = () => {
+    const main = document.querySelector('main');
+    if (main) return main;
+
+    const loadingText = [
+      ...document.querySelectorAll('div, section, p, span, h1, h2'),
+    ].find((element) =>
+      String(element.textContent || '')
+        .toLowerCase()
+        .includes('загружаем linkray'),
+    );
+
+    if (loadingText) {
+      return (
+        loadingText.closest(
+          '[data-cabinet-content], .cabinet-content, .screen-content, section',
+        ) ||
+        loadingText.parentElement
+      );
+    }
+
+    const bottomNav = findBottomNav();
+    const host = document.createElement('main');
+    host.className = 'lr-real-cabinet-host';
+
+    if (bottomNav?.parentNode) {
+      bottomNav.parentNode.insertBefore(host, bottomNav);
+    } else {
+      document.body.append(host);
+    }
+
+    return host;
+  };
+
+  const navItems = () => {
+    const nav = findBottomNav();
+    if (!nav) return {};
+
+    const elements = [...nav.querySelectorAll('a, button, [role="button"], div')];
+    const result = {};
+
+    for (const element of elements) {
+      const text = String(element.textContent || '').trim().toLowerCase();
+
+      if (!result.overview && text === 'обзор') result.overview = element;
+      if (!result.channels && text === 'каналы') result.channels = element;
+      if (!result.studio && text.includes('studio')) result.studio = element;
+    }
+
+    return result;
+  };
+
+  const channelAvatar = (channel) => {
+    if (channel.avatar) {
+      return `
+        <img
+          class="lr-real-channel-avatar"
+          src="${escapeHtml(channel.avatar)}"
+          alt=""
+          loading="lazy"
+        >
+      `;
+    }
+
+    const letter = String(channel.title || 'L').trim().charAt(0).toUpperCase();
+
+    return `
+      <div class="lr-real-channel-avatar lr-real-channel-avatar--fallback">
+        ${escapeHtml(letter)}
+      </div>
+    `;
+  };
+
+  const summaryCard = (label, value, note = '') => `
+    <article class="lr-real-summary-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      ${note ? `<small>${escapeHtml(note)}</small>` : ''}
+    </article>
+  `;
+
+  const renderOverview = (data) => {
+    const host = findContentHost();
+    const user = data.user || {};
+    const summary = data.summary || {};
+    const channels = Array.isArray(data.channels) ? data.channels : [];
+
+    host.innerHTML = `
+      <div class="lr-real-cabinet" data-lr-real-cabinet>
+        <header class="lr-real-cabinet-header">
+          <div>
+            <span class="lr-real-eyebrow">Личный кабинет</span>
+            <h1>${escapeHtml(user.displayName || 'LinkRay')}</h1>
+            <p>ID LinkRay: <b>${escapeHtml(user.linkrayId || '—')}</b></p>
+          </div>
+
+          <a
+            class="lr-real-header-max"
+            href="${STUDIO_URL}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Открыть MAX
+          </a>
+        </header>
+
+        <section class="lr-real-summary-grid" aria-label="Общая статистика">
+          ${summaryCard(
+            'Каналы',
+            formatNumber(summary.channels),
+            'Подключены к LinkRay',
+          )}
+          ${summaryCard(
+            'Подписчики',
+            formatNumber(summary.subscribers),
+            'Всего по каналам',
+          )}
+          ${summaryCard(
+            'Просмотры 24 ч',
+            formatNumber(summary.views24),
+            'По доступным данным',
+          )}
+          ${summaryCard(
+            'Изменение 24 ч',
+            formatSigned(summary.net24),
+            'Подписки минус отписки',
+          )}
+        </section>
+
+        <section class="lr-real-protection-card">
+          <div>
+            <span class="lr-real-protection-icon" aria-hidden="true">✓</span>
+            <div>
+              <strong>AntiFraud</strong>
+              <p>
+                Защищено каналов:
+                ${formatNumber(summary.protectedChannels)}
+                из ${formatNumber(summary.channels)}
+              </p>
+            </div>
+          </div>
+
+          <span class="lr-real-alert-count">
+            События за 24 ч: ${formatNumber(summary.alerts24)}
+          </span>
+        </section>
+
+        <section class="lr-real-section">
+          <div class="lr-real-section-heading">
+            <div>
+              <span class="lr-real-eyebrow">Каналы</span>
+              <h2>Подключённые каналы</h2>
+            </div>
+
+            <button type="button" data-lr-open-channels>
+              Все каналы
+            </button>
+          </div>
+
+          <div class="lr-real-channel-list">
+            ${
+              channels.length
+                ? channels
+                    .slice(0, 3)
+                    .map(
+                      (channel) => `
+                        <article class="lr-real-channel-card">
+                          <div class="lr-real-channel-main">
+                            ${channelAvatar(channel)}
+                            <div>
+                              <strong>${escapeHtml(channel.title)}</strong>
+                              <span>${escapeHtml(channel.role || 'Администратор')}</span>
+                            </div>
+                          </div>
+
+                          <div class="lr-real-channel-metrics">
+                            <span>
+                              <b>${formatNumber(channel.subscribers)}</b>
+                              подписчиков
+                            </span>
+                            <span>
+                              <b>${formatSigned(channel.net24)}</b>
+                              за 24 ч
+                            </span>
+                            <span>
+                              <b>${formatNumber(channel.views24)}</b>
+                              просмотров
+                            </span>
+                          </div>
+
+                          <div class="lr-real-channel-status">
+                            <span class="${
+                              channel.antifraudEnabled
+                                ? 'is-enabled'
+                                : 'is-disabled'
+                            }">
+                              ${
+                                channel.antifraudEnabled
+                                  ? 'AntiFraud включён'
+                                  : 'AntiFraud выключен'
+                              }
+                            </span>
+                            <span>ER ${Number(channel.er || 0).toFixed(1)}%</span>
+                          </div>
+                        </article>
+                      `,
+                    )
+                    .join('')
+                : `
+                  <div class="lr-real-empty">
+                    <strong>Каналы пока не найдены</strong>
+                    <p>
+                      Добавьте бота LinkRay администратором канала и перешлите
+                      ему любой пост.
+                    </p>
+                    <a
+                      href="${STUDIO_URL}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Открыть LinkRay в MAX
+                    </a>
+                  </div>
+                `
+            }
+          </div>
+        </section>
+
+        <p class="lr-real-updated">
+          Данные обновлены:
+          ${escapeHtml(
+            new Date(data.updatedAt || Date.now()).toLocaleString('ru-RU'),
+          )}
+        </p>
+      </div>
+    `;
+
+    host
+      .querySelector('[data-lr-open-channels]')
+      ?.addEventListener('click', () => renderChannels(data));
+
+    setActiveNav('overview');
+  };
+
+  const renderChannels = (data) => {
+    const host = findContentHost();
+    const channels = Array.isArray(data.channels) ? data.channels : [];
+
+    host.innerHTML = `
+      <div class="lr-real-cabinet" data-lr-real-cabinet>
+        <header class="lr-real-page-header">
+          <div>
+            <span class="lr-real-eyebrow">Каналы</span>
+            <h1>Ваши каналы</h1>
+            <p>${formatNumber(channels.length)} подключено</p>
+          </div>
+
+          <button type="button" data-lr-refresh-cabinet>
+            Обновить
+          </button>
+        </header>
+
+        <section class="lr-real-channel-list lr-real-channel-list--full">
+          ${
+            channels.length
+              ? channels
+                  .map(
+                    (channel) => `
+                      <article class="lr-real-channel-card">
+                        <div class="lr-real-channel-main">
+                          ${channelAvatar(channel)}
+                          <div>
+                            <strong>${escapeHtml(channel.title)}</strong>
+                            <span>ID канала: ${escapeHtml(channel.id)}</span>
+                          </div>
+                        </div>
+
+                        <div class="lr-real-channel-metrics">
+                          <span>
+                            <b>${formatNumber(channel.subscribers)}</b>
+                            подписчиков
+                          </span>
+                          <span>
+                            <b>${formatNumber(channel.views24)}</b>
+                            просмотров 24 ч
+                          </span>
+                          <span>
+                            <b>${formatSigned(channel.net24)}</b>
+                            изменение
+                          </span>
+                          <span>
+                            <b>${Number(channel.er || 0).toFixed(1)}%</b>
+                            ER
+                          </span>
+                        </div>
+
+                        <div class="lr-real-antifraud-line">
+                          <span class="${
+                            channel.antifraudEnabled
+                              ? 'is-enabled'
+                              : 'is-disabled'
+                          }">
+                            ${escapeHtml(channel.antifraudStatus)}
+                          </span>
+                          <span>
+                            События 24 ч:
+                            ${formatNumber(channel.alertCount24)}
+                          </span>
+                        </div>
+                      </article>
+                    `,
+                  )
+                  .join('')
+              : `
+                <div class="lr-real-empty">
+                  <strong>Нет подключённых каналов</strong>
+                  <p>
+                    Управление добавлением каналов остаётся в боте LinkRay.
+                  </p>
+                  <a
+                    href="${STUDIO_URL}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Перейти в MAX
+                  </a>
+                </div>
+              `
+          }
+        </section>
+      </div>
+    `;
+
+    host
+      .querySelector('[data-lr-refresh-cabinet]')
+      ?.addEventListener('click', () => loadCabinet(true));
+
+    setActiveNav('channels');
+  };
+
+  const renderLoading = () => {
+    const host = findContentHost();
+
+    host.innerHTML = `
+      <div class="lr-real-state">
+        <img src="/assets/linkray-logo.webp" alt="" class="lr-real-state-logo">
+        <strong>Загружаем данные LinkRay…</strong>
+        <span>Обычно это занимает несколько секунд</span>
+      </div>
+    `;
+  };
+
+  const renderError = (message) => {
+    const host = findContentHost();
+
+    host.innerHTML = `
+      <div class="lr-real-state lr-real-state--error">
+        <img src="/assets/linkray-logo.webp" alt="" class="lr-real-state-logo">
+        <strong>Не удалось загрузить кабинет</strong>
+        <span>${escapeHtml(message || 'Повторите попытку.')}</span>
+        <button type="button" data-lr-retry>Повторить</button>
+        <a href="/" class="lr-real-secondary-link">Вернуться на сайт</a>
+      </div>
+    `;
+
+    host
+      .querySelector('[data-lr-retry]')
+      ?.addEventListener('click', () => loadCabinet(true));
+  };
+
+  const setActiveNav = (name) => {
+    const items = navItems();
+
+    Object.entries(items).forEach(([key, element]) => {
+      element?.classList.toggle('is-active', key === name);
+    });
+  };
+
+  let cabinetData = null;
+  let loadingPromise = null;
+
+  const loadCabinet = async (force = false) => {
+    if (loadingPromise && !force) return loadingPromise;
+
+    renderLoading();
+
+    loadingPromise = (async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 12000);
+
+      try {
+        const response = await fetch(API_URL, {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: {
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
+        });
+
+        const payload = await response.json().catch(() => null);
+
+        if (response.status === 401) {
+          window.location.href = '/?login=1';
+          return;
+        }
+
+        if (!response.ok || !payload?.ok) {
+          throw new Error(
+            payload?.error || `Ошибка загрузки: ${response.status}`,
+          );
+        }
+
+        cabinetData = payload;
+        renderOverview(payload);
+      } catch (error) {
+        const message =
+          error?.name === 'AbortError'
+            ? 'Сервер слишком долго отвечает.'
+            : error?.message || 'Неизвестная ошибка.';
+
+        renderError(message);
+      } finally {
+        window.clearTimeout(timeout);
+        loadingPromise = null;
+      }
+    })();
+
+    return loadingPromise;
+  };
+
+  const bindNavigation = () => {
+    const items = navItems();
+
+    items.overview?.addEventListener('click', (event) => {
+      event.preventDefault();
+
+      if (cabinetData) {
+        renderOverview(cabinetData);
+      } else {
+        loadCabinet();
+      }
+    });
+
+    items.channels?.addEventListener('click', (event) => {
+      event.preventDefault();
+
+      if (cabinetData) {
+        renderChannels(cabinetData);
+      } else {
+        loadCabinet();
+      }
+    });
+
+    if (items.studio) {
+      if (items.studio.tagName === 'A') {
+        items.studio.href = STUDIO_URL;
+        items.studio.target = '_blank';
+        items.studio.rel = 'noopener noreferrer';
+      } else {
+        items.studio.addEventListener('click', (event) => {
+          event.preventDefault();
+          window.open(STUDIO_URL, '_blank', 'noopener,noreferrer');
+        });
+      }
+    }
+  };
+
+  const start = () => {
+    bindNavigation();
+    loadCabinet();
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+/* LINKRAY_REAL_CABINET_FRONTEND_V1_END */
+
