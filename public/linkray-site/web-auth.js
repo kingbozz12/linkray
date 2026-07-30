@@ -110,7 +110,7 @@
           <button class="lr-auth-close" type="button" aria-label="Закрыть">×</button>
 
           <div class="lr-auth-brand">
-            <img src="/linkray-site/linkray-logo-exact.webp" alt="">
+            <img src="/linkray-site/assets/linkray-logo.webp" alt="">
             <div>
               <strong>LinkRay</strong>
               <span>Личный кабинет</span>
