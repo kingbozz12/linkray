@@ -2586,3 +2586,30 @@ img[data-linkray-exact-logo="1"],
   background-image: none !important;
 }
 /* LR_EXACT_LOGO_CSS_V4_4_END */
+
+/* LR_LOGO_ENFORCER_CSS_V4_5_START */
+img[data-lr-exact-logo="1"],
+.lr-exact-logo-v4-5 {
+  content: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-5-1ac20ba95b") !important;
+  object-fit: cover !important;
+  object-position: center !important;
+  background: transparent !important;
+  -webkit-mask: none !important;
+  mask: none !important;
+}
+
+.lr-exact-logo-background-v4-5 {
+  background-image: url("/linkray-site/linkray-logo-exact.webp?v=lr-logo-v4-5-1ac20ba95b") !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  -webkit-mask: none !important;
+  mask: none !important;
+}
+
+.lr-exact-logo-background-v4-5 > svg,
+.lr-exact-logo-background-v4-5 > picture,
+.lr-exact-logo-background-v4-5 > canvas {
+  display: none !important;
+}
+/* LR_LOGO_ENFORCER_CSS_V4_5_END */
