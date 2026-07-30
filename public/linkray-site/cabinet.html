@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Личный кабинет — LinkRay</title>
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="theme-color" content="#06111d">
+  <link rel="icon" href="/linkray-site/linkray-logo-exact.webp">
+  <link rel="stylesheet" href="/linkray-site/cabinet.css?v=auth-v1">
+</head>
+<body>
+  <div class="cabinet-loading" data-loading>
+    <img src="/linkray-site/linkray-logo-exact.webp" alt="">
+    <strong>Загружаем LinkRay…</strong>
+  </div>
+
+  <div class="cabinet-shell" data-cabinet hidden>
+    <aside class="cabinet-sidebar">
+      <a class="cabinet-brand" href="/">
+        <img src="/linkray-site/linkray-logo-exact.webp" alt="">
+        <span><b>LinkRay</b><small>Личный кабинет</small></span>
+      </a>
+
+      <nav class="cabinet-nav">
+        <button class="active" data-tab="overview">
+          <svg viewBox="0 0 24 24"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z"/></svg>
+          <span>Обзор</span>
+        </button>
+        <button data-tab="channels">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16v12H4V6Zm4 12v2m8-2v2M8 10h8"/></svg>
+          <span>Каналы</span>
+        </button>
+        <a href="/go-bot">
+          <svg viewBox="0 0 24 24"><path d="M4 12 20 4l-5 16-3-6-8-2Zm8 2 3-3"/></svg>
+          <span>Studio в MAX</span>
+        </a>
+      </nav>
+
+      <button class="cabinet-exit" data-logout>
+        <svg viewBox="0 0 24 24"><path d="M10 5H5v14h5m4-3 4-4-4-4m4 4H9"/></svg>
+        <span>Выйти</span>
+      </button>
+    </aside>
+
+    <main class="cabinet-main">
+      <header class="cabinet-header">
+        <div>
+          <small>Рабочее пространство LinkRay</small>
+          <h1 data-page-title>Обзор</h1>
+        </div>
+        <div class="cabinet-user">
+          <div>
+            <b data-user-name>Пользователь</b>
+            <span>ID <span data-user-id>000000</span></span>
+          </div>
+          <i data-user-letter>Л</i>
+        </div>
+      </header>
+
+      <section class="cabinet-tab active" data-panel="overview">
+        <div class="summary-grid">
+          <article><span>Подключено каналов</span><strong data-summary-channels>0</strong></article>
+          <article><span>Активных каналов</span><strong data-summary-active>0</strong></article>
+          <article><span>Подписчики</span><strong data-summary-subscribers>—</strong></article>
+        </div>
+
+        <div class="cabinet-panel">
+          <div class="panel-head">
+            <div><small>Ваши каналы</small><h2>Подключённые к LinkRay</h2></div>
+            <a class="cabinet-primary" href="/go-bot">Добавить канал</a>
+          </div>
+          <div class="channel-list" data-overview-channels></div>
+        </div>
+      </section>
+
+      <section class="cabinet-tab" data-panel="channels">
+        <div class="cabinet-panel">
+          <div class="panel-head">
+            <div><small>Доступ подтверждён в MAX</small><h2>Все каналы</h2></div>
+            <a class="cabinet-primary" href="/go-bot">Управлять в боте</a>
+          </div>
+          <div class="channel-list" data-all-channels></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="cabinet-toast" data-toast hidden></div>
+  <script src="/linkray-site/cabinet.js?v=auth-v1" defer></script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+.lr-auth-fab {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px));
+  z-index: 80;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 50px;
+  padding: 10px 16px 10px 11px;
+  border: 1px solid rgba(130, 239, 185, .3);
+  border-radius: 16px;
+  background: linear-gradient(135deg, #72efb2, #46d89c);
+  color: #062118;
+  box-shadow: 0 16px 46px rgba(0, 0, 0, .34);
+  font: 800 14px/1.1 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.lr-auth-fab-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(6, 33, 24, .1);
+}
+
+.lr-auth-fab svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lr-auth-modal[hidden] {
+  display: none !important;
+}
+
+.lr-auth-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.lr-auth-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border: 0;
+  background: rgba(1, 8, 14, .78);
+  backdrop-filter: blur(12px);
+}
+
+.lr-auth-card {
+  position: relative;
+  z-index: 1;
+  width: min(440px, 100%);
+  padding: 25px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 25px;
+  background:
+    radial-gradient(500px 230px at 100% 0%, rgba(104, 238, 172, .13), transparent 62%),
+    #0a1928;
+  color: #f2f7fa;
+  box-shadow: 0 30px 100px rgba(0, 0, 0, .5);
+}
+
+.lr-auth-close {
+  position: absolute;
+  top: 13px;
+  right: 13px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .05);
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lr-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-right: 45px;
+  margin-bottom: 24px;
+}
+
+.lr-auth-brand img {
+  width: 43px;
+  height: 43px;
+  border-radius: 13px;
+  object-fit: cover;
+}
+
+.lr-auth-brand strong,
+.lr-auth-brand span {
+  display: block;
+}
+
+.lr-auth-brand strong {
+  font-size: 18px;
+}
+
+.lr-auth-brand span {
+  color: #8da4b5;
+  font-size: 12px;
+}
+
+.lr-auth-card h2 {
+  margin: 0 0 8px;
+  color: #fff;
+  font-size: 27px;
+  line-height: 1.15;
+  letter-spacing: -.8px;
+}
+
+.lr-auth-card p {
+  margin: 0 0 20px;
+  color: #9db0bf;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.lr-auth-card form {
+  display: grid;
+  gap: 10px;
+}
+
+.lr-auth-card label {
+  color: #b7c7d3;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.lr-auth-card input {
+  width: 100%;
+  min-height: 52px;
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 255, 255, .11);
+  border-radius: 14px;
+  outline: none;
+  background: #06121e;
+  color: #fff;
+  font: 700 16px/1.2 inherit;
+}
+
+.lr-auth-card input:focus {
+  border-color: rgba(105, 239, 177, .7);
+  box-shadow: 0 0 0 4px rgba(105, 239, 177, .08);
+}
+
+.lr-auth-primary,
+.lr-auth-secondary {
+  min-height: 50px;
+  border-radius: 14px;
+  font: 800 14px/1 inherit;
+  cursor: pointer;
+}
+
+.lr-auth-primary {
+  margin-top: 5px;
+  border: 0;
+  background: linear-gradient(135deg, #71efb2, #43d897);
+  color: #062118;
+}
+
+.lr-auth-secondary {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  background: rgba(255, 255, 255, .04);
+  color: #eaf2f6;
+}
+
+.lr-auth-primary:disabled {
+  cursor: wait;
+  opacity: .7;
+}
+
+.lr-auth-message {
+  min-height: 20px;
+  margin-top: 13px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.lr-auth-message.error {
+  color: #ff9ba8;
+}
+
+.lr-auth-message.success {
+  color: #8ff0bd;
+}
+
+.lr-auth-note {
+  display: block;
+  margin-top: 10px;
+  color: #71899b;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+body.lr-auth-open {
+  overflow: hidden;
+}
+
+@media (max-width: 620px) {
+  .lr-auth-fab {
+    left: 12px;
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    justify-content: center;
+    border-radius: 15px;
+  }
+
+  .lr-auth-card {
+    max-height: calc(100dvh - 24px);
+    overflow: auto;
+    padding: 22px 18px;
+    border-radius: 22px;
+  }
+}
