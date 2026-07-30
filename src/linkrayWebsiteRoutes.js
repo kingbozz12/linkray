@@ -668,9 +668,7 @@ export function mountLinkRayWebsiteRoutes(app) {
     sendSiteFile(res, 'cabinet.html');
   });
 
-  app.get("/index.html", (_req, res) => res.redirect(302, "/"));
-
-app.get('/', applyWebsiteHeaders, (_req, res) => {
+  app.get('/', applyWebsiteHeaders, (_req, res) => {
     sendSiteFile(res, 'index.html');
   });
 
