@@ -57,7 +57,11 @@ export function mountLinkRayWebsiteRoutes(app) {
         })
     );
 
-    app.get('/', applyWebsiteHeaders, (_req, res) => {
+    
+// LINKRAY_STATIC_SITE_MIDDLEWARE
+app.use(express.static(`${process.cwd()}/public/linkray-site`, { index: false, maxAge: '1h', extensions: ['html'] }));
+
+app.get('/', applyWebsiteHeaders, (_req, res) => {
         sendSiteFile(res, 'index.html');
     });
 
