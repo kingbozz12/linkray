@@ -1,0 +1,3215 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-cabinet-suite-v5"
+ROUTES="src/linkrayWebsiteRoutes.js"
+SITE="public/linkray-site"
+HTML="$SITE/cabinet-stable.html"
+CSS="$SITE/cabinet-stable.css"
+JS="$SITE/cabinet-stable.js"
+BACKUP_DIR="$(mktemp -d /tmp/linkray-cabinet-suite.XXXXXX)"
+SUCCESS=0
+
+allowed_dirty() {
+  case "$1" in
+    "$ROUTES"|"$HTML"|"$CSS"|"$JS") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_backup() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию кабинета"
+
+  for file in "$ROUTES" "$HTML" "$CSS" "$JS"; do
+    key="$(printf '%s' "$file" | tr '/' '_')"
+    if [[ -f "$BACKUP_DIR/$key.exists" ]]; then
+      mkdir -p "$(dirname "$file")"
+      cp -f "$BACKUP_DIR/$key" "$file"
+    else
+      rm -f "$file"
+    fi
+  done
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$SUCCESS" != "1" ]]; then
+    restore_backup
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/11] Проверяю незавершённые изменения"
+
+mapfile -t dirty_files < <(
+  git status --porcelain |
+  sed -E 's/^.. //' |
+  sed -E 's/.* -> //' |
+  sed '/^$/d'
+)
+
+for file in "${dirty_files[@]:-}"; do
+  if ! allowed_dirty "$file"; then
+    echo "Остановка: найдено постороннее незавершённое изменение: $file"
+    echo "Кабинет не изменялся."
+    exit 1
+  fi
+done
+
+for file in "${dirty_files[@]:-}"; do
+  git restore --source=HEAD -- "$file"
+done
+
+echo "[2/11] Сохраняю резервную копию"
+
+for file in "$ROUTES" "$HTML" "$CSS" "$JS"; do
+  key="$(printf '%s' "$file" | tr '/' '_')"
+  if [[ -f "$file" ]]; then
+    cp -f "$file" "$BACKUP_DIR/$key"
+    touch "$BACKUP_DIR/$key.exists"
+  fi
+done
+
+mkdir -p "$SITE"
+
+echo "[3/11] Проверяю необходимые таблицы базы"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -v ON_ERROR_STOP=1 -At \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}" \
+    -c "
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema='\''public'\''
+        AND table_name IN (
+          '\''lr_web_sessions'\'',
+          '\''lr_users'\'',
+          '\''channels'\'',
+          '\''lr_user_channels'\'',
+          '\''lr_channel_analytics_snapshots'\'',
+          '\''lr_channel_metrics_state'\'',
+          '\''lr_antifraud_channels'\'',
+          '\''lr_antifraud_events'\'',
+          '\''lr_antifraud_waves'\'',
+          '\''scheduled_posts'\'',
+          '\''lr_user_subscriptions'\'',
+          '\''lr_tariffs'\''
+        )
+      ORDER BY table_name;
+    "
+' | tee "$BACKUP_DIR/schema-tables.txt"
+
+grep -qx "lr_web_sessions" "$BACKUP_DIR/schema-tables.txt"
+grep -qx "lr_users" "$BACKUP_DIR/schema-tables.txt"
+grep -qx "channels" "$BACKUP_DIR/schema-tables.txt"
+
+echo "[4/11] Подключаю защищённый API кабинета"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+IMPORT_MARKER = "// LINKRAY_CABINET_SUITE_V5_IMPORT"
+MODULE_START = "// LINKRAY_CABINET_SUITE_V5_MODULE_START"
+MODULE_END = "// LINKRAY_CABINET_SUITE_V5_MODULE_END"
+ROUTES_START = "// LINKRAY_CABINET_SUITE_V5_ROUTES_START"
+ROUTES_END = "// LINKRAY_CABINET_SUITE_V5_ROUTES_END"
+
+source = re.sub(
+    rf"\n?{re.escape(IMPORT_MARKER)}\nimport[^\n]+\n?",
+    "\n",
+    source,
+)
+source = re.sub(
+    rf"\n?{re.escape(MODULE_START)}[\s\S]*?{re.escape(MODULE_END)}\n?",
+    "\n",
+    source,
+)
+source = re.sub(
+    rf"\n?{re.escape(ROUTES_START)}[\s\S]*?{re.escape(ROUTES_END)}\n?",
+    "\n",
+    source,
+)
+
+import_match = list(re.finditer(r"^import\b[^;]*;\s*$", source, flags=re.M))
+if not import_match:
+    raise SystemExit("В linkrayWebsiteRoutes.js не найдены импорты")
+
+insert_import_at = import_match[-1].end()
+source = (
+    source[:insert_import_at]
+    + "\n"
+    + IMPORT_MARKER
+    + "\nimport { query as lrCabinetQuery } from './db.js';"
+    + source[insert_import_at:]
+)
+
+module = r'''
+// LINKRAY_CABINET_SUITE_V5_MODULE_START
+const LR_CABINET_BOT_URL = 'https://max.ru/se13353901_bot';
+
+function lrC5Rows(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.rows)) return value.rows;
+  return [];
+}
+
+function lrC5Pick(object, names, fallback = null) {
+  if (!object || typeof object !== 'object') return fallback;
+
+  for (const name of names) {
+    const value = object[name];
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+
+  return fallback;
+}
+
+function lrC5Number(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function lrC5Bool(value, fallback = false) {
+  if (value === true || value === 1 || value === '1') return true;
+  if (value === false || value === 0 || value === '0') return false;
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+
+  if (['true', 'yes', 'on', 'enabled', 'active', 'safe'].includes(normalized)) {
+    return true;
+  }
+
+  if (['false', 'no', 'off', 'disabled', 'inactive'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function lrC5Text(value, fallback = '') {
+  const text = String(value ?? '').trim();
+  return text || fallback;
+}
+
+function lrC5Ident(value) {
+  const name = String(value ?? '').trim();
+
+  if (!/^[a-z_][a-z0-9_]*$/i.test(name)) {
+    throw new Error(`Недопустимый SQL-идентификатор: ${name}`);
+  }
+
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+async function lrC5SafeQuery(sql, params = [], label = 'query') {
+  try {
+    return lrC5Rows(await lrCabinetQuery(sql, params));
+  } catch (error) {
+    console.error(
+      `[LinkRay Cabinet ${label}]`,
+      error?.message || error,
+    );
+    return [];
+  }
+}
+
+async function lrC5TableExists(table) {
+  const rows = await lrC5SafeQuery(
+    `SELECT to_regclass($1) AS relation`,
+    [`public.${table}`],
+    `table:${table}`,
+  );
+
+  return Boolean(rows[0]?.relation);
+}
+
+async function lrC5Columns(table) {
+  if (!(await lrC5TableExists(table))) return new Set();
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema='public'
+        AND table_name=$1
+    `,
+    [table],
+    `columns:${table}`,
+  );
+
+  return new Set(rows.map((row) => String(row.column_name)));
+}
+
+function lrC5Column(columns, candidates) {
+  return candidates.find((name) => columns.has(name)) || null;
+}
+
+function lrC5ParseCookies(req) {
+  const result = {};
+  const raw = String(req.headers.cookie ?? '');
+
+  for (const part of raw.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+
+    const name = part.slice(0, separator).trim();
+    const rawValue = part.slice(separator + 1).trim();
+
+    if (!name) continue;
+
+    try {
+      result[name] = decodeURIComponent(rawValue);
+    } catch {
+      result[name] = rawValue;
+    }
+  }
+
+  return result;
+}
+
+async function lrC5Hash(value) {
+  const { createHash } = await import('node:crypto');
+  return createHash('sha256').update(String(value)).digest('hex');
+}
+
+async function lrC5Session(req) {
+  const sessionColumns = await lrC5Columns('lr_web_sessions');
+  if (!sessionColumns.size) return null;
+
+  const hashColumn = lrC5Column(
+    sessionColumns,
+    ['token_hash', 'session_hash', 'challenge_hash'],
+  );
+
+  if (!hashColumn) return null;
+
+  const cookies = lrC5ParseCookies(req);
+  const preferredNames = [
+    'lr_web_session',
+    'linkray_session',
+    'lr_session',
+    'session',
+  ];
+
+  const candidates = [];
+
+  for (const name of preferredNames) {
+    if (cookies[name]) candidates.push(cookies[name]);
+  }
+
+  for (const value of Object.values(cookies)) {
+    if (value && !candidates.includes(value)) {
+      candidates.push(value);
+    }
+  }
+
+  const where = [`s.${lrC5Ident(hashColumn)}=$1`];
+
+  if (sessionColumns.has('expires_at')) {
+    where.push(`s."expires_at">NOW()`);
+  }
+
+  if (sessionColumns.has('revoked_at')) {
+    where.push(`s."revoked_at" IS NULL`);
+  }
+
+  for (const token of candidates.slice(0, 12)) {
+    const tokenHash = await lrC5Hash(token);
+
+    const rows = await lrC5SafeQuery(
+      `
+        SELECT to_jsonb(s) AS session
+        FROM public.lr_web_sessions s
+        WHERE ${where.join(' AND ')}
+        ORDER BY ${
+          sessionColumns.has('created_at')
+            ? 's."created_at" DESC'
+            : 's."id" DESC'
+        }
+        LIMIT 1
+      `,
+      [tokenHash],
+      'session',
+    );
+
+    const session = rows[0]?.session;
+    if (!session) continue;
+
+    const userId = lrC5Pick(session, ['user_id', 'lr_user_id']);
+    if (userId === null || userId === undefined) continue;
+
+    const userColumns = await lrC5Columns('lr_users');
+    let user = {};
+
+    if (userColumns.size) {
+      const userIdColumn = lrC5Column(
+        userColumns,
+        ['id', 'user_id', 'lr_user_id'],
+      );
+
+      if (userIdColumn) {
+        const userRows = await lrC5SafeQuery(
+          `
+            SELECT to_jsonb(u) AS user
+            FROM public.lr_users u
+            WHERE CAST(u.${lrC5Ident(userIdColumn)} AS TEXT)=$1
+            LIMIT 1
+          `,
+          [String(userId)],
+          'user',
+        );
+
+        user = userRows[0]?.user || {};
+      }
+    }
+
+    if (sessionColumns.has('last_seen_at')) {
+      const idColumn = lrC5Column(sessionColumns, ['id']);
+      if (idColumn && session[idColumn] !== undefined) {
+        lrC5SafeQuery(
+          `
+            UPDATE public.lr_web_sessions
+            SET "last_seen_at"=NOW()
+            WHERE ${lrC5Ident(idColumn)}=$1
+          `,
+          [session[idColumn]],
+          'session-touch',
+        );
+      }
+    }
+
+    return {
+      session,
+      user,
+      userId: String(userId),
+      maxUserId: lrC5Text(
+        lrC5Pick(user, ['max_user_id', 'maxUserId'], ''),
+      ),
+      displayName: lrC5Text(
+        lrC5Pick(
+          user,
+          [
+            'display_name',
+            'name',
+            'first_name',
+            'username',
+          ],
+          `Пользователь ${userId}`,
+        ),
+      ),
+    };
+  }
+
+  return null;
+}
+
+function lrC5NormalizeKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/+$/, '');
+}
+
+function lrC5Keys(object) {
+  const values = [
+    lrC5Pick(object, ['id']),
+    lrC5Pick(object, ['channel_id']),
+    lrC5Pick(object, ['max_chat_id']),
+    lrC5Pick(object, ['chat_id']),
+    lrC5Pick(object, ['max_channel_id']),
+    lrC5Pick(object, ['link']),
+    lrC5Pick(object, ['public_link']),
+    lrC5Pick(object, ['channel_link']),
+    lrC5Pick(object, ['url']),
+    lrC5Pick(object, ['channel_key']),
+  ];
+
+  return new Set(
+    values
+      .map(lrC5NormalizeKey)
+      .filter(Boolean),
+  );
+}
+
+function lrC5Intersects(left, right) {
+  for (const value of left) {
+    if (right.has(value)) return true;
+  }
+  return false;
+}
+
+function lrC5Time(object) {
+  const value = lrC5Pick(
+    object,
+    [
+      'captured_at',
+      'occurred_at',
+      'created_at',
+      'updated_at',
+      'publish_at',
+      'published_at',
+      'detected_at',
+      'started_at',
+      'last_seen_at',
+    ],
+  );
+
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+async function lrC5JsonRows(
+  table,
+  {
+    limit = 5000,
+    orderCandidates = [
+      'captured_at',
+      'occurred_at',
+      'created_at',
+      'updated_at',
+      'id',
+    ],
+    whereSql = '',
+    params = [],
+  } = {},
+) {
+  const columns = await lrC5Columns(table);
+  if (!columns.size) return [];
+
+  const orderColumn =
+    lrC5Column(columns, orderCandidates) ||
+    lrC5Column(columns, ['id']);
+
+  const orderSql = orderColumn
+    ? `ORDER BY t.${lrC5Ident(orderColumn)} DESC NULLS LAST`
+    : '';
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(t) AS row
+      FROM public.${lrC5Ident(table)} t
+      ${whereSql}
+      ${orderSql}
+      LIMIT ${Math.max(1, Math.min(Number(limit) || 1000, 20000))}
+    `,
+    params,
+    `rows:${table}`,
+  );
+
+  return rows.map((item) => item.row || {}).filter(Boolean);
+}
+
+async function lrC5LoadChannels(identity) {
+  const channelColumns = await lrC5Columns('channels');
+  if (!channelColumns.size) return [];
+
+  const channelIdColumn = lrC5Column(
+    channelColumns,
+    ['id', 'channel_id'],
+  );
+
+  if (!channelIdColumn) return [];
+
+  const userChannelColumns = await lrC5Columns('lr_user_channels');
+
+  if (userChannelColumns.size) {
+    const ucUserColumn = lrC5Column(
+      userChannelColumns,
+      ['user_id', 'lr_user_id', 'owner_user_id'],
+    );
+    const ucChannelColumn = lrC5Column(
+      userChannelColumns,
+      ['channel_id', 'channel_internal_id'],
+    );
+
+    if (ucUserColumn && ucChannelColumn) {
+      const identities = [
+        identity.userId,
+        identity.maxUserId,
+      ].filter(Boolean);
+
+      const rows = await lrC5SafeQuery(
+        `
+          SELECT
+            to_jsonb(c) AS channel,
+            to_jsonb(uc) AS membership
+          FROM public.lr_user_channels uc
+          JOIN public.channels c
+            ON CAST(c.${lrC5Ident(channelIdColumn)} AS TEXT)
+             = CAST(uc.${lrC5Ident(ucChannelColumn)} AS TEXT)
+          WHERE CAST(uc.${lrC5Ident(ucUserColumn)} AS TEXT)
+                = ANY($1::text[])
+          ORDER BY c.${lrC5Ident(channelIdColumn)} ASC
+        `,
+        [identities],
+        'user-channels',
+      );
+
+      if (rows.length) {
+        return rows
+          .map((row) => ({
+            raw: row.channel || {},
+            membership: row.membership || {},
+          }))
+          .filter(({ raw }) => raw && typeof raw === 'object');
+      }
+    }
+  }
+
+  const directUserColumn = lrC5Column(
+    channelColumns,
+    [
+      'user_id',
+      'owner_user_id',
+      'created_by_user_id',
+      'admin_user_id',
+      'max_user_id',
+      'owner_max_user_id',
+      'created_by_max_user_id',
+    ],
+  );
+
+  if (!directUserColumn) return [];
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(c) AS channel
+      FROM public.channels c
+      WHERE CAST(c.${lrC5Ident(directUserColumn)} AS TEXT)
+            = ANY($1::text[])
+      ORDER BY c.${lrC5Ident(channelIdColumn)} ASC
+    `,
+    [identities],
+    'direct-channels',
+  );
+
+  return rows.map((row) => ({
+    raw: row.channel || {},
+    membership: {},
+  }));
+}
+
+function lrC5ActiveChannel(channel) {
+  const active = lrC5Pick(
+    channel,
+    ['is_active', 'active', 'enabled'],
+    true,
+  );
+
+  return lrC5Bool(active, true);
+}
+
+function lrC5SnapshotSourceScore(snapshot) {
+  return lrC5Text(snapshot.collection_source) === 'max_api_collector_v1'
+    ? 1
+    : 0;
+}
+
+function lrC5MatchingRows(channelKeys, rows) {
+  return rows
+    .filter((row) => lrC5Intersects(channelKeys, lrC5Keys(row)))
+    .sort((a, b) => {
+      const sourceDiff =
+        lrC5SnapshotSourceScore(b) -
+        lrC5SnapshotSourceScore(a);
+
+      if (sourceDiff) return sourceDiff;
+      return lrC5Time(b) - lrC5Time(a);
+    });
+}
+
+function lrC5DailyHistory(rows, days = 30) {
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+  const daily = new Map();
+
+  for (const row of rows) {
+    const time = lrC5Time(row);
+    if (!time || time < since) continue;
+
+    const day = new Date(time).toISOString().slice(0, 10);
+    if (!daily.has(day)) {
+      daily.set(day, row);
+    }
+  }
+
+  return [...daily.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([date, row]) => ({
+      date,
+      capturedAt: lrC5Pick(row, ['captured_at']),
+      subscribers: lrC5Number(row.subscribers),
+      views24: lrC5Number(row.views24),
+      deltaDay: lrC5Number(row.delta_day),
+      er24: lrC5Number(row.er24),
+    }));
+}
+
+function lrC5HourlyHistory(rows) {
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+
+  return rows
+    .filter((row) => lrC5Time(row) >= since)
+    .slice(0, 48)
+    .reverse()
+    .map((row) => ({
+      capturedAt: lrC5Pick(row, ['captured_at']),
+      subscribers: lrC5Number(row.subscribers),
+      views24: lrC5Number(row.views24),
+      deltaDay: lrC5Number(row.delta_day),
+      er24: lrC5Number(row.er24),
+    }));
+}
+
+function lrC5Risk(config, events) {
+  const explicit = lrC5Text(
+    lrC5Pick(
+      config,
+      [
+        'risk_level',
+        'risk',
+        'status',
+        'safety_status',
+      ],
+      '',
+    ),
+  ).toLowerCase();
+
+  const score = lrC5Number(
+    lrC5Pick(config, ['risk_score', 'score']),
+  );
+
+  if (
+    explicit.includes('high') ||
+    explicit.includes('danger') ||
+    explicit.includes('unsafe') ||
+    explicit.includes('высок')
+  ) {
+    return { level: 'high', label: 'Высокий риск', score };
+  }
+
+  if (
+    explicit.includes('medium') ||
+    explicit.includes('warn') ||
+    explicit.includes('attention') ||
+    explicit.includes('сред')
+  ) {
+    return { level: 'medium', label: 'Требует внимания', score };
+  }
+
+  if (score !== null && score >= 70) {
+    return { level: 'high', label: 'Высокий риск', score };
+  }
+
+  if (score !== null && score >= 30) {
+    return { level: 'medium', label: 'Требует внимания', score };
+  }
+
+  const recentSince = Date.now() - 24 * 60 * 60 * 1000;
+  const recentEvents = events.filter(
+    (event) => lrC5Time(event) >= recentSince,
+  ).length;
+
+  if (recentEvents >= 5) {
+    return { level: 'high', label: 'Высокий риск', score };
+  }
+
+  if (recentEvents > 0) {
+    return { level: 'medium', label: 'Есть события', score };
+  }
+
+  return { level: 'safe', label: 'Угроз не обнаружено', score };
+}
+
+function lrC5PostStatus(row) {
+  const status = lrC5Text(
+    lrC5Pick(row, ['status', 'state'], 'unknown'),
+  ).toLowerCase();
+
+  if (status === 'scheduled') return 'scheduled';
+  if (status === 'published') return 'published';
+  if (status === 'error' || status === 'failed') return 'error';
+  if (status === 'canceled' || status === 'deleted') return 'deleted';
+  if (status === 'publishing') return 'publishing';
+
+  return status || 'unknown';
+}
+
+function lrC5Post(row, channelMap) {
+  const channelId = lrC5Text(
+    lrC5Pick(row, ['channel_id', 'channelId']),
+  );
+
+  const channel = channelMap.get(channelId);
+
+  return {
+    id: lrC5Text(lrC5Pick(row, ['id', 'post_id'])),
+    channelId,
+    channelTitle: channel?.title || lrC5Text(
+      lrC5Pick(row, ['channel_title']),
+      'Канал',
+    ),
+    status: lrC5PostStatus(row),
+    text: lrC5Text(
+      lrC5Pick(row, ['text', 'caption', 'content']),
+    ).slice(0, 220),
+    publishAt: lrC5Pick(row, ['publish_at', 'scheduled_at']),
+    publishedAt: lrC5Pick(row, ['published_at']),
+    createdAt: lrC5Pick(row, ['created_at']),
+    isAd: lrC5Bool(lrC5Pick(row, ['is_ad', 'advertising']), false),
+    cpm: lrC5Number(lrC5Pick(row, ['cpm'])),
+    error: lrC5Text(
+      lrC5Pick(row, ['error_message', 'last_error']),
+    ).slice(0, 300),
+  };
+}
+
+async function lrC5Subscription(identity) {
+  const columns = await lrC5Columns('lr_user_subscriptions');
+
+  if (!columns.size) {
+    return {
+      name: 'Бесплатный',
+      status: 'active',
+      endsAt: null,
+      channelLimit: null,
+    };
+  }
+
+  const userColumn = lrC5Column(
+    columns,
+    ['user_id', 'lr_user_id', 'max_user_id'],
+  );
+
+  if (!userColumn) {
+    return {
+      name: 'Бесплатный',
+      status: 'active',
+      endsAt: null,
+      channelLimit: null,
+    };
+  }
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const orderColumn = lrC5Column(
+    columns,
+    ['expires_at', 'ends_at', 'created_at', 'id'],
+  );
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(s) AS subscription
+      FROM public.lr_user_subscriptions s
+      WHERE CAST(s.${lrC5Ident(userColumn)} AS TEXT)
+            = ANY($1::text[])
+      ${
+        orderColumn
+          ? `ORDER BY s.${lrC5Ident(orderColumn)} DESC NULLS LAST`
+          : ''
+      }
+      LIMIT 1
+    `,
+    [identities],
+    'subscription',
+  );
+
+  const subscription = rows[0]?.subscription || {};
+  let tariff = {};
+
+  const tariffId = lrC5Pick(
+    subscription,
+    ['tariff_id', 'plan_id'],
+  );
+
+  if (
+    tariffId !== undefined &&
+    tariffId !== null &&
+    await lrC5TableExists('lr_tariffs')
+  ) {
+    const tariffColumns = await lrC5Columns('lr_tariffs');
+    const tariffIdColumn = lrC5Column(
+      tariffColumns,
+      ['id', 'tariff_id'],
+    );
+
+    if (tariffIdColumn) {
+      const tariffRows = await lrC5SafeQuery(
+        `
+          SELECT to_jsonb(t) AS tariff
+          FROM public.lr_tariffs t
+          WHERE CAST(t.${lrC5Ident(tariffIdColumn)} AS TEXT)=$1
+          LIMIT 1
+        `,
+        [String(tariffId)],
+        'tariff',
+      );
+
+      tariff = tariffRows[0]?.tariff || {};
+    }
+  }
+
+  return {
+    name: lrC5Text(
+      lrC5Pick(
+        tariff,
+        ['name', 'title'],
+        lrC5Pick(
+          subscription,
+          ['plan_name', 'tariff_name'],
+          'Бесплатный',
+        ),
+      ),
+    ),
+    status: lrC5Text(
+      lrC5Pick(subscription, ['status'], 'active'),
+    ),
+    startsAt: lrC5Pick(
+      subscription,
+      ['starts_at', 'started_at', 'created_at'],
+    ),
+    endsAt: lrC5Pick(
+      subscription,
+      ['expires_at', 'ends_at', 'end_at'],
+    ),
+    channelLimit: lrC5Number(
+      lrC5Pick(
+        tariff,
+        ['channel_limit', 'channels_limit', 'max_channels'],
+      ),
+    ),
+  };
+}
+
+async function lrC5TeamCounts(channelIds) {
+  const columns = await lrC5Columns('lr_user_channels');
+  if (!columns.size || !channelIds.length) return new Map();
+
+  const channelColumn = lrC5Column(
+    columns,
+    ['channel_id', 'channel_internal_id'],
+  );
+
+  if (!channelColumn) return new Map();
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT
+        CAST(${lrC5Ident(channelColumn)} AS TEXT) AS channel_id,
+        COUNT(*)::int AS team_count
+      FROM public.lr_user_channels
+      WHERE CAST(${lrC5Ident(channelColumn)} AS TEXT)
+            = ANY($1::text[])
+      GROUP BY ${lrC5Ident(channelColumn)}
+    `,
+    [channelIds],
+    'team-counts',
+  );
+
+  return new Map(
+    rows.map((row) => [
+      String(row.channel_id),
+      Number(row.team_count || 0),
+    ]),
+  );
+}
+
+async function lrC5CabinetPayload(req) {
+  const identity = await lrC5Session(req);
+
+  if (!identity) {
+    const error = new Error(
+      'Сессия входа закончилась. Войдите заново.',
+    );
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const channelMemberships = (
+    await lrC5LoadChannels(identity)
+  ).filter(({ raw }) => lrC5ActiveChannel(raw));
+
+  const snapshotColumns = await lrC5Columns(
+    'lr_channel_analytics_snapshots',
+  );
+
+  const snapshotRows = await lrC5JsonRows(
+    'lr_channel_analytics_snapshots',
+    {
+      limit: 12000,
+      orderCandidates: ['captured_at', 'id'],
+      whereSql: snapshotColumns.has('captured_at')
+        ? `WHERE t."captured_at" >= NOW() - INTERVAL '32 days'`
+        : '',
+    },
+  );
+
+  const stateRows = await lrC5JsonRows(
+    'lr_channel_metrics_state',
+    {
+      limit: 3000,
+      orderCandidates: ['updated_at', 'last_success_at'],
+    },
+  );
+
+  const antifraudRows = await lrC5JsonRows(
+    'lr_antifraud_channels',
+    {
+      limit: 3000,
+      orderCandidates: ['updated_at', 'id'],
+    },
+  );
+
+  const antifraudEvents = await lrC5JsonRows(
+    'lr_antifraud_events',
+    {
+      limit: 5000,
+      orderCandidates: ['occurred_at', 'created_at', 'id'],
+    },
+  );
+
+  const antifraudWaves = await lrC5JsonRows(
+    'lr_antifraud_waves',
+    {
+      limit: 3000,
+      orderCandidates: ['detected_at', 'created_at', 'id'],
+    },
+  );
+
+  const baseChannels = channelMemberships.map(
+    ({ raw, membership }) => {
+      const id = lrC5Text(
+        lrC5Pick(raw, ['id', 'channel_id']),
+      );
+
+      return {
+        id,
+        raw,
+        membership,
+        keys: lrC5Keys(raw),
+        title: lrC5Text(
+          lrC5Pick(
+            raw,
+            ['title', 'name', 'channel_title', 'display_name'],
+            `Канал ${id}`,
+          ),
+        ),
+      };
+    },
+  );
+
+  const channelIds = baseChannels
+    .map((channel) => channel.id)
+    .filter(Boolean);
+
+  const teamCounts = await lrC5TeamCounts(channelIds);
+
+  const channelMap = new Map(
+    baseChannels.map((channel) => [
+      channel.id,
+      channel,
+    ]),
+  );
+
+  let scheduledRows = [];
+
+  if (channelIds.length) {
+    const scheduledColumns = await lrC5Columns('scheduled_posts');
+
+    if (scheduledColumns.size) {
+      const channelColumn = lrC5Column(
+        scheduledColumns,
+        ['channel_id'],
+      );
+
+      const orderColumn = lrC5Column(
+        scheduledColumns,
+        ['publish_at', 'created_at', 'id'],
+      );
+
+      if (channelColumn) {
+        scheduledRows = await lrC5JsonRows(
+          'scheduled_posts',
+          {
+            limit: 500,
+            orderCandidates: [
+              orderColumn || 'publish_at',
+              'created_at',
+              'id',
+            ],
+            whereSql:
+              `WHERE CAST(t.${lrC5Ident(channelColumn)} AS TEXT)`
+              + ` = ANY($1::text[])`,
+            params: [channelIds],
+          },
+        );
+      }
+    }
+  }
+
+  const posts = scheduledRows
+    .map((row) => lrC5Post(row, channelMap))
+    .sort((a, b) => {
+      const left = new Date(
+        a.publishAt || a.publishedAt || a.createdAt || 0,
+      ).getTime();
+
+      const right = new Date(
+        b.publishAt || b.publishedAt || b.createdAt || 0,
+      ).getTime();
+
+      return right - left;
+    });
+
+  const channels = baseChannels.map((base) => {
+    const matchingSnapshots = lrC5MatchingRows(
+      base.keys,
+      snapshotRows,
+    );
+
+    const latest = matchingSnapshots[0] || null;
+
+    const matchingStates = lrC5MatchingRows(
+      base.keys,
+      stateRows,
+    );
+
+    const state = matchingStates[0] || {};
+
+    const matchingConfigs = lrC5MatchingRows(
+      base.keys,
+      antifraudRows,
+    );
+
+    const antifraudConfig = matchingConfigs[0] || {};
+
+    const events = [
+      ...lrC5MatchingRows(base.keys, antifraudEvents),
+      ...lrC5MatchingRows(base.keys, antifraudWaves),
+    ].sort((a, b) => lrC5Time(b) - lrC5Time(a));
+
+    const risk = lrC5Risk(antifraudConfig, events);
+
+    const channelPosts = posts.filter(
+      (post) => post.channelId === base.id,
+    );
+
+    const firstSeen = lrC5Pick(
+      state,
+      ['first_seen_at', 'first_success_at'],
+    );
+
+    const firstSeenTime = firstSeen
+      ? new Date(firstSeen).getTime()
+      : 0;
+
+    const baselineComplete = lrC5Bool(
+      lrC5Pick(state, ['baseline_complete']),
+      firstSeenTime > 0 &&
+        Date.now() - firstSeenTime >= 24 * 60 * 60 * 1000,
+    );
+
+    const analyticsReady = Boolean(latest);
+    const full24hReady = analyticsReady && baselineComplete;
+
+    return {
+      id: base.id,
+      maxChatId: lrC5Text(
+        lrC5Pick(
+          base.raw,
+          ['max_chat_id', 'chat_id', 'max_channel_id'],
+        ),
+      ),
+      title: base.title,
+      link: lrC5Text(
+        lrC5Pick(
+          base.raw,
+          ['link', 'public_link', 'channel_link', 'url'],
+        ),
+      ),
+      role: lrC5Text(
+        lrC5Pick(
+          base.membership,
+          ['role', 'access_role', 'member_role'],
+          'Администратор',
+        ),
+      ),
+      teamCount: teamCounts.get(base.id) || 1,
+      botAccess: lrC5Bool(
+        lrC5Pick(
+          base.raw,
+          [
+            'bot_is_admin',
+            'is_bot_admin',
+            'bot_admin',
+            'has_access',
+          ],
+          true,
+        ),
+        true,
+      ),
+      analyticsReady,
+      full24hReady,
+      metrics: latest
+        ? {
+            subscribers: lrC5Number(latest.subscribers),
+            views24: lrC5Number(latest.views24),
+            views48: lrC5Number(latest.views48),
+            views72: lrC5Number(latest.views72),
+            viewsTotal: lrC5Number(latest.views_total),
+            er24: lrC5Number(latest.er24),
+            deltaDay: lrC5Number(latest.delta_day),
+            joined24h: lrC5Number(latest.joined_24h),
+            left24h: lrC5Number(latest.left_24h),
+            capturedAt: lrC5Pick(latest, ['captured_at']),
+            source: lrC5Text(
+              lrC5Pick(latest, ['collection_source']),
+            ),
+          }
+        : null,
+      history24h: lrC5HourlyHistory(matchingSnapshots),
+      history30d: lrC5DailyHistory(matchingSnapshots, 30),
+      collector: {
+        baselineComplete,
+        readyAt: lrC5Pick(state, ['ready_at']),
+        lastSuccessAt: lrC5Pick(
+          state,
+          ['last_success_at', 'last_collect_at'],
+        ),
+        lastError: lrC5Text(
+          lrC5Pick(state, ['last_error']),
+        ),
+      },
+      antifraud: {
+        enabled: lrC5Bool(
+          lrC5Pick(
+            antifraudConfig,
+            ['enabled', 'is_enabled', 'active', 'is_active'],
+            false,
+          ),
+          false,
+        ),
+        level: risk.level,
+        label: risk.label,
+        score: risk.score,
+        events24h: events.filter(
+          (event) =>
+            lrC5Time(event) >=
+            Date.now() - 24 * 60 * 60 * 1000,
+        ).length,
+        totalEvents: events.length,
+        lastEventAt: events[0]
+          ? new Date(lrC5Time(events[0])).toISOString()
+          : null,
+        pdpBefore: lrC5Number(
+          lrC5Pick(
+            events[0] || {},
+            [
+              'pdp_before',
+              'baseline_pdp',
+              'members_before',
+              'subscriber_count_before',
+            ],
+          ),
+        ),
+      },
+      posts: channelPosts.slice(0, 12),
+    };
+  });
+
+  const subscription = await lrC5Subscription(identity);
+
+  const notifications = [];
+
+  for (const channel of channels) {
+    if (!channel.botAccess) {
+      notifications.push({
+        type: 'access',
+        level: 'high',
+        title: `${channel.title}: нет доступа`,
+        text: 'Бот больше не является администратором канала.',
+        channelId: channel.id,
+      });
+    }
+
+    if (!channel.analyticsReady) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: данные собираются`,
+        text: 'Первый снимок аналитики ещё не получен.',
+        channelId: channel.id,
+      });
+    } else if (!channel.full24hReady) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: накапливаются 24 часа`,
+        text: 'Текущие показатели доступны, полный период ещё не завершён.',
+        channelId: channel.id,
+      });
+    }
+
+    if (channel.collector.lastError) {
+      notifications.push({
+        type: 'collector',
+        level: 'medium',
+        title: `${channel.title}: ошибка сбора`,
+        text: channel.collector.lastError,
+        channelId: channel.id,
+      });
+    }
+
+    if (channel.antifraud.level === 'high') {
+      notifications.push({
+        type: 'antifraud',
+        level: 'high',
+        title: `${channel.title}: высокий риск`,
+        text: `AntiFraud обнаружил событий за 24 часа: ${channel.antifraud.events24h}.`,
+        channelId: channel.id,
+      });
+    } else if (channel.antifraud.events24h > 0) {
+      notifications.push({
+        type: 'antifraud',
+        level: 'medium',
+        title: `${channel.title}: новые события AntiFraud`,
+        text: `Событий за 24 часа: ${channel.antifraud.events24h}.`,
+        channelId: channel.id,
+      });
+    }
+  }
+
+  for (const post of posts.filter(
+    (post) => post.status === 'error',
+  ).slice(0, 10)) {
+    notifications.push({
+      type: 'post',
+      level: 'high',
+      title: `${post.channelTitle}: ошибка публикации`,
+      text: post.error || 'Публикация завершилась ошибкой.',
+      channelId: post.channelId,
+    });
+  }
+
+  if (subscription.endsAt) {
+    const endTime = new Date(subscription.endsAt).getTime();
+    const daysLeft = Math.ceil(
+      (endTime - Date.now()) / (24 * 60 * 60 * 1000),
+    );
+
+    if (Number.isFinite(daysLeft) && daysLeft >= 0 && daysLeft <= 7) {
+      notifications.push({
+        type: 'subscription',
+        level: 'medium',
+        title: 'Заканчивается подписка',
+        text: `До окончания тарифа осталось дней: ${daysLeft}.`,
+      });
+    }
+  }
+
+  const readyChannels = channels.filter(
+    (channel) => channel.metrics,
+  );
+
+  const sum = (field) =>
+    readyChannels.reduce(
+      (total, channel) =>
+        total + Number(channel.metrics?.[field] ?? 0),
+      0,
+    );
+
+  const summary = {
+    channels: channels.length,
+    analyticsReadyChannels: readyChannels.length,
+    subscribers:
+      readyChannels.length > 0
+        ? sum('subscribers')
+        : null,
+    views24:
+      readyChannels.length > 0
+        ? sum('views24')
+        : null,
+    deltaDay:
+      readyChannels.length > 0
+        ? sum('deltaDay')
+        : null,
+    antifraudAlerts: channels.reduce(
+      (total, channel) =>
+        total + Number(channel.antifraud.events24h || 0),
+      0,
+    ),
+    scheduledPosts: posts.filter(
+      (post) => post.status === 'scheduled',
+    ).length,
+  };
+
+  return {
+    ok: true,
+    version: 'cabinet-suite-v5',
+    user: {
+      id: identity.userId,
+      linkrayId: String(identity.userId).padStart(6, '0'),
+      maxUserId: identity.maxUserId,
+      displayName: identity.displayName,
+      connectedChannels: channels.length,
+    },
+    profile: {
+      subscription,
+      botUrl: LR_CABINET_BOT_URL,
+    },
+    summary,
+    channels,
+    notifications: notifications.slice(0, 40),
+    posts: posts.slice(0, 40),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function lrC5Async(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+async function lrC5FullHandler(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const payload = await lrC5CabinetPayload(req);
+    return res.json(payload);
+  } catch (error) {
+    const status = Number(error?.statusCode || 500);
+
+    console.error(
+      '[LinkRay Cabinet API]',
+      error?.message || error,
+    );
+
+    return res.status(status).json({
+      ok: false,
+      error:
+        status === 401
+          ? 'Сессия входа закончилась. Войдите заново.'
+          : 'Не удалось загрузить данные кабинета.',
+    });
+  }
+}
+// LINKRAY_CABINET_SUITE_V5_MODULE_END
+'''
+
+export_match = re.search(
+    r"^export\s+function\s+mountLinkRayWebsiteRoutes\s*\(",
+    source,
+    flags=re.M,
+)
+
+if not export_match:
+    raise SystemExit(
+        "Не найдена mountLinkRayWebsiteRoutes в linkrayWebsiteRoutes.js"
+    )
+
+source = source[:export_match.start()] + module + "\n\n" + source[export_match.start():]
+
+routes = r'''
+  // LINKRAY_CABINET_SUITE_V5_ROUTES_START
+  app.get(
+    ['/cabinet', '/cabinet/'],
+    applyWebsiteHeaders,
+    (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      return sendSiteFile(
+        res,
+        'cabinet-stable.html',
+        'no-store, no-cache, must-revalidate',
+      );
+    },
+  );
+
+  app.get(
+    '/api/website/cabinet/full',
+    applyWebsiteHeaders,
+    lrC5Async(lrC5FullHandler),
+  );
+
+  app.get(
+    '/api/website/cabinet/overview',
+    applyWebsiteHeaders,
+    lrC5Async(lrC5FullHandler),
+  );
+  // LINKRAY_CABINET_SUITE_V5_ROUTES_END
+
+'''
+
+mount_match = re.search(
+    r"export\s+function\s+mountLinkRayWebsiteRoutes\s*\([^)]*\)\s*\{",
+    source,
+)
+
+if not mount_match:
+    raise SystemExit("Не найдено начало mountLinkRayWebsiteRoutes")
+
+first_route = re.search(
+    r"^[ \t]*app\.(?:use|get|post|put|patch|delete)\s*\(",
+    source[mount_match.end():],
+    flags=re.M,
+)
+
+if not first_route:
+    raise SystemExit("В функции сайта не найдены маршруты Express")
+
+insert_routes_at = mount_match.end() + first_route.start()
+source = source[:insert_routes_at] + routes + source[insert_routes_at:]
+
+path.write_text(source, encoding="utf-8")
+
+for required in (
+    "LINKRAY_CABINET_SUITE_V5_MODULE_START",
+    "'/api/website/cabinet/full'",
+    "'cabinet-stable.html'",
+):
+    if required not in source:
+        raise SystemExit(f"Не установлен обязательный фрагмент: {required}")
+
+print("API и маршруты кабинета подключены")
+PY
+
+echo "[5/11] Создаю единый интерфейс кабинета"
+
+cat > "$HTML" <<HTML
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport"
+        content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="Cache-Control"
+        content="no-store, no-cache, must-revalidate">
+  <meta name="theme-color" content="#061521">
+  <title>Личный кабинет — LinkRay</title>
+  <link rel="icon" href="/linkray-site/favicon-64.png">
+  <link rel="stylesheet"
+        href="/linkray-site/cabinet-stable.css?v=$VERSION">
+  <script src="/linkray-site/cabinet-stable.js?v=$VERSION"
+          defer></script>
+</head>
+<body>
+  <main id="lr-cabinet" class="cabinet-shell" aria-live="polite">
+    <section class="state-card">
+      <img class="state-logo"
+           src="/linkray-site/linkray-logo-exact.webp"
+           alt="LinkRay"
+           onerror="this.src='/linkray-site/icon-192.png'">
+      <h1>Загружаем кабинет</h1>
+      <p>Получаем каналы, аналитику и события.</p>
+      <div class="spinner" aria-label="Загрузка"></div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Разделы кабинета">
+    <button type="button" data-tab="overview" class="active">
+      <span class="nav-icon">▦</span>
+      <span>Обзор</span>
+    </button>
+
+    <button type="button" data-tab="channels">
+      <span class="nav-icon">▤</span>
+      <span>Каналы</span>
+    </button>
+
+    <a href="https://max.ru/se13353901_bot"
+       target="_blank"
+       rel="noopener noreferrer">
+      <span class="nav-icon">➤</span>
+      <span>Studio в MAX</span>
+    </a>
+  </nav>
+</body>
+</html>
+HTML
+
+cat > "$CSS" <<'CSS'
+:root {
+  color-scheme: dark;
+  --bg: #04101b;
+  --panel: rgba(10, 31, 45, .9);
+  --panel-soft: rgba(16, 42, 57, .78);
+  --line: rgba(147, 178, 198, .16);
+  --text: #f3f8fb;
+  --muted: #8da3b5;
+  --green: #59dda0;
+  --green-dark: #06271b;
+  --amber: #ffc96b;
+  --red: #ff91a5;
+  --blue: #73b7ff;
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; margin: 0; }
+
+body {
+  background:
+    radial-gradient(circle at 85% 0%, rgba(55, 201, 138, .15), transparent 34%),
+    linear-gradient(180deg, #061521 0%, var(--bg) 100%);
+  color: var(--text);
+  font-family:
+    Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button, a { font: inherit; }
+button { cursor: pointer; }
+
+.cabinet-shell {
+  min-height: 100dvh;
+  padding:
+    max(20px, env(safe-area-inset-top))
+    16px
+    calc(112px + env(safe-area-inset-bottom));
+}
+
+.state-card {
+  min-height: calc(100dvh - 150px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 13px;
+}
+
+.state-logo {
+  width: 104px;
+  height: 104px;
+  border-radius: 26px;
+  object-fit: cover;
+  box-shadow: 0 22px 55px rgba(0, 0, 0, .35);
+}
+
+.state-card h1 {
+  margin: 10px 0 0;
+  font-size: clamp(27px, 7vw, 38px);
+}
+
+.state-card p {
+  max-width: 460px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.spinner {
+  width: 42px;
+  height: 42px;
+  margin-top: 14px;
+  border: 4px solid rgba(255,255,255,.1);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+}
+
+.profile img {
+  width: 61px;
+  height: 61px;
+  border-radius: 18px;
+  object-fit: cover;
+}
+
+.profile-copy { min-width: 0; }
+
+.eyebrow {
+  display: block;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.profile h1 {
+  margin: 4px 0 3px;
+  overflow: hidden;
+  font-size: clamp(22px, 6vw, 30px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.icon-button {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255,255,255,.045);
+  color: var(--text);
+  font-size: 25px;
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 10px;
+}
+
+.metric,
+.panel,
+.channel-card,
+.empty-card,
+.error-card {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, .16);
+}
+
+.metric { padding: 15px; }
+
+.metric span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.metric strong {
+  overflow-wrap: anywhere;
+  font-size: 24px;
+}
+
+.section-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 26px 2px 12px;
+}
+
+.section-head h2 {
+  margin: 4px 0 0;
+  font-size: 21px;
+}
+
+.section-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.section-head a {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.panel {
+  padding: 17px;
+}
+
+.panel + .panel {
+  margin-top: 11px;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 13px;
+}
+
+.panel-title h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.panel-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notice-list,
+.post-list,
+.profile-list {
+  display: grid;
+  gap: 9px;
+}
+
+.notice,
+.post-row,
+.profile-row {
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 15px;
+  padding: 12px;
+  background: rgba(255,255,255,.025);
+}
+
+.notice {
+  display: grid;
+  grid-template-columns: 10px minmax(0,1fr);
+  gap: 10px;
+}
+
+.notice-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--blue);
+}
+
+.notice.medium .notice-dot { background: var(--amber); }
+.notice.high .notice-dot { background: var(--red); }
+
+.notice strong,
+.post-row strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 14px;
+}
+
+.notice p,
+.post-row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.42;
+}
+
+.post-row {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.post-meta {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.status-pill,
+.risk-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  border-radius: 999px;
+  padding: 0 9px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.status-scheduled {
+  background: rgba(115,183,255,.13);
+  color: #a8d1ff;
+}
+
+.status-published,
+.risk-safe {
+  background: rgba(89,221,160,.13);
+  color: #8aebba;
+}
+
+.status-error,
+.risk-high {
+  background: rgba(255,145,165,.13);
+  color: #ffb2c0;
+}
+
+.status-deleted,
+.risk-medium {
+  background: rgba(255,201,107,.13);
+  color: #ffd894;
+}
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.profile-row span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.profile-row strong {
+  text-align: right;
+  font-size: 13px;
+}
+
+.channel-list {
+  display: grid;
+  gap: 12px;
+}
+
+.channel-card {
+  overflow: hidden;
+}
+
+.channel-summary {
+  width: 100%;
+  display: block;
+  border: 0;
+  padding: 17px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.channel-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.channel-title {
+  min-width: 0;
+}
+
+.channel-title h3 {
+  margin: 0 0 5px;
+  overflow: hidden;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-title p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.channel-chevron {
+  color: var(--muted);
+  font-size: 20px;
+  transition: transform .18s ease;
+}
+
+.channel-card.open .channel-chevron {
+  transform: rotate(180deg);
+}
+
+.channel-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.channel-metrics strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 16px;
+}
+
+.channel-metrics span {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.channel-details {
+  display: none;
+  border-top: 1px solid var(--line);
+  padding: 16px;
+  background: rgba(0,0,0,.08);
+}
+
+.channel-card.open .channel-details {
+  display: block;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 9px;
+}
+
+.detail-item {
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255,255,255,.025);
+}
+
+.detail-item span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.detail-item strong {
+  font-size: 15px;
+}
+
+.chart-card {
+  margin-top: 12px;
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255,255,255,.025);
+}
+
+.chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.chart-head strong {
+  font-size: 13px;
+}
+
+.periods {
+  display: flex;
+  gap: 5px;
+}
+
+.periods button {
+  min-height: 29px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.periods button.active {
+  border-color: rgba(89,221,160,.38);
+  background: rgba(89,221,160,.12);
+  color: #baf4d7;
+}
+
+.chart {
+  width: 100%;
+  min-height: 122px;
+  display: block;
+}
+
+.chart-empty {
+  min-height: 100px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-label {
+  fill: #7f96a8;
+  font-size: 8px;
+}
+
+.chart-line-subscribers {
+  fill: none;
+  stroke: #59dda0;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-line-views {
+  fill: none;
+  stroke: #73b7ff;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-section {
+  margin-top: 14px;
+}
+
+.detail-section h4 {
+  margin: 0 0 9px;
+  font-size: 14px;
+}
+
+.antifraud-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 15px;
+  padding: 12px;
+  background: rgba(255,255,255,.025);
+}
+
+.antifraud-row p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.primary,
+.secondary {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  padding: 0 12px;
+  font-weight: 800;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.primary {
+  border: 0;
+  background: linear-gradient(135deg, #6ee7a8, #37c98a);
+  color: var(--green-dark);
+}
+
+.secondary {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.045);
+  color: var(--text);
+}
+
+.full-width { grid-column: 1 / -1; }
+.positive { color: var(--green) !important; }
+.negative { color: var(--red) !important; }
+.muted { color: var(--muted) !important; }
+
+.empty-card,
+.error-card {
+  padding: 23px;
+}
+
+.empty-card h2,
+.error-card h1 {
+  margin-top: 0;
+}
+
+.empty-card p,
+.error-card p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.tab-view[hidden] {
+  display: none !important;
+}
+
+.bottom-nav {
+  position: fixed;
+  z-index: 50;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  min-height: calc(82px + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(3,1fr);
+  padding: 8px 10px env(safe-area-inset-bottom);
+  border-top: 1px solid var(--line);
+  background: rgba(4,16,27,.96);
+  backdrop-filter: blur(18px);
+}
+
+.bottom-nav button,
+.bottom-nav a {
+  min-width: 0;
+  border: 0;
+  border-radius: 17px;
+  background: transparent;
+  color: #8298aa;
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.bottom-nav .active {
+  background: rgba(89,221,160,.11);
+  color: #d9f8e9;
+}
+
+.nav-icon { font-size: 22px; }
+
+@media (min-width: 760px) {
+  .cabinet-shell {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+
+  .summary {
+    grid-template-columns: repeat(4,1fr);
+  }
+
+  .channel-list {
+    grid-template-columns: repeat(2,minmax(0,1fr));
+    align-items: start;
+  }
+
+  .channel-card.open {
+    grid-column: 1 / -1;
+  }
+
+  .detail-grid {
+    grid-template-columns: repeat(4,minmax(0,1fr));
+  }
+}
+CSS
+
+cat > "$JS" <<'JS'
+(() => {
+  'use strict';
+
+  const API = '/api/website/cabinet/full';
+  const BOT_URL = 'https://max.ru/se13353901_bot';
+  const root = document.getElementById('lr-cabinet');
+
+  const state = {
+    payload: null,
+    tab: 'overview',
+    openChannelId: null,
+    periods: new Map(),
+    noticesExpanded: false,
+  };
+
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+  const numberOrNull = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const formatNumber = (value) => {
+    const parsed = numberOrNull(value);
+    return parsed === null ? '—' : new Intl.NumberFormat('ru-RU').format(parsed);
+  };
+
+  const formatSigned = (value) => {
+    const parsed = numberOrNull(value);
+    if (parsed === null) return '—';
+    return `${parsed > 0 ? '+' : ''}${formatNumber(parsed)}`;
+  };
+
+  const formatPercent = (value) => {
+    const parsed = numberOrNull(value);
+    return parsed === null ? '—' : `${parsed.toFixed(1).replace('.0', '')}%`;
+  };
+
+  const formatDate = (value, withTime = true) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '—';
+
+    return new Intl.DateTimeFormat('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: withTime ? undefined : 'numeric',
+      hour: withTime ? '2-digit' : undefined,
+      minute: withTime ? '2-digit' : undefined,
+    }).format(date);
+  };
+
+  const statusLabel = (status) => ({
+    scheduled: 'Запланирован',
+    publishing: 'Публикуется',
+    published: 'Опубликован',
+    error: 'Ошибка',
+    deleted: 'Удалён',
+    canceled: 'Отменён',
+  }[status] || 'Без статуса');
+
+  const loading = () => {
+    root.innerHTML = `
+      <section class="state-card">
+        <img class="state-logo"
+             src="/linkray-site/linkray-logo-exact.webp"
+             alt="LinkRay"
+             onerror="this.src='/linkray-site/icon-192.png'">
+        <h1>Загружаем кабинет</h1>
+        <p>Получаем каналы, аналитику и события.</p>
+        <div class="spinner" aria-label="Загрузка"></div>
+      </section>
+    `;
+  };
+
+  const errorScreen = (message, status) => {
+    const authError = status === 401 || status === 403;
+
+    root.innerHTML = `
+      <section class="state-card error-card">
+        <img class="state-logo"
+             src="/linkray-site/linkray-logo-exact.webp"
+             alt="LinkRay"
+             onerror="this.src='/linkray-site/icon-192.png'">
+        <h1>${authError ? 'Сессия входа закончилась' : 'Не удалось загрузить кабинет'}</h1>
+        <p>${escapeHtml(message || 'Сервер не вернул данные.')}</p>
+        <div class="actions">
+          ${
+            authError
+              ? '<a class="primary full-width" href="/">Войти снова</a>'
+              : '<button class="primary full-width" type="button" data-action="retry">Повторить</button>'
+          }
+          <a class="secondary full-width"
+             href="${BOT_URL}"
+             target="_blank"
+             rel="noopener noreferrer">
+            Открыть LinkRay в MAX
+          </a>
+        </div>
+      </section>
+    `;
+  };
+
+  const metricClass = (value) => {
+    const parsed = numberOrNull(value);
+    if (parsed === null) return 'muted';
+    return parsed < 0 ? 'negative' : 'positive';
+  };
+
+  const notificationHtml = (notice) => `
+    <article class="notice ${escapeHtml(notice.level || 'info')}">
+      <span class="notice-dot"></span>
+      <div>
+        <strong>${escapeHtml(notice.title || 'Уведомление')}</strong>
+        <p>${escapeHtml(notice.text || '')}</p>
+      </div>
+    </article>
+  `;
+
+  const postHtml = (post) => {
+    const date =
+      post.status === 'scheduled'
+        ? post.publishAt
+        : post.publishedAt || post.createdAt;
+
+    return `
+      <article class="post-row">
+        <div>
+          <strong>
+            ${post.isAd ? '💼 ' : ''}
+            ${escapeHtml(post.channelTitle || 'Канал')}
+          </strong>
+          <p>${escapeHtml(post.text || 'Публикация без текста')}</p>
+        </div>
+        <div>
+          <span class="status-pill status-${escapeHtml(post.status)}">
+            ${escapeHtml(statusLabel(post.status))}
+          </span>
+          <div class="post-meta">${escapeHtml(formatDate(date))}</div>
+        </div>
+      </article>
+    `;
+  };
+
+  const summaryMetric = (label, value, className = '') => `
+    <article class="metric">
+      <span>${escapeHtml(label)}</span>
+      <strong class="${className}">${escapeHtml(value)}</strong>
+    </article>
+  `;
+
+  function overviewHtml(payload) {
+    const notices = Array.isArray(payload.notifications)
+      ? payload.notifications
+      : [];
+
+    const visibleNotices = state.noticesExpanded
+      ? notices
+      : notices.slice(0, 5);
+
+    const upcoming = (payload.posts || [])
+      .filter((post) =>
+        ['scheduled', 'publishing', 'error'].includes(post.status),
+      )
+      .slice(0, 8);
+
+    const subscription = payload.profile?.subscription || {};
+
+    return `
+      <section class="tab-view" data-view="overview">
+        <section class="summary">
+          ${summaryMetric('Каналы', formatNumber(payload.summary?.channels))}
+          ${summaryMetric('Подписчики', formatNumber(payload.summary?.subscribers))}
+          ${summaryMetric('Просмотры 24 ч', formatNumber(payload.summary?.views24))}
+          ${summaryMetric(
+            'Изменение за сутки',
+            formatSigned(payload.summary?.deltaDay),
+            metricClass(payload.summary?.deltaDay),
+          )}
+        </section>
+
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Центр событий</span>
+            <h2>Уведомления</h2>
+            <p>${formatNumber(notices.length)} важных событий</p>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="notice-list">
+            ${
+              visibleNotices.length
+                ? visibleNotices.map(notificationHtml).join('')
+                : `
+                  <article class="notice">
+                    <span class="notice-dot"></span>
+                    <div>
+                      <strong>Всё работает штатно</strong>
+                      <p>Новых предупреждений нет.</p>
+                    </div>
+                  </article>
+                `
+            }
+          </div>
+
+          ${
+            notices.length > 5
+              ? `
+                <button class="secondary full-width"
+                        type="button"
+                        data-action="toggle-notices"
+                        style="width:100%;margin-top:10px">
+                  ${state.noticesExpanded ? 'Свернуть' : 'Показать все'}
+                </button>
+              `
+              : ''
+          }
+        </section>
+
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Studio</span>
+            <h2>Ближайшие публикации</h2>
+            <p>Редактирование остаётся в MAX</p>
+          </div>
+          <a href="${BOT_URL}" target="_blank" rel="noopener noreferrer">
+            Открыть Studio
+          </a>
+        </div>
+
+        <section class="panel">
+          <div class="post-list">
+            ${
+              upcoming.length
+                ? upcoming.map(postHtml).join('')
+                : `
+                  <article class="post-row">
+                    <div>
+                      <strong>Нет ближайших публикаций</strong>
+                      <p>Запланированные посты появятся здесь.</p>
+                    </div>
+                  </article>
+                `
+            }
+          </div>
+        </section>
+
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Профиль</span>
+            <h2>Аккаунт и тариф</h2>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="profile-list">
+            <article class="profile-row">
+              <span>ID LinkRay</span>
+              <strong>${escapeHtml(payload.user?.linkrayId || '—')}</strong>
+            </article>
+
+            <article class="profile-row">
+              <span>Подключено каналов</span>
+              <strong>${formatNumber(payload.user?.connectedChannels)}</strong>
+            </article>
+
+            <article class="profile-row">
+              <span>Тариф</span>
+              <strong>${escapeHtml(subscription.name || 'Бесплатный')}</strong>
+            </article>
+
+            <article class="profile-row">
+              <span>Статус</span>
+              <strong>${escapeHtml(subscription.status || 'active')}</strong>
+            </article>
+
+            <article class="profile-row">
+              <span>Действует до</span>
+              <strong>${escapeHtml(formatDate(subscription.endsAt, false))}</strong>
+            </article>
+          </div>
+        </section>
+      </section>
+    `;
+  }
+
+  function chartData(channel, period) {
+    if (period === '24h') {
+      return Array.isArray(channel.history24h)
+        ? channel.history24h
+        : [];
+    }
+
+    const history = Array.isArray(channel.history30d)
+      ? channel.history30d
+      : [];
+
+    return period === '7d' ? history.slice(-7) : history.slice(-30);
+  }
+
+  function svgChart(points, field, cssClass) {
+    const values = points
+      .map((point) => numberOrNull(point[field]))
+      .filter((value) => value !== null);
+
+    if (values.length < 2) {
+      return '<div class="chart-empty">Недостаточно точек для графика</div>';
+    }
+
+    const width = 320;
+    const height = 120;
+    const left = 8;
+    const right = 8;
+    const top = 13;
+    const bottom = 20;
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = Math.max(1, max - min);
+
+    const coords = values.map((value, index) => {
+      const x =
+        left +
+        (index / Math.max(1, values.length - 1)) *
+          (width - left - right);
+
+      const y =
+        top +
+        ((max - value) / range) *
+          (height - top - bottom);
+
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+
+    return `
+      <svg class="chart"
+           viewBox="0 0 ${width} ${height}"
+           role="img"
+           aria-label="График">
+        <line x1="${left}" y1="${height - bottom}"
+              x2="${width - right}" y2="${height - bottom}"
+              stroke="rgba(255,255,255,.08)"/>
+        <text class="chart-label" x="${left}" y="9">${escapeHtml(formatNumber(max))}</text>
+        <text class="chart-label" x="${left}" y="${height - 5}">${escapeHtml(formatNumber(min))}</text>
+        <polyline class="${cssClass}" points="${coords.join(' ')}"/>
+      </svg>
+    `;
+  }
+
+  function channelPostRows(channel) {
+    const posts = Array.isArray(channel.posts)
+      ? channel.posts.slice(0, 5)
+      : [];
+
+    if (!posts.length) {
+      return `
+        <article class="post-row">
+          <div>
+            <strong>Публикаций пока нет</strong>
+            <p>Новые посты появятся после работы Studio.</p>
+          </div>
+        </article>
+      `;
+    }
+
+    return posts.map(postHtml).join('');
+  }
+
+  function channelDetailHtml(channel) {
+    const period = state.periods.get(channel.id) || '7d';
+    const points = chartData(channel, period);
+    const metrics = channel.metrics || {};
+    const anti = channel.antifraud || {};
+
+    return `
+      <div class="channel-details">
+        <section class="detail-grid">
+          <article class="detail-item">
+            <span>Просмотры 48 ч</span>
+            <strong>${formatNumber(metrics.views48)}</strong>
+          </article>
+
+          <article class="detail-item">
+            <span>Просмотры 72 ч</span>
+            <strong>${formatNumber(metrics.views72)}</strong>
+          </article>
+
+          <article class="detail-item">
+            <span>ER за 24 ч</span>
+            <strong>${formatPercent(metrics.er24)}</strong>
+          </article>
+
+          <article class="detail-item">
+            <span>Администраторы</span>
+            <strong>${formatNumber(channel.teamCount)}</strong>
+          </article>
+
+          <article class="detail-item">
+            <span>Подписки за 24 ч</span>
+            <strong class="positive">${formatNumber(metrics.joined24h)}</strong>
+          </article>
+
+          <article class="detail-item">
+            <span>Отписки за 24 ч</span>
+            <strong class="negative">${formatNumber(metrics.left24h)}</strong>
+          </article>
+
+          <article class="detail-item">
+            <span>Обновлено</span>
+            <strong>${escapeHtml(formatDate(metrics.capturedAt))}</strong>
+          </article>
+
+          <article class="detail-item">
+            <span>Доступ бота</span>
+            <strong class="${channel.botAccess ? 'positive' : 'negative'}">
+              ${channel.botAccess ? 'Есть' : 'Нет'}
+            </strong>
+          </article>
+        </section>
+
+        <section class="chart-card">
+          <div class="chart-head">
+            <strong>Подписчики</strong>
+            <div class="periods">
+              ${['24h', '7d', '30d'].map((item) => `
+                <button type="button"
+                        class="${period === item ? 'active' : ''}"
+                        data-action="period"
+                        data-channel-id="${escapeHtml(channel.id)}"
+                        data-period="${item}">
+                  ${item === '24h' ? '24 ч' : item === '7d' ? '7 дн' : '30 дн'}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+          ${svgChart(points, 'subscribers', 'chart-line-subscribers')}
+        </section>
+
+        <section class="chart-card">
+          <div class="chart-head">
+            <strong>Просмотры за 24 часа</strong>
+          </div>
+          ${svgChart(points, 'views24', 'chart-line-views')}
+        </section>
+
+        <section class="detail-section">
+          <h4>AntiFraud</h4>
+          <div class="antifraud-row">
+            <div>
+              <strong>${escapeHtml(anti.label || 'Нет данных')}</strong>
+              <p>
+                Событий за 24 ч: ${formatNumber(anti.events24h)} ·
+                ПДП до наплыва: ${formatNumber(anti.pdpBefore)}
+              </p>
+            </div>
+            <span class="risk-pill risk-${escapeHtml(anti.level || 'safe')}">
+              ${anti.enabled ? 'Защита включена' : 'Защита выключена'}
+            </span>
+          </div>
+        </section>
+
+        <section class="detail-section">
+          <h4>Последние публикации</h4>
+          <div class="post-list">${channelPostRows(channel)}</div>
+        </section>
+
+        <div class="actions">
+          <button type="button"
+                  class="secondary"
+                  data-action="download-png"
+                  data-channel-id="${escapeHtml(channel.id)}">
+            Скачать PNG
+          </button>
+
+          <button type="button"
+                  class="secondary"
+                  data-action="download-csv"
+                  data-channel-id="${escapeHtml(channel.id)}">
+            Скачать CSV
+          </button>
+
+          <a class="primary full-width"
+             href="${BOT_URL}"
+             target="_blank"
+             rel="noopener noreferrer">
+            Открыть канал в LinkRay MAX
+          </a>
+        </div>
+      </div>
+    `;
+  }
+
+  function channelCardHtml(channel) {
+    const open = state.openChannelId === channel.id;
+    const metrics = channel.metrics || {};
+    const readyText = channel.analyticsReady
+      ? channel.full24hReady
+        ? `Обновлено ${formatDate(metrics.capturedAt)}`
+        : 'Накапливается полный период 24 часа'
+      : 'Данные аналитики собираются';
+
+    return `
+      <article class="channel-card ${open ? 'open' : ''}">
+        <button type="button"
+                class="channel-summary"
+                data-action="toggle-channel"
+                data-channel-id="${escapeHtml(channel.id)}">
+          <div class="channel-top">
+            <div class="channel-title">
+              <h3>${escapeHtml(channel.title || `Канал ${channel.id}`)}</h3>
+              <p>${escapeHtml(readyText)}</p>
+            </div>
+            <span class="channel-chevron">⌄</span>
+          </div>
+
+          <div class="channel-metrics">
+            <div>
+              <strong>${formatNumber(metrics.subscribers)}</strong>
+              <span>подписчиков</span>
+            </div>
+
+            <div>
+              <strong>${formatNumber(metrics.views24)}</strong>
+              <span>просмотров 24 ч</span>
+            </div>
+
+            <div>
+              <strong class="${metricClass(metrics.deltaDay)}">
+                ${formatSigned(metrics.deltaDay)}
+              </strong>
+              <span>изменение за сутки</span>
+            </div>
+          </div>
+        </button>
+
+        ${open ? channelDetailHtml(channel) : ''}
+      </article>
+    `;
+  }
+
+  function channelsHtml(payload) {
+    const channels = Array.isArray(payload.channels)
+      ? payload.channels
+      : [];
+
+    return `
+      <section class="tab-view" data-view="channels">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Аналитика каналов</span>
+            <h2>Мои каналы</h2>
+            <p>
+              Данные готовы для
+              ${formatNumber(payload.summary?.analyticsReadyChannels)}
+              из ${formatNumber(payload.summary?.channels)}
+            </p>
+          </div>
+          <a href="${BOT_URL}" target="_blank" rel="noopener noreferrer">
+            Studio в MAX
+          </a>
+        </div>
+
+        <section class="channel-list">
+          ${
+            channels.length
+              ? channels.map(channelCardHtml).join('')
+              : `
+                <section class="empty-card">
+                  <h2>Подключённых каналов пока нет</h2>
+                  <p>
+                    Добавь LinkRay администратором канала и перешли
+                    боту любой пост из этого канала.
+                  </p>
+                  <div class="actions">
+                    <a class="primary full-width"
+                       href="${BOT_URL}"
+                       target="_blank"
+                       rel="noopener noreferrer">
+                      Открыть LinkRay в MAX
+                    </a>
+                  </div>
+                </section>
+              `
+          }
+        </section>
+      </section>
+    `;
+  }
+
+  function render() {
+    const payload = state.payload;
+    if (!payload) return;
+
+    root.innerHTML = `
+      <header class="header">
+        <div class="profile">
+          <img src="/linkray-site/linkray-logo-exact.webp"
+               alt="LinkRay"
+               onerror="this.src='/linkray-site/icon-192.png'">
+
+          <div class="profile-copy">
+            <span class="eyebrow">Личный кабинет</span>
+            <h1>${escapeHtml(payload.user?.displayName || 'Пользователь LinkRay')}</h1>
+            <p>
+              ID ${escapeHtml(payload.user?.linkrayId || '—')} ·
+              обновлено ${escapeHtml(formatDate(payload.updatedAt))}
+            </p>
+          </div>
+        </div>
+
+        <button type="button"
+                class="icon-button"
+                data-action="refresh"
+                aria-label="Обновить">
+          ↻
+        </button>
+      </header>
+
+      ${state.tab === 'overview' ? overviewHtml(payload) : channelsHtml(payload)}
+    `;
+
+    document.querySelectorAll('[data-tab]').forEach((button) => {
+      button.classList.toggle(
+        'active',
+        button.getAttribute('data-tab') === state.tab,
+      );
+    });
+  }
+
+  function findChannel(id) {
+    return (state.payload?.channels || []).find(
+      (channel) => String(channel.id) === String(id),
+    );
+  }
+
+  function downloadBlob(filename, type, content) {
+    const blob = content instanceof Blob
+      ? content
+      : new Blob([content], { type });
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function downloadCsv(channel) {
+    const rows = Array.isArray(channel.history30d)
+      ? channel.history30d
+      : [];
+
+    const lines = [
+      [
+        'date',
+        'subscribers',
+        'views24',
+        'deltaDay',
+        'er24',
+      ].join(';'),
+      ...rows.map((row) => [
+        row.date || '',
+        row.subscribers ?? '',
+        row.views24 ?? '',
+        row.deltaDay ?? '',
+        row.er24 ?? '',
+      ].join(';')),
+    ];
+
+    downloadBlob(
+      `linkray-${channel.id}-analytics.csv`,
+      'text/csv;charset=utf-8',
+      '\uFEFF' + lines.join('\n'),
+    );
+  }
+
+  function drawReportGraph(ctx, points, field, x, y, width, height, stroke) {
+    const values = points
+      .map((point) => numberOrNull(point[field]))
+      .filter((value) => value !== null);
+
+    if (values.length < 2) {
+      ctx.fillStyle = '#8da3b5';
+      ctx.font = '28px sans-serif';
+      ctx.fillText('Недостаточно данных', x, y + height / 2);
+      return;
+    }
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = Math.max(1, max - min);
+
+    ctx.beginPath();
+
+    values.forEach((value, index) => {
+      const px = x + (index / Math.max(1, values.length - 1)) * width;
+      const py = y + ((max - value) / range) * height;
+
+      if (index === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 6;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  function downloadPng(channel) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1200;
+    canvas.height = 900;
+
+    const ctx = canvas.getContext('2d');
+    const metrics = channel.metrics || {};
+    const points = Array.isArray(channel.history30d)
+      ? channel.history30d
+      : [];
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, 900);
+    gradient.addColorStop(0, '#071b28');
+    gradient.addColorStop(1, '#04101b');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 1200, 900);
+
+    ctx.fillStyle = '#59dda0';
+    ctx.font = '700 30px sans-serif';
+    ctx.fillText('LINKRAY · ОТЧЁТ КАНАЛА', 70, 75);
+
+    ctx.fillStyle = '#f3f8fb';
+    ctx.font = '700 52px sans-serif';
+    ctx.fillText(channel.title || `Канал ${channel.id}`, 70, 145);
+
+    ctx.fillStyle = '#8da3b5';
+    ctx.font = '26px sans-serif';
+    ctx.fillText(`Обновлено: ${formatDate(metrics.capturedAt)}`, 70, 188);
+
+    const cards = [
+      ['Подписчики', formatNumber(metrics.subscribers)],
+      ['Просмотры 24 ч', formatNumber(metrics.views24)],
+      ['Изменение', formatSigned(metrics.deltaDay)],
+      ['ER 24 ч', formatPercent(metrics.er24)],
+    ];
+
+    cards.forEach(([label, value], index) => {
+      const x = 70 + (index % 2) * 535;
+      const y = 235 + Math.floor(index / 2) * 145;
+
+      ctx.fillStyle = '#0c2939';
+      ctx.fillRect(x, y, 495, 115);
+
+      ctx.fillStyle = '#8da3b5';
+      ctx.font = '24px sans-serif';
+      ctx.fillText(label, x + 25, y + 38);
+
+      ctx.fillStyle = '#f3f8fb';
+      ctx.font = '700 42px sans-serif';
+      ctx.fillText(value, x + 25, y + 88);
+    });
+
+    ctx.fillStyle = '#f3f8fb';
+    ctx.font = '700 30px sans-serif';
+    ctx.fillText('Подписчики за 30 дней', 70, 560);
+
+    drawReportGraph(
+      ctx,
+      points,
+      'subscribers',
+      70,
+      600,
+      1060,
+      190,
+      '#59dda0',
+    );
+
+    ctx.fillStyle = '#8da3b5';
+    ctx.font = '24px sans-serif';
+    ctx.fillText(
+      `AntiFraud: ${channel.antifraud?.label || 'нет данных'}`,
+      70,
+      850,
+    );
+
+    canvas.toBlob((blob) => {
+      if (blob) {
+        downloadBlob(
+          `linkray-${channel.id}-report.png`,
+          'image/png',
+          blob,
+        );
+      }
+    }, 'image/png');
+  }
+
+  async function load() {
+    loading();
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+
+    try {
+      const response = await fetch(API, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+        signal: controller.signal,
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      const body = contentType.includes('application/json')
+        ? await response.json()
+        : { error: (await response.text()).slice(0, 500) };
+
+      if (!response.ok || body?.ok === false) {
+        const error = new Error(
+          body?.error ||
+          body?.message ||
+          `Ошибка API ${response.status}`,
+        );
+
+        error.status = response.status;
+        throw error;
+      }
+
+      state.payload = body;
+      render();
+    } catch (error) {
+      errorScreen(
+        error?.name === 'AbortError'
+          ? 'Сервер не ответил за 15 секунд.'
+          : error?.message || 'Неизвестная ошибка загрузки.',
+        Number(error?.status || 0),
+      );
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  document.addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-tab]');
+
+    if (tab) {
+      state.tab = tab.getAttribute('data-tab') || 'overview';
+      state.openChannelId = null;
+      render();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const actionElement = event.target.closest('[data-action]');
+    if (!actionElement) return;
+
+    const action = actionElement.getAttribute('data-action');
+
+    if (action === 'retry' || action === 'refresh') {
+      load();
+      return;
+    }
+
+    if (action === 'toggle-notices') {
+      state.noticesExpanded = !state.noticesExpanded;
+      render();
+      return;
+    }
+
+    if (action === 'toggle-channel') {
+      const id = actionElement.getAttribute('data-channel-id');
+      state.openChannelId =
+        state.openChannelId === id ? null : id;
+      render();
+      return;
+    }
+
+    if (action === 'period') {
+      const id = actionElement.getAttribute('data-channel-id');
+      const period = actionElement.getAttribute('data-period') || '7d';
+      state.periods.set(id, period);
+      state.openChannelId = id;
+      render();
+      return;
+    }
+
+    if (action === 'download-csv') {
+      const channel = findChannel(
+        actionElement.getAttribute('data-channel-id'),
+      );
+      if (channel) downloadCsv(channel);
+      return;
+    }
+
+    if (action === 'download-png') {
+      const channel = findChannel(
+        actionElement.getAttribute('data-channel-id'),
+      );
+      if (channel) downloadPng(channel);
+    }
+  });
+
+  load();
+})();
+JS
+
+echo "[6/11] Проверяю синтаксис до сборки"
+
+node --check "$ROUTES"
+node --check "$JS"
+
+grep -q "LINKRAY_CABINET_SUITE_V5_MODULE_START" "$ROUTES"
+grep -q "/api/website/cabinet/full" "$ROUTES"
+grep -q "download-png" "$JS"
+grep -q "AntiFraud" "$JS"
+
+echo "[7/11] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[8/11] Проверяю сайт после сборки"
+
+CABINET_HTML="$(curl -fsS --max-time 20 https://linkray.ru/cabinet)"
+printf '%s' "$CABINET_HTML" | grep -q "cabinet-stable.js?v=$VERSION"
+
+echo "Кабинет: 200"
+echo "JavaScript: $(curl -fsS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.js?v=$VERSION")"
+echo "CSS: $(curl -fsS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.css?v=$VERSION")"
+
+API_STATUS="$(
+  curl -sS -o "$BACKUP_DIR/no-cookie-api.json" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/api/website/cabinet/full
+)"
+
+echo "API без cookie: $API_STATUS"
+[[ "$API_STATUS" == "401" ]]
+
+echo "[9/11] Проверяю журналы контейнера"
+
+if docker logs --since 45s linkray-app 2>&1 |
+   grep -E "SyntaxError|ReferenceError|Cannot find module|ERR_MODULE_NOT_FOUND" |
+   grep -v "node_modules"; then
+  echo "В журнале обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[10/11] Фиксирую проверенную версию"
+
+SUCCESS=1
+trap - ERR
+
+git add -- "$ROUTES" "$HTML" "$CSS" "$JS"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Complete LinkRay web cabinet analytics suite"
+  git push origin HEAD:main
+else
+  echo "Изменения уже присутствуют в текущей версии"
+fi
+
+echo "[11/11] Готово"
+
+rm -rf "$BACKUP_DIR"
+
+echo
+echo "============================================================"
+echo "ПОЛНЫЙ ЛИЧНЫЙ КАБИНЕТ LINKRAY УСТАНОВЛЕН"
+echo
+echo "Добавлено:"
+echo "• подробная аналитика каждого канала"
+echo "• графики за 24 часа, 7 и 30 дней"
+echo "• подписки, отписки, просмотры и ER"
+echo "• состояние AntiFraud и последние события"
+echo "• центр уведомлений"
+echo "• ближайшие публикации и их статусы"
+echo "• профиль и тариф"
+echo "• выгрузка PNG и CSV"
+echo
+echo "Автопостинг, редактор Studio и удаление участников не изменялись."
+echo "При ошибке установки предыдущая версия восстанавливается автоматически."
+echo "============================================================"
