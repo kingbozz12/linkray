@@ -19496,7 +19496,7 @@ async function lrV15SendChannelSelect(chatId, key, draft, multi=false) {
   } catch (e) {
     console.error('[v44 forward editor] save draft hook failed', e?.message || e);
   }
- const channels = await lrV47Channels(); if (!channels.length) { await setSession(key, 'select_channels', { draft }); return msg(chatId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\nСначала добавьте канал в LinkRay.\n━━━━━━━━━━━━━━`, [[callbackButton('➕ Добавить канал','post:add_channel')],[callbackButton('⬅️ В меню','main:menu')]], 'html'); } const rows = []; for (const ch of channels) { const selected = draft.channelIds.includes(Number(ch.id)); rows.push([callbackButton(`${selected ? '✅' : '📡'} ${channelName(ch)}`, multi ? `post:toggle:${ch.id}` : `post:single:${ch.id}`)]); } rows.push([callbackButton('🧩 Выбрать несколько','post:multi'), callbackButton('🌐 Все каналы','post:all_channels')]); if (multi) rows.push([callbackButton('➡️ Далее','post:channels_next')]); rows.push([callbackButton('🔗 Добавить канал','post:add_channel')]); rows.push([callbackButton('⬅️ Назад','main:posting'), callbackButton('❌ Отмена','post:cancel')]); await setSession(key, multi ? 'select_channels_multi' : 'select_channels', { draft }); return msg(chatId, `━━━━━━━━━━━━━━\n📡 <b>Куда выпустить пост?</b>\n\nПост принят.\nВыберите канал.\n━━━━━━━━━━━━━━`, rows, 'html'); }
+ const channels = await lrV47Channels(key || chatId); if (!channels.length) { await setSession(key, 'select_channels', { draft }); return msg(chatId, `━━━━━━━━━━━━━━\n🔗 <b>Подключить канал</b>\n\nСначала добавьте канал в LinkRay.\n━━━━━━━━━━━━━━`, [[callbackButton('➕ Добавить канал','post:add_channel')],[callbackButton('⬅️ В меню','main:menu')]], 'html'); } const rows = []; for (const ch of channels) { const selected = draft.channelIds.includes(Number(ch.id)); rows.push([callbackButton(`${selected ? '✅' : '📡'} ${channelName(ch)}`, multi ? `post:toggle:${ch.id}` : `post:single:${ch.id}`)]); } rows.push([callbackButton('🧩 Выбрать несколько','post:multi'), callbackButton('🌐 Все каналы','post:all_channels')]); if (multi) rows.push([callbackButton('➡️ Далее','post:channels_next')]); rows.push([callbackButton('🔗 Добавить канал','post:add_channel')]); rows.push([callbackButton('⬅️ Назад','main:posting'), callbackButton('❌ Отмена','post:cancel')]); await setSession(key, multi ? 'select_channels_multi' : 'select_channels', { draft }); return msg(chatId, `━━━━━━━━━━━━━━\n📡 <b>Куда выпустить пост?</b>\n\nПост принят.\nВыберите канал.\n━━━━━━━━━━━━━━`, rows, 'html'); }
 console.log('[v15 native] helpers installed');
 /* LR_NATIVE_V15_NO_LAYERS_END */
 async function showChannels(callbackId, chatId) {
@@ -22410,11 +22410,12 @@ function lrV47DraftHasContent(draft) {
 }
 
 async function lrV47Channels(subjectId = '') {
-  /* LR_USER_SCOPED_STUDIO_CHANNELS_V87_5
+  /* LR_USER_SCOPED_STUDIO_CHANNELS_V87_6
    *
-   * Изолированная фильтрация только списка каналов Studio.
-   * Добавление каналов, редактор, публикация, аналитика,
-   * AntiFraud и закупы не изменяются.
+   * Показываем только активные каналы текущего пользователя.
+   * Достаточно реальной связи lr_user_channels или владельца
+   * owner_max_user_id. Временные role/access_source/
+   * last_verified_at не используются для постоянного доступа.
    */
   const subject = String(subjectId || '')
     .replace(/^user:/, '')
@@ -22422,14 +22423,25 @@ async function lrV47Channels(subjectId = '') {
 
   if (!/^\d+$/.test(subject)) {
     console.error(
-      '[v87.5 studio channels] invalid user context',
+      '[v87.6 studio channels] invalid user context',
       JSON.stringify({ subjectId })
     );
     return [];
   }
 
   try {
-    return lrV47Rows(await query(`
+    const channels = lrV47Rows(await query(`
+      WITH actor AS (
+        SELECT
+          id,
+          max_user_id,
+          private_chat_id
+        FROM public.lr_users
+        WHERE max_user_id::text=$1
+           OR private_chat_id::text=$1
+        ORDER BY id
+        LIMIT 1
+      )
       SELECT DISTINCT
         channel.id,
         channel.max_chat_id,
@@ -22438,37 +22450,36 @@ async function lrV47Channels(subjectId = '') {
         channel.is_active,
         channel.updated_at
       FROM public.channels channel
-      JOIN public.lr_user_channels access
+      LEFT JOIN actor
+        ON true
+      LEFT JOIN public.lr_user_channels access
         ON access.channel_id=channel.id
-      JOIN public.lr_users user_account
-        ON user_account.id=access.user_id
-      WHERE (
-          user_account.max_user_id::text=$1
-          OR user_account.private_chat_id::text=$1
-        )
-        AND COALESCE(user_account.is_blocked, false)=false
-        AND COALESCE(channel.is_active, true)=true
-        AND LOWER(COALESCE(access.role, '')) IN (
-          'owner',
-          'admin',
-          'administrator'
-        )
+       AND access.user_id=actor.id
+      WHERE COALESCE(channel.is_active, true)=true
         AND (
-          COALESCE(access.access_source, '')='workspace'
-          OR access.last_verified_at >=
-             now() - interval '30 minutes'
+          access.user_id IS NOT NULL
+          OR channel.owner_max_user_id::text=$1
+          OR channel.owner_max_user_id::text=
+             COALESCE(actor.max_user_id::text, '')
         )
       ORDER BY
         channel.updated_at DESC NULLS LAST,
         channel.id DESC
     `, [subject]));
+
+    console.log(
+      '[v87.6 studio channels] resolved',
+      JSON.stringify({
+        subject,
+        count: channels.length,
+        ids: channels.map((channel) => channel.id),
+      })
+    );
+
+    return channels;
   } catch (error) {
-    /*
-     * При ошибке возвращаем пустой список.
-     * Общий список чужих каналов как fallback запрещён.
-     */
     console.error(
-      '[v87.5 studio channels] scoped query failed',
+      '[v87.6 studio channels] scoped query failed',
       error?.stack || error?.message || error
     );
     return [];
