@@ -1667,7 +1667,1038 @@ async function lrC5FullHandler(req, res) {
 // LINKRAY_CABINET_SUITE_V5_MODULE_END
 
 
+
+// LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_START
+const LR_CABINET_CONTROL_VERSION = 'cabinet-control-center-v1';
+
+function lrC6Date(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function lrC6HoursSince(value) {
+  const date = lrC6Date(value);
+  if (!date) return null;
+  return Math.max(0, (Date.now() - date.getTime()) / 3600000);
+}
+
+function lrC6SafeUrl(value) {
+  const text = lrC5Text(value, '');
+
+  if (
+    text.startsWith('/') ||
+    /^https:\/\//i.test(text)
+  ) {
+    return text;
+  }
+
+  return '';
+}
+
+function lrC6ChannelKeys(channel) {
+  return new Set(
+    [
+      channel?.id,
+      channel?.maxChatId,
+      channel?.link,
+    ]
+      .map(lrC5NormalizeKey)
+      .filter(Boolean),
+  );
+}
+
+function lrC6MatchChannel(row, channels) {
+  const rowKeys = lrC5Keys(row);
+
+  return channels.find((channel) =>
+    lrC5Intersects(rowKeys, lrC6ChannelKeys(channel)),
+  ) || null;
+}
+
+function lrC6EntityKeys(row) {
+  return new Set(
+    [
+      lrC5Pick(row, ['id']),
+      lrC5Pick(row, ['purchase_id']),
+      lrC5Pick(row, ['campaign_id']),
+      lrC5Pick(row, ['proof_campaign_id']),
+      lrC5Pick(row, ['placement_id']),
+      lrC5Pick(row, ['session_id']),
+    ]
+      .map(lrC5NormalizeKey)
+      .filter(Boolean),
+  );
+}
+
+async function lrC6LoadUserRows(
+  table,
+  identity,
+  {
+    limit = 3000,
+    orderCandidates = [
+      'updated_at',
+      'created_at',
+      'captured_at',
+      'id',
+    ],
+  } = {},
+) {
+  const columns = await lrC5Columns(table);
+
+  if (!columns.size) {
+    return { rows: [], userScoped: false, columns };
+  }
+
+  const userColumn = lrC5Column(
+    columns,
+    [
+      'user_id',
+      'lr_user_id',
+      'owner_user_id',
+      'max_user_id',
+      'created_by_user_id',
+      'buyer_user_id',
+    ],
+  );
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const rows = await lrC5JsonRows(
+    table,
+    {
+      limit,
+      orderCandidates,
+      whereSql:
+        userColumn && identities.length
+          ? `WHERE CAST(t.${lrC5Ident(userColumn)} AS TEXT)`
+            + ` = ANY($1::text[])`
+          : '',
+      params:
+        userColumn && identities.length
+          ? [identities]
+          : [],
+    },
+  );
+
+  return {
+    rows,
+    userScoped: Boolean(userColumn && identities.length),
+    columns,
+  };
+}
+
+function lrC6Health(payload) {
+  return (payload.channels || []).map((channel) => {
+    const analyticsEnabled =
+      channel.analyticsEnabled === true ||
+      (
+        channel.analyticsEnabled === undefined &&
+        Boolean(
+          channel.analyticsReady ||
+          channel.metrics ||
+          channel.full24hReady
+        )
+      );
+
+    const lastSuccessAt =
+      channel.collector?.lastSuccessAt ||
+      channel.metrics?.capturedAt ||
+      null;
+
+    const ageHours = lrC6HoursSince(lastSuccessAt);
+    const issues = [];
+    let level = analyticsEnabled ? 'ok' : 'off';
+
+    if (!channel.botAccess) {
+      level = 'critical';
+      issues.push('Бот потерял права администратора');
+    }
+
+    if (channel.collector?.lastError) {
+      if (level !== 'critical') level = 'warning';
+      issues.push(`Ошибка сбора: ${channel.collector.lastError}`);
+    }
+
+    if (!analyticsEnabled) {
+      issues.push('Аналитика отключена');
+    } else if (!channel.analyticsReady) {
+      if (level === 'ok') level = 'warning';
+      issues.push('Ожидается первый снимок аналитики');
+    } else if (!channel.full24hReady) {
+      if (level === 'ok') level = 'warning';
+      issues.push('Накапливается полный период 24 часа');
+    }
+
+    if (
+      analyticsEnabled &&
+      ageHours !== null &&
+      ageHours > 6
+    ) {
+      if (level !== 'critical') level = 'warning';
+      issues.push(
+        `Данные не обновлялись ${Math.floor(ageHours)} ч.`,
+      );
+    }
+
+    if (channel.antifraud?.level === 'high') {
+      level = 'critical';
+      issues.push('AntiFraud обнаружил высокий риск');
+    } else if (channel.antifraud?.level === 'medium') {
+      if (level === 'ok') level = 'warning';
+      issues.push('Есть события AntiFraud');
+    }
+
+    if (!issues.length) {
+      issues.push('Канал работает штатно');
+    }
+
+    const label = {
+      ok: 'Работает',
+      warning: 'Требует внимания',
+      critical: 'Критическая проблема',
+      off: 'Функция отключена',
+    }[level] || 'Неизвестно';
+
+    return {
+      channelId: channel.id,
+      title: channel.title,
+      level,
+      label,
+      issues,
+      botAccess: Boolean(channel.botAccess),
+      analyticsEnabled,
+      analyticsReady: Boolean(channel.analyticsReady),
+      full24hReady: Boolean(channel.full24hReady),
+      antifraudEnabled: Boolean(channel.antifraud?.enabled),
+      antifraudLevel: channel.antifraud?.level || 'safe',
+      lastSuccessAt,
+      dataAgeHours:
+        ageHours === null ? null : Math.round(ageHours * 10) / 10,
+    };
+  });
+}
+
+function lrC6Comparison(payload) {
+  const rows = (payload.channels || []).map((channel) => ({
+    channelId: channel.id,
+    title: channel.title,
+    subscribers: lrC5Number(channel.metrics?.subscribers),
+    views24: lrC5Number(channel.metrics?.views24),
+    deltaDay: lrC5Number(channel.metrics?.deltaDay),
+    joined24h: lrC5Number(channel.metrics?.joined24h),
+    left24h: lrC5Number(channel.metrics?.left24h),
+    er24: lrC5Number(channel.metrics?.er24),
+    analyticsEnabled:
+      channel.analyticsEnabled === true ||
+      Boolean(channel.metrics),
+  }));
+
+  const ranked = [...rows]
+    .filter((row) => row.deltaDay !== null)
+    .sort((left, right) => right.deltaDay - left.deltaDay);
+
+  const rankMap = new Map(
+    ranked.map((row, index) => [row.channelId, index + 1]),
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    growthRank: rankMap.get(row.channelId) || null,
+  }));
+}
+
+async function lrC6LoadPurchases(identity, payload) {
+  const purchaseTables = [
+    'lr_purchases',
+    'lr_proof_campaigns',
+  ];
+
+  const snapshotTables = [
+    'lr_purchase_snapshots',
+    'lr_proof_snapshots',
+    'lr_proof_reports',
+  ];
+
+  const purchaseRows = [];
+
+  for (const table of purchaseTables) {
+    const loaded = await lrC6LoadUserRows(
+      table,
+      identity,
+      { limit: 1500 },
+    );
+
+    const rows = loaded.userScoped
+      ? loaded.rows
+      : loaded.rows.filter((row) =>
+          Boolean(lrC6MatchChannel(row, payload.channels || [])),
+        );
+
+    for (const row of rows) {
+      purchaseRows.push({ table, row });
+    }
+  }
+
+  const snapshots = [];
+
+  for (const table of snapshotTables) {
+    const loaded = await lrC6LoadUserRows(
+      table,
+      identity,
+      { limit: 5000 },
+    );
+
+    for (const row of loaded.rows) {
+      snapshots.push({ table, row });
+    }
+  }
+
+  const seen = new Set();
+  const normalized = [];
+
+  for (const item of purchaseRows) {
+    const row = item.row;
+    const id = lrC5Text(
+      lrC5Pick(
+        row,
+        [
+          'id',
+          'purchase_id',
+          'campaign_id',
+          'proof_campaign_id',
+        ],
+        '',
+      ),
+    );
+
+    const key = `${item.table}:${id || JSON.stringify(row).slice(0, 120)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const entityKeys = lrC6EntityKeys(row);
+    const channel = lrC6MatchChannel(
+      row,
+      payload.channels || [],
+    );
+
+    const related = snapshots
+      .filter(({ row: snapshot }) => {
+        const snapshotKeys = lrC6EntityKeys(snapshot);
+
+        if (lrC5Intersects(entityKeys, snapshotKeys)) {
+          return true;
+        }
+
+        return Boolean(
+          channel &&
+          lrC6MatchChannel(snapshot, [channel]),
+        );
+      })
+      .sort((left, right) =>
+        lrC5Time(right.row) - lrC5Time(left.row),
+      );
+
+    const latest = related[0]?.row || {};
+
+    const pickNumber = (names) =>
+      lrC5Number(
+        lrC5Pick(
+          latest,
+          names,
+          lrC5Pick(row, names),
+        ),
+      );
+
+    const amount = pickNumber([
+      'amount',
+      'price',
+      'cost',
+      'total_cost',
+      'budget',
+      'spend',
+      'spent',
+      'purchase_price',
+    ]);
+
+    const subscribers = pickNumber([
+      'subscribers_gained',
+      'joined',
+      'joins',
+      'pdp',
+      'net_subscribers',
+      'result_subscribers',
+    ]);
+
+    normalized.push({
+      id: id || key,
+      source: item.table,
+      channelId: channel?.id || lrC5Text(
+        lrC5Pick(row, ['channel_id', 'target_channel_id']),
+      ),
+      channelTitle: channel?.title || lrC5Text(
+        lrC5Pick(
+          row,
+          ['channel_title', 'title', 'name'],
+          'Закуп',
+        ),
+      ),
+      status: lrC5Text(
+        lrC5Pick(row, ['status', 'state'], 'active'),
+      ),
+      createdAt: lrC5Pick(
+        row,
+        ['created_at', 'started_at', 'purchased_at'],
+      ),
+      updatedAt: lrC5Pick(
+        latest,
+        ['captured_at', 'updated_at', 'created_at'],
+        lrC5Pick(row, ['updated_at', 'created_at']),
+      ),
+      amount,
+      cpm: pickNumber(['cpm', 'actual_cpm', 'planned_cpm']),
+      views24: pickNumber(['views24', 'views_24h', 'views_24', 'views']),
+      views48: pickNumber(['views48', 'views_48h', 'views_48']),
+      views72: pickNumber(['views72', 'views_72h', 'views_72']),
+      subscribers,
+      costPerSubscriber:
+        amount !== null && subscribers !== null && subscribers > 0
+          ? Math.round((amount / subscribers) * 100) / 100
+          : null,
+      link: lrC6SafeUrl(
+        lrC5Pick(
+          row,
+          ['link', 'post_link', 'channel_link', 'url'],
+          '',
+        ),
+      ),
+    });
+  }
+
+  normalized.sort((left, right) => {
+    const leftTime = lrC6Date(left.updatedAt || left.createdAt)?.getTime() || 0;
+    const rightTime = lrC6Date(right.updatedAt || right.createdAt)?.getTime() || 0;
+    return rightTime - leftTime;
+  });
+
+  const sum = (field) =>
+    normalized.reduce(
+      (total, row) => total + Number(row[field] || 0),
+      0,
+    );
+
+  const cpmValues = normalized
+    .map((row) => row.cpm)
+    .filter((value) => value !== null);
+
+  const totalAmount = sum('amount');
+  const totalSubscribers = sum('subscribers');
+
+  return {
+    summary: {
+      count: normalized.length,
+      totalAmount: normalized.length ? totalAmount : null,
+      averageCpm:
+        cpmValues.length
+          ? Math.round(
+              cpmValues.reduce((a, b) => a + b, 0)
+              / cpmValues.length
+              * 100,
+            ) / 100
+          : null,
+      views24: normalized.length ? sum('views24') : null,
+      subscribers:
+        normalized.length ? totalSubscribers : null,
+      costPerSubscriber:
+        totalAmount > 0 && totalSubscribers > 0
+          ? Math.round((totalAmount / totalSubscribers) * 100) / 100
+          : null,
+    },
+    rows: normalized.slice(0, 60),
+  };
+}
+
+async function lrC6SyncNotifications(identity, payload) {
+  for (const notice of payload.notifications || []) {
+    const fingerprint = await lrC5Hash(
+      [
+        notice.type || 'system',
+        notice.level || 'info',
+        notice.channelId || '',
+        notice.title || '',
+        notice.text || '',
+      ].join('|'),
+    );
+
+    await lrC5SafeQuery(
+      `
+        INSERT INTO public.lr_web_cabinet_notifications (
+          user_id,
+          fingerprint,
+          type,
+          level,
+          title,
+          body,
+          channel_id,
+          created_at,
+          last_seen_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
+        ON CONFLICT (user_id, fingerprint)
+        DO UPDATE SET
+          level=EXCLUDED.level,
+          title=EXCLUDED.title,
+          body=EXCLUDED.body,
+          channel_id=EXCLUDED.channel_id,
+          last_seen_at=NOW(),
+          read_at=CASE
+            WHEN lr_web_cabinet_notifications.last_seen_at
+                 < NOW() - INTERVAL '24 hours'
+              THEN NULL
+            ELSE lr_web_cabinet_notifications.read_at
+          END,
+          cleared_at=CASE
+            WHEN lr_web_cabinet_notifications.last_seen_at
+                 < NOW() - INTERVAL '24 hours'
+              THEN NULL
+            ELSE lr_web_cabinet_notifications.cleared_at
+          END
+      `,
+      [
+        identity.userId,
+        fingerprint,
+        notice.type || 'system',
+        notice.level || 'info',
+        notice.title || 'Уведомление',
+        notice.text || '',
+        notice.channelId || null,
+      ],
+      'control-notification-sync',
+    );
+  }
+}
+
+async function lrC6NotificationHistory(identity) {
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT
+        id,
+        type,
+        level,
+        title,
+        body AS text,
+        channel_id,
+        created_at,
+        last_seen_at,
+        read_at
+      FROM public.lr_web_cabinet_notifications
+      WHERE user_id=$1
+        AND cleared_at IS NULL
+      ORDER BY COALESCE(last_seen_at, created_at) DESC
+      LIMIT 100
+    `,
+    [identity.userId],
+    'control-notification-history',
+  );
+
+  return {
+    unread: rows.filter((row) => !row.read_at).length,
+    rows: rows.map((row) => ({
+      id: String(row.id),
+      type: row.type,
+      level: row.level,
+      title: row.title,
+      text: row.text,
+      channelId: row.channel_id,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      read: Boolean(row.read_at),
+    })),
+  };
+}
+
+async function lrC6SyncReports(identity, payload) {
+  for (const channel of payload.channels || []) {
+    const history = Array.isArray(channel.history30d)
+      ? channel.history30d.slice(-30)
+      : [];
+
+    for (const point of history) {
+      const generatedAt =
+        point.capturedAt ||
+        (point.date ? `${point.date}T12:00:00.000Z` : null);
+
+      if (!generatedAt) continue;
+
+      const reportKey = await lrC5Hash(
+        [identity.userId, channel.id, point.date || generatedAt].join('|'),
+      );
+
+      const metrics = {
+        subscribers: point.subscribers,
+        views24: point.views24,
+        deltaDay: point.deltaDay,
+        er24: point.er24,
+      };
+
+      await lrC5SafeQuery(
+        `
+          INSERT INTO public.lr_web_report_archive (
+            user_id,
+            report_key,
+            channel_id,
+            channel_title,
+            report_type,
+            period_label,
+            generated_at,
+            source_table,
+            metrics
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+          ON CONFLICT (user_id, report_key)
+          DO UPDATE SET
+            channel_title=EXCLUDED.channel_title,
+            generated_at=EXCLUDED.generated_at,
+            metrics=EXCLUDED.metrics
+        `,
+        [
+          identity.userId,
+          reportKey,
+          channel.id,
+          channel.title || '',
+          'analytics_snapshot',
+          '24 часа',
+          generatedAt,
+          'lr_channel_analytics_snapshots',
+          JSON.stringify(metrics),
+        ],
+        'control-report-sync',
+      );
+    }
+  }
+}
+
+async function lrC6ReportArchive(identity, payload) {
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT
+        id,
+        channel_id,
+        channel_title,
+        report_type,
+        period_label,
+        generated_at,
+        file_url,
+        metrics
+      FROM public.lr_web_report_archive
+      WHERE user_id=$1
+      ORDER BY generated_at DESC
+      LIMIT 100
+    `,
+    [identity.userId],
+    'control-report-archive',
+  );
+
+  const latestByChannel = new Set();
+
+  return rows.map((row) => {
+    const channelId = String(row.channel_id);
+    const current = !latestByChannel.has(channelId);
+    latestByChannel.add(channelId);
+
+    const channel = (payload.channels || []).find(
+      (item) => String(item.id) === channelId,
+    );
+
+    return {
+      id: String(row.id),
+      channelId,
+      channelTitle:
+        row.channel_title ||
+        channel?.title ||
+        `Канал ${channelId}`,
+      reportType: row.report_type,
+      periodLabel: row.period_label,
+      generatedAt: row.generated_at,
+      metrics: row.metrics || {},
+      current,
+      downloadUrl:
+        lrC6SafeUrl(row.file_url) ||
+        (
+          current && channel?.full24hReady
+            ? `/api/website/cabinet/channel/${encodeURIComponent(channelId)}/bot-report.png`
+            : ''
+        ),
+    };
+  });
+}
+
+async function lrC6Sessions(identity) {
+  const columns = await lrC5Columns('lr_web_sessions');
+
+  if (!columns.size) {
+    return { rows: [], active: 0 };
+  }
+
+  const userColumn = lrC5Column(
+    columns,
+    ['user_id', 'lr_user_id'],
+  );
+  const idColumn = lrC5Column(columns, ['id', 'session_id']);
+
+  if (!userColumn || !idColumn) {
+    return { rows: [], active: 0 };
+  }
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const conditions = [
+    `CAST(s.${lrC5Ident(userColumn)} AS TEXT)=ANY($1::text[])`,
+  ];
+
+  if (columns.has('revoked_at')) {
+    conditions.push('s."revoked_at" IS NULL');
+  }
+
+  if (columns.has('expires_at')) {
+    conditions.push('(s."expires_at" IS NULL OR s."expires_at">NOW())');
+  }
+
+  const orderColumn = lrC5Column(
+    columns,
+    ['last_seen_at', 'created_at', 'id'],
+  );
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(s) AS session
+      FROM public.lr_web_sessions s
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY s.${lrC5Ident(orderColumn || idColumn)} DESC NULLS LAST
+      LIMIT 50
+    `,
+    [identities],
+    'control-sessions',
+  );
+
+  const currentId = lrC5Text(
+    lrC5Pick(identity.session, [idColumn, 'id', 'session_id']),
+  );
+
+  const normalized = rows.map(({ session }) => {
+    const id = lrC5Text(
+      lrC5Pick(session, [idColumn, 'id', 'session_id']),
+    );
+
+    const rawIp = lrC5Text(
+      lrC5Pick(
+        session,
+        ['created_ip', 'requested_ip', 'ip', 'ip_address'],
+        '',
+      ),
+    );
+
+    return {
+      id,
+      current: Boolean(currentId && id === currentId),
+      createdAt: lrC5Pick(session, ['created_at']),
+      lastSeenAt: lrC5Pick(
+        session,
+        ['last_seen_at', 'used_at', 'created_at'],
+      ),
+      expiresAt: lrC5Pick(session, ['expires_at']),
+      ip: rawIp || (session.ip_hash ? 'Скрыт' : '—'),
+      userAgent: lrC5Text(
+        lrC5Pick(session, ['user_agent']),
+        'Неизвестное устройство',
+      ).slice(0, 240),
+      canRevoke: Boolean(id && (!currentId || id !== currentId)),
+    };
+  });
+
+  return {
+    rows: normalized,
+    active: normalized.length,
+    currentSessionId: currentId || null,
+  };
+}
+
+async function lrC6OperationsPayload(req) {
+  const payload = await lrC5CabinetPayload(req);
+  const identity = await lrC5Session(req);
+
+  if (!identity) {
+    const error = new Error('Сессия входа закончилась.');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  await lrC6SyncNotifications(identity, payload);
+  await lrC6SyncReports(identity, payload);
+
+  const [purchases, notificationHistory, reports, sessions] =
+    await Promise.all([
+      lrC6LoadPurchases(identity, payload),
+      lrC6NotificationHistory(identity),
+      lrC6ReportArchive(identity, payload),
+      lrC6Sessions(identity),
+    ]);
+
+  return {
+    ok: true,
+    version: LR_CABINET_CONTROL_VERSION,
+    updatedAt: new Date().toISOString(),
+    channelHealth: lrC6Health(payload),
+    comparison: lrC6Comparison(payload),
+    purchases,
+    notificationHistory,
+    reports,
+    security: {
+      sessions,
+      subscription: payload.profile?.subscription || {},
+    },
+  };
+}
+
+function lrC6Async(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+async function lrC6SendOperations(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await lrC6OperationsPayload(req));
+  } catch (error) {
+    const status = Number(error?.statusCode || 500);
+
+    console.error(
+      '[LinkRay Cabinet Control]',
+      error?.stack || error?.message || error,
+    );
+
+    return res.status(status).json({
+      ok: false,
+      error:
+        status === 401
+          ? 'Сессия входа закончилась. Войдите заново.'
+          : 'Не удалось загрузить дополнительные данные кабинета.',
+    });
+  }
+}
+
+async function lrC6RequireIdentity(req) {
+  const identity = await lrC5Session(req);
+
+  if (!identity) {
+    const error = new Error('Сессия входа закончилась.');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  return identity;
+}
+
+async function lrC6MarkNotifications(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+
+  await lrC5SafeQuery(
+    `
+      UPDATE public.lr_web_cabinet_notifications
+      SET read_at=COALESCE(read_at, NOW())
+      WHERE user_id=$1
+        AND cleared_at IS NULL
+    `,
+    [identity.userId],
+    'control-notifications-read',
+  );
+
+  return res.json({ ok: true });
+}
+
+async function lrC6ClearNotifications(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+
+  await lrC5SafeQuery(
+    `
+      UPDATE public.lr_web_cabinet_notifications
+      SET cleared_at=NOW()
+      WHERE user_id=$1
+        AND read_at IS NOT NULL
+        AND cleared_at IS NULL
+    `,
+    [identity.userId],
+    'control-notifications-clear',
+  );
+
+  return res.json({ ok: true });
+}
+
+async function lrC6RevokeSession(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+  const sessionId = lrC5Text(req.params.sessionId, '');
+
+  if (!sessionId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Не указана сессия.',
+    });
+  }
+
+  const columns = await lrC5Columns('lr_web_sessions');
+  const idColumn = lrC5Column(columns, ['id', 'session_id']);
+  const userColumn = lrC5Column(columns, ['user_id', 'lr_user_id']);
+
+  if (!idColumn || !userColumn) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Управление сессиями недоступно.',
+    });
+  }
+
+  const currentId = lrC5Text(
+    lrC5Pick(identity.session, [idColumn, 'id', 'session_id']),
+  );
+
+  if (currentId && currentId === sessionId) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Текущую сессию можно завершить обычным выходом.',
+    });
+  }
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  if (columns.has('revoked_at')) {
+    await lrC5SafeQuery(
+      `
+        UPDATE public.lr_web_sessions
+        SET "revoked_at"=NOW()
+        WHERE CAST(${lrC5Ident(idColumn)} AS TEXT)=$1
+          AND CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($2::text[])
+      `,
+      [sessionId, identities],
+      'control-session-revoke',
+    );
+  } else {
+    await lrC5SafeQuery(
+      `
+        DELETE FROM public.lr_web_sessions
+        WHERE CAST(${lrC5Ident(idColumn)} AS TEXT)=$1
+          AND CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($2::text[])
+      `,
+      [sessionId, identities],
+      'control-session-delete',
+    );
+  }
+
+  return res.json({ ok: true });
+}
+
+async function lrC6RevokeOtherSessions(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+  const columns = await lrC5Columns('lr_web_sessions');
+  const idColumn = lrC5Column(columns, ['id', 'session_id']);
+  const userColumn = lrC5Column(columns, ['user_id', 'lr_user_id']);
+
+  if (!idColumn || !userColumn) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Управление сессиями недоступно.',
+    });
+  }
+
+  const currentId = lrC5Text(
+    lrC5Pick(identity.session, [idColumn, 'id', 'session_id']),
+  );
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const currentCondition = currentId
+    ? `AND CAST(${lrC5Ident(idColumn)} AS TEXT)<>$2`
+    : '';
+
+  const params = currentId
+    ? [identities, currentId]
+    : [identities];
+
+  if (columns.has('revoked_at')) {
+    await lrC5SafeQuery(
+      `
+        UPDATE public.lr_web_sessions
+        SET "revoked_at"=NOW()
+        WHERE CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($1::text[])
+          AND "revoked_at" IS NULL
+          ${currentCondition}
+      `,
+      params,
+      'control-sessions-revoke-others',
+    );
+  } else {
+    await lrC5SafeQuery(
+      `
+        DELETE FROM public.lr_web_sessions
+        WHERE CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($1::text[])
+          ${currentCondition}
+      `,
+      params,
+      'control-sessions-delete-others',
+    );
+  }
+
+  return res.json({ ok: true });
+}
+// LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_END
+
+
 export function mountLinkRayWebsiteRoutes(app) {
+
+  // LINKRAY_CABINET_CONTROL_CENTER_V1_ROUTES_START
+  app.get(
+    '/api/website/cabinet/operations',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6SendOperations),
+  );
+
+  app.post(
+    '/api/website/cabinet/notifications/read',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6MarkNotifications),
+  );
+
+  app.post(
+    '/api/website/cabinet/notifications/clear',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6ClearNotifications),
+  );
+
+  app.post(
+    '/api/website/cabinet/sessions/revoke-others',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6RevokeOtherSessions),
+  );
+
+  app.post(
+    '/api/website/cabinet/sessions/:sessionId/revoke',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6RevokeSession),
+  );
+  // LINKRAY_CABINET_CONTROL_CENTER_V1_ROUTES_END
+
+
   if (!app || typeof app.use !== 'function' || typeof app.get !== 'function') {
     throw new TypeError('LinkRay website requires an Express application');
   }
