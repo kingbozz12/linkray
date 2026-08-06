@@ -1,0 +1,2396 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-cabinet-control-center-v1"
+ROUTES="src/linkrayWebsiteRoutes.js"
+HTML="public/linkray-site/cabinet-stable.html"
+OPS_JS="public/linkray-site/cabinet-control-center.js"
+OPS_CSS="public/linkray-site/cabinet-control-center.css"
+BACKUP="$(mktemp -d /tmp/linkray-cabinet-control.XXXXXX)"
+DONE=0
+
+backup_file() {
+  local file="$1"
+  local key
+  key="$(printf '%s' "$file" | tr '/' '_')"
+
+  if [[ -f "$file" ]]; then
+    cp -f "$file" "$BACKUP/$key"
+    touch "$BACKUP/$key.exists"
+  fi
+}
+
+restore_all() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию кабинета"
+
+  for file in "$ROUTES" "$HTML" "$OPS_JS" "$OPS_CSS"; do
+    key="$(printf '%s' "$file" | tr '/' '_')"
+
+    if [[ -f "$BACKUP/$key.exists" ]]; then
+      mkdir -p "$(dirname "$file")"
+      cp -f "$BACKUP/$key" "$file"
+    else
+      rm -f "$file"
+    fi
+  done
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_all
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/10] Проверяю текущую архитектуру кабинета"
+
+test -f "$ROUTES"
+test -f "$HTML"
+test -f "public/linkray-site/cabinet-stable.js"
+test -f "public/linkray-site/cabinet-stable.css"
+
+grep -q "LINKRAY_CABINET_SUITE_V5_MODULE_START" "$ROUTES"
+grep -q "function lrC5CabinetPayload" "$ROUTES"
+grep -q "cabinet-stable.js" "$HTML"
+
+backup_file "$ROUTES"
+backup_file "$HTML"
+backup_file "$OPS_JS"
+backup_file "$OPS_CSS"
+
+echo "[2/10] Создаю безопасное хранилище истории"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}"
+' <<'SQL'
+CREATE TABLE IF NOT EXISTS public.lr_web_cabinet_notifications (
+  id BIGSERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'system',
+  level TEXT NOT NULL DEFAULT 'info',
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  channel_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  read_at TIMESTAMPTZ,
+  cleared_at TIMESTAMPTZ,
+  UNIQUE (user_id, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lr_web_cabinet_notifications_user
+  ON public.lr_web_cabinet_notifications
+  (user_id, last_seen_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lr_web_cabinet_notifications_unread
+  ON public.lr_web_cabinet_notifications
+  (user_id, read_at)
+  WHERE cleared_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS public.lr_web_report_archive (
+  id BIGSERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  report_key TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  channel_title TEXT NOT NULL DEFAULT '',
+  report_type TEXT NOT NULL DEFAULT 'analytics_snapshot',
+  period_label TEXT NOT NULL DEFAULT '24 часа',
+  generated_at TIMESTAMPTZ NOT NULL,
+  source_table TEXT,
+  source_id TEXT,
+  file_url TEXT,
+  metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, report_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lr_web_report_archive_user
+  ON public.lr_web_report_archive
+  (user_id, generated_at DESC);
+SQL
+
+echo "[3/10] Подключаю расширенный API кабинета"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+MODULE_START = "// LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_START"
+MODULE_END = "// LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_END"
+ROUTES_START = "// LINKRAY_CABINET_CONTROL_CENTER_V1_ROUTES_START"
+ROUTES_END = "// LINKRAY_CABINET_CONTROL_CENTER_V1_ROUTES_END"
+
+source = re.sub(
+    rf"\n?{re.escape(MODULE_START)}[\s\S]*?{re.escape(MODULE_END)}\n?",
+    "\n",
+    source,
+)
+source = re.sub(
+    rf"\n?{re.escape(ROUTES_START)}[\s\S]*?{re.escape(ROUTES_END)}\n?",
+    "\n",
+    source,
+)
+
+module = r'''
+// LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_START
+const LR_CABINET_CONTROL_VERSION = 'cabinet-control-center-v1';
+
+function lrC6Date(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function lrC6HoursSince(value) {
+  const date = lrC6Date(value);
+  if (!date) return null;
+  return Math.max(0, (Date.now() - date.getTime()) / 3600000);
+}
+
+function lrC6SafeUrl(value) {
+  const text = lrC5Text(value, '');
+
+  if (
+    text.startsWith('/') ||
+    /^https:\/\//i.test(text)
+  ) {
+    return text;
+  }
+
+  return '';
+}
+
+function lrC6ChannelKeys(channel) {
+  return new Set(
+    [
+      channel?.id,
+      channel?.maxChatId,
+      channel?.link,
+    ]
+      .map(lrC5NormalizeKey)
+      .filter(Boolean),
+  );
+}
+
+function lrC6MatchChannel(row, channels) {
+  const rowKeys = lrC5Keys(row);
+
+  return channels.find((channel) =>
+    lrC5Intersects(rowKeys, lrC6ChannelKeys(channel)),
+  ) || null;
+}
+
+function lrC6EntityKeys(row) {
+  return new Set(
+    [
+      lrC5Pick(row, ['id']),
+      lrC5Pick(row, ['purchase_id']),
+      lrC5Pick(row, ['campaign_id']),
+      lrC5Pick(row, ['proof_campaign_id']),
+      lrC5Pick(row, ['placement_id']),
+      lrC5Pick(row, ['session_id']),
+    ]
+      .map(lrC5NormalizeKey)
+      .filter(Boolean),
+  );
+}
+
+async function lrC6LoadUserRows(
+  table,
+  identity,
+  {
+    limit = 3000,
+    orderCandidates = [
+      'updated_at',
+      'created_at',
+      'captured_at',
+      'id',
+    ],
+  } = {},
+) {
+  const columns = await lrC5Columns(table);
+
+  if (!columns.size) {
+    return { rows: [], userScoped: false, columns };
+  }
+
+  const userColumn = lrC5Column(
+    columns,
+    [
+      'user_id',
+      'lr_user_id',
+      'owner_user_id',
+      'max_user_id',
+      'created_by_user_id',
+      'buyer_user_id',
+    ],
+  );
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const rows = await lrC5JsonRows(
+    table,
+    {
+      limit,
+      orderCandidates,
+      whereSql:
+        userColumn && identities.length
+          ? `WHERE CAST(t.${lrC5Ident(userColumn)} AS TEXT)`
+            + ` = ANY($1::text[])`
+          : '',
+      params:
+        userColumn && identities.length
+          ? [identities]
+          : [],
+    },
+  );
+
+  return {
+    rows,
+    userScoped: Boolean(userColumn && identities.length),
+    columns,
+  };
+}
+
+function lrC6Health(payload) {
+  return (payload.channels || []).map((channel) => {
+    const analyticsEnabled =
+      channel.analyticsEnabled === true ||
+      (
+        channel.analyticsEnabled === undefined &&
+        Boolean(
+          channel.analyticsReady ||
+          channel.metrics ||
+          channel.full24hReady
+        )
+      );
+
+    const lastSuccessAt =
+      channel.collector?.lastSuccessAt ||
+      channel.metrics?.capturedAt ||
+      null;
+
+    const ageHours = lrC6HoursSince(lastSuccessAt);
+    const issues = [];
+    let level = analyticsEnabled ? 'ok' : 'off';
+
+    if (!channel.botAccess) {
+      level = 'critical';
+      issues.push('Бот потерял права администратора');
+    }
+
+    if (channel.collector?.lastError) {
+      if (level !== 'critical') level = 'warning';
+      issues.push(`Ошибка сбора: ${channel.collector.lastError}`);
+    }
+
+    if (!analyticsEnabled) {
+      issues.push('Аналитика отключена');
+    } else if (!channel.analyticsReady) {
+      if (level === 'ok') level = 'warning';
+      issues.push('Ожидается первый снимок аналитики');
+    } else if (!channel.full24hReady) {
+      if (level === 'ok') level = 'warning';
+      issues.push('Накапливается полный период 24 часа');
+    }
+
+    if (
+      analyticsEnabled &&
+      ageHours !== null &&
+      ageHours > 6
+    ) {
+      if (level !== 'critical') level = 'warning';
+      issues.push(
+        `Данные не обновлялись ${Math.floor(ageHours)} ч.`,
+      );
+    }
+
+    if (channel.antifraud?.level === 'high') {
+      level = 'critical';
+      issues.push('AntiFraud обнаружил высокий риск');
+    } else if (channel.antifraud?.level === 'medium') {
+      if (level === 'ok') level = 'warning';
+      issues.push('Есть события AntiFraud');
+    }
+
+    if (!issues.length) {
+      issues.push('Канал работает штатно');
+    }
+
+    const label = {
+      ok: 'Работает',
+      warning: 'Требует внимания',
+      critical: 'Критическая проблема',
+      off: 'Функция отключена',
+    }[level] || 'Неизвестно';
+
+    return {
+      channelId: channel.id,
+      title: channel.title,
+      level,
+      label,
+      issues,
+      botAccess: Boolean(channel.botAccess),
+      analyticsEnabled,
+      analyticsReady: Boolean(channel.analyticsReady),
+      full24hReady: Boolean(channel.full24hReady),
+      antifraudEnabled: Boolean(channel.antifraud?.enabled),
+      antifraudLevel: channel.antifraud?.level || 'safe',
+      lastSuccessAt,
+      dataAgeHours:
+        ageHours === null ? null : Math.round(ageHours * 10) / 10,
+    };
+  });
+}
+
+function lrC6Comparison(payload) {
+  const rows = (payload.channels || []).map((channel) => ({
+    channelId: channel.id,
+    title: channel.title,
+    subscribers: lrC5Number(channel.metrics?.subscribers),
+    views24: lrC5Number(channel.metrics?.views24),
+    deltaDay: lrC5Number(channel.metrics?.deltaDay),
+    joined24h: lrC5Number(channel.metrics?.joined24h),
+    left24h: lrC5Number(channel.metrics?.left24h),
+    er24: lrC5Number(channel.metrics?.er24),
+    analyticsEnabled:
+      channel.analyticsEnabled === true ||
+      Boolean(channel.metrics),
+  }));
+
+  const ranked = [...rows]
+    .filter((row) => row.deltaDay !== null)
+    .sort((left, right) => right.deltaDay - left.deltaDay);
+
+  const rankMap = new Map(
+    ranked.map((row, index) => [row.channelId, index + 1]),
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    growthRank: rankMap.get(row.channelId) || null,
+  }));
+}
+
+async function lrC6LoadPurchases(identity, payload) {
+  const purchaseTables = [
+    'lr_purchases',
+    'lr_proof_campaigns',
+  ];
+
+  const snapshotTables = [
+    'lr_purchase_snapshots',
+    'lr_proof_snapshots',
+    'lr_proof_reports',
+  ];
+
+  const purchaseRows = [];
+
+  for (const table of purchaseTables) {
+    const loaded = await lrC6LoadUserRows(
+      table,
+      identity,
+      { limit: 1500 },
+    );
+
+    const rows = loaded.userScoped
+      ? loaded.rows
+      : loaded.rows.filter((row) =>
+          Boolean(lrC6MatchChannel(row, payload.channels || [])),
+        );
+
+    for (const row of rows) {
+      purchaseRows.push({ table, row });
+    }
+  }
+
+  const snapshots = [];
+
+  for (const table of snapshotTables) {
+    const loaded = await lrC6LoadUserRows(
+      table,
+      identity,
+      { limit: 5000 },
+    );
+
+    for (const row of loaded.rows) {
+      snapshots.push({ table, row });
+    }
+  }
+
+  const seen = new Set();
+  const normalized = [];
+
+  for (const item of purchaseRows) {
+    const row = item.row;
+    const id = lrC5Text(
+      lrC5Pick(
+        row,
+        [
+          'id',
+          'purchase_id',
+          'campaign_id',
+          'proof_campaign_id',
+        ],
+        '',
+      ),
+    );
+
+    const key = `${item.table}:${id || JSON.stringify(row).slice(0, 120)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const entityKeys = lrC6EntityKeys(row);
+    const channel = lrC6MatchChannel(
+      row,
+      payload.channels || [],
+    );
+
+    const related = snapshots
+      .filter(({ row: snapshot }) => {
+        const snapshotKeys = lrC6EntityKeys(snapshot);
+
+        if (lrC5Intersects(entityKeys, snapshotKeys)) {
+          return true;
+        }
+
+        return Boolean(
+          channel &&
+          lrC6MatchChannel(snapshot, [channel]),
+        );
+      })
+      .sort((left, right) =>
+        lrC5Time(right.row) - lrC5Time(left.row),
+      );
+
+    const latest = related[0]?.row || {};
+
+    const pickNumber = (names) =>
+      lrC5Number(
+        lrC5Pick(
+          latest,
+          names,
+          lrC5Pick(row, names),
+        ),
+      );
+
+    const amount = pickNumber([
+      'amount',
+      'price',
+      'cost',
+      'total_cost',
+      'budget',
+      'spend',
+      'spent',
+      'purchase_price',
+    ]);
+
+    const subscribers = pickNumber([
+      'subscribers_gained',
+      'joined',
+      'joins',
+      'pdp',
+      'net_subscribers',
+      'result_subscribers',
+    ]);
+
+    normalized.push({
+      id: id || key,
+      source: item.table,
+      channelId: channel?.id || lrC5Text(
+        lrC5Pick(row, ['channel_id', 'target_channel_id']),
+      ),
+      channelTitle: channel?.title || lrC5Text(
+        lrC5Pick(
+          row,
+          ['channel_title', 'title', 'name'],
+          'Закуп',
+        ),
+      ),
+      status: lrC5Text(
+        lrC5Pick(row, ['status', 'state'], 'active'),
+      ),
+      createdAt: lrC5Pick(
+        row,
+        ['created_at', 'started_at', 'purchased_at'],
+      ),
+      updatedAt: lrC5Pick(
+        latest,
+        ['captured_at', 'updated_at', 'created_at'],
+        lrC5Pick(row, ['updated_at', 'created_at']),
+      ),
+      amount,
+      cpm: pickNumber(['cpm', 'actual_cpm', 'planned_cpm']),
+      views24: pickNumber(['views24', 'views_24h', 'views_24', 'views']),
+      views48: pickNumber(['views48', 'views_48h', 'views_48']),
+      views72: pickNumber(['views72', 'views_72h', 'views_72']),
+      subscribers,
+      costPerSubscriber:
+        amount !== null && subscribers !== null && subscribers > 0
+          ? Math.round((amount / subscribers) * 100) / 100
+          : null,
+      link: lrC6SafeUrl(
+        lrC5Pick(
+          row,
+          ['link', 'post_link', 'channel_link', 'url'],
+          '',
+        ),
+      ),
+    });
+  }
+
+  normalized.sort((left, right) => {
+    const leftTime = lrC6Date(left.updatedAt || left.createdAt)?.getTime() || 0;
+    const rightTime = lrC6Date(right.updatedAt || right.createdAt)?.getTime() || 0;
+    return rightTime - leftTime;
+  });
+
+  const sum = (field) =>
+    normalized.reduce(
+      (total, row) => total + Number(row[field] || 0),
+      0,
+    );
+
+  const cpmValues = normalized
+    .map((row) => row.cpm)
+    .filter((value) => value !== null);
+
+  const totalAmount = sum('amount');
+  const totalSubscribers = sum('subscribers');
+
+  return {
+    summary: {
+      count: normalized.length,
+      totalAmount: normalized.length ? totalAmount : null,
+      averageCpm:
+        cpmValues.length
+          ? Math.round(
+              cpmValues.reduce((a, b) => a + b, 0)
+              / cpmValues.length
+              * 100,
+            ) / 100
+          : null,
+      views24: normalized.length ? sum('views24') : null,
+      subscribers:
+        normalized.length ? totalSubscribers : null,
+      costPerSubscriber:
+        totalAmount > 0 && totalSubscribers > 0
+          ? Math.round((totalAmount / totalSubscribers) * 100) / 100
+          : null,
+    },
+    rows: normalized.slice(0, 60),
+  };
+}
+
+async function lrC6SyncNotifications(identity, payload) {
+  for (const notice of payload.notifications || []) {
+    const fingerprint = await lrC5Hash(
+      [
+        notice.type || 'system',
+        notice.level || 'info',
+        notice.channelId || '',
+        notice.title || '',
+        notice.text || '',
+      ].join('|'),
+    );
+
+    await lrC5SafeQuery(
+      `
+        INSERT INTO public.lr_web_cabinet_notifications (
+          user_id,
+          fingerprint,
+          type,
+          level,
+          title,
+          body,
+          channel_id,
+          created_at,
+          last_seen_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
+        ON CONFLICT (user_id, fingerprint)
+        DO UPDATE SET
+          level=EXCLUDED.level,
+          title=EXCLUDED.title,
+          body=EXCLUDED.body,
+          channel_id=EXCLUDED.channel_id,
+          last_seen_at=NOW(),
+          read_at=CASE
+            WHEN lr_web_cabinet_notifications.last_seen_at
+                 < NOW() - INTERVAL '24 hours'
+              THEN NULL
+            ELSE lr_web_cabinet_notifications.read_at
+          END,
+          cleared_at=CASE
+            WHEN lr_web_cabinet_notifications.last_seen_at
+                 < NOW() - INTERVAL '24 hours'
+              THEN NULL
+            ELSE lr_web_cabinet_notifications.cleared_at
+          END
+      `,
+      [
+        identity.userId,
+        fingerprint,
+        notice.type || 'system',
+        notice.level || 'info',
+        notice.title || 'Уведомление',
+        notice.text || '',
+        notice.channelId || null,
+      ],
+      'control-notification-sync',
+    );
+  }
+}
+
+async function lrC6NotificationHistory(identity) {
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT
+        id,
+        type,
+        level,
+        title,
+        body AS text,
+        channel_id,
+        created_at,
+        last_seen_at,
+        read_at
+      FROM public.lr_web_cabinet_notifications
+      WHERE user_id=$1
+        AND cleared_at IS NULL
+      ORDER BY COALESCE(last_seen_at, created_at) DESC
+      LIMIT 100
+    `,
+    [identity.userId],
+    'control-notification-history',
+  );
+
+  return {
+    unread: rows.filter((row) => !row.read_at).length,
+    rows: rows.map((row) => ({
+      id: String(row.id),
+      type: row.type,
+      level: row.level,
+      title: row.title,
+      text: row.text,
+      channelId: row.channel_id,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      read: Boolean(row.read_at),
+    })),
+  };
+}
+
+async function lrC6SyncReports(identity, payload) {
+  for (const channel of payload.channels || []) {
+    const history = Array.isArray(channel.history30d)
+      ? channel.history30d.slice(-30)
+      : [];
+
+    for (const point of history) {
+      const generatedAt =
+        point.capturedAt ||
+        (point.date ? `${point.date}T12:00:00.000Z` : null);
+
+      if (!generatedAt) continue;
+
+      const reportKey = await lrC5Hash(
+        [identity.userId, channel.id, point.date || generatedAt].join('|'),
+      );
+
+      const metrics = {
+        subscribers: point.subscribers,
+        views24: point.views24,
+        deltaDay: point.deltaDay,
+        er24: point.er24,
+      };
+
+      await lrC5SafeQuery(
+        `
+          INSERT INTO public.lr_web_report_archive (
+            user_id,
+            report_key,
+            channel_id,
+            channel_title,
+            report_type,
+            period_label,
+            generated_at,
+            source_table,
+            metrics
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+          ON CONFLICT (user_id, report_key)
+          DO UPDATE SET
+            channel_title=EXCLUDED.channel_title,
+            generated_at=EXCLUDED.generated_at,
+            metrics=EXCLUDED.metrics
+        `,
+        [
+          identity.userId,
+          reportKey,
+          channel.id,
+          channel.title || '',
+          'analytics_snapshot',
+          '24 часа',
+          generatedAt,
+          'lr_channel_analytics_snapshots',
+          JSON.stringify(metrics),
+        ],
+        'control-report-sync',
+      );
+    }
+  }
+}
+
+async function lrC6ReportArchive(identity, payload) {
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT
+        id,
+        channel_id,
+        channel_title,
+        report_type,
+        period_label,
+        generated_at,
+        file_url,
+        metrics
+      FROM public.lr_web_report_archive
+      WHERE user_id=$1
+      ORDER BY generated_at DESC
+      LIMIT 100
+    `,
+    [identity.userId],
+    'control-report-archive',
+  );
+
+  const latestByChannel = new Set();
+
+  return rows.map((row) => {
+    const channelId = String(row.channel_id);
+    const current = !latestByChannel.has(channelId);
+    latestByChannel.add(channelId);
+
+    const channel = (payload.channels || []).find(
+      (item) => String(item.id) === channelId,
+    );
+
+    return {
+      id: String(row.id),
+      channelId,
+      channelTitle:
+        row.channel_title ||
+        channel?.title ||
+        `Канал ${channelId}`,
+      reportType: row.report_type,
+      periodLabel: row.period_label,
+      generatedAt: row.generated_at,
+      metrics: row.metrics || {},
+      current,
+      downloadUrl:
+        lrC6SafeUrl(row.file_url) ||
+        (
+          current && channel?.full24hReady
+            ? `/api/website/cabinet/channel/${encodeURIComponent(channelId)}/bot-report.png`
+            : ''
+        ),
+    };
+  });
+}
+
+async function lrC6Sessions(identity) {
+  const columns = await lrC5Columns('lr_web_sessions');
+
+  if (!columns.size) {
+    return { rows: [], active: 0 };
+  }
+
+  const userColumn = lrC5Column(
+    columns,
+    ['user_id', 'lr_user_id'],
+  );
+  const idColumn = lrC5Column(columns, ['id', 'session_id']);
+
+  if (!userColumn || !idColumn) {
+    return { rows: [], active: 0 };
+  }
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const conditions = [
+    `CAST(s.${lrC5Ident(userColumn)} AS TEXT)=ANY($1::text[])`,
+  ];
+
+  if (columns.has('revoked_at')) {
+    conditions.push('s."revoked_at" IS NULL');
+  }
+
+  if (columns.has('expires_at')) {
+    conditions.push('(s."expires_at" IS NULL OR s."expires_at">NOW())');
+  }
+
+  const orderColumn = lrC5Column(
+    columns,
+    ['last_seen_at', 'created_at', 'id'],
+  );
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(s) AS session
+      FROM public.lr_web_sessions s
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY s.${lrC5Ident(orderColumn || idColumn)} DESC NULLS LAST
+      LIMIT 50
+    `,
+    [identities],
+    'control-sessions',
+  );
+
+  const currentId = lrC5Text(
+    lrC5Pick(identity.session, [idColumn, 'id', 'session_id']),
+  );
+
+  const normalized = rows.map(({ session }) => {
+    const id = lrC5Text(
+      lrC5Pick(session, [idColumn, 'id', 'session_id']),
+    );
+
+    const rawIp = lrC5Text(
+      lrC5Pick(
+        session,
+        ['created_ip', 'requested_ip', 'ip', 'ip_address'],
+        '',
+      ),
+    );
+
+    return {
+      id,
+      current: Boolean(currentId && id === currentId),
+      createdAt: lrC5Pick(session, ['created_at']),
+      lastSeenAt: lrC5Pick(
+        session,
+        ['last_seen_at', 'used_at', 'created_at'],
+      ),
+      expiresAt: lrC5Pick(session, ['expires_at']),
+      ip: rawIp || (session.ip_hash ? 'Скрыт' : '—'),
+      userAgent: lrC5Text(
+        lrC5Pick(session, ['user_agent']),
+        'Неизвестное устройство',
+      ).slice(0, 240),
+      canRevoke: Boolean(id && (!currentId || id !== currentId)),
+    };
+  });
+
+  return {
+    rows: normalized,
+    active: normalized.length,
+    currentSessionId: currentId || null,
+  };
+}
+
+async function lrC6OperationsPayload(req) {
+  const payload = await lrC5CabinetPayload(req);
+  const identity = await lrC5Session(req);
+
+  if (!identity) {
+    const error = new Error('Сессия входа закончилась.');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  await lrC6SyncNotifications(identity, payload);
+  await lrC6SyncReports(identity, payload);
+
+  const [purchases, notificationHistory, reports, sessions] =
+    await Promise.all([
+      lrC6LoadPurchases(identity, payload),
+      lrC6NotificationHistory(identity),
+      lrC6ReportArchive(identity, payload),
+      lrC6Sessions(identity),
+    ]);
+
+  return {
+    ok: true,
+    version: LR_CABINET_CONTROL_VERSION,
+    updatedAt: new Date().toISOString(),
+    channelHealth: lrC6Health(payload),
+    comparison: lrC6Comparison(payload),
+    purchases,
+    notificationHistory,
+    reports,
+    security: {
+      sessions,
+      subscription: payload.profile?.subscription || {},
+    },
+  };
+}
+
+function lrC6Async(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+async function lrC6SendOperations(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await lrC6OperationsPayload(req));
+  } catch (error) {
+    const status = Number(error?.statusCode || 500);
+
+    console.error(
+      '[LinkRay Cabinet Control]',
+      error?.stack || error?.message || error,
+    );
+
+    return res.status(status).json({
+      ok: false,
+      error:
+        status === 401
+          ? 'Сессия входа закончилась. Войдите заново.'
+          : 'Не удалось загрузить дополнительные данные кабинета.',
+    });
+  }
+}
+
+async function lrC6RequireIdentity(req) {
+  const identity = await lrC5Session(req);
+
+  if (!identity) {
+    const error = new Error('Сессия входа закончилась.');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  return identity;
+}
+
+async function lrC6MarkNotifications(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+
+  await lrC5SafeQuery(
+    `
+      UPDATE public.lr_web_cabinet_notifications
+      SET read_at=COALESCE(read_at, NOW())
+      WHERE user_id=$1
+        AND cleared_at IS NULL
+    `,
+    [identity.userId],
+    'control-notifications-read',
+  );
+
+  return res.json({ ok: true });
+}
+
+async function lrC6ClearNotifications(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+
+  await lrC5SafeQuery(
+    `
+      UPDATE public.lr_web_cabinet_notifications
+      SET cleared_at=NOW()
+      WHERE user_id=$1
+        AND read_at IS NOT NULL
+        AND cleared_at IS NULL
+    `,
+    [identity.userId],
+    'control-notifications-clear',
+  );
+
+  return res.json({ ok: true });
+}
+
+async function lrC6RevokeSession(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+  const sessionId = lrC5Text(req.params.sessionId, '');
+
+  if (!sessionId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Не указана сессия.',
+    });
+  }
+
+  const columns = await lrC5Columns('lr_web_sessions');
+  const idColumn = lrC5Column(columns, ['id', 'session_id']);
+  const userColumn = lrC5Column(columns, ['user_id', 'lr_user_id']);
+
+  if (!idColumn || !userColumn) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Управление сессиями недоступно.',
+    });
+  }
+
+  const currentId = lrC5Text(
+    lrC5Pick(identity.session, [idColumn, 'id', 'session_id']),
+  );
+
+  if (currentId && currentId === sessionId) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Текущую сессию можно завершить обычным выходом.',
+    });
+  }
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  if (columns.has('revoked_at')) {
+    await lrC5SafeQuery(
+      `
+        UPDATE public.lr_web_sessions
+        SET "revoked_at"=NOW()
+        WHERE CAST(${lrC5Ident(idColumn)} AS TEXT)=$1
+          AND CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($2::text[])
+      `,
+      [sessionId, identities],
+      'control-session-revoke',
+    );
+  } else {
+    await lrC5SafeQuery(
+      `
+        DELETE FROM public.lr_web_sessions
+        WHERE CAST(${lrC5Ident(idColumn)} AS TEXT)=$1
+          AND CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($2::text[])
+      `,
+      [sessionId, identities],
+      'control-session-delete',
+    );
+  }
+
+  return res.json({ ok: true });
+}
+
+async function lrC6RevokeOtherSessions(req, res) {
+  const identity = await lrC6RequireIdentity(req);
+  const columns = await lrC5Columns('lr_web_sessions');
+  const idColumn = lrC5Column(columns, ['id', 'session_id']);
+  const userColumn = lrC5Column(columns, ['user_id', 'lr_user_id']);
+
+  if (!idColumn || !userColumn) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Управление сессиями недоступно.',
+    });
+  }
+
+  const currentId = lrC5Text(
+    lrC5Pick(identity.session, [idColumn, 'id', 'session_id']),
+  );
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const currentCondition = currentId
+    ? `AND CAST(${lrC5Ident(idColumn)} AS TEXT)<>$2`
+    : '';
+
+  const params = currentId
+    ? [identities, currentId]
+    : [identities];
+
+  if (columns.has('revoked_at')) {
+    await lrC5SafeQuery(
+      `
+        UPDATE public.lr_web_sessions
+        SET "revoked_at"=NOW()
+        WHERE CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($1::text[])
+          AND "revoked_at" IS NULL
+          ${currentCondition}
+      `,
+      params,
+      'control-sessions-revoke-others',
+    );
+  } else {
+    await lrC5SafeQuery(
+      `
+        DELETE FROM public.lr_web_sessions
+        WHERE CAST(${lrC5Ident(userColumn)} AS TEXT)=ANY($1::text[])
+          ${currentCondition}
+      `,
+      params,
+      'control-sessions-delete-others',
+    );
+  }
+
+  return res.json({ ok: true });
+}
+// LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_END
+'''
+
+export_match = re.search(
+    r"^export\s+function\s+mountLinkRayWebsiteRoutes\s*\(",
+    source,
+    flags=re.M,
+)
+
+if not export_match:
+    raise SystemExit(
+        "Не найдена mountLinkRayWebsiteRoutes в linkrayWebsiteRoutes.js"
+    )
+
+source = (
+    source[:export_match.start()]
+    + module
+    + "\n\n"
+    + source[export_match.start():]
+)
+
+mount = re.search(
+    r"export\s+function\s+mountLinkRayWebsiteRoutes\s*\([^)]*\)\s*\{",
+    source,
+    flags=re.M,
+)
+
+if not mount:
+    raise SystemExit("Не найдено начало mountLinkRayWebsiteRoutes")
+
+routes = r'''
+  // LINKRAY_CABINET_CONTROL_CENTER_V1_ROUTES_START
+  app.get(
+    '/api/website/cabinet/operations',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6SendOperations),
+  );
+
+  app.post(
+    '/api/website/cabinet/notifications/read',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6MarkNotifications),
+  );
+
+  app.post(
+    '/api/website/cabinet/notifications/clear',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6ClearNotifications),
+  );
+
+  app.post(
+    '/api/website/cabinet/sessions/revoke-others',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6RevokeOtherSessions),
+  );
+
+  app.post(
+    '/api/website/cabinet/sessions/:sessionId/revoke',
+    applyWebsiteHeaders,
+    lrC6Async(lrC6RevokeSession),
+  );
+  // LINKRAY_CABINET_CONTROL_CENTER_V1_ROUTES_END
+
+'''
+
+source = source[:mount.end()] + "\n" + routes + source[mount.end():]
+path.write_text(source, encoding="utf-8")
+
+checks = [
+    "LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_START",
+    "'/api/website/cabinet/operations'",
+    "lrC6LoadPurchases",
+    "lrC6NotificationHistory",
+    "lrC6ReportArchive",
+    "lrC6Sessions",
+]
+
+for check in checks:
+    if check not in source:
+        raise SystemExit(f"Не установлен блок: {check}")
+
+print("Расширенный API кабинета подключён")
+PY
+
+echo "[4/10] Создаю интерфейс центра управления"
+
+cat > "$OPS_JS" <<'JS'
+(() => {
+  'use strict';
+
+  const API = '/api/website/cabinet/operations';
+  const root = document.getElementById('lr-cabinet');
+
+  if (!root) return;
+
+  const state = {
+    data: null,
+    error: '',
+    loading: true,
+    renderTimer: null,
+  };
+
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+  const numberOrNull = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const formatNumber = (value) => {
+    const parsed = numberOrNull(value);
+    return parsed === null
+      ? '—'
+      : new Intl.NumberFormat('ru-RU').format(parsed);
+  };
+
+  const formatMoney = (value) => {
+    const parsed = numberOrNull(value);
+    return parsed === null
+      ? '—'
+      : `${new Intl.NumberFormat('ru-RU', {
+          maximumFractionDigits: 2,
+        }).format(parsed)} ₽`;
+  };
+
+  const formatSigned = (value) => {
+    const parsed = numberOrNull(value);
+    if (parsed === null) return '—';
+    return `${parsed > 0 ? '+' : ''}${formatNumber(parsed)}`;
+  };
+
+  const formatPercent = (value) => {
+    const parsed = numberOrNull(value);
+    return parsed === null
+      ? '—'
+      : `${parsed.toFixed(1).replace('.0', '')}%`;
+  };
+
+  const formatDate = (value) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '—';
+
+    return new Intl.DateTimeFormat('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  };
+
+  const shortDevice = (value) => {
+    const text = String(value || 'Неизвестное устройство');
+
+    if (/Android/i.test(text)) return 'Android · мобильный браузер';
+    if (/iPhone|iPad/i.test(text)) return 'iPhone/iPad · Safari';
+    if (/Windows/i.test(text)) return 'Windows · браузер';
+    if (/Macintosh|Mac OS/i.test(text)) return 'macOS · браузер';
+    if (/Linux/i.test(text)) return 'Linux · браузер';
+
+    return text.length > 65 ? `${text.slice(0, 62)}…` : text;
+  };
+
+  const levelLabel = (level) => ({
+    ok: 'Работает',
+    warning: 'Внимание',
+    critical: 'Проблема',
+    off: 'Отключено',
+  }[level] || 'Статус');
+
+  const postJson = async (url) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache',
+      },
+    });
+
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || `Ошибка ${response.status}`);
+    }
+
+    return body;
+  };
+
+  async function load() {
+    state.loading = true;
+    state.error = '';
+    scheduleRender();
+
+    try {
+      const response = await fetch(API, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+      });
+
+      const body = await response.json().catch(() => ({}));
+
+      if (!response.ok || body?.ok === false) {
+        throw new Error(body?.error || `Ошибка ${response.status}`);
+      }
+
+      state.data = body;
+    } catch (error) {
+      state.error = error?.message || 'Не удалось загрузить данные.';
+    } finally {
+      state.loading = false;
+      scheduleRender();
+    }
+  }
+
+  const metricCard = (label, value, className = '') => `
+    <article class="lr-ops-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong class="${className}">${escapeHtml(value)}</strong>
+    </article>
+  `;
+
+  function healthHtml() {
+    const rows = state.data?.channelHealth || [];
+
+    return `
+      <section class="lr-ops-root" data-lr-ops-root="channels">
+        <div class="section-head lr-ops-heading">
+          <div>
+            <span class="eyebrow">Контроль состояния</span>
+            <h2>Здоровье каналов</h2>
+            <p>Доступ бота, аналитика, обновления и AntiFraud</p>
+          </div>
+          <button class="secondary" type="button" data-lr-action="refresh">
+            Обновить
+          </button>
+        </div>
+
+        <section class="lr-ops-health-grid">
+          ${
+            rows.length
+              ? rows.map((row) => `
+                <article class="lr-ops-health-card is-${escapeHtml(row.level)}">
+                  <div class="lr-ops-health-top">
+                    <strong>${escapeHtml(row.title)}</strong>
+                    <span>${escapeHtml(levelLabel(row.level))}</span>
+                  </div>
+                  <ul>
+                    ${(row.issues || []).map((issue) =>
+                      `<li>${escapeHtml(issue)}</li>`,
+                    ).join('')}
+                  </ul>
+                  <div class="lr-ops-health-meta">
+                    <span>Последнее обновление</span>
+                    <b>${escapeHtml(formatDate(row.lastSuccessAt))}</b>
+                  </div>
+                </article>
+              `).join('')
+              : '<div class="lr-ops-empty">Нет подключённых каналов.</div>'
+          }
+        </section>
+
+        ${comparisonHtml()}
+      </section>
+    `;
+  }
+
+  function comparisonHtml() {
+    const rows = state.data?.comparison || [];
+
+    return `
+      <details class="lr-ops-panel lr-ops-details" open>
+        <summary>
+          <span>
+            <strong>Сравнение каналов</strong>
+            <small>Подписчики, просмотры, ER и прирост</small>
+          </span>
+          <i>⌄</i>
+        </summary>
+
+        <div class="lr-ops-table-wrap">
+          <table class="lr-ops-table">
+            <thead>
+              <tr>
+                <th>Канал</th>
+                <th>Место</th>
+                <th>Подписчики</th>
+                <th>Просмотры</th>
+                <th>Прирост</th>
+                <th>Подписки</th>
+                <th>Отписки</th>
+                <th>ER</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                rows.length
+                  ? rows.map((row) => `
+                    <tr>
+                      <td><strong>${escapeHtml(row.title)}</strong></td>
+                      <td>${row.growthRank ? `#${row.growthRank}` : '—'}</td>
+                      <td>${formatNumber(row.subscribers)}</td>
+                      <td>${formatNumber(row.views24)}</td>
+                      <td class="${Number(row.deltaDay || 0) < 0 ? 'negative' : 'positive'}">
+                        ${formatSigned(row.deltaDay)}
+                      </td>
+                      <td class="positive">${formatNumber(row.joined24h)}</td>
+                      <td class="negative">${formatNumber(row.left24h)}</td>
+                      <td>${formatPercent(row.er24)}</td>
+                    </tr>
+                  `).join('')
+                  : '<tr><td colspan="8">Данных для сравнения пока нет.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  function purchasesHtml() {
+    const purchases = state.data?.purchases || {};
+    const summary = purchases.summary || {};
+    const rows = purchases.rows || [];
+
+    return `
+      <section class="lr-ops-root" data-lr-ops-root="purchases">
+        <div class="section-head lr-ops-heading">
+          <div>
+            <span class="eyebrow">Реклама</span>
+            <h2>Закупы</h2>
+            <p>Расходы и результат размещений за 24/48/72 часа</p>
+          </div>
+        </div>
+
+        <section class="lr-ops-summary">
+          ${metricCard('Размещений', formatNumber(summary.count))}
+          ${metricCard('Расходы', formatMoney(summary.totalAmount))}
+          ${metricCard('Средний CPM', formatMoney(summary.averageCpm))}
+          ${metricCard('Получено подписчиков', formatNumber(summary.subscribers), 'positive')}
+          ${metricCard('Цена подписчика', formatMoney(summary.costPerSubscriber))}
+        </section>
+
+        <section class="lr-ops-panel">
+          <div class="lr-ops-table-wrap">
+            <table class="lr-ops-table">
+              <thead>
+                <tr>
+                  <th>Канал</th>
+                  <th>Статус</th>
+                  <th>Сумма</th>
+                  <th>CPM</th>
+                  <th>24 ч</th>
+                  <th>48 ч</th>
+                  <th>72 ч</th>
+                  <th>Подписчики</th>
+                  <th>Цена ПДП</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${
+                  rows.length
+                    ? rows.slice(0, 20).map((row) => `
+                      <tr>
+                        <td>
+                          <strong>${escapeHtml(row.channelTitle)}</strong>
+                          <small>${escapeHtml(formatDate(row.createdAt))}</small>
+                        </td>
+                        <td>${escapeHtml(row.status)}</td>
+                        <td>${formatMoney(row.amount)}</td>
+                        <td>${formatMoney(row.cpm)}</td>
+                        <td>${formatNumber(row.views24)}</td>
+                        <td>${formatNumber(row.views48)}</td>
+                        <td>${formatNumber(row.views72)}</td>
+                        <td class="positive">${formatNumber(row.subscribers)}</td>
+                        <td>${formatMoney(row.costPerSubscriber)}</td>
+                      </tr>
+                    `).join('')
+                    : '<tr><td colspan="9">Закупов пока нет или данные ещё не собраны.</td></tr>'
+                }
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    `;
+  }
+
+  function notificationHistoryHtml() {
+    const history = state.data?.notificationHistory || {};
+    const rows = history.rows || [];
+
+    return `
+      <section class="lr-ops-root" data-lr-ops-root="notifications">
+        <div class="section-head lr-ops-heading">
+          <div>
+            <span class="eyebrow">История</span>
+            <h2>Уведомления кабинета</h2>
+            <p>Непрочитано: ${formatNumber(history.unread)}</p>
+          </div>
+          <div class="lr-ops-inline-actions">
+            <button class="secondary" type="button" data-lr-action="read-notifications">
+              Прочитать всё
+            </button>
+            <button class="secondary" type="button" data-lr-action="clear-notifications">
+              Очистить прочитанные
+            </button>
+          </div>
+        </div>
+
+        <section class="lr-ops-panel">
+          <div class="lr-ops-notice-list">
+            ${
+              rows.length
+                ? rows.slice(0, 30).map((row) => `
+                  <article class="lr-ops-notice is-${escapeHtml(row.level)} ${row.read ? 'is-read' : 'is-unread'}">
+                    <span></span>
+                    <div>
+                      <strong>${escapeHtml(row.title)}</strong>
+                      <p>${escapeHtml(row.text)}</p>
+                      <small>${escapeHtml(formatDate(row.lastSeenAt || row.createdAt))}</small>
+                    </div>
+                  </article>
+                `).join('')
+                : '<div class="lr-ops-empty">История уведомлений пуста.</div>'
+            }
+          </div>
+        </section>
+      </section>
+    `;
+  }
+
+  function reportsHtml() {
+    const rows = state.data?.reports || [];
+
+    return `
+      <section class="lr-ops-root" data-lr-ops-root="reports">
+        <div class="section-head lr-ops-heading">
+          <div>
+            <span class="eyebrow">Аналитика</span>
+            <h2>Архив отчётов</h2>
+            <p>Ежедневные снимки показателей каналов</p>
+          </div>
+        </div>
+
+        <section class="lr-ops-panel">
+          <div class="lr-ops-report-list">
+            ${
+              rows.length
+                ? rows.slice(0, 30).map((row) => `
+                  <article class="lr-ops-report-row">
+                    <div>
+                      <strong>${escapeHtml(row.channelTitle)}</strong>
+                      <p>
+                        ${escapeHtml(row.periodLabel)} ·
+                        ${escapeHtml(formatDate(row.generatedAt))}
+                      </p>
+                      <small>
+                        Подписчики ${formatNumber(row.metrics?.subscribers)} ·
+                        Просмотры ${formatNumber(row.metrics?.views24)} ·
+                        Изменение ${formatSigned(row.metrics?.deltaDay)}
+                      </small>
+                    </div>
+                    ${
+                      row.downloadUrl
+                        ? `
+                          <button type="button"
+                                  class="secondary"
+                                  data-lr-action="download-report"
+                                  data-url="${escapeHtml(row.downloadUrl)}"
+                                  data-channel-id="${escapeHtml(row.channelId)}">
+                            Скачать
+                          </button>
+                        `
+                        : '<span class="lr-ops-archive-badge">Архив</span>'
+                    }
+                  </article>
+                `).join('')
+                : '<div class="lr-ops-empty">Архив появится после сбора аналитики.</div>'
+            }
+          </div>
+        </section>
+      </section>
+    `;
+  }
+
+  function securityHtml() {
+    const security = state.data?.security || {};
+    const sessions = security.sessions || {};
+    const rows = sessions.rows || [];
+    const subscription = security.subscription || {};
+
+    return `
+      <section class="lr-ops-root" data-lr-ops-root="security">
+        <div class="section-head lr-ops-heading">
+          <div>
+            <span class="eyebrow">Безопасность</span>
+            <h2>Профиль и активные сессии</h2>
+            <p>Активных входов: ${formatNumber(sessions.active)}</p>
+          </div>
+          <button class="secondary" type="button" data-lr-action="revoke-others">
+            Выйти на других устройствах
+          </button>
+        </div>
+
+        <section class="lr-ops-panel">
+          <div class="lr-ops-security-summary">
+            <div>
+              <span>Тариф</span>
+              <strong>${escapeHtml(subscription.name || 'Бесплатный')}</strong>
+            </div>
+            <div>
+              <span>Действует до</span>
+              <strong>${escapeHtml(formatDate(subscription.endsAt))}</strong>
+            </div>
+          </div>
+
+          <div class="lr-ops-session-list">
+            ${
+              rows.length
+                ? rows.map((row) => `
+                  <article class="lr-ops-session ${row.current ? 'is-current' : ''}">
+                    <div>
+                      <strong>
+                        ${escapeHtml(shortDevice(row.userAgent))}
+                        ${row.current ? '<em>Текущая</em>' : ''}
+                      </strong>
+                      <p>
+                        IP: ${escapeHtml(row.ip)} ·
+                        активность ${escapeHtml(formatDate(row.lastSeenAt))}
+                      </p>
+                      <small>Вход: ${escapeHtml(formatDate(row.createdAt))}</small>
+                    </div>
+                    ${
+                      row.canRevoke
+                        ? `
+                          <button type="button"
+                                  class="secondary"
+                                  data-lr-action="revoke-session"
+                                  data-session-id="${escapeHtml(row.id)}">
+                            Завершить
+                          </button>
+                        `
+                        : ''
+                    }
+                  </article>
+                `).join('')
+                : '<div class="lr-ops-empty">Список активных сессий недоступен.</div>'
+            }
+          </div>
+        </section>
+      </section>
+    `;
+  }
+
+  function statusHtml() {
+    if (state.loading) {
+      return `
+        <section class="lr-ops-root lr-ops-panel lr-ops-status" data-lr-ops-root="status">
+          <span class="lr-ops-spinner"></span>
+          <p>Загружаем расширенные данные кабинета…</p>
+        </section>
+      `;
+    }
+
+    if (state.error) {
+      return `
+        <section class="lr-ops-root lr-ops-panel lr-ops-status" data-lr-ops-root="status">
+          <p>${escapeHtml(state.error)}</p>
+          <button type="button" class="secondary" data-lr-action="refresh">
+            Повторить
+          </button>
+        </section>
+      `;
+    }
+
+    return '';
+  }
+
+  function renderExtras() {
+    observer.disconnect();
+
+    root.querySelectorAll('[data-lr-ops-root]').forEach((element) => {
+      element.remove();
+    });
+
+    const view = root.querySelector('.tab-view');
+
+    if (!view) {
+      observer.observe(root, { childList: true, subtree: true });
+      return;
+    }
+
+    if (state.loading || state.error) {
+      view.insertAdjacentHTML('beforeend', statusHtml());
+      observer.observe(root, { childList: true, subtree: true });
+      return;
+    }
+
+    if (view.getAttribute('data-view') === 'channels') {
+      const channelList = view.querySelector('.channel-list');
+
+      if (channelList) {
+        channelList.insertAdjacentHTML('beforebegin', healthHtml());
+      } else {
+        view.insertAdjacentHTML('beforeend', healthHtml());
+      }
+    } else {
+      view.insertAdjacentHTML(
+        'beforeend',
+        purchasesHtml()
+          + notificationHistoryHtml()
+          + reportsHtml()
+          + securityHtml(),
+      );
+    }
+
+    observer.observe(root, { childList: true, subtree: true });
+  }
+
+  function scheduleRender() {
+    window.clearTimeout(state.renderTimer);
+    state.renderTimer = window.setTimeout(renderExtras, 30);
+  }
+
+  async function downloadReport(button) {
+    const url = button.getAttribute('data-url');
+    const channelId = button.getAttribute('data-channel-id') || 'channel';
+
+    if (!url) return;
+
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Создаём…';
+
+    try {
+      const response = await fetch(url, {
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'image/png, application/json',
+          'Cache-Control': 'no-cache',
+        },
+      });
+
+      if (!response.ok) {
+        const type = response.headers.get('content-type') || '';
+        const body = type.includes('application/json')
+          ? await response.json()
+          : { error: (await response.text()).slice(0, 300) };
+
+        throw new Error(body?.error || `Ошибка ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = `linkray-report-${channelId}.png`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1500);
+    } catch (error) {
+      window.alert(error?.message || 'Не удалось скачать отчёт.');
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  document.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-lr-action]');
+    if (!button) return;
+
+    const action = button.getAttribute('data-lr-action');
+
+    try {
+      if (action === 'refresh') {
+        await load();
+        return;
+      }
+
+      if (action === 'read-notifications') {
+        await postJson('/api/website/cabinet/notifications/read');
+        await load();
+        return;
+      }
+
+      if (action === 'clear-notifications') {
+        await postJson('/api/website/cabinet/notifications/clear');
+        await load();
+        return;
+      }
+
+      if (action === 'revoke-session') {
+        if (!window.confirm('Завершить выбранную сессию?')) return;
+
+        const id = button.getAttribute('data-session-id');
+        await postJson(
+          `/api/website/cabinet/sessions/${encodeURIComponent(id)}/revoke`,
+        );
+        await load();
+        return;
+      }
+
+      if (action === 'revoke-others') {
+        if (!window.confirm('Завершить вход на всех других устройствах?')) {
+          return;
+        }
+
+        await postJson('/api/website/cabinet/sessions/revoke-others');
+        await load();
+        return;
+      }
+
+      if (action === 'download-report') {
+        await downloadReport(button);
+      }
+    } catch (error) {
+      window.alert(error?.message || 'Операция не выполнена.');
+    }
+  });
+
+  const observer = new MutationObserver(scheduleRender);
+  observer.observe(root, { childList: true, subtree: true });
+
+  load();
+})();
+JS
+
+cat > "$OPS_CSS" <<'CSS'
+/* LINKRAY_CABINET_CONTROL_CENTER_V1 */
+.lr-ops-root {
+  margin-top: 18px;
+}
+
+.lr-ops-heading {
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.lr-ops-heading > div:first-child {
+  min-width: 0;
+}
+
+.lr-ops-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.lr-ops-panel {
+  border: 1px solid rgba(143, 174, 194, .16);
+  border-radius: 22px;
+  background: rgba(9, 33, 46, .78);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .14);
+  padding: 14px;
+}
+
+.lr-ops-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.lr-ops-metric {
+  min-width: 0;
+  border: 1px solid rgba(143, 174, 194, .13);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .025);
+  padding: 13px;
+}
+
+.lr-ops-metric span,
+.lr-ops-health-meta span,
+.lr-ops-security-summary span {
+  display: block;
+  color: var(--muted, #8da3b5);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.lr-ops-metric strong {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  font-size: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lr-ops-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.lr-ops-health-card {
+  border: 1px solid rgba(143, 174, 194, .13);
+  border-left-width: 4px;
+  border-radius: 18px;
+  background: rgba(9, 33, 46, .78);
+  padding: 14px;
+}
+
+.lr-ops-health-card.is-ok { border-left-color: #59dda0; }
+.lr-ops-health-card.is-warning { border-left-color: #f0bf67; }
+.lr-ops-health-card.is-critical { border-left-color: #ff8298; }
+.lr-ops-health-card.is-off { border-left-color: #7890a2; }
+
+.lr-ops-health-top,
+.lr-ops-health-meta,
+.lr-ops-report-row,
+.lr-ops-session,
+.lr-ops-security-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lr-ops-health-top span,
+.lr-ops-archive-badge,
+.lr-ops-session em {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(89, 221, 160, .12);
+  color: #70e6b0;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  padding: 6px 9px;
+}
+
+.lr-ops-health-card.is-warning .lr-ops-health-top span {
+  background: rgba(240, 191, 103, .12);
+  color: #f0bf67;
+}
+
+.lr-ops-health-card.is-critical .lr-ops-health-top span {
+  background: rgba(255, 130, 152, .12);
+  color: #ff91a5;
+}
+
+.lr-ops-health-card.is-off .lr-ops-health-top span {
+  background: rgba(120, 144, 162, .12);
+  color: #9db0bd;
+}
+
+.lr-ops-health-card ul {
+  margin: 11px 0;
+  padding-left: 18px;
+  color: var(--muted, #8da3b5);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.lr-ops-health-meta {
+  border-top: 1px solid rgba(143, 174, 194, .1);
+  padding-top: 10px;
+}
+
+.lr-ops-health-meta b {
+  font-size: 11px;
+}
+
+.lr-ops-details {
+  padding: 0;
+  overflow: hidden;
+}
+
+.lr-ops-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  padding: 15px;
+}
+
+.lr-ops-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.lr-ops-details summary span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lr-ops-details summary small {
+  color: var(--muted, #8da3b5);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.lr-ops-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.lr-ops-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.lr-ops-table th,
+.lr-ops-table td {
+  border-top: 1px solid rgba(143, 174, 194, .1);
+  padding: 11px 10px;
+  font-size: 11px;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.lr-ops-table th {
+  color: var(--muted, #8da3b5);
+  font-weight: 600;
+}
+
+.lr-ops-table td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted, #8da3b5);
+}
+
+.lr-ops-notice-list,
+.lr-ops-report-list,
+.lr-ops-session-list {
+  display: grid;
+  gap: 8px;
+}
+
+.lr-ops-notice {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  gap: 11px;
+  border: 1px solid rgba(143, 174, 194, .1);
+  border-radius: 15px;
+  padding: 12px;
+}
+
+.lr-ops-notice > span {
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #73b7ff;
+}
+
+.lr-ops-notice.is-high > span { background: #ff8298; }
+.lr-ops-notice.is-medium > span { background: #f0bf67; }
+.lr-ops-notice.is-read { opacity: .68; }
+
+.lr-ops-notice p,
+.lr-ops-report-row p,
+.lr-ops-session p {
+  margin: 4px 0;
+  color: var(--muted, #8da3b5);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.lr-ops-notice small,
+.lr-ops-report-row small,
+.lr-ops-session small {
+  color: rgba(141, 163, 181, .75);
+  font-size: 9px;
+}
+
+.lr-ops-report-row,
+.lr-ops-session {
+  border: 1px solid rgba(143, 174, 194, .1);
+  border-radius: 15px;
+  padding: 12px;
+}
+
+.lr-ops-report-row > div,
+.lr-ops-session > div {
+  min-width: 0;
+}
+
+.lr-ops-security-summary {
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(143, 174, 194, .1);
+  padding: 1px 2px 12px;
+}
+
+.lr-ops-security-summary > div {
+  flex: 1;
+}
+
+.lr-ops-security-summary strong {
+  display: block;
+  margin-top: 4px;
+}
+
+.lr-ops-session.is-current {
+  border-color: rgba(89, 221, 160, .3);
+}
+
+.lr-ops-session strong {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.lr-ops-empty,
+.lr-ops-status {
+  color: var(--muted, #8da3b5);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px;
+}
+
+.lr-ops-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.lr-ops-status p {
+  margin: 0;
+}
+
+.lr-ops-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, .12);
+  border-top-color: #59dda0;
+  border-radius: 50%;
+  animation: lrOpsSpin .8s linear infinite;
+}
+
+@keyframes lrOpsSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 760px) {
+  .lr-ops-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lr-ops-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .lr-ops-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .lr-ops-inline-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .lr-ops-inline-actions button {
+    flex: 1;
+  }
+
+  .lr-ops-report-row,
+  .lr-ops-session {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .lr-ops-report-row button,
+  .lr-ops-session button,
+  .lr-ops-heading > button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  .lr-ops-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .lr-ops-security-summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+CSS
+
+echo "[5/10] Подключаю расширение к существующему кабинету"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("public/linkray-site/cabinet-stable.html")
+source = path.read_text(encoding="utf-8")
+version = "20260806-cabinet-control-center-v1"
+
+start = "<!-- LINKRAY_CABINET_CONTROL_CENTER_V1_START -->"
+end = "<!-- LINKRAY_CABINET_CONTROL_CENTER_V1_END -->"
+
+source = re.sub(
+    rf"\s*{re.escape(start)}[\s\S]*?{re.escape(end)}\s*",
+    "\n",
+    source,
+    flags=re.I,
+)
+
+block = f'''
+{start}
+<link rel="stylesheet"
+      href="/linkray-site/cabinet-control-center.css?v={version}">
+<script src="/linkray-site/cabinet-control-center.js?v={version}"
+        defer></script>
+{end}
+'''.strip()
+
+head_close = re.search(r"</head>", source, flags=re.I)
+
+if not head_close:
+    raise SystemExit("В cabinet-stable.html не найден </head>")
+
+source = (
+    source[:head_close.start()]
+    + "\n"
+    + block
+    + "\n"
+    + source[head_close.start():]
+)
+
+path.write_text(source, encoding="utf-8")
+
+if source.count(start) != 1:
+    raise SystemExit("Расширение кабинета подключено некорректно")
+
+print("Расширение подключено без нового пункта меню")
+PY
+
+echo "[6/10] Проверяю синтаксис и установленные блоки"
+
+node --check "$ROUTES"
+node --check "$OPS_JS"
+
+grep -q "LINKRAY_CABINET_CONTROL_CENTER_V1_MODULE_START" "$ROUTES"
+grep -q "LINKRAY_CABINET_CONTROL_CENTER_V1_START" "$HTML"
+grep -q "data-lr-ops-root" "$OPS_JS"
+grep -q "lr-ops-health-grid" "$OPS_CSS"
+
+echo "[7/10] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[8/10] Проверяю кабинет, ресурсы и защиту API"
+
+CABINET_STATUS="$(
+  curl -sS -o "$BACKUP/cabinet.html" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/cabinet
+)"
+
+JS_STATUS="$(
+  curl -sS -o /dev/null \
+    -w '%{http_code}' \
+    --max-time 20 \
+    "https://linkray.ru/linkray-site/cabinet-control-center.js?v=$VERSION"
+)"
+
+CSS_STATUS="$(
+  curl -sS -o /dev/null \
+    -w '%{http_code}' \
+    --max-time 20 \
+    "https://linkray.ru/linkray-site/cabinet-control-center.css?v=$VERSION"
+)"
+
+API_STATUS="$(
+  curl -sS -o "$BACKUP/api-no-cookie.json" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/api/website/cabinet/operations
+)"
+
+echo "Кабинет: $CABINET_STATUS"
+echo "JavaScript: $JS_STATUS"
+echo "CSS: $CSS_STATUS"
+echo "API без cookie: $API_STATUS"
+
+[[ "$CABINET_STATUS" == "200" ]]
+[[ "$JS_STATUS" == "200" ]]
+[[ "$CSS_STATUS" == "200" ]]
+[[ "$API_STATUS" == "401" ]]
+
+grep -q "cabinet-control-center.js?v=$VERSION" "$BACKUP/cabinet.html"
+
+echo "[9/10] Проверяю журнал запуска"
+
+if docker logs --since 70s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[10/10] Сохраняю проверенную версию в GitHub"
+
+git add -- "$ROUTES" "$HTML" "$OPS_JS" "$OPS_CSS"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Add LinkRay cabinet control center"
+  git push origin HEAD:main
+else
+  echo "Центр управления уже установлен"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ЦЕНТР УПРАВЛЕНИЯ ЛИЧНОГО КАБИНЕТА LINKRAY УСТАНОВЛЕН"
+echo
+echo "• состояние и ошибки каждого канала"
+echo "• сравнение каналов по основным показателям"
+echo "• закупы с расходами, CPM и результатом 24/48/72 ч"
+echo "• постоянная история уведомлений"
+echo "• архив ежедневных аналитических отчётов"
+echo "• активные сессии и выход с других устройств"
+echo "• новый пункт меню не создавался"
+echo "• Studio и автопостинг не изменялись"
+echo "============================================================"
