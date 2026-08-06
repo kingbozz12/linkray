@@ -326,7 +326,18 @@ export function mountLinkRayWebsiteRoutes(app) {
     throw new TypeError('LinkRay website requires an Express application');
   }
 
-  app.use('/linkray-site', applyWebsiteHeaders);
+  
+  // LINKRAY_STABLE_CABINET_ROUTE_START
+  app.get(['/cabinet', '/cabinet/'], applyWebsiteHeaders, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.sendFile(
+      path.resolve(process.cwd(), 'public/linkray-site/cabinet-stable.html')
+    );
+  });
+  // LINKRAY_STABLE_CABINET_ROUTE_END
+
+app.use('/linkray-site', applyWebsiteHeaders);
   app.use(
     '/linkray-site',
     express.static(siteRoot, {
