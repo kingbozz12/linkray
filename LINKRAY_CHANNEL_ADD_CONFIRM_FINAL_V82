@@ -1,0 +1,828 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-channel-add-v82.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю текущий код добавления канала"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q "async function lrV47ShowAddChannel" "$FILE"
+grep -q "async function lrV47IsAddMode" "$FILE"
+grep -q "async function lrV47NotifyConnected" "$FILE"
+grep -q "async function lrV47HandleAddForward" "$FILE"
+
+echo "[2/8] Удаляю конфликтующие экспериментальные обёртки"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+markers = [
+    (
+        "/* LR_CHANNEL_ADD_V79_START */",
+        "/* LR_CHANNEL_ADD_V79_END */",
+    ),
+    (
+        "/* LR_CHANNEL_CONFIRM_DIRECT_V80_START */",
+        "/* LR_CHANNEL_CONFIRM_DIRECT_V80_END */",
+    ),
+    (
+        "/* LR_CHANNEL_ADD_STATE_V82_START */",
+        "/* LR_CHANNEL_ADD_STATE_V82_END */",
+    ),
+]
+
+removed = []
+
+for start, end in markers:
+    pattern = re.compile(
+        rf"\s*{re.escape(start)}[\s\S]*?{re.escape(end)}\s*",
+    )
+
+    source, count = pattern.subn("\n", source)
+
+    if count:
+        removed.append(start)
+
+path.write_text(source, encoding="utf-8")
+
+print(
+    "Удалено конфликтующих блоков:",
+    len(removed),
+)
+PY
+
+echo "[3/8] Исправляю существующий режим добавления"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+helper = r'''
+/* LR_CHANNEL_ADD_STATE_V82_START */
+function lrV82FreshWait(state) {
+  return Boolean(
+    state &&
+    Date.now() - Number(state.ts || 0)
+      < 30 * 60 * 1000
+  );
+}
+
+function lrV82UserId(update) {
+  try {
+    if (typeof lrV36UserId === 'function') {
+      const value = String(
+        lrV36UserId(update) || '',
+      ).trim();
+
+      if (value && !value.startsWith('-')) {
+        return value;
+      }
+    }
+  } catch {}
+
+  const candidates = [
+    update?.callback?.user?.user_id,
+    update?.callback?.user?.userId,
+    update?.message?.sender?.user_id,
+    update?.message?.sender?.userId,
+    update?.sender?.user_id,
+    update?.sender?.userId,
+    update?.user_id,
+    update?.userId,
+  ];
+
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+
+    if (value && !value.startsWith('-')) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+async function lrV82ResolveAddWait(update) {
+  const eventKey = String(
+    lrV47Key(update) || '',
+  ).trim();
+
+  const session = eventKey
+    ? await lrV47GetSession(eventKey)
+    : null;
+
+  const local = eventKey
+    ? await lrV47StateGet(
+        `lr_v47_add_wait:${eventKey}`,
+      )
+    : null;
+
+  const global =
+    await lrV47StateGet(
+      'lr_v47_add_wait_global',
+    );
+
+  const state =
+    lrV82FreshWait(local)
+      ? local
+      : lrV82FreshWait(global)
+        ? global
+        : null;
+
+  if (
+    !state &&
+    session?.state !== 'wait_add_channel'
+  ) {
+    return null;
+  }
+
+  return {
+    ...(state || {}),
+    eventKey,
+    key: String(
+      state?.key ||
+      eventKey ||
+      '',
+    ).trim(),
+    privateChatId: String(
+      state?.privateChatId ||
+      state?.chatId ||
+      lrV47PrivateChatId(update) ||
+      '',
+    ).trim(),
+    userId: String(
+      state?.userId ||
+      lrV82UserId(update) ||
+      '',
+    ).trim(),
+    baselineId: Number(
+      state?.baselineId ||
+      session?.data?.baselineId ||
+      session?.baselineId ||
+      0,
+    ),
+  };
+}
+
+async function lrV82NotifyConnected(
+  chatId,
+  key,
+  channel,
+  waitState = {},
+) {
+  if (!channel) return false;
+
+  const targetChatId = String(
+    waitState?.privateChatId ||
+    chatId ||
+    '',
+  ).trim();
+
+  const userId = String(
+    waitState?.userId ||
+    '',
+  ).trim();
+
+  const stateKey =
+    `lr_v47_connected_notified:${targetChatId}:${channel.id}`;
+
+  const previous =
+    await lrV47StateGet(stateKey);
+
+  if (
+    previous &&
+    Date.now() - Number(previous.ts || 0)
+      < 30_000
+  ) {
+    console.log(
+      '[channel add v82] duplicate confirmation skipped',
+      JSON.stringify({
+        targetChatId,
+        userId,
+        channelId: channel.id,
+      }),
+    );
+
+    return true;
+  }
+
+  if (previous) {
+    await lrV47StateDelLike([stateKey]);
+  }
+
+  const text =
+    `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV47Esc(channel.title || 'Канал')}
+
+Канал сохранён и доступен в Studio, автоподписях, аналитике и отчётах.`;
+
+  const rows = [[
+    lrV47Btn(
+      '⬅️ Главное меню',
+      'main:menu',
+    ),
+  ]];
+
+  let ok = false;
+
+  /*
+   * Сначала используем user_id, сохранённый в момент
+   * нажатия «Добавить канал». Этот способ уже работает
+   * для сообщения об удалении канала.
+   */
+  if (
+    userId &&
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const result =
+        await lrV37ApiPostMessage(
+          { user_id: userId },
+          text,
+          rows,
+        );
+
+      ok = Boolean(result?.ok);
+
+      console.log(
+        '[channel add v82] direct user confirmation',
+        JSON.stringify({
+          userId,
+          status: result?.status || 0,
+          ok,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        '[channel add v82] direct user confirmation failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (!ok && targetChatId) {
+    try {
+      ok = Boolean(
+        await lrV47Msg(
+          targetChatId,
+          text,
+          rows,
+          'html',
+        ),
+      );
+
+      console.log(
+        '[channel add v82] private chat confirmation',
+        JSON.stringify({
+          targetChatId,
+          ok,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        '[channel add v82] private chat confirmation failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (
+    !ok &&
+    targetChatId &&
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const result =
+        await lrV37ApiPostMessage(
+          { chat_id: targetChatId },
+          text,
+          rows,
+        );
+
+      ok = Boolean(result?.ok);
+
+      console.log(
+        '[channel add v82] direct chat confirmation',
+        JSON.stringify({
+          targetChatId,
+          status: result?.status || 0,
+          ok,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        '[channel add v82] direct chat confirmation failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (ok) {
+    await lrV47StateSet(
+      stateKey,
+      {
+        chatId: targetChatId,
+        userId,
+        key,
+        channel,
+        ts: Date.now(),
+      },
+    );
+
+    console.log(
+      '[channel add v82] confirmation delivered',
+      JSON.stringify({
+        targetChatId,
+        userId,
+        channelId: channel.id,
+        title: channel.title,
+      }),
+    );
+  } else {
+    console.error(
+      '[channel add v82] confirmation delivery failed',
+      JSON.stringify({
+        targetChatId,
+        userId,
+        channelId: channel.id,
+      }),
+    );
+  }
+
+  return ok;
+}
+/* LR_CHANNEL_ADD_STATE_V82_END */
+'''
+
+show_function = r'''async function lrV47ShowAddChannel(update) {
+  const callbackId = lrV47CallbackId(update);
+  const chatId = lrV47PrivateChatId(update);
+  const key = lrV47Key(update);
+  const userId = lrV82UserId(update);
+
+  const baseline = lrV47Rows(
+    await query(
+      `SELECT COALESCE(MAX(id),0)::int AS id FROM channels`
+    ).catch(() => [{ id: 0 }])
+  )[0]?.id || 0;
+
+  const waitState = {
+    mode: 'add_channel',
+    privateChatId: chatId,
+    chatId,
+    userId,
+    key,
+    baselineId: baseline,
+    ts: Date.now(),
+  };
+
+  await lrV47SetSession(
+    key,
+    'wait_add_channel',
+    waitState,
+  );
+
+  await lrV47StateSet(
+    `lr_v47_add_wait:${key}`,
+    waitState,
+  );
+
+  await lrV47StateSet(
+    'lr_v47_add_wait_global',
+    waitState,
+  );
+
+  const text = `━━━━━━━━━━━━━━
+🔗 <b>Добавить канал</b>
+
+1. Откройте канал в MAX.
+2. Добавьте LinkRay в администраторы.
+3. Выдайте право публикации.
+4. Перешлите любой пост из этого канала сюда, в бота.
+
+Если LinkRay не является администратором — канал не будет добавлен.
+━━━━━━━━━━━━━━`;
+
+  console.log(
+    '[channel add v82] add mode enabled',
+    JSON.stringify({
+      chatId,
+      userId,
+      key,
+      baseline,
+    }),
+  );
+
+  return lrV47Cb(
+    callbackId,
+    chatId,
+    text,
+    [[
+      lrV47Btn(
+        '⬅️ В меню',
+        'main:menu',
+      ),
+    ]],
+    'html',
+  );
+}'''
+
+is_add_function = r'''async function lrV47IsAddMode(update) {
+  return Boolean(
+    await lrV82ResolveAddWait(update),
+  );
+}'''
+
+notify_function = r'''async function lrV47NotifyConnected(
+  chatId,
+  key,
+  channel,
+  waitState = {},
+) {
+  return lrV82NotifyConnected(
+    chatId,
+    key,
+    channel,
+    waitState,
+  );
+}'''
+
+handle_function = r'''async function lrV47HandleAddForward(update) {
+  const waitState =
+    await lrV82ResolveAddWait(update);
+
+  if (!waitState) return false;
+
+  const chatId =
+    waitState.privateChatId;
+
+  const key =
+    waitState.key ||
+    waitState.eventKey ||
+    chatId;
+
+  const baseline =
+    Number(waitState.baselineId || 0);
+
+  console.log(
+    '[channel add v82] forwarded post intercepted',
+    JSON.stringify({
+      chatId,
+      userId: waitState.userId,
+      key,
+      eventKey: waitState.eventKey,
+      baseline,
+    }),
+  );
+
+  let result = false;
+
+  try {
+    if (
+      typeof maybeRegisterChannel === 'function'
+    ) {
+      result =
+        await maybeRegisterChannel(update);
+    }
+  } catch (error) {
+    console.error(
+      '[channel add v82] maybeRegisterChannel failed',
+      error?.stack || error?.message || error,
+    );
+  }
+
+  let channel =
+    await lrV47LatestChannelAfter(
+      baseline,
+    );
+
+  if (!channel && result === true) {
+    channel =
+      await lrV47LatestChannelAfter(0);
+  }
+
+  if (channel) {
+    const notified =
+      await lrV47NotifyConnected(
+        chatId,
+        key,
+        channel,
+        waitState,
+      );
+
+    if (notified) {
+      await lrV47ClearSession(key);
+
+      if (
+        waitState.eventKey &&
+        waitState.eventKey !== key
+      ) {
+        await lrV47ClearSession(
+          waitState.eventKey,
+        );
+      }
+
+      await lrV47StateDelLike([
+        `lr_v47_add_wait:${key}`,
+        waitState.eventKey
+          ? `lr_v47_add_wait:${waitState.eventKey}`
+          : '',
+        'lr_v47_add_wait_global',
+      ].filter(Boolean));
+    }
+
+    /*
+     * Пересылку не передаём в Studio:
+     * канал уже зарегистрирован.
+     */
+    return true;
+  }
+
+  const failureText =
+    `❌ <b>Бот не является администратором канала</b>
+
+Сначала добавьте LinkRay в администраторы канала и выдайте право публикации.
+
+Канал не добавлен в базу.`;
+
+  const rows = [[
+    lrV47Btn(
+      '⬅️ Главное меню',
+      'main:menu',
+    ),
+  ]];
+
+  let failureSent = false;
+
+  if (
+    waitState.userId &&
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const response =
+        await lrV37ApiPostMessage(
+          { user_id: waitState.userId },
+          failureText,
+          rows,
+        );
+
+      failureSent =
+        Boolean(response?.ok);
+    } catch {}
+  }
+
+  if (!failureSent && chatId) {
+    await lrV47Msg(
+      chatId,
+      failureText,
+      rows,
+      'html',
+    );
+  }
+
+  return true;
+}'''
+
+def replace_function(source, name, replacement, next_name):
+    pattern = re.compile(
+        rf"async function {re.escape(name)}\s*\([^)]*\)\s*\{{"
+        rf"[\s\S]*?"
+        rf"(?=async function {re.escape(next_name)}\s*\()",
+    )
+
+    updated, count = pattern.subn(
+        lambda _match: replacement + "\n",
+        source,
+        count=1,
+    )
+
+    if count != 1:
+        raise SystemExit(
+            f"Не удалось заменить функцию {name}: найдено {count}"
+        )
+
+    return updated
+
+anchor = source.find(
+    "async function lrV47ShowAddChannel"
+)
+
+if anchor < 0:
+    raise SystemExit(
+        "Не найдена lrV47ShowAddChannel"
+    )
+
+source = (
+    source[:anchor]
+    + helper
+    + "\n"
+    + source[anchor:]
+)
+
+source = replace_function(
+    source,
+    "lrV47ShowAddChannel",
+    show_function,
+    "lrV47IsAddMode",
+)
+
+source = replace_function(
+    source,
+    "lrV47IsAddMode",
+    is_add_function,
+    "lrV47LatestChannelAfter",
+)
+
+source = replace_function(
+    source,
+    "lrV47NotifyConnected",
+    notify_function,
+    "lrV47HandleAddForward",
+)
+
+source = replace_function(
+    source,
+    "lrV47HandleAddForward",
+    handle_function,
+    "lrV47HandleMainForward",
+)
+
+# Если ранее устанавливался V78, сохраняем его исправление удаления,
+# но не позволяем ему снова заменить уведомление подключения.
+v78_notify_pattern = re.compile(
+    r"lrV47NotifyConnected\s*=\s*"
+    r"async function lrV78NotifyConnected"
+    r"\s*\([^)]*\)\s*\{[\s\S]*?\n\s*\};",
+)
+
+source, v78_count = v78_notify_pattern.subn(
+    "lrV47NotifyConnected = lrV82NotifyConnected;",
+    source,
+    count=1,
+)
+
+marker = (
+    "console.log(\n"
+    "  '[channel add v82] installed: global wait, saved chat and user confirmation',\n"
+    ");\n"
+)
+
+ensure_position = source.rfind(
+    "await ensureDb();"
+)
+
+if ensure_position < 0:
+    raise SystemExit(
+        "Не найден запуск ensureDb"
+    )
+
+source = (
+    source[:ensure_position]
+    + marker
+    + "\n"
+    + source[ensure_position:]
+)
+
+path.write_text(
+    source,
+    encoding="utf-8",
+)
+
+checks = [
+    "LR_CHANNEL_ADD_STATE_V82_START",
+    "lrV82ResolveAddWait",
+    "lrV82NotifyConnected",
+    "[channel add v82] forwarded post intercepted",
+    "[channel add v82] confirmation delivered",
+]
+
+for check in checks:
+    if check not in source:
+        raise SystemExit(
+            f"Не установлен элемент: {check}"
+        )
+
+print(
+    "Основные функции добавления заменены",
+)
+print(
+    "Переопределение V78 исправлено:",
+    bool(v78_count),
+)
+PY
+
+echo "[4/8] Проверяю синтаксис"
+
+node --check "$FILE"
+
+grep -q \
+  "LR_CHANNEL_ADD_STATE_V82_START" \
+  "$FILE"
+
+grep -q \
+  "lr_v47_add_wait_global" \
+  "$FILE"
+
+grep -q \
+  "privateChatId: chatId" \
+  "$FILE"
+
+grep -q \
+  "userId," \
+  "$FILE"
+
+echo "[5/8] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[6/8] Проверяю запуск и установленный код"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_CHANNEL_ADD_STATE_V82_START' /app/src/index.js"
+
+if docker logs --since 70s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+docker logs --since 70s linkray-app 2>&1 |
+  grep -F \
+    "[channel add v82] installed" |
+  tail -n 1
+
+echo "[7/8] Сохраняю исправление"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Fix channel add confirmation state and recipient"
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено"
+fi
+
+echo "[8/8] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ДОБАВЛЕНИЕ КАНАЛА И УВЕДОМЛЕНИЕ ИСПРАВЛЕНЫ"
+echo
+echo "• глобальный режим добавления теперь читается"
+echo "• используется личный chatId, сохранённый при нажатии кнопки"
+echo "• user_id также сохраняется заранее"
+echo "• подтверждение сначала отправляется напрямую по user_id"
+echo "• канал не передаётся в Studio как обычный пост"
+echo "• экспериментальные V79/V80 удалены"
+echo "• удаление канала и автопостинг не изменялись"
+echo "============================================================"
