@@ -25092,9 +25092,437 @@ try {
   }
 } catch (e) { console.error('[v61 labels] cb wrap failed', e?.message || e); }
 
+
+/* LR_CHANNEL_ADD_V79_START */
+async function lrV79StateGet(key) {
+  try {
+    if (typeof lrV47StateGet === 'function') {
+      return await lrV47StateGet(key);
+    }
+  } catch {}
+
+  try {
+    const result = await query(
+      `
+        SELECT data
+        FROM lr_bot_state
+        WHERE key=$1
+        LIMIT 1
+      `,
+      [String(key)],
+    );
+
+    const rows = Array.isArray(result)
+      ? result
+      : Array.isArray(result?.rows)
+        ? result.rows
+        : [];
+
+    return rows[0]?.data || null;
+  } catch {}
+
+  return null;
+}
+
+async function lrV79StateDelete(keys) {
+  const clean = [...new Set(
+    (keys || [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean),
+  )];
+
+  if (!clean.length) return;
+
+  try {
+    await query(
+      `DELETE FROM lr_bot_state WHERE key=ANY($1::text[])`,
+      [clean],
+    );
+  } catch (error) {
+    console.error(
+      '[channel add v79] state cleanup failed',
+      error?.message || error,
+    );
+  }
+}
+
+function lrV79PrivateChatId(update, globalState) {
+  const saved = String(
+    globalState?.privateChatId ||
+    globalState?.chatId ||
+    '',
+  ).trim();
+
+  if (saved) return saved;
+
+  try {
+    if (typeof lrV47PrivateChatId === 'function') {
+      const value = lrV47PrivateChatId(update);
+      if (value) return String(value);
+    }
+  } catch {}
+
+  try {
+    if (typeof lrProfileMaxUserId === 'function') {
+      const value = lrProfileMaxUserId(update);
+      if (value) return String(value);
+    }
+  } catch {}
+
+  return String(
+    update?.message?.sender?.user_id ||
+    update?.message?.sender?.userId ||
+    update?.sender?.user_id ||
+    update?.sender?.userId ||
+    update?.user_id ||
+    update?.userId ||
+    '',
+  ).trim();
+}
+
+function lrV79UpdateType(update) {
+  try {
+    if (typeof lrV61Type === 'function') {
+      return String(lrV61Type(update) || '');
+    }
+  } catch {}
+
+  return String(
+    update?.update_type ||
+    update?.type ||
+    update?.event_type ||
+    '',
+  );
+}
+
+function lrV79LooksLikeMessage(update) {
+  const type = lrV79UpdateType(update);
+
+  if (
+    type &&
+    !/message_created|message_callback/i.test(type)
+  ) {
+    return false;
+  }
+
+  try {
+    const payload =
+      typeof lrV61Payload === 'function'
+        ? lrV61Payload(update)
+        : '';
+
+    if (
+      payload &&
+      typeof payload === 'string' &&
+      payload !== '[object Object]'
+    ) {
+      return false;
+    }
+  } catch {}
+
+  return true;
+}
+
+async function lrV79LatestChannel(baselineId) {
+  try {
+    const result = await query(
+      `
+        SELECT
+          id,
+          max_chat_id,
+          title,
+          link,
+          is_active,
+          updated_at
+        FROM channels
+        WHERE id>$1
+           OR updated_at>NOW()-INTERVAL '5 minutes'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `,
+      [Number(baselineId || 0)],
+    );
+
+    const rows = Array.isArray(result)
+      ? result
+      : Array.isArray(result?.rows)
+        ? result.rows
+        : [];
+
+    return rows[0] || null;
+  } catch (error) {
+    console.error(
+      '[channel add v79] channel lookup failed',
+      error?.message || error,
+    );
+    return null;
+  }
+}
+
+async function lrV79Send(chatId, text, rows = []) {
+  if (!chatId) return false;
+
+  try {
+    if (typeof lrV47Msg === 'function') {
+      await lrV47Msg(chatId, text, rows, 'html');
+      return true;
+    }
+  } catch (error) {
+    console.error(
+      '[channel add v79] lrV47Msg failed',
+      error?.message || error,
+    );
+  }
+
+  try {
+    if (typeof msg === 'function') {
+      await msg(chatId, text, rows, 'html');
+      return true;
+    }
+  } catch (error) {
+    console.error(
+      '[channel add v79] msg failed',
+      error?.message || error,
+    );
+  }
+
+  return false;
+}
+
+async function lrV79HandleAddChannelEarly(update) {
+  if (!lrV79LooksLikeMessage(update)) return false;
+
+  const globalState =
+    await lrV79StateGet('lr_v47_add_wait_global');
+
+  if (!globalState) return false;
+
+  const startedAt = Number(globalState.ts || 0);
+
+  if (
+    startedAt > 0 &&
+    Date.now() - startedAt > 30 * 60 * 1000
+  ) {
+    await lrV79StateDelete([
+      'lr_v47_add_wait_global',
+    ]);
+    return false;
+  }
+
+  const privateChatId =
+    lrV79PrivateChatId(update, globalState);
+
+  const storedKey = String(
+    globalState.key || privateChatId || '',
+  ).trim();
+
+  const baselineId = Number(
+    globalState.baselineId || 0,
+  );
+
+  if (!privateChatId) {
+    console.error(
+      '[channel add v79] private chat id not resolved',
+    );
+    return false;
+  }
+
+  const lockKey =
+    `lr_v79_add_lock:${privateChatId}`;
+
+  const lock = await lrV79StateGet(lockKey);
+
+  if (
+    lock &&
+    Date.now() - Number(lock.ts || 0) < 15_000
+  ) {
+    return true;
+  }
+
+  try {
+    if (typeof lrV47StateSet === 'function') {
+      await lrV47StateSet(lockKey, {
+        ts: Date.now(),
+      });
+    }
+  } catch {}
+
+  console.log(
+    '[channel add v79] forwarded post intercepted',
+    JSON.stringify({
+      privateChatId,
+      storedKey,
+      baselineId,
+      type: lrV79UpdateType(update),
+    }),
+  );
+
+  let registrationResult = false;
+  let registrationError = null;
+
+  try {
+    registrationResult =
+      await maybeRegisterChannel(update);
+  } catch (error) {
+    registrationError = error;
+    console.error(
+      '[channel add v79] maybeRegisterChannel failed',
+      error?.stack || error?.message || error,
+    );
+  }
+
+  const channel =
+    await lrV79LatestChannel(baselineId);
+
+  if (channel) {
+    try {
+      await query(
+        `
+          UPDATE channels
+          SET is_active=true,
+              updated_at=NOW()
+          WHERE id=$1
+        `,
+        [Number(channel.id)],
+      );
+    } catch {}
+
+    const notificationKeys = [
+      `lr_v47_connected_notified:${privateChatId}:${channel.id}`,
+      `lr_v31_channel_connected_notified:${privateChatId}:${channel.id}`,
+      `lr_v35_channel_connected_notified:${privateChatId}:${channel.id}`,
+    ];
+
+    await lrV79StateDelete(notificationKeys);
+
+    const title = String(
+      channel.title || 'Канал',
+    )
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const button =
+      typeof callbackButton === 'function'
+        ? callbackButton(
+            '⬅️ Главное меню',
+            'main:menu',
+          )
+        : {
+            type: 'callback',
+            text: '⬅️ Главное меню',
+            payload: 'main:menu',
+          };
+
+    await lrV79Send(
+      privateChatId,
+      `✅ Канал подключён к LinkRay
+
+<b>${title}</b>
+
+Канал сохранён и доступен в Studio, автоподписях, аналитике и отчётах.`,
+      [[button]],
+    );
+
+    const cleanupKeys = [
+      'lr_v47_add_wait_global',
+      `lr_v47_add_wait:${storedKey}`,
+      `lr_v47_add_wait:${privateChatId}`,
+      `lr_v31_add_wait:${storedKey}`,
+      `lr_v31_add_wait:${privateChatId}`,
+      'lr_v31_add_wait_global',
+      lockKey,
+    ];
+
+    await lrV79StateDelete(cleanupKeys);
+
+    try {
+      if (typeof lrV47ClearSession === 'function') {
+        if (storedKey) {
+          await lrV47ClearSession(storedKey);
+        }
+        if (
+          privateChatId &&
+          privateChatId !== storedKey
+        ) {
+          await lrV47ClearSession(privateChatId);
+        }
+      }
+    } catch {}
+
+    console.log(
+      '[channel add v79] connected successfully',
+      JSON.stringify({
+        privateChatId,
+        channelId: channel.id,
+        maxChatId: channel.max_chat_id,
+        registrationResult,
+      }),
+    );
+
+    return true;
+  }
+
+  await lrV79StateDelete([lockKey]);
+
+  const errorText = registrationError
+    ? String(
+        registrationError.message ||
+        registrationError,
+      )
+    : '';
+
+  const button =
+    typeof callbackButton === 'function'
+      ? callbackButton(
+          '⬅️ В меню',
+          'main:menu',
+        )
+      : {
+          type: 'callback',
+          text: '⬅️ В меню',
+          payload: 'main:menu',
+        };
+
+  await lrV79Send(
+    privateChatId,
+    `❌ Канал не подключён
+
+LinkRay не смог подтвердить права администратора и право публикации.
+
+Проверьте права бота в канале и перешлите пост ещё раз.${errorText ? `
+
+Техническая причина: ${errorText.slice(0, 250)}` : ''}`,
+    [[button]],
+  );
+
+  console.log(
+    '[channel add v79] channel not registered',
+    JSON.stringify({
+      privateChatId,
+      baselineId,
+      registrationResult,
+      error: errorText.slice(0, 250),
+    }),
+  );
+
+  return true;
+}
+/* LR_CHANNEL_ADD_V79_END */
+
 app.use(async function lrV61ForwardMainBeforeFallback(req, res, next) {
   try {
     if (req.method !== 'POST' || !String(req.path || req.url || '').includes('/webhook')) return next();
+    if (
+      await lrV79HandleAddChannelEarly(
+        req.body || {},
+      )
+    ) {
+      return res.json({
+        ok: true,
+        handled: 'lr_v79_add_channel',
+      });
+    }
     if (await lrV61HandleForwardFromMain(req.body || {})) return res.json({ ok: true, handled: 'lr_v61_forward_main' });
   } catch (e) {
     console.error('[v61 forward] middleware failed', e?.stack || e?.message || e);
