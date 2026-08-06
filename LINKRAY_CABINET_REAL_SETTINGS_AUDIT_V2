@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+echo "============================================================"
+echo "LINKRAY — ДИАГНОСТИКА КАБИНЕТА V2"
+echo "Только чтение: код и база НЕ изменяются"
+echo "============================================================"
+
+echo
+echo "[1/7] Проверяю репозиторий"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "ОСТАНОВКА: в репозитории есть незавершённые изменения:"
+  git status --short
+  echo
+  echo "Ничего не изменено. Сначала нужно разобраться с этими файлами."
+  exit 2
+fi
+
+git fetch origin main --quiet
+git pull --ff-only origin main --quiet
+
+echo "Коммит: $(git rev-parse --short HEAD)"
+echo "Последний коммит: $(git log -1 --pretty='%h %s')"
+
+echo
+echo "[2/7] Нахожу текущий кабинет и API"
+
+mapfile -t ROUTE_FILES < <(
+  grep -RIl \
+    --exclude-dir=node_modules \
+    --exclude-dir=.git \
+    -E "/api/website/(cabinet|auth)|mountLinkRayWebsiteRoutes" \
+    src 2>/dev/null |
+  sort -u
+)
+
+mapfile -t FRONT_FILES < <(
+  grep -RIl \
+    --exclude-dir=node_modules \
+    --exclude-dir=.git \
+    -E "/api/website/|Загружаем LinkRay|Последние публикации|Studio в MAX" \
+    public 2>/dev/null |
+  sort -u
+)
+
+echo "Серверные файлы:"
+printf '  %s\n' "${ROUTE_FILES[@]:-НЕ НАЙДЕНЫ}"
+
+echo "Файлы интерфейса:"
+printf '  %s\n' "${FRONT_FILES[@]:-НЕ НАЙДЕНЫ}"
+
+echo
+echo "[3/7] Текущие маршруты кабинета"
+
+if ((${#ROUTE_FILES[@]})); then
+  grep -nE \
+    "app\.(get|post|put|patch|delete)\(['\"]/api/website/|router\.(get|post|put|patch|delete)\(['\"]/api/website/" \
+    "${ROUTE_FILES[@]}" 2>/dev/null |
+  sed -n '1,160p' || true
+else
+  echo "Маршруты не найдены"
+fi
+
+echo
+echo "[4/7] Авторизация сайта и сессия"
+
+if ((${#ROUTE_FILES[@]})); then
+  grep -nEi \
+    "session|cookie|token_hash|require.*auth|current.*user|website.*user|401" \
+    "${ROUTE_FILES[@]}" 2>/dev/null |
+  sed -n '1,180p' || true
+fi
+
+echo
+echo "[5/7] API, которые вызывает интерфейс"
+
+if ((${#FRONT_FILES[@]})); then
+  grep -nEo \
+    "/api/website/[A-Za-z0-9_/?=&.{}:-]+" \
+    "${FRONT_FILES[@]}" 2>/dev/null |
+  sort -u |
+  sed -n '1,180p' || true
+fi
+
+echo
+echo "[6/7] Таблицы и поля, связанные с кабинетом"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -P pager=off -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}" <<'"'"'SQL'"'"'
+SELECT
+  table_name
+FROM information_schema.tables
+WHERE table_schema='"'"'public'"'"'
+  AND (
+    table_name ILIKE '"'"'%channel%'"'"'
+    OR table_name ILIKE '"'"'%analytic%'"'"'
+    OR table_name ILIKE '"'"'%antifraud%'"'"'
+    OR table_name ILIKE '"'"'%notification%'"'"'
+    OR table_name ILIKE '"'"'%notice%'"'"'
+    OR table_name ILIKE '"'"'%post%'"'"'
+    OR table_name ILIKE '"'"'%signature%'"'"'
+    OR table_name ILIKE '"'"'%session%'"'"'
+  )
+ORDER BY table_name;
+
+SELECT
+  table_name,
+  string_agg(
+    column_name || '"'"':'"'"' || data_type,
+    '"'"', '"'"'
+    ORDER BY ordinal_position
+  ) AS columns
+FROM information_schema.columns
+WHERE table_schema='"'"'public'"'"'
+  AND table_name IN (
+    '"'"'channels'"'"',
+    '"'"'lr_user_channels'"'"',
+    '"'"'lr_channel_analytics_settings'"'"',
+    '"'"'lr_channel_analytics_daily_channels'"'"',
+    '"'"'lr_antifraud_channels'"'"',
+    '"'"'lr_web_sessions'"'"',
+    '"'"'lr_web_notifications'"'"',
+    '"'"'lr_channel_notify_state'"'"',
+    '"'"'lr_post_entry_v68'"'"'
+  )
+GROUP BY table_name
+ORDER BY table_name;
+
+SELECT
+  tc.table_name,
+  kcu.column_name,
+  ccu.table_name AS referenced_table,
+  ccu.column_name AS referenced_column,
+  rc.delete_rule
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON tc.constraint_name=kcu.constraint_name
+ AND tc.constraint_schema=kcu.constraint_schema
+JOIN information_schema.constraint_column_usage ccu
+  ON ccu.constraint_name=tc.constraint_name
+ AND ccu.constraint_schema=tc.constraint_schema
+JOIN information_schema.referential_constraints rc
+  ON rc.constraint_name=tc.constraint_name
+ AND rc.constraint_schema=tc.constraint_schema
+WHERE tc.constraint_type='"'"'FOREIGN KEY'"'"'
+  AND tc.table_schema='"'"'public'"'"'
+  AND (
+    tc.table_name ILIKE '"'"'%channel%'"'"'
+    OR ccu.table_name='"'"'channels'"'"'
+  )
+ORDER BY tc.table_name, kcu.column_name;
+SQL
+'
+
+echo
+echo "[7/7] Проверяю уже установленные блоки кабинета"
+
+grep -RIn \
+  --exclude-dir=node_modules \
+  --exclude-dir=.git \
+  -E "LR_CABINET_CONTROL_CENTER|Центр управления|Управление каналом|lr_web_notifications" \
+  public src migrations 2>/dev/null |
+sed -n '1,160p' || true
+
+echo
+echo "============================================================"
+echo "ДИАГНОСТИКА ЗАВЕРШЕНА — НИ ОДИН ФАЙЛ И НИ ОДНА ЗАПИСЬ НЕ ИЗМЕНЕНЫ"
+echo "Пришли скриншоты вывода начиная с раздела [3/7]."
+echo "После этого будет точный патч настроек и реальных уведомлений."
+echo "============================================================"
