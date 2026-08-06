@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+INDEX="public/linkray-site/index.html"
+BACKUP="$(mktemp -d /tmp/linkray-faq-direct.XXXXXX)"
+DONE=0
+
+restore_index() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежний FAQ"
+  cp -f "$BACKUP/index.html" "$INDEX"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущий FAQ восстановлен"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_index
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/7] Проверяю главную страницу"
+
+test -f "$INDEX"
+cp -f "$INDEX" "$BACKUP/index.html"
+
+echo "[2/7] Нахожу вопросы по видимому тексту"
+
+python3 - <<'PY'
+from pathlib import Path
+import html
+import json
+import re
+
+path = Path("public/linkray-site/index.html")
+source = path.read_text(encoding="utf-8")
+
+FAQ_ITEMS = [
+    (
+        {
+            "Что такое LinkRay?",
+        },
+        "Что такое LinkRay?",
+        (
+            "LinkRay — готовый сервис для владельцев каналов MAX. "
+            "Он объединяет Studio, автопостинг, аналитику, "
+            "рекламные закупы, AntiFraud и личный кабинет."
+        ),
+    ),
+    (
+        {
+            "Сайт заменит существующего бота?",
+            "Сайт заменяет бота?",
+            "Сайт и бот работают вместе?",
+        },
+        "Сайт заменяет бота?",
+        (
+            "Нет. Сайт и бот работают вместе. В кабинете доступны "
+            "каналы, показатели и отчёты, а создание и редактирование "
+            "публикаций выполняется в LinkRay Studio внутри MAX."
+        ),
+    ),
+    (
+        {
+            "Как будет работать вход?",
+            "Как войти в личный кабинет?",
+        },
+        "Как войти в личный кабинет?",
+        (
+            "Нажмите «Открыть кабинет», введите свой ID LinkRay "
+            "и подтвердите вход кодом, который бот отправит вам в MAX."
+        ),
+    ),
+    (
+        {
+            "Какие данные показывает личный кабинет?",
+            "Что показывает личный кабинет?",
+        },
+        "Что показывает личный кабинет?",
+        (
+            "Кабинет показывает подключённые каналы, подписчиков, "
+            "просмотры, прирост аудитории, ER, графики, состояние "
+            "аналитики, AntiFraud и последние публикации."
+        ),
+    ),
+    (
+        {
+            "Сайт адаптирован под телефон?",
+            "Сайт работает на телефоне?",
+        },
+        "Сайт работает на телефоне?",
+        (
+            "Да. Главная страница и личный кабинет полностью "
+            "адаптированы для телефонов, планшетов и компьютеров."
+        ),
+    ),
+]
+
+def plain_text(value):
+    value = re.sub(
+        r"<[^>]+>",
+        " ",
+        value,
+        flags=re.I | re.S,
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        html.unescape(value),
+    ).strip()
+
+question_lookup = {}
+
+for aliases, question, answer in FAQ_ITEMS:
+    for alias in aliases:
+        question_lookup[alias] = (question, answer)
+
+details_pattern = re.compile(
+    r"<details\b[^>]*>[\s\S]*?</details>",
+    flags=re.I,
+)
+
+summary_pattern = re.compile(
+    r"<summary\b[^>]*>([\s\S]*?)</summary>",
+    flags=re.I,
+)
+
+replaced_questions = []
+total_replacements = 0
+
+def replace_details(match):
+    global total_replacements
+
+    block = match.group(0)
+    summary = summary_pattern.search(block)
+
+    if not summary:
+        return block
+
+    current_question = plain_text(summary.group(1))
+    replacement = question_lookup.get(current_question)
+
+    if replacement is None:
+        return block
+
+    question, answer = replacement
+    replaced_questions.append(question)
+    total_replacements += 1
+
+    opening = re.match(
+        r"<details\b[^>]*>",
+        block,
+        flags=re.I,
+    )
+
+    opening_tag = (
+        opening.group(0)
+        if opening
+        else "<details>"
+    )
+
+    return (
+        opening_tag
+        + "\n"
+        + "  <summary>"
+        + html.escape(question)
+        + "</summary>\n"
+        + "  <p>"
+        + html.escape(answer)
+        + "</p>\n"
+        + "</details>"
+    )
+
+source = details_pattern.sub(
+    replace_details,
+    source,
+)
+
+missing = [
+    question
+    for _, question, _ in FAQ_ITEMS
+    if question not in replaced_questions
+]
+
+if missing:
+    raise SystemExit(
+        "Не найдены текущие вопросы: "
+        + "; ".join(missing)
+    )
+
+if total_replacements < 5:
+    raise SystemExit(
+        f"Заменено только {total_replacements} вопросов, ожидалось минимум 5"
+    )
+
+# Заголовок уже может быть правильным. Старые варианты меняем без
+# привязки к секции или классу.
+source = re.sub(
+    r"<h2>\s*(?:Коротко о LinkRay|Работа с LinkRay)\s*</h2>",
+    "<h2>Частые вопросы</h2>",
+    source,
+    flags=re.I,
+)
+
+source = re.sub(
+    r"<p>\s*(?:Основные ответы перед подключением\.|"
+    r"Вход, подключение каналов, аналитика и Studio\.)\s*</p>",
+    "<p>Вход, кабинет, аналитика и работа с ботом.</p>",
+    source,
+    flags=re.I,
+)
+
+faq_entities = [
+    {
+        "@type": "Question",
+        "name": question,
+        "acceptedAnswer": {
+            "@type": "Answer",
+            "text": answer,
+        },
+    }
+    for _, question, answer in FAQ_ITEMS
+]
+
+schema_updated = False
+script_pattern = re.compile(
+    r"<script\b([^>]*)>([\s\S]*?)</script>",
+    flags=re.I,
+)
+
+for match in list(script_pattern.finditer(source)):
+    attributes = match.group(1)
+
+    type_match = re.search(
+        r"\btype\s*=\s*(['\"])(.*?)\1",
+        attributes,
+        flags=re.I | re.S,
+    )
+
+    if (
+        not type_match
+        or type_match.group(2).strip().lower()
+        != "application/ld+json"
+    ):
+        continue
+
+    try:
+        data = json.loads(
+            html.unescape(match.group(2)).strip()
+        )
+    except Exception:
+        continue
+
+    nodes = []
+
+    if isinstance(data, dict):
+        if isinstance(data.get("@graph"), list):
+            nodes = data["@graph"]
+        else:
+            nodes = [data]
+
+    faq_node = next(
+        (
+            node
+            for node in nodes
+            if isinstance(node, dict)
+            and node.get("@type") == "FAQPage"
+        ),
+        None,
+    )
+
+    if faq_node is None:
+        continue
+
+    faq_node["mainEntity"] = faq_entities
+
+    serialized = json.dumps(
+        data,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).replace("</", "<\\/")
+
+    new_script = (
+        "<script"
+        + attributes
+        + ">"
+        + serialized
+        + "</script>"
+    )
+
+    source = (
+        source[:match.start()]
+        + new_script
+        + source[match.end():]
+    )
+
+    schema_updated = True
+    break
+
+if not schema_updated:
+    schema = {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "@id": "https://linkray.ru/#faq",
+        "mainEntity": faq_entities,
+    }
+
+    schema_tag = (
+        '\n<script id="lr-ready-faq-direct-v1" '
+        'type="application/ld+json">'
+        + json.dumps(
+            schema,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).replace("</", "<\\/")
+        + "</script>\n"
+    )
+
+    head_close = re.search(
+        r"</head>",
+        source,
+        flags=re.I,
+    )
+
+    if not head_close:
+        raise SystemExit(
+            "Не найден закрывающий тег </head>"
+        )
+
+    source = (
+        source[:head_close.start()]
+        + schema_tag
+        + source[head_close.start():]
+    )
+
+path.write_text(source, encoding="utf-8")
+
+print(
+    f"Заменено FAQ-блоков: {total_replacements}"
+)
+PY
+
+echo "[3/7] Проверяю новые вопросы"
+
+python3 - <<'PY'
+from pathlib import Path
+
+source = Path(
+    "public/linkray-site/index.html"
+).read_text(encoding="utf-8")
+
+required = [
+    "Что такое LinkRay?",
+    "Сайт заменяет бота?",
+    "Как войти в личный кабинет?",
+    "Что показывает личный кабинет?",
+    "Сайт работает на телефоне?",
+]
+
+obsolete = [
+    "Сайт заменит существующего бота?",
+    "Как будет работать вход?",
+    "Какие данные показывает личный кабинет?",
+    "Сайт адаптирован под телефон?",
+]
+
+for question in required:
+    if question not in source:
+        raise SystemExit(
+            f"Не установлен вопрос: {question}"
+        )
+
+for question in obsolete:
+    if question in source:
+        raise SystemExit(
+            f"Остался старый вопрос: {question}"
+        )
+
+print("Все пять вопросов обновлены")
+PY
+
+echo "[4/7] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[5/7] Проверяю опубликованную страницу"
+
+STATUS="$(
+  curl -sS \
+    -o "$BACKUP/live-index.html" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/
+)"
+
+echo "Главная: $STATUS"
+[[ "$STATUS" == "200" ]]
+
+grep -q \
+  "Как войти в личный кабинет?" \
+  "$BACKUP/live-index.html"
+
+grep -q \
+  "Сайт заменяет бота?" \
+  "$BACKUP/live-index.html"
+
+grep -q \
+  "Сайт работает на телефоне?" \
+  "$BACKUP/live-index.html"
+
+echo "[6/7] Проверяю журнал запуска"
+
+if docker logs --since 45s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[7/7] Сохраняю только FAQ"
+
+git add -- "$INDEX"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Update finished LinkRay website FAQ"
+  git push origin HEAD:main
+else
+  echo "FAQ уже обновлён"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "FAQ LINKRAY ОБНОВЛЁН"
+echo
+echo "• вопросы найдены напрямую по видимому тексту"
+echo "• будущие формулировки заменены на актуальные"
+echo "• обновлены все копии FAQ на странице"
+echo "• обновлена поисковая FAQ-разметка"
+echo "• кабинет, логотип и остальные разделы не изменялись"
+echo "============================================================"
