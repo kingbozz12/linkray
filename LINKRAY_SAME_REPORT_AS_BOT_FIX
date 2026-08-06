@@ -1,0 +1,676 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-same-bot-report-v1"
+ANALYTICS="src/linkrayChannelAnalytics.js"
+ROUTES="src/linkrayWebsiteRoutes.js"
+JS="public/linkray-site/cabinet-stable.js"
+HTML="public/linkray-site/cabinet-stable.html"
+BACKUP="$(mktemp -d /tmp/linkray-same-bot-report.XXXXXX)"
+DONE=0
+
+backup_file() {
+  local file="$1"
+  local key
+  key="$(printf '%s' "$file" | tr '/' '_')"
+
+  test -f "$file"
+  cp -f "$file" "$BACKUP/$key"
+}
+
+restore_all() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+
+  for file in "$ANALYTICS" "$ROUTES" "$JS" "$HTML"; do
+    key="$(printf '%s' "$file" | tr '/' '_')"
+    cp -f "$BACKUP/$key" "$file"
+  done
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_all
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/9] Проверяю текущую версию"
+
+backup_file "$ANALYTICS"
+backup_file "$ROUTES"
+backup_file "$JS"
+backup_file "$HTML"
+
+grep -q "renderSingle" "$ANALYTICS"
+grep -q "function lrC5Session" "$ROUTES"
+grep -q "function lrC5LoadChannels" "$ROUTES"
+grep -q "function downloadPng(channel)" "$JS"
+
+echo "[2/9] Экспортирую тот же генератор, который использует бот"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayChannelAnalytics.js")
+source = path.read_text(encoding="utf-8")
+
+start = "/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_START */"
+end = "/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_END */"
+
+source = re.sub(
+    rf"\s*{re.escape(start)}[\s\S]*?{re.escape(end)}\s*",
+    "\n",
+    source,
+)
+
+block = r'''
+/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_START */
+/**
+ * Создаёт для сайта в точности ту же PNG-карточку,
+ * которую бот отправляет при аналитике одного канала.
+ *
+ * Здесь специально повторно используются:
+ *   1) getChannelMetricsReadiness;
+ *   2) resolveChannel;
+ *   3) renderSingle.
+ *
+ * Отдельного веб-дизайна отчёта больше нет.
+ */
+export async function renderLinkRayWebsiteBotReport(input = {}) {
+  const link = String(
+    input?.link ||
+    input?.public_link ||
+    input?.channel_link ||
+    input?.url ||
+    input?.max_chat_id ||
+    input?.chat_id ||
+    '',
+  ).trim();
+
+  if (!link) {
+    const error = new Error(
+      'Для этого канала не сохранена MAX-ссылка.',
+    );
+    error.code = 'CHANNEL_LINK_MISSING';
+    throw error;
+  }
+
+  const readiness = await getChannelMetricsReadiness([link]);
+
+  if (!readiness?.ready) {
+    const error = new Error(
+      'Отчёт канала ещё не готов: аналитике необходимо накопить 24 часа данных.',
+    );
+    error.code = 'REPORT_NOT_READY';
+    error.readiness = readiness;
+    throw error;
+  }
+
+  const resolved = await resolveChannel(link, {
+    ...input,
+    _lrIndex: 0,
+  });
+
+  /*
+   * Это тот же вызов, что используется в handleLinks()
+   * при отправке в бот одной ссылки.
+   */
+  const image = await renderSingle(resolved);
+
+  let buffer = null;
+
+  if (typeof lrV33ToPngBuffer === 'function') {
+    buffer = await lrV33ToPngBuffer(image);
+  }
+
+  if (!buffer && Buffer.isBuffer(image)) {
+    buffer = image;
+  }
+
+  if (!buffer && image instanceof Uint8Array) {
+    buffer = Buffer.from(image);
+  }
+
+  if (!buffer && Buffer.isBuffer(image?.buffer)) {
+    buffer = image.buffer;
+  }
+
+  if (!buffer && Buffer.isBuffer(image?.data)) {
+    buffer = image.data;
+  }
+
+  if (!buffer && Buffer.isBuffer(image?.png)) {
+    buffer = image.png;
+  }
+
+  if (!buffer) {
+    const error = new Error(
+      'Генератор бота не вернул PNG-файл.',
+    );
+    error.code = 'BOT_REPORT_EMPTY';
+    throw error;
+  }
+
+  return buffer;
+}
+/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_END */
+
+'''
+
+needle = "export function mountLinkRayChannelAnalytics"
+
+position = source.find(needle)
+
+if position < 0:
+    raise SystemExit(
+        "Не найдена mountLinkRayChannelAnalytics",
+    )
+
+source = source[:position] + block + source[position:]
+
+path.write_text(source, encoding="utf-8")
+
+if source.count("renderLinkRayWebsiteBotReport") != 1:
+    raise SystemExit(
+        "Экспорт генератора добавлен некорректно",
+    )
+
+print("Точный генератор отчёта бота экспортирован")
+PY
+
+echo "[3/9] Добавляю защищённую загрузку отчёта на сайт"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+IMPORT_MARKER = "// LINKRAY_SAME_BOT_REPORT_IMPORT_V1"
+ROUTE_START = "// LINKRAY_SAME_BOT_REPORT_ROUTE_V1_START"
+ROUTE_END = "// LINKRAY_SAME_BOT_REPORT_ROUTE_V1_END"
+
+source = re.sub(
+    rf"\s*{re.escape(IMPORT_MARKER)}\s*"
+    rf"import\s+\{{\s*renderLinkRayWebsiteBotReport\s*\}}"
+    rf"\s+from\s+['\"]\.\/linkrayChannelAnalytics\.js['\"];\s*",
+    "\n",
+    source,
+)
+
+source = re.sub(
+    rf"\s*{re.escape(ROUTE_START)}[\s\S]*?"
+    rf"{re.escape(ROUTE_END)}\s*",
+    "\n",
+    source,
+)
+
+imports = re.match(
+    r"(?s)^(\s*(?:import\s+[^;]+;\s*)+)",
+    source,
+)
+
+if not imports:
+    raise SystemExit(
+        "Не удалось определить блок импортов сайта",
+    )
+
+import_block = (
+    "\n"
+    + IMPORT_MARKER
+    + "\n"
+    + "import { renderLinkRayWebsiteBotReport } "
+      "from './linkrayChannelAnalytics.js';\n"
+)
+
+source = (
+    source[:imports.end()]
+    + import_block
+    + source[imports.end():]
+)
+
+route = r'''
+  // LINKRAY_SAME_BOT_REPORT_ROUTE_V1_START
+  app.get(
+    '/api/website/cabinet/channel/:channelId/bot-report.png',
+    applyWebsiteHeaders,
+    lrC5Async(async (req, res) => {
+      try {
+        const identity = await lrC5Session(req);
+
+        if (!identity?.userId) {
+          return res.status(401).json({
+            ok: false,
+            error: 'Сессия входа закончилась. Войдите заново.',
+          });
+        }
+
+        const requestedId = String(
+          req.params.channelId || '',
+        ).trim();
+
+        const memberships = await lrC5LoadChannels(identity);
+
+        const membership = memberships.find(({ raw }) => {
+          const values = [
+            raw?.id,
+            raw?.channel_id,
+            raw?.max_chat_id,
+            raw?.chat_id,
+            raw?.max_channel_id,
+          ]
+            .map((value) => String(value ?? '').trim())
+            .filter(Boolean);
+
+          return values.includes(requestedId);
+        });
+
+        if (!membership) {
+          return res.status(404).json({
+            ok: false,
+            error: 'Канал не найден или не принадлежит пользователю.',
+          });
+        }
+
+        const raw = membership.raw || {};
+
+        const link = lrC5Text(
+          lrC5Pick(
+            raw,
+            [
+              'link',
+              'public_link',
+              'channel_link',
+              'url',
+              'join_link',
+            ],
+            '',
+          ),
+        );
+
+        if (!link) {
+          return res.status(409).json({
+            ok: false,
+            error: 'У канала не сохранена MAX-ссылка для создания отчёта.',
+          });
+        }
+
+        const title = lrC5Text(
+          lrC5Pick(
+            raw,
+            [
+              'title',
+              'name',
+              'channel_title',
+              'display_name',
+            ],
+            `Канал ${requestedId}`,
+          ),
+        );
+
+        const png = await renderLinkRayWebsiteBotReport({
+          ...raw,
+          id: raw.id ?? requestedId,
+          channel_id: raw.channel_id ?? raw.id ?? requestedId,
+          title,
+          link,
+        });
+
+        const output = Buffer.isBuffer(png)
+          ? png
+          : Buffer.from(png);
+
+        const safeId = requestedId.replace(
+          /[^a-zA-Z0-9_-]+/g,
+          '-',
+        );
+
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="linkray-bot-report-${safeId}.png"`,
+        );
+        res.setHeader(
+          'Cache-Control',
+          'private, no-store, no-cache, must-revalidate',
+        );
+        res.setHeader('Content-Length', String(output.length));
+
+        return res.end(output);
+      } catch (error) {
+        const code = String(error?.code || '');
+
+        if (
+          code === 'REPORT_NOT_READY' ||
+          code === 'CHANNEL_LINK_MISSING'
+        ) {
+          return res.status(409).json({
+            ok: false,
+            error: error.message,
+          });
+        }
+
+        console.error(
+          '[LinkRay Website bot report]',
+          error?.stack || error?.message || error,
+        );
+
+        return res.status(500).json({
+          ok: false,
+          error: 'Не удалось создать отчёт канала.',
+        });
+      }
+    }),
+  );
+  // LINKRAY_SAME_BOT_REPORT_ROUTE_V1_END
+
+'''
+
+mount = re.search(
+    r"export\s+function\s+mountLinkRayWebsiteRoutes"
+    r"\s*\([^)]*\)\s*\{",
+    source,
+)
+
+if not mount:
+    raise SystemExit(
+        "Не найдена mountLinkRayWebsiteRoutes",
+    )
+
+search_from = mount.end()
+
+positions = [
+    source.find(token, search_from)
+    for token in (
+        "app.use(",
+        "app.get(",
+        "app.post(",
+        "app.put(",
+        "app.patch(",
+        "app.delete(",
+    )
+]
+
+positions = [
+    position
+    for position in positions
+    if position >= 0
+]
+
+if not positions:
+    raise SystemExit(
+        "Не найдено место перед маршрутами сайта",
+    )
+
+insert_at = min(positions)
+
+source = source[:insert_at] + route + source[insert_at:]
+
+path.write_text(source, encoding="utf-8")
+
+if source.count(
+    "'/api/website/cabinet/channel/:channelId/bot-report.png'"
+) != 1:
+    raise SystemExit(
+        "Маршрут отчёта установлен некорректно",
+    )
+
+print("Защищённый маршрут загрузки отчёта добавлен")
+PY
+
+echo "[4/9] Убираю отдельный Canvas-отчёт сайта"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+js_path = Path("public/linkray-site/cabinet-stable.js")
+html_path = Path("public/linkray-site/cabinet-stable.html")
+
+js = js_path.read_text(encoding="utf-8")
+html = html_path.read_text(encoding="utf-8")
+
+new_download = r'''
+  /*
+   * LINKRAY_SAME_BOT_REPORT_FRONTEND_V1
+   * Сайт больше не рисует PNG самостоятельно.
+   * Он скачивает результат серверного renderSingle() из бота.
+   */
+  async function downloadPng(channel) {
+    const channelId = String(channel?.id || '').trim();
+
+    if (!channelId) {
+      window.alert('Не удалось определить канал.');
+      return;
+    }
+
+    const button = [
+      ...document.querySelectorAll(
+        '[data-action="download-png"]',
+      ),
+    ].find(
+      (element) =>
+        String(
+          element.getAttribute('data-channel-id') || '',
+        ) === channelId,
+    );
+
+    const originalText = button?.textContent || '';
+
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Создаём отчёт…';
+    }
+
+    try {
+      const response = await fetch(
+        `/api/website/cabinet/channel/${encodeURIComponent(channelId)}/bot-report.png`,
+        {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: {
+            Accept: 'image/png, application/json',
+            'Cache-Control': 'no-cache',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        const contentType =
+          response.headers.get('content-type') || '';
+
+        let message = `Ошибка ${response.status}`;
+
+        if (contentType.includes('application/json')) {
+          const body = await response.json();
+          message = body?.error || message;
+        } else {
+          const text = (await response.text()).trim();
+          if (text) message = text.slice(0, 300);
+        }
+
+        throw new Error(message);
+      }
+
+      const blob = await response.blob();
+
+      if (!blob.size) {
+        throw new Error('Сервер вернул пустой отчёт.');
+      }
+
+      downloadBlob(
+        `linkray-bot-report-${channelId}.png`,
+        'image/png',
+        blob,
+      );
+    } catch (error) {
+      window.alert(
+        error?.message ||
+        'Не удалось скачать отчёт.',
+      );
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent =
+          originalText || 'Скачать отчёт';
+      }
+    }
+  }
+'''
+
+start_candidates = [
+    js.find("  function reportRoundRect("),
+    js.find("  function drawReportGraph("),
+    js.find("  function downloadPng(channel)"),
+]
+
+start_candidates = [
+    value
+    for value in start_candidates
+    if value >= 0
+]
+
+if not start_candidates:
+    raise SystemExit(
+        "Не найден старый генератор PNG сайта",
+    )
+
+start = min(start_candidates)
+end = js.find("\n  async function load", start)
+
+if end < 0:
+    raise SystemExit(
+        "Не найден конец старого генератора PNG",
+    )
+
+js = js[:start] + new_download + js[end:]
+
+js = js.replace(
+    "Скачать PNG",
+    "Скачать отчёт",
+)
+
+version = "20260806-same-bot-report-v1"
+
+html = re.sub(
+    r'cabinet-stable\.js(?:\?v=[^"\']*)?',
+    f'cabinet-stable.js?v={version}',
+    html,
+)
+
+html = re.sub(
+    r'cabinet-stable\.css(?:\?v=[^"\']*)?',
+    f'cabinet-stable.css?v={version}',
+    html,
+)
+
+js_path.write_text(js, encoding="utf-8")
+html_path.write_text(html, encoding="utf-8")
+
+if "LINKRAY_SAME_BOT_REPORT_FRONTEND_V1" not in js:
+    raise SystemExit(
+        "Новая загрузка отчёта не установлена",
+    )
+
+if "canvas.width" in js and "function downloadPng" in js:
+    print(
+        "Предупреждение: в файле остался Canvas другого назначения, "
+        "но downloadPng уже использует серверный отчёт."
+    )
+
+print("Отдельная отрисовка PNG на сайте удалена")
+PY
+
+echo "[5/9] Проверяю синтаксис"
+
+node --check "$ANALYTICS"
+node --check "$ROUTES"
+node --check "$JS"
+
+grep -q "renderLinkRayWebsiteBotReport" "$ANALYTICS"
+grep -q "bot-report.png" "$ROUTES"
+grep -q "LINKRAY_SAME_BOT_REPORT_FRONTEND_V1" "$JS"
+
+echo "[6/9] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[7/9] Проверяю сайт и защиту отчёта"
+
+CABINET_HTML="$(
+  curl -fsS --max-time 20 \
+    https://linkray.ru/cabinet
+)"
+
+printf '%s' "$CABINET_HTML" |
+  grep -q "cabinet-stable.js?v=$VERSION"
+
+echo "Кабинет: 200"
+
+echo "JavaScript: $(
+  curl -fsS -o /dev/null -w '%{http_code}' \
+    "https://linkray.ru/linkray-site/cabinet-stable.js?v=$VERSION"
+)"
+
+REPORT_STATUS="$(
+  curl -sS \
+    -o "$BACKUP/report-no-cookie.json" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/api/website/cabinet/channel/0/bot-report.png
+)"
+
+echo "Отчёт без cookie: $REPORT_STATUS"
+[[ "$REPORT_STATUS" == "401" ]]
+
+echo "[8/9] Проверяю журналы запуска"
+
+if docker logs --since 60s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[9/9] Сохраняю проверенную версию"
+
+git add -- "$ANALYTICS" "$ROUTES" "$JS" "$HTML"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Reuse bot analytics report in web cabinet"
+  git push origin HEAD:main
+else
+  echo "Правка уже сохранена"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "САЙТ ТЕПЕРЬ СКАЧИВАЕТ ТОТ ЖЕ ОТЧЁТ, ЧТО И БОТ"
+echo
+echo "• отдельный Canvas-отчёт сайта удалён"
+echo "• данные обрабатываются через resolveChannel() бота"
+echo "• готовность проверяется так же, как в боте"
+echo "• PNG создаётся тем же renderSingle()"
+echo "• доступ разрешён только владельцу канала"
+echo "• будущие изменения отчёта бота автоматически попадут на сайт"
+echo "============================================================"
