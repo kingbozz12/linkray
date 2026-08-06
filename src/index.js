@@ -27003,6 +27003,503 @@ console.log(
 );
 /* LR_CHANNEL_LIFECYCLE_V78_END */
 
+
+/* LR_CHANNEL_CONFIRM_DIRECT_V80_START */
+/*
+ * Регистрацию канала не меняем.
+ * После успешной записи в channels отправляем подтверждение
+ * напрямую пользователю, который переслал пост.
+ */
+function lrV80Clean(value, max = 4000) {
+  const text = String(value ?? '').trim();
+
+  if (
+    !text ||
+    text.length > max ||
+    ['undefined', 'null', 'nan', '[object object]']
+      .includes(text.toLowerCase())
+  ) {
+    return '';
+  }
+
+  return text;
+}
+
+function lrV80Rows(result) {
+  return Array.isArray(result)
+    ? result
+    : Array.isArray(result?.rows)
+      ? result.rows
+      : [];
+}
+
+function lrV80Esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lrV80UserId(update) {
+  const helpers = [
+    'lrV36UserId',
+    'lrProfileMaxUserId',
+    'getUserId',
+  ];
+
+  for (const name of helpers) {
+    try {
+      const helper = globalThis[name];
+
+      if (typeof helper === 'function') {
+        const value = lrV80Clean(helper(update), 100);
+
+        if (value && !value.startsWith('-')) {
+          return value;
+        }
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    update?.message?.sender?.user_id,
+    update?.message?.sender?.userId,
+    update?.body?.message?.sender?.user_id,
+    update?.body?.message?.sender?.userId,
+    update?.sender?.user_id,
+    update?.sender?.userId,
+    update?.user?.user_id,
+    update?.user?.userId,
+    update?.callback?.user?.user_id,
+    update?.callback?.user?.userId,
+    update?.user_id,
+    update?.userId,
+  ];
+
+  for (const candidate of candidates) {
+    const value = lrV80Clean(candidate, 100);
+
+    if (value && !value.startsWith('-')) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+async function lrV80BeforeChannel() {
+  try {
+    const rows = lrV80Rows(
+      await query(
+        `
+          SELECT
+            COALESCE(MAX(id), 0) AS max_id,
+            NOW() AS started_at
+          FROM channels
+        `,
+      ),
+    );
+
+    return {
+      maxId: Number(rows[0]?.max_id || 0),
+      startedAt:
+        rows[0]?.started_at ||
+        new Date().toISOString(),
+    };
+  } catch {
+    return {
+      maxId: 0,
+      startedAt: new Date().toISOString(),
+    };
+  }
+}
+
+async function lrV80SavedChannel(before) {
+  try {
+    const rows = lrV80Rows(
+      await query(
+        `
+          SELECT
+            id,
+            max_chat_id,
+            title,
+            link,
+            is_active,
+            updated_at
+          FROM channels
+          WHERE COALESCE(is_active, true)=true
+            AND (
+              id>$1
+              OR updated_at >=
+                $2::timestamptz - INTERVAL '10 seconds'
+            )
+          ORDER BY
+            updated_at DESC NULLS LAST,
+            id DESC
+          LIMIT 1
+        `,
+        [
+          Number(before?.maxId || 0),
+          before?.startedAt ||
+            new Date().toISOString(),
+        ],
+      ),
+    );
+
+    return rows[0] || null;
+  } catch (error) {
+    console.error(
+      '[channel confirm v80] saved channel lookup failed',
+      error?.message || error,
+    );
+
+    return null;
+  }
+}
+
+async function lrV80WasSent(userId, channelId) {
+  try {
+    const key =
+      `lr_v80_channel_confirm:${userId}:${channelId}`;
+
+    const rows = lrV80Rows(
+      await query(
+        `
+          SELECT key
+          FROM lr_bot_state
+          WHERE key=$1
+            AND updated_at >
+              NOW() - INTERVAL '60 seconds'
+          LIMIT 1
+        `,
+        [key],
+      ),
+    );
+
+    return Boolean(rows[0]);
+  } catch {
+    return false;
+  }
+}
+
+async function lrV80RememberSent(userId, channel) {
+  const key =
+    `lr_v80_channel_confirm:${userId}:${channel.id}`;
+
+  try {
+    await query(
+      `
+        INSERT INTO lr_bot_state (
+          key,
+          value,
+          updated_at
+        )
+        VALUES ($1,$2,NOW())
+        ON CONFLICT (key)
+        DO UPDATE SET
+          value=EXCLUDED.value,
+          updated_at=NOW()
+      `,
+      [
+        key,
+        JSON.stringify({
+          userId,
+          channelId: channel.id,
+          maxChatId: channel.max_chat_id,
+          ts: Date.now(),
+        }),
+      ],
+    );
+  } catch (error) {
+    console.error(
+      '[channel confirm v80] remember failed',
+      error?.message || error,
+    );
+  }
+}
+
+function lrV80Buttons() {
+  try {
+    if (typeof lrV37ButtonRows === 'function') {
+      return lrV37ButtonRows();
+    }
+  } catch {}
+
+  try {
+    if (typeof callbackButton === 'function') {
+      return [[
+        callbackButton(
+          '⬅️ Главное меню',
+          'main:menu',
+        ),
+      ]];
+    }
+  } catch {}
+
+  return [];
+}
+
+async function lrV80SendDirect(userId, text, rows, update) {
+  if (userId) {
+    try {
+      if (typeof lrV37ApiPostMessage === 'function') {
+        const response = await lrV37ApiPostMessage(
+          { user_id: userId },
+          text,
+          rows,
+        );
+
+        if (response?.ok) {
+          console.log(
+            '[channel confirm v80] sent by direct user_id',
+            JSON.stringify({
+              userId,
+              status: response.status,
+            }),
+          );
+
+          return true;
+        }
+
+        console.error(
+          '[channel confirm v80] direct user_id failed',
+          JSON.stringify({
+            userId,
+            status: response?.status || 0,
+            preview:
+              String(response?.raw || '')
+                .slice(0, 300),
+          }),
+        );
+      }
+    } catch (error) {
+      console.error(
+        '[channel confirm v80] direct API exception',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  try {
+    if (typeof lrV37DirectNotifyUser === 'function') {
+      const ok = await lrV37DirectNotifyUser(
+        text,
+        rows,
+        update,
+      );
+
+      if (ok) {
+        console.log(
+          '[channel confirm v80] sent by direct helper',
+        );
+
+        return true;
+      }
+    }
+  } catch (error) {
+    console.error(
+      '[channel confirm v80] direct helper failed',
+      error?.message || error,
+    );
+  }
+
+  if (userId) {
+    try {
+      if (typeof msg === 'function') {
+        await msg(
+          userId,
+          text,
+          rows,
+          'html',
+        );
+
+        console.log(
+          '[channel confirm v80] sent by msg fallback',
+          JSON.stringify({ userId }),
+        );
+
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        '[channel confirm v80] msg fallback failed',
+        error?.message || error,
+      );
+    }
+  }
+
+  return false;
+}
+
+async function lrV80ClearAddMode(update, userId) {
+  const keys = new Set([
+    'lr_v47_add_wait_global',
+    'lr_v34_add_wait_global',
+    'lr_v31_add_wait_global',
+    'lr_v30_add_wait_global',
+    'lr_v29_add_wait_global',
+  ]);
+
+  try {
+    if (typeof lrV47Key === 'function') {
+      const key = lrV80Clean(lrV47Key(update), 100);
+
+      if (key) {
+        keys.add(`lr_v47_add_wait:${key}`);
+      }
+    }
+  } catch {}
+
+  if (userId) {
+    for (const prefix of [
+      'lr_v47_add_wait',
+      'lr_v34_add_wait',
+      'lr_v31_add_wait',
+      'lr_v30_add_wait',
+      'lr_v29_add_wait',
+    ]) {
+      keys.add(`${prefix}:${userId}`);
+      keys.add(`${prefix}:user:${userId}`);
+    }
+  }
+
+  try {
+    await query(
+      `
+        DELETE FROM lr_bot_state
+        WHERE key=ANY($1::text[])
+      `,
+      [[...keys]],
+    );
+  } catch {}
+
+  try {
+    if (userId) {
+      await query(
+        `
+          DELETE FROM bot_sessions
+          WHERE user_id::text=ANY($1::text[])
+        `,
+        [[
+          String(userId),
+          `user:${userId}`,
+        ]],
+      );
+    }
+  } catch {}
+}
+
+const lrV80MaybeRegisterOriginal =
+  maybeRegisterChannel;
+
+maybeRegisterChannel =
+  async function lrV80MaybeRegisterChannel(update) {
+    const before = await lrV80BeforeChannel();
+    const result =
+      await lrV80MaybeRegisterOriginal(update);
+
+    const channel =
+      await lrV80SavedChannel(before);
+
+    if (!channel) {
+      console.log(
+        '[channel confirm v80] registration returned without changed channel',
+        JSON.stringify({
+          result: Boolean(result),
+        }),
+      );
+
+      return result;
+    }
+
+    const userId = lrV80UserId(update);
+
+    if (!userId) {
+      console.error(
+        '[channel confirm v80] sender user_id not found',
+        JSON.stringify({
+          channelId: channel.id,
+          maxChatId: channel.max_chat_id,
+        }),
+      );
+
+      return result;
+    }
+
+    if (
+      await lrV80WasSent(
+        userId,
+        channel.id,
+      )
+    ) {
+      console.log(
+        '[channel confirm v80] duplicate skipped',
+        JSON.stringify({
+          userId,
+          channelId: channel.id,
+        }),
+      );
+
+      return result;
+    }
+
+    const title =
+      lrV80Esc(
+        channel.title || 'Канал',
+      );
+
+    const text =
+      `✅ Канал подключён к LinkRay
+
+<b>${title}</b>
+
+Канал сохранён и доступен в Studio, автоподписях, аналитике и отчётах.`;
+
+    const sent = await lrV80SendDirect(
+      userId,
+      text,
+      lrV80Buttons(),
+      update,
+    );
+
+    if (sent) {
+      await lrV80RememberSent(
+        userId,
+        channel,
+      );
+
+      await lrV80ClearAddMode(
+        update,
+        userId,
+      );
+
+      console.log(
+        '[channel confirm v80] completed',
+        JSON.stringify({
+          userId,
+          channelId: channel.id,
+          maxChatId: channel.max_chat_id,
+          title: channel.title,
+        }),
+      );
+    } else {
+      console.error(
+        '[channel confirm v80] all delivery methods failed',
+        JSON.stringify({
+          userId,
+          channelId: channel.id,
+        }),
+      );
+    }
+
+    return result;
+  };
+
+console.log(
+  '[channel confirm v80] installed: confirmation by sender user_id',
+);
+/* LR_CHANNEL_CONFIRM_DIRECT_V80_END */
+
 await ensureDb();
 startAutopostWorker().catch(e => console.error('[autopost start]', e));
 app.listen(PORT, () => console.log(`LinkRay bot started on port ${PORT}`));
