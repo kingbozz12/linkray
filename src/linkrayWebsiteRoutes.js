@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { query } from './db.js';
 import { sendMaxMessage } from './maxClient.js';
 
+
+// LINKRAY_SAME_BOT_REPORT_IMPORT_V1
+import { renderLinkRayWebsiteBotReport } from './linkrayChannelAnalytics.js';
 // LINKRAY_CABINET_SUITE_V5_IMPORT
 import { query as lrCabinetQuery } from './db.js';
 const __filename = fileURLToPath(import.meta.url);
@@ -1815,7 +1818,142 @@ function lrAccurateSnapshotMatches(snapshot, identifiers) {
 
 
   // LINKRAY_CABINET_SUITE_V5_ROUTES_START
+  
+  // LINKRAY_SAME_BOT_REPORT_ROUTE_V1_START
   app.get(
+    '/api/website/cabinet/channel/:channelId/bot-report.png',
+    applyWebsiteHeaders,
+    lrC5Async(async (req, res) => {
+      try {
+        const identity = await lrC5Session(req);
+
+        if (!identity?.userId) {
+          return res.status(401).json({
+            ok: false,
+            error: 'Сессия входа закончилась. Войдите заново.',
+          });
+        }
+
+        const requestedId = String(
+          req.params.channelId || '',
+        ).trim();
+
+        const memberships = await lrC5LoadChannels(identity);
+
+        const membership = memberships.find(({ raw }) => {
+          const values = [
+            raw?.id,
+            raw?.channel_id,
+            raw?.max_chat_id,
+            raw?.chat_id,
+            raw?.max_channel_id,
+          ]
+            .map((value) => String(value ?? '').trim())
+            .filter(Boolean);
+
+          return values.includes(requestedId);
+        });
+
+        if (!membership) {
+          return res.status(404).json({
+            ok: false,
+            error: 'Канал не найден или не принадлежит пользователю.',
+          });
+        }
+
+        const raw = membership.raw || {};
+
+        const link = lrC5Text(
+          lrC5Pick(
+            raw,
+            [
+              'link',
+              'public_link',
+              'channel_link',
+              'url',
+              'join_link',
+            ],
+            '',
+          ),
+        );
+
+        if (!link) {
+          return res.status(409).json({
+            ok: false,
+            error: 'У канала не сохранена MAX-ссылка для создания отчёта.',
+          });
+        }
+
+        const title = lrC5Text(
+          lrC5Pick(
+            raw,
+            [
+              'title',
+              'name',
+              'channel_title',
+              'display_name',
+            ],
+            `Канал ${requestedId}`,
+          ),
+        );
+
+        const png = await renderLinkRayWebsiteBotReport({
+          ...raw,
+          id: raw.id ?? requestedId,
+          channel_id: raw.channel_id ?? raw.id ?? requestedId,
+          title,
+          link,
+        });
+
+        const output = Buffer.isBuffer(png)
+          ? png
+          : Buffer.from(png);
+
+        const safeId = requestedId.replace(
+          /[^a-zA-Z0-9_-]+/g,
+          '-',
+        );
+
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="linkray-bot-report-${safeId}.png"`,
+        );
+        res.setHeader(
+          'Cache-Control',
+          'private, no-store, no-cache, must-revalidate',
+        );
+        res.setHeader('Content-Length', String(output.length));
+
+        return res.end(output);
+      } catch (error) {
+        const code = String(error?.code || '');
+
+        if (
+          code === 'REPORT_NOT_READY' ||
+          code === 'CHANNEL_LINK_MISSING'
+        ) {
+          return res.status(409).json({
+            ok: false,
+            error: error.message,
+          });
+        }
+
+        console.error(
+          '[LinkRay Website bot report]',
+          error?.stack || error?.message || error,
+        );
+
+        return res.status(500).json({
+          ok: false,
+          error: 'Не удалось создать отчёт канала.',
+        });
+      }
+    }),
+  );
+  // LINKRAY_SAME_BOT_REPORT_ROUTE_V1_END
+
+app.get(
     ['/cabinet', '/cabinet/'],
     applyWebsiteHeaders,
     (_req, res) => {

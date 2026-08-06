@@ -813,7 +813,7 @@
                   class="secondary"
                   data-action="download-png"
                   data-channel-id="${escapeHtml(channel.id)}">
-            Скачать PNG
+            Скачать отчёт
           </button>
 
           <button type="button"
@@ -1026,592 +1026,93 @@
   }
 
 
-  function reportRoundRect(ctx, x, y, width, height, radius) {
-    const safeRadius = Math.min(radius, width / 2, height / 2);
 
-    ctx.beginPath();
-    ctx.moveTo(x + safeRadius, y);
-    ctx.lineTo(x + width - safeRadius, y);
-    ctx.quadraticCurveTo(
-      x + width,
-      y,
-      x + width,
-      y + safeRadius,
-    );
-    ctx.lineTo(x + width, y + height - safeRadius);
-    ctx.quadraticCurveTo(
-      x + width,
-      y + height,
-      x + width - safeRadius,
-      y + height,
-    );
-    ctx.lineTo(x + safeRadius, y + height);
-    ctx.quadraticCurveTo(
-      x,
-      y + height,
-      x,
-      y + height - safeRadius,
-    );
-    ctx.lineTo(x, y + safeRadius);
-    ctx.quadraticCurveTo(x, y, x + safeRadius, y);
-    ctx.closePath();
-  }
+  /*
+   * LINKRAY_SAME_BOT_REPORT_FRONTEND_V1
+   * Сайт больше не рисует PNG самостоятельно.
+   * Он скачивает результат серверного renderSingle() из бота.
+   */
+  async function downloadPng(channel) {
+    const channelId = String(channel?.id || '').trim();
 
-  function reportTextLines(ctx, text, maxWidth, maxLines = 2) {
-    const words = String(text || '').split(/\s+/).filter(Boolean);
-    const lines = [];
-    let line = '';
-
-    for (const word of words) {
-      const candidate = line ? `${line} ${word}` : word;
-
-      if (ctx.measureText(candidate).width <= maxWidth) {
-        line = candidate;
-        continue;
-      }
-
-      if (line) lines.push(line);
-      line = word;
-
-      if (lines.length >= maxLines - 1) break;
-    }
-
-    if (line && lines.length < maxLines) {
-      lines.push(line);
-    }
-
-    if (words.length && lines.length === maxLines) {
-      const joined = lines.join(' ');
-      const original = words.join(' ');
-
-      if (joined.length < original.length) {
-        let last = lines[lines.length - 1];
-
-        while (
-          last.length > 1 &&
-          ctx.measureText(`${last}…`).width > maxWidth
-        ) {
-          last = last.slice(0, -1);
-        }
-
-        lines[lines.length - 1] = `${last.trim()}…`;
-      }
-    }
-
-    return lines;
-  }
-
-  function reportPointTime(point, index) {
-    const raw = point?.capturedAt || point?.date;
-    const time = raw ? new Date(raw).getTime() : NaN;
-    return Number.isFinite(time) ? time : index;
-  }
-
-  function reportMedian(values) {
-    if (!values.length) return 0;
-
-    const sorted = [...values].sort((left, right) => left - right);
-    const middle = Math.floor(sorted.length / 2);
-
-    return sorted.length % 2
-      ? sorted[middle]
-      : (sorted[middle - 1] + sorted[middle]) / 2;
-  }
-
-  function prepareReportPoints(
-    sourcePoints,
-    field,
-    positiveOnly = false,
-  ) {
-    const prepared = (Array.isArray(sourcePoints) ? sourcePoints : [])
-      .map((point, index) => ({
-        point,
-        value: numberOrNull(point?.[field]),
-        time: reportPointTime(point, index),
-        sourceIndex: index,
-      }))
-      .filter((item) => {
-        if (item.value === null) return false;
-        if (positiveOnly && item.value <= 0) return false;
-        return true;
-      })
-      .sort((left, right) => {
-        if (left.time !== right.time) return left.time - right.time;
-        return left.sourceIndex - right.sourceIndex;
-      });
-
-    const deduplicated = [];
-
-    for (const item of prepared) {
-      const previous = deduplicated[deduplicated.length - 1];
-
-      if (previous && previous.time === item.time) {
-        deduplicated[deduplicated.length - 1] = item;
-      } else {
-        deduplicated.push(item);
-      }
-    }
-
-    if (deduplicated.length >= 5) {
-      const followingValues = deduplicated
-        .slice(1, Math.min(6, deduplicated.length))
-        .map((item) => item.value);
-
-      const followingMedian = reportMedian(followingValues);
-      const first = deduplicated[0].value;
-      const difference = Math.abs(first - followingMedian);
-      const threshold = Math.max(
-        positiveOnly ? 100 : 30,
-        Math.abs(followingMedian) * 0.18,
-      );
-
-      if (difference > threshold) {
-        deduplicated.shift();
-      }
-    }
-
-    return deduplicated;
-  }
-
-  function reportNiceStep(range, targetTicks = 5) {
-    const safeRange = Math.max(Number(range) || 0, 1);
-    const rough = safeRange / Math.max(1, targetTicks - 1);
-    const power = 10 ** Math.floor(Math.log10(rough));
-    const fraction = rough / power;
-
-    const niceFraction =
-      fraction <= 1
-        ? 1
-        : fraction <= 2
-          ? 2
-          : fraction <= 5
-            ? 5
-            : 10;
-
-    return niceFraction * power;
-  }
-
-  function reportAxisNumber(value) {
-    const absolute = Math.abs(value);
-
-    if (absolute >= 1000000) {
-      return `${(value / 1000000).toFixed(1).replace('.0', '')} млн`;
-    }
-
-    if (absolute >= 10000) {
-      return `${(value / 1000).toFixed(1).replace('.0', '')} тыс.`;
-    }
-
-    return new Intl.NumberFormat('ru-RU', {
-      maximumFractionDigits: absolute < 10 ? 1 : 0,
-    }).format(value);
-  }
-
-  function reportDateLabel(time) {
-    const date = new Date(time);
-
-    if (Number.isNaN(date.getTime())) return '';
-
-    return new Intl.DateTimeFormat('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-    }).format(date);
-  }
-
-  function drawReportMetric(
-    ctx,
-    x,
-    y,
-    width,
-    label,
-    value,
-    accent = '#f3f8fb',
-  ) {
-    reportRoundRect(ctx, x, y, width, 118, 22);
-    ctx.fillStyle = '#0c2939';
-    ctx.fill();
-
-    ctx.fillStyle = '#8da3b5';
-    ctx.font = '26px sans-serif';
-    ctx.fillText(label, x + 26, y + 40);
-
-    ctx.fillStyle = accent;
-    ctx.font = '700 44px sans-serif';
-    ctx.fillText(value, x + 26, y + 91);
-  }
-
-  function drawReportChart(
-    ctx,
-    {
-      sourcePoints,
-      field,
-      title,
-      x,
-      y,
-      width,
-      height,
-      color,
-      positiveOnly = false,
-    },
-  ) {
-    reportRoundRect(ctx, x, y, width, height, 26);
-    ctx.fillStyle = '#092230';
-    ctx.fill();
-
-    ctx.fillStyle = '#f3f8fb';
-    ctx.font = '700 30px sans-serif';
-    ctx.fillText(title, x + 34, y + 48);
-
-    const points = prepareReportPoints(
-      sourcePoints,
-      field,
-      positiveOnly,
-    );
-
-    if (points.length < 2) {
-      ctx.fillStyle = '#8da3b5';
-      ctx.font = '26px sans-serif';
-      ctx.fillText(
-        'Недостаточно данных для графика',
-        x + 34,
-        y + height / 2,
-      );
+    if (!channelId) {
+      window.alert('Не удалось определить канал.');
       return;
     }
 
-    const values = points.map((point) => point.value);
-    const rawMin = Math.min(...values);
-    const rawMax = Math.max(...values);
-    const rawRange = Math.max(rawMax - rawMin, 1);
-
-    const minimumVisualRange = Math.max(
-      positiveOnly ? Math.abs(rawMax) * 0.006 : 0,
-      rawRange * 1.5,
-      positiveOnly ? 10 : 5,
+    const button = [
+      ...document.querySelectorAll(
+        '[data-action="download-png"]',
+      ),
+    ].find(
+      (element) =>
+        String(
+          element.getAttribute('data-channel-id') || '',
+        ) === channelId,
     );
 
-    const centeredMin =
-      (rawMin + rawMax - minimumVisualRange) / 2;
-    const centeredMax =
-      (rawMin + rawMax + minimumVisualRange) / 2;
+    const originalText = button?.textContent || '';
 
-    const step = reportNiceStep(
-      centeredMax - centeredMin,
-      5,
-    );
-
-    let axisMin = Math.floor(centeredMin / step) * step;
-    let axisMax = Math.ceil(centeredMax / step) * step;
-
-    if (axisMax <= axisMin) {
-      axisMax = axisMin + step;
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Создаём отчёт…';
     }
 
-    const plotLeft = x + 90;
-    const plotRight = x + width - 32;
-    const plotTop = y + 84;
-    const plotBottom = y + height - 58;
-    const plotWidth = plotRight - plotLeft;
-    const plotHeight = plotBottom - plotTop;
-    const valueRange = Math.max(axisMax - axisMin, 1);
-
-    const firstTime = points[0].time;
-    const lastTime = points[points.length - 1].time;
-    const timeRange = Math.max(lastTime - firstTime, 1);
-
-    const coordinates = points.map((point, index) => {
-      const ratio =
-        lastTime !== firstTime
-          ? (point.time - firstTime) / timeRange
-          : index / Math.max(1, points.length - 1);
-
-      return {
-        ...point,
-        x: plotLeft + ratio * plotWidth,
-        y:
-          plotTop +
-          ((axisMax - point.value) / valueRange) *
-            plotHeight,
-      };
-    });
-
-    for (let index = 0; index <= 4; index += 1) {
-      const ratio = index / 4;
-      const lineY = plotTop + ratio * plotHeight;
-      const value = axisMax - ratio * valueRange;
-
-      ctx.strokeStyle = 'rgba(144,170,188,.15)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(plotLeft, lineY);
-      ctx.lineTo(plotRight, lineY);
-      ctx.stroke();
-
-      ctx.fillStyle = '#7890a2';
-      ctx.font = '19px sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText(
-        reportAxisNumber(value),
-        plotLeft - 14,
-        lineY + 6,
+    try {
+      const response = await fetch(
+        `/api/website/cabinet/channel/${encodeURIComponent(channelId)}/bot-report.png`,
+        {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: {
+            Accept: 'image/png, application/json',
+            'Cache-Control': 'no-cache',
+          },
+        },
       );
-    }
 
-    const gradient = ctx.createLinearGradient(
-      0,
-      plotTop,
-      0,
-      plotBottom,
-    );
-    gradient.addColorStop(0, `${color}55`);
-    gradient.addColorStop(1, `${color}00`);
+      if (!response.ok) {
+        const contentType =
+          response.headers.get('content-type') || '';
 
-    ctx.beginPath();
-    coordinates.forEach((point, index) => {
-      if (index === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
-    });
-    ctx.lineTo(
-      coordinates[coordinates.length - 1].x,
-      plotBottom,
-    );
-    ctx.lineTo(coordinates[0].x, plotBottom);
-    ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
+        let message = `Ошибка ${response.status}`;
 
-    ctx.beginPath();
-    coordinates.forEach((point, index) => {
-      if (index === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
-    });
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 6;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke();
+        if (contentType.includes('application/json')) {
+          const body = await response.json();
+          message = body?.error || message;
+        } else {
+          const text = (await response.text()).trim();
+          if (text) message = text.slice(0, 300);
+        }
 
-    const showAllPoints = coordinates.length <= 14;
-
-    coordinates.forEach((point, index) => {
-      const last = index === coordinates.length - 1;
-
-      if (!showAllPoints && !last) return;
-
-      if (last) {
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, 13, 0, Math.PI * 2);
-        ctx.fillStyle = `${color}35`;
-        ctx.fill();
+        throw new Error(message);
       }
 
-      ctx.beginPath();
-      ctx.arc(
-        point.x,
-        point.y,
-        last ? 6 : 4,
-        0,
-        Math.PI * 2,
-      );
-      ctx.fillStyle = last ? '#f4fbf8' : '#092230';
-      ctx.fill();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-    });
+      const blob = await response.blob();
 
-    const labelIndexes = [
-      0,
-      Math.round((coordinates.length - 1) / 2),
-      coordinates.length - 1,
-    ].filter(
-      (value, index, array) =>
-        array.indexOf(value) === index,
-    );
-
-    ctx.font = '19px sans-serif';
-    ctx.fillStyle = '#7890a2';
-
-    labelIndexes.forEach((pointIndex, labelIndex) => {
-      const point = coordinates[pointIndex];
-
-      ctx.textAlign =
-        labelIndex === 0
-          ? 'left'
-          : labelIndex === labelIndexes.length - 1
-            ? 'right'
-            : 'center';
-
-      ctx.fillText(
-        reportDateLabel(point.time),
-        point.x,
-        plotBottom + 34,
-      );
-    });
-
-    const current = coordinates[coordinates.length - 1].value;
-    const change = current - coordinates[0].value;
-
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#8da3b5';
-    ctx.font = '21px sans-serif';
-    ctx.fillText(
-      `Сейчас ${formatNumber(current)} · за период ${formatSigned(change)}`,
-      plotRight,
-      y + 48,
-    );
-
-    ctx.textAlign = 'left';
-  }
-
-  function downloadPng(channel) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1400;
-    canvas.height = 1260;
-
-    const ctx = canvas.getContext('2d');
-    const metrics = channel.metrics || {};
-    const history = Array.isArray(channel.history30d)
-      ? channel.history30d
-      : [];
-
-    const background = ctx.createLinearGradient(
-      0,
-      0,
-      0,
-      canvas.height,
-    );
-    background.addColorStop(0, '#071b28');
-    background.addColorStop(1, '#03101a');
-
-    ctx.fillStyle = background;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = '#59dda0';
-    ctx.font = '700 30px sans-serif';
-    ctx.fillText('LINKRAY · ОТЧЁТ КАНАЛА', 72, 70);
-
-    ctx.fillStyle = '#f3f8fb';
-    ctx.font = '700 54px sans-serif';
-
-    const titleLines = reportTextLines(
-      ctx,
-      channel.title || `Канал ${channel.id}`,
-      1240,
-      2,
-    );
-
-    titleLines.forEach((line, index) => {
-      ctx.fillText(line, 72, 142 + index * 62);
-    });
-
-    const titleBottom =
-      142 + Math.max(0, titleLines.length - 1) * 62;
-
-    ctx.fillStyle = '#8da3b5';
-    ctx.font = '26px sans-serif';
-    ctx.fillText(
-      `Обновлено: ${formatDate(metrics.capturedAt)}`,
-      72,
-      titleBottom + 48,
-    );
-
-    const cardsY = titleBottom + 88;
-    const cardWidth = 610;
-    const gap = 36;
-
-    drawReportMetric(
-      ctx,
-      72,
-      cardsY,
-      cardWidth,
-      'Подписчики',
-      formatNumber(metrics.subscribers),
-    );
-
-    drawReportMetric(
-      ctx,
-      72 + cardWidth + gap,
-      cardsY,
-      cardWidth,
-      'Просмотры за 24 часа',
-      formatNumber(metrics.views24),
-    );
-
-    drawReportMetric(
-      ctx,
-      72,
-      cardsY + 138,
-      cardWidth,
-      'Изменение за сутки',
-      formatSigned(metrics.deltaDay),
-      Number(metrics.deltaDay || 0) < 0
-        ? '#ff91a5'
-        : '#59dda0',
-    );
-
-    drawReportMetric(
-      ctx,
-      72 + cardWidth + gap,
-      cardsY + 138,
-      cardWidth,
-      'ER за 24 часа',
-      formatPercent(metrics.er24),
-    );
-
-    const firstChartY = cardsY + 306;
-
-    drawReportChart(ctx, {
-      sourcePoints: history,
-      field: 'subscribers',
-      title: 'Подписчики за 30 дней',
-      x: 72,
-      y: firstChartY,
-      width: 1256,
-      height: 320,
-      color: '#59dda0',
-      positiveOnly: true,
-    });
-
-    drawReportChart(ctx, {
-      sourcePoints: history,
-      field: 'views24',
-      title: 'Просмотры за 24 часа',
-      x: 72,
-      y: firstChartY + 346,
-      width: 1256,
-      height: 320,
-      color: '#73b7ff',
-      positiveOnly: false,
-    });
-
-    ctx.fillStyle = '#8da3b5';
-    ctx.font = '24px sans-serif';
-    ctx.fillText(
-      `AntiFraud: ${channel.antifraud?.label || 'нет данных'}`,
-      72,
-      1215,
-    );
-
-    ctx.textAlign = 'right';
-    ctx.fillText(
-      `Сформировано ${formatDate(new Date().toISOString())}`,
-      1328,
-      1215,
-    );
-    ctx.textAlign = 'left';
-
-    canvas.toBlob((blob) => {
-      if (!blob) return;
+      if (!blob.size) {
+        throw new Error('Сервер вернул пустой отчёт.');
+      }
 
       downloadBlob(
-        `linkray-${channel.id}-report.png`,
+        `linkray-bot-report-${channelId}.png`,
         'image/png',
         blob,
       );
-    }, 'image/png');
+    } catch (error) {
+      window.alert(
+        error?.message ||
+        'Не удалось скачать отчёт.',
+      );
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent =
+          originalText || 'Скачать отчёт';
+      }
+    }
   }
-
 
   async function load() {
     loading();

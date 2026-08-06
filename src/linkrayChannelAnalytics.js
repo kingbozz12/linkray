@@ -7110,6 +7110,98 @@ async function lrV73SendDailyGroup(
 /* LR_CHANNEL_ANALYTICS_V73_END */
 
 
+
+/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_START */
+/**
+ * Создаёт для сайта в точности ту же PNG-карточку,
+ * которую бот отправляет при аналитике одного канала.
+ *
+ * Здесь специально повторно используются:
+ *   1) getChannelMetricsReadiness;
+ *   2) resolveChannel;
+ *   3) renderSingle.
+ *
+ * Отдельного веб-дизайна отчёта больше нет.
+ */
+export async function renderLinkRayWebsiteBotReport(input = {}) {
+  const link = String(
+    input?.link ||
+    input?.public_link ||
+    input?.channel_link ||
+    input?.url ||
+    input?.max_chat_id ||
+    input?.chat_id ||
+    '',
+  ).trim();
+
+  if (!link) {
+    const error = new Error(
+      'Для этого канала не сохранена MAX-ссылка.',
+    );
+    error.code = 'CHANNEL_LINK_MISSING';
+    throw error;
+  }
+
+  const readiness = await getChannelMetricsReadiness([link]);
+
+  if (!readiness?.ready) {
+    const error = new Error(
+      'Отчёт канала ещё не готов: аналитике необходимо накопить 24 часа данных.',
+    );
+    error.code = 'REPORT_NOT_READY';
+    error.readiness = readiness;
+    throw error;
+  }
+
+  const resolved = await resolveChannel(link, {
+    ...input,
+    _lrIndex: 0,
+  });
+
+  /*
+   * Это тот же вызов, что используется в handleLinks()
+   * при отправке в бот одной ссылки.
+   */
+  const image = await renderSingle(resolved);
+
+  let buffer = null;
+
+  if (typeof lrV33ToPngBuffer === 'function') {
+    buffer = await lrV33ToPngBuffer(image);
+  }
+
+  if (!buffer && Buffer.isBuffer(image)) {
+    buffer = image;
+  }
+
+  if (!buffer && image instanceof Uint8Array) {
+    buffer = Buffer.from(image);
+  }
+
+  if (!buffer && Buffer.isBuffer(image?.buffer)) {
+    buffer = image.buffer;
+  }
+
+  if (!buffer && Buffer.isBuffer(image?.data)) {
+    buffer = image.data;
+  }
+
+  if (!buffer && Buffer.isBuffer(image?.png)) {
+    buffer = image.png;
+  }
+
+  if (!buffer) {
+    const error = new Error(
+      'Генератор бота не вернул PNG-файл.',
+    );
+    error.code = 'BOT_REPORT_EMPTY';
+    throw error;
+  }
+
+  return buffer;
+}
+/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_END */
+
 export function mountLinkRayChannelAnalytics(app) {
   if (mounted) return;
   mounted = true;
