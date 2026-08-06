@@ -1,0 +1,759 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-cabinet-stable-1"
+SITE="public/linkray-site"
+ROUTES="src/linkrayWebsiteRoutes.js"
+BACKUP="/root/linkray-site-backups/cabinet-stable-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+echo "[1/8] Сохраняю резервную копию"
+mkdir -p /root/linkray-site-backups
+tar -czf "$BACKUP" "$ROUTES" "$SITE"
+
+echo "[2/8] Создаю отдельную стабильную страницу кабинета"
+
+cat > "$SITE/cabinet-stable.html" <<'HTML'
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta name="theme-color" content="#061521">
+  <title>Личный кабинет — LinkRay</title>
+  <link rel="icon" href="/linkray-site/favicon-64.png">
+  <link rel="stylesheet" href="/linkray-site/cabinet-stable.css?v=20260806-cabinet-stable-1">
+  <script src="/linkray-site/cabinet-stable.js?v=20260806-cabinet-stable-1" defer></script>
+</head>
+<body>
+  <main id="lr-cabinet" class="cabinet-shell" aria-live="polite">
+    <section class="state-card">
+      <img class="state-logo" src="/linkray-site/linkray-logo-exact.webp" alt="LinkRay"
+           onerror="this.src='/linkray-site/icon-192.png'">
+      <h1>Загружаем кабинет</h1>
+      <p>Получаем профиль, каналы и аналитику.</p>
+      <div class="spinner" aria-label="Загрузка"></div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Разделы кабинета">
+    <button type="button" data-tab="overview" class="active">
+      <span class="nav-icon">▦</span><span>Обзор</span>
+    </button>
+    <button type="button" data-tab="channels">
+      <span class="nav-icon">▤</span><span>Каналы</span>
+    </button>
+    <a href="https://max.ru/se13353901_bot" target="_blank" rel="noopener noreferrer">
+      <span class="nav-icon">➤</span><span>Studio в MAX</span>
+    </a>
+  </nav>
+</body>
+</html>
+HTML
+
+cat > "$SITE/cabinet-stable.css" <<'CSS'
+:root {
+  color-scheme: dark;
+  --bg: #04101b;
+  --panel: rgba(10, 31, 45, .88);
+  --panel-2: rgba(16, 42, 57, .88);
+  --line: rgba(147, 178, 198, .16);
+  --text: #f3f8fb;
+  --muted: #8da3b5;
+  --green: #59dda0;
+  --green-dark: #06271b;
+  --red: #ff91a5;
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; margin: 0; }
+body {
+  background:
+    radial-gradient(circle at 85% 0%, rgba(55, 201, 138, .15), transparent 34%),
+    linear-gradient(180deg, #061521 0%, var(--bg) 100%);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button, a { font: inherit; }
+button { cursor: pointer; }
+
+.cabinet-shell {
+  min-height: 100dvh;
+  padding: max(20px, env(safe-area-inset-top)) 18px calc(112px + env(safe-area-inset-bottom));
+}
+
+.state-card {
+  min-height: calc(100dvh - 150px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 13px;
+}
+
+.state-logo {
+  width: 104px;
+  height: 104px;
+  border-radius: 26px;
+  object-fit: cover;
+  box-shadow: 0 22px 55px rgba(0, 0, 0, .35);
+}
+
+.state-card h1 { margin: 10px 0 0; font-size: clamp(27px, 7vw, 38px); }
+.state-card p { max-width: 460px; margin: 0; color: var(--muted); line-height: 1.5; }
+
+.spinner {
+  width: 42px;
+  height: 42px;
+  margin-top: 14px;
+  border: 4px solid rgba(255,255,255,.1);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.profile img {
+  width: 64px;
+  height: 64px;
+  border-radius: 19px;
+  object-fit: cover;
+}
+
+.profile-copy { min-width: 0; }
+.eyebrow {
+  display: block;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.profile h1 {
+  margin: 4px 0 3px;
+  overflow: hidden;
+  font-size: clamp(23px, 6vw, 31px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile p { margin: 0; color: var(--muted); font-size: 13px; }
+
+.icon-button {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255,255,255,.045);
+  color: var(--text);
+  font-size: 25px;
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 11px;
+}
+
+.metric, .channel-card, .empty-card, .error-card {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, .16);
+}
+
+.metric { padding: 16px; }
+.metric span { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+.metric strong { font-size: 25px; }
+
+.section-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 28px 2px 14px;
+}
+
+.section-head h2 { margin: 4px 0 0; font-size: 22px; }
+.section-head a { color: var(--green); font-size: 13px; font-weight: 800; text-decoration: none; }
+
+.channel-list { display: grid; gap: 12px; }
+.channel-card { padding: 17px; }
+
+.channel-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.channel-title { min-width: 0; }
+.channel-title h3 {
+  margin: 0 0 5px;
+  overflow: hidden;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-title p { margin: 0; color: var(--muted); font-size: 12px; }
+
+.status-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 7px rgba(89, 221, 160, .09);
+}
+
+.channel-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.channel-metrics strong { display: block; margin-bottom: 4px; font-size: 17px; }
+.channel-metrics span { display: block; color: var(--muted); font-size: 10px; line-height: 1.25; }
+.positive { color: var(--green) !important; }
+.negative { color: var(--red) !important; }
+
+.empty-card, .error-card { padding: 24px; }
+.empty-card h2, .error-card h1 { margin-top: 0; }
+.empty-card p, .error-card p { color: var(--muted); line-height: 1.55; }
+
+.actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.primary, .secondary {
+  min-height: 53px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  padding: 0 18px;
+  font-weight: 850;
+  text-decoration: none;
+}
+
+.primary {
+  border: 0;
+  background: linear-gradient(135deg, #6ee7a8, #37c98a);
+  color: var(--green-dark);
+}
+
+.secondary {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.045);
+  color: var(--text);
+}
+
+.bottom-nav {
+  position: fixed;
+  z-index: 50;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  min-height: calc(82px + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(3,1fr);
+  padding: 8px 10px env(safe-area-inset-bottom);
+  border-top: 1px solid var(--line);
+  background: rgba(4,16,27,.96);
+  backdrop-filter: blur(18px);
+}
+
+.bottom-nav button, .bottom-nav a {
+  min-width: 0;
+  border: 0;
+  border-radius: 17px;
+  background: transparent;
+  color: #8298aa;
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.bottom-nav .active {
+  background: rgba(89, 221, 160, .11);
+  color: #d9f8e9;
+}
+
+.nav-icon { font-size: 22px; }
+
+[data-view="channels"] .summary,
+[data-view="channels"] .overview-only { display: none; }
+
+@media (min-width: 760px) {
+  .cabinet-shell {
+    max-width: 960px;
+    margin: 0 auto;
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+  .summary { grid-template-columns: repeat(4,1fr); }
+  .channel-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+CSS
+
+cat > "$SITE/cabinet-stable.js" <<'JS'
+(() => {
+  'use strict';
+
+  const API = '/api/website/cabinet/overview';
+  const BOT_URL = 'https://max.ru/se13353901_bot';
+  const root = document.getElementById('lr-cabinet');
+
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+  const first = (...values) =>
+    values.find((value) => value !== undefined && value !== null && value !== '');
+
+  const number = (...values) => {
+    const value = first(...values);
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const format = (value) => new Intl.NumberFormat('ru-RU').format(number(value));
+
+  const normalize = (payload) => {
+    const source =
+      payload?.data && typeof payload.data === 'object'
+        ? payload.data
+        : payload || {};
+
+    const profile =
+      source.profile || source.user || source.account || source.viewer || {};
+
+    const rawChannels =
+      source.channels ||
+      source.channelList ||
+      source.items ||
+      source.overview?.channels ||
+      [];
+
+    const channels = Array.isArray(rawChannels)
+      ? rawChannels
+      : Array.isArray(rawChannels?.items)
+        ? rawChannels.items
+        : [];
+
+    const summary =
+      source.summary || source.analytics || source.stats || source.overview || {};
+
+    return { source, profile, channels, summary };
+  };
+
+  const channelName = (channel, index) =>
+    first(
+      channel?.title,
+      channel?.name,
+      channel?.displayName,
+      channel?.display_name,
+      channel?.channelTitle,
+      channel?.channel_name,
+      `Канал ${index + 1}`
+    );
+
+  const subscribers = (channel) =>
+    number(
+      channel?.subscribers,
+      channel?.subscriberCount,
+      channel?.subscriber_count,
+      channel?.members,
+      channel?.memberCount,
+      channel?.member_count,
+      channel?.audience,
+      channel?.metrics?.subscribers,
+      channel?.analytics?.subscribers
+    );
+
+  const views24 = (channel) =>
+    number(
+      channel?.views24,
+      channel?.views_24,
+      channel?.views24h,
+      channel?.views_24h,
+      channel?.metrics?.views24,
+      channel?.analytics?.views24
+    );
+
+  const growth24 = (channel) =>
+    number(
+      channel?.growth24,
+      channel?.growth_24,
+      channel?.net24,
+      channel?.net_24,
+      channel?.delta24,
+      channel?.joined24,
+      channel?.metrics?.growth24,
+      channel?.analytics?.growth24
+    );
+
+  const antifraud = (channel) => {
+    const enabled = first(
+      channel?.antifraudEnabled,
+      channel?.antifraud_enabled,
+      channel?.antiFraudEnabled,
+      channel?.antifraud?.enabled,
+      channel?.antiFraud?.enabled
+    );
+    if (enabled === true || enabled === 1 || enabled === 'true') return 'AntiFraud включён';
+    if (enabled === false || enabled === 0 || enabled === 'false') return 'AntiFraud выключен';
+    return 'Канал подключён';
+  };
+
+  function renderError(message, status) {
+    const authError = status === 401 || status === 403;
+    root.innerHTML = `
+      <section class="state-card error-card">
+        <img class="state-logo" src="/linkray-site/linkray-logo-exact.webp" alt="LinkRay"
+             onerror="this.src='/linkray-site/icon-192.png'">
+        <h1>${authError ? 'Сессия входа закончилась' : 'Не удалось загрузить кабинет'}</h1>
+        <p>${escapeHtml(message || 'Сервер не вернул данные.')}</p>
+        <div class="actions">
+          ${
+            authError
+              ? '<a class="primary" href="/">Войти снова</a>'
+              : '<button class="primary" type="button" id="retry-cabinet">Повторить</button>'
+          }
+          <a class="secondary" href="${BOT_URL}" target="_blank" rel="noopener noreferrer">
+            Открыть LinkRay в MAX
+          </a>
+        </div>
+      </section>
+    `;
+    document.getElementById('retry-cabinet')?.addEventListener('click', load);
+  }
+
+  function render(payload) {
+    const { source, profile, channels, summary } = normalize(payload);
+
+    const displayName = first(
+      profile.displayName,
+      profile.display_name,
+      profile.name,
+      profile.firstName,
+      profile.first_name,
+      source.displayName,
+      source.display_name,
+      'Пользователь LinkRay'
+    );
+
+    const publicId = first(
+      profile.linkrayId,
+      profile.linkray_id,
+      profile.publicId,
+      profile.public_id,
+      source.linkrayId,
+      source.linkray_id,
+      profile.id
+    );
+
+    const summedSubscribers = channels.reduce((sum, channel) => sum + subscribers(channel), 0);
+    const summedViews = channels.reduce((sum, channel) => sum + views24(channel), 0);
+    const summedGrowth = channels.reduce((sum, channel) => sum + growth24(channel), 0);
+
+    const totalSubscribers = number(
+      summary.totalSubscribers,
+      summary.total_subscribers,
+      summary.subscribers,
+      summary.audience,
+      summedSubscribers
+    );
+    const totalViews = number(
+      summary.views24,
+      summary.views_24,
+      summary.totalViews24,
+      summary.total_views_24,
+      summedViews
+    );
+    const totalGrowth = number(
+      summary.growth24,
+      summary.growth_24,
+      summary.net24,
+      summary.net_24,
+      summary.delta24,
+      summedGrowth
+    );
+
+    const cards = channels.length
+      ? channels.map((channel, index) => {
+          const growth = growth24(channel);
+          return `
+            <article class="channel-card">
+              <div class="channel-top">
+                <div class="channel-title">
+                  <h3>${escapeHtml(channelName(channel, index))}</h3>
+                  <p>${escapeHtml(antifraud(channel))}</p>
+                </div>
+                <span class="status-dot"></span>
+              </div>
+              <div class="channel-metrics">
+                <div><strong>${format(subscribers(channel))}</strong><span>подписчиков</span></div>
+                <div><strong>${format(views24(channel))}</strong><span>просмотров 24 ч</span></div>
+                <div>
+                  <strong class="${growth < 0 ? 'negative' : 'positive'}">
+                    ${growth > 0 ? '+' : ''}${format(growth)}
+                  </strong>
+                  <span>изменение 24 ч</span>
+                </div>
+              </div>
+            </article>
+          `;
+        }).join('')
+      : `
+        <section class="empty-card">
+          <h2>Подключённых каналов пока нет</h2>
+          <p>Добавь бота LinkRay администратором канала и перешли ему любой пост из этого канала.</p>
+          <div class="actions">
+            <a class="primary" href="${BOT_URL}" target="_blank" rel="noopener noreferrer">
+              Открыть LinkRay в MAX
+            </a>
+          </div>
+        </section>
+      `;
+
+    const idText =
+      publicId !== undefined && publicId !== null && publicId !== ''
+        ? `ID LinkRay: ${escapeHtml(String(publicId).padStart(6, '0'))}`
+        : 'Личный кабинет';
+
+    root.innerHTML = `
+      <header class="header">
+        <div class="profile">
+          <img src="/linkray-site/linkray-logo-exact.webp" alt="LinkRay"
+               onerror="this.src='/linkray-site/icon-192.png'">
+          <div class="profile-copy">
+            <span class="eyebrow">Личный кабинет</span>
+            <h1>${escapeHtml(displayName)}</h1>
+            <p>${idText}</p>
+          </div>
+        </div>
+        <button type="button" class="icon-button" id="refresh-cabinet" aria-label="Обновить">↻</button>
+      </header>
+
+      <section class="summary overview-only">
+        <article class="metric"><span>Каналы</span><strong>${format(channels.length)}</strong></article>
+        <article class="metric"><span>Подписчики</span><strong>${format(totalSubscribers)}</strong></article>
+        <article class="metric"><span>Просмотры 24 ч</span><strong>${format(totalViews)}</strong></article>
+        <article class="metric">
+          <span>Изменение 24 ч</span>
+          <strong class="${totalGrowth < 0 ? 'negative' : 'positive'}">
+            ${totalGrowth > 0 ? '+' : ''}${format(totalGrowth)}
+          </strong>
+        </article>
+      </section>
+
+      <section class="section-head">
+        <div>
+          <span class="eyebrow">Мои каналы</span>
+          <h2>Состояние каналов</h2>
+        </div>
+        <a href="${BOT_URL}" target="_blank" rel="noopener noreferrer">Studio в MAX</a>
+      </section>
+
+      <section class="channel-list">${cards}</section>
+    `;
+
+    document.getElementById('refresh-cabinet')?.addEventListener('click', load);
+  }
+
+  async function load() {
+    root.removeAttribute('data-view');
+    root.innerHTML = `
+      <section class="state-card">
+        <img class="state-logo" src="/linkray-site/linkray-logo-exact.webp" alt="LinkRay"
+             onerror="this.src='/linkray-site/icon-192.png'">
+        <h1>Загружаем кабинет</h1>
+        <p>Получаем профиль, каналы и аналитику.</p>
+        <div class="spinner" aria-label="Загрузка"></div>
+      </section>
+    `;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+
+    try {
+      const response = await fetch(API, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache'
+        },
+        signal: controller.signal
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      const body = contentType.includes('application/json')
+        ? await response.json()
+        : { error: (await response.text()).slice(0, 500) };
+
+      if (!response.ok || body?.ok === false) {
+        const error = new Error(body?.error || body?.message || `Ошибка API ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+
+      render(body);
+    } catch (error) {
+      const message =
+        error?.name === 'AbortError'
+          ? 'Сервер не ответил за 12 секунд. Нажми «Повторить».'
+          : error?.message || 'Неизвестная ошибка загрузки.';
+      renderError(message, Number(error?.status || 0));
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  document.querySelectorAll('[data-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('[data-tab]').forEach((item) => item.classList.remove('active'));
+      button.classList.add('active');
+      const tab = button.getAttribute('data-tab');
+      root.setAttribute('data-view', tab || 'overview');
+      if (tab === 'channels') {
+        document.querySelector('.section-head')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    });
+  });
+
+  load();
+})();
+JS
+
+echo "[3/8] Подключаю новую страницу непосредственно к /cabinet"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+marker_start = "// LINKRAY_STABLE_CABINET_ROUTE_START"
+marker_end = "// LINKRAY_STABLE_CABINET_ROUTE_END"
+
+source = re.sub(
+    rf"\n?{re.escape(marker_start)}[\s\S]*?{re.escape(marker_end)}\n?",
+    "\n",
+    source,
+)
+
+mount = re.search(
+    r"export\s+function\s+mountLinkRayWebsiteRoutes\s*\(\s*app\s*\)\s*\{",
+    source,
+)
+if not mount:
+    raise SystemExit("Не найдена функция mountLinkRayWebsiteRoutes(app)")
+
+route_candidates = []
+for pattern in (r"\bapp\.use\s*\(", r"\bapp\.get\s*\(", r"\bapp\.post\s*\("):
+    match = re.search(pattern, source[mount.end():])
+    if match:
+        route_candidates.append(mount.end() + match.start())
+
+if not route_candidates:
+    raise SystemExit("В mountLinkRayWebsiteRoutes не найдено место перед маршрутами")
+
+insert_at = min(route_candidates)
+has_headers = bool(re.search(r"\bfunction\s+applyWebsiteHeaders\b", source))
+
+middleware = "applyWebsiteHeaders, " if has_headers else ""
+block = f"""
+  {marker_start}
+  app.get(['/cabinet', '/cabinet/'], {middleware}(_req, res) => {{
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.sendFile(
+      path.resolve(process.cwd(), 'public/linkray-site/cabinet-stable.html')
+    );
+  }});
+  {marker_end}
+
+"""
+
+source = source[:insert_at] + block + source[insert_at:]
+path.write_text(source, encoding="utf-8")
+print("Маршрут /cabinet поставлен первым внутри mountLinkRayWebsiteRoutes")
+PY
+
+echo "[4/8] Проверяю синтаксис"
+node --check "$ROUTES"
+node --check "$SITE/cabinet-stable.js"
+
+echo "[5/8] Сохраняю изменения в GitHub"
+git add -- "$ROUTES" \
+  "$SITE/cabinet-stable.html" \
+  "$SITE/cabinet-stable.css" \
+  "$SITE/cabinet-stable.js"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Replace endless cabinet loader with stable cabinet page"
+  git push origin HEAD:main
+else
+  echo "Изменения уже применены"
+fi
+
+echo "[6/8] Пересобираю только приложение"
+docker compose up -d --build app
+sleep 15
+
+echo "[7/8] Проверяю новую страницу и файлы"
+CABINET_HTML="$(curl -fsS --max-time 20 https://linkray.ru/cabinet)"
+echo "$CABINET_HTML" | grep -q "cabinet-stable.js"
+echo "Кабинет: 200, новая страница подключена"
+
+echo "JavaScript: $(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.js?v=$VERSION")"
+echo "CSS: $(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.css?v=$VERSION")"
+echo "API без cookie: $(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/api/website/cabinet/overview)"
+
+echo "[8/8] Готово"
+echo
+echo "============================================================"
+echo "БЕСКОНЕЧНАЯ ЗАГРУЗКА ЗАМЕНЕНА СТАБИЛЬНЫМ КАБИНЕТОМ"
+echo "Новая страница всегда покажет данные или точную ошибку с кнопкой «Повторить»"
+echo "Коды входа, Studio, аналитика и AntiFraud не изменялись"
+echo "Резервная копия: $BACKUP"
+echo "============================================================"
