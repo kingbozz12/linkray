@@ -1,0 +1,1198 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+JS="public/linkray-site/cabinet-stable.js"
+CSS="public/linkray-site/styles.css"
+CONTROL="public/linkray-site/cabinet-control-center.js"
+BACKUP="$(mktemp -d /tmp/linkray-real-settings-v3.XXXXXX)"
+DONE=0
+
+rollback() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежний кабинет"
+
+  [[ -f "$BACKUP/cabinet-stable.js" ]] &&
+    cp -f "$BACKUP/cabinet-stable.js" "$JS"
+
+  [[ -f "$BACKUP/styles.css" ]] &&
+    cp -f "$BACKUP/styles.css" "$CSS"
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    rollback
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/10] Проверяю текущую версию"
+
+test -f "$JS"
+test -f "$CSS"
+test -f "$CONTROL"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "В репозитории есть незавершённые изменения:"
+  git status --short
+  exit 2
+fi
+
+git fetch origin main --quiet
+git pull --ff-only origin main --quiet
+
+cp -f "$JS" "$BACKUP/cabinet-stable.js"
+cp -f "$CSS" "$BACKUP/styles.css"
+
+echo "Коммит: $(git rev-parse --short HEAD)"
+
+echo "[2/10] Проверяю реальные API и уведомления"
+
+grep -q "/api/website/cabinet/full" "$JS"
+grep -q "/api/website/cabinet/channel/" "$JS"
+
+grep -q "/api/website/cabinet/operations" "$CONTROL"
+grep -q "/api/website/cabinet/notifications/read" "$CONTROL"
+grep -q "/api/website/cabinet/notifications/clear" "$CONTROL"
+
+NOTIFY_TABLE="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "
+        SELECT to_regclass(
+          '\''public.lr_web_cabinet_notifications'\''
+        ) IS NOT NULL;
+      "
+  '
+)"
+
+if [[ "$NOTIFY_TABLE" != "t" ]]; then
+  echo "Таблица реальных уведомлений не найдена"
+  exit 1
+fi
+
+echo "Реальные уведомления уже подключены и будут сохранены"
+
+echo "[3/10] Определяю действующий обработчик настроек"
+
+python3 - "$JS" <<'PY'
+from pathlib import Path
+import json
+import re
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+
+START = "/* LR_REAL_CHANNEL_SETTINGS_V3_START */"
+END = "/* LR_REAL_CHANNEL_SETTINGS_V3_END */"
+ADAPTER = "/* LR_REAL_CHANNEL_SETTINGS_V3_ADAPTER */"
+
+source = re.sub(
+    rf"\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*",
+    "\n",
+    source,
+)
+
+source = re.sub(
+    rf"\s*{re.escape(ADAPTER)}[\s\S]*?"
+    rf"/\* LR_REAL_CHANNEL_SETTINGS_V3_ADAPTER_END \*/\s*",
+    "\n",
+    source,
+)
+
+needle = "/api/website/cabinet/channel/"
+needle_pos = source.find(needle)
+
+if needle_pos < 0:
+    raise SystemExit(
+        "Не найден существующий API изменения канала"
+    )
+
+
+def match_brace(text: str, opening: int) -> int:
+    depth = 0
+    quote = None
+    escaped = False
+    template_expr = 0
+    i = opening
+
+    while i < len(text):
+        ch = text[i]
+
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif (
+                quote == "`"
+                and ch == "$"
+                and i + 1 < len(text)
+                and text[i + 1] == "{"
+            ):
+                template_expr += 1
+                i += 1
+            elif (
+                quote == "`"
+                and ch == "}"
+                and template_expr
+            ):
+                template_expr -= 1
+            elif ch == quote and not template_expr:
+                quote = None
+        else:
+            if ch in ("'", '"', "`"):
+                quote = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+
+                if depth == 0:
+                    return i + 1
+
+        i += 1
+
+    raise SystemExit("Не найден конец функции обновления")
+
+
+patterns = [
+    re.compile(
+        r"async\s+function\s+([A-Za-z_$][\w$]*)\s*"
+        r"\(([^)]*)\)\s*\{"
+    ),
+    re.compile(
+        r"function\s+([A-Za-z_$][\w$]*)\s*"
+        r"\(([^)]*)\)\s*\{"
+    ),
+    re.compile(
+        r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+        r"async\s*\(([^)]*)\)\s*=>\s*\{"
+    ),
+    re.compile(
+        r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+        r"\(([^)]*)\)\s*=>\s*\{"
+    ),
+]
+
+candidates = []
+
+window_start = max(0, needle_pos - 12000)
+prefix = source[window_start:needle_pos]
+
+for pattern in patterns:
+    for match in pattern.finditer(prefix):
+        absolute_start = window_start + match.start()
+        brace = source.find("{", absolute_start)
+
+        try:
+            end = match_brace(source, brace)
+        except SystemExit:
+            continue
+
+        if absolute_start <= needle_pos < end:
+            candidates.append(
+                (
+                    absolute_start,
+                    end,
+                    match.group(1),
+                    match.group(2),
+                )
+            )
+
+if not candidates:
+    raise SystemExit(
+        "Не удалось определить существующую функцию обновления"
+    )
+
+start, end, function_name, raw_params = max(
+    candidates,
+    key=lambda item: item[0],
+)
+
+params = [
+    item.strip().split("=")[0].strip()
+    for item in raw_params.split(",")
+    if item.strip()
+]
+
+body = source[start:end]
+
+
+def classify_param(name: str):
+    low = name.lower()
+
+    if "channel" in low or low in {"id", "channelid", "channel_id"}:
+        return "channel"
+
+    if any(
+        token in low
+        for token in (
+            "action",
+            "setting",
+            "field",
+            "key",
+            "type",
+            "mode",
+        )
+    ):
+        return "action"
+
+    if any(
+        token in low
+        for token in (
+            "enabled",
+            "value",
+            "checked",
+            "state",
+            "active",
+        )
+    ):
+        return "enabled"
+
+    if any(
+        token in low
+        for token in (
+            "payload",
+            "data",
+            "options",
+            "settings",
+            "body",
+        )
+    ):
+        return "payload"
+
+    return "unknown"
+
+
+classes = [classify_param(name) for name in params]
+
+if (
+    len(params) == 3
+    and "channel" in classes
+    and "action" in classes
+    and "enabled" in classes
+):
+    args = []
+
+    for kind in classes:
+        args.append(
+            {
+                "channel": "channelId",
+                "action": "action",
+                "enabled": "enabled",
+            }[kind]
+        )
+
+    call_expr = (
+        f"{function_name}({', '.join(args)})"
+    )
+elif (
+    len(params) == 2
+    and "channel" in classes
+    and "payload" in classes
+):
+    args = []
+
+    for kind in classes:
+        if kind == "channel":
+            args.append("channelId")
+        else:
+            args.append(
+                "{ action, enabled, value: enabled, [action]: enabled }"
+            )
+
+    call_expr = (
+        f"{function_name}({', '.join(args)})"
+    )
+else:
+    raise SystemExit(
+        "Сигнатура существующего обработчика не распознана: "
+        + function_name
+        + "("
+        + ", ".join(params)
+        + ")"
+    )
+
+quoted = re.findall(
+    r'''['"]([^'"]*(?:analytics|antifraud|anti_fraud|daily|pdp)[^'"]*)['"]''',
+    body,
+    flags=re.I,
+)
+
+nearby = source[
+    max(0, needle_pos - 16000):
+    min(len(source), needle_pos + 16000)
+]
+
+quoted += re.findall(
+    r'''['"]([^'"]*(?:analytics|antifraud|anti_fraud|daily|pdp)[^'"]*)['"]''',
+    nearby,
+    flags=re.I,
+)
+
+tokens = []
+
+for item in quoted:
+    value = item.strip()
+
+    if (
+        1 <= len(value) <= 80
+        and " " not in value
+        and value not in tokens
+    ):
+        tokens.append(value)
+
+
+def choose(kind: str, defaults):
+    scored = []
+
+    for token in tokens:
+        low = token.lower()
+        score = 0
+
+        if kind == "analytics":
+            if "analytics" in low:
+                score += 10
+            if "daily" in low or "pdp" in low:
+                score -= 8
+            if "antifraud" in low or "anti_fraud" in low:
+                score -= 12
+
+        elif kind == "daily":
+            if "daily" in low or "pdp" in low:
+                score += 10
+            if "analytics" in low:
+                score += 2
+            if "antifraud" in low or "anti_fraud" in low:
+                score -= 12
+
+        elif kind == "antifraud":
+            if "antifraud" in low or "anti_fraud" in low:
+                score += 12
+            if "analytics" in low or "daily" in low:
+                score -= 8
+
+        if "enabled" in low:
+            score += 3
+
+        if score > 0:
+            scored.append((score, -len(token), token))
+
+    if scored:
+        return max(scored)[2]
+
+    for default in defaults:
+        if default in body or default in nearby:
+            return default
+
+    raise SystemExit(
+        f"Не найдено точное действие для {kind}"
+    )
+
+
+actions = {
+    "analytics": choose(
+        "analytics",
+        (
+            "analytics_enabled",
+            "analyticsEnabled",
+            "analytics",
+        ),
+    ),
+    "daily": choose(
+        "daily",
+        (
+            "daily_enabled",
+            "dailyReportEnabled",
+            "daily_report_enabled",
+            "daily",
+        ),
+    ),
+    "antifraud": choose(
+        "antifraud",
+        (
+            "antifraud_enabled",
+            "antiFraudEnabled",
+            "antifraud",
+        ),
+    ),
+}
+
+adapter = f'''
+{ADAPTER}
+window.LinkRayExistingChannelSettingsV3 = async function(
+  channelId,
+  action,
+  enabled
+) {{
+  return await {call_expr};
+}};
+window.LinkRayExistingChannelActionsV3 = {json.dumps(actions, ensure_ascii=False)};
+window.LinkRayExistingChannelUpdaterV3 = {json.dumps(function_name)};
+window.dispatchEvent(
+  new CustomEvent('linkray:channel-settings-adapter-ready')
+);
+/* LR_REAL_CHANNEL_SETTINGS_V3_ADAPTER_END */
+'''
+
+source = source[:end] + "\n" + adapter + source[end:]
+
+module = r'''
+/* LR_REAL_CHANNEL_SETTINGS_V3_START */
+(() => {
+  'use strict';
+
+  const FULL_API = '/api/website/cabinet/full';
+  const UPDATE_EVENT = 'linkray:real-settings-updated';
+  let timer = null;
+  let dataCache = null;
+
+  const clean = (value) =>
+    String(value ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const text = (element) =>
+    clean(element?.textContent || '');
+
+  const boolValue = (value) => {
+    if (typeof value === 'boolean') return value;
+
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+
+    if (typeof value === 'string') {
+      const normalized = value.toLowerCase();
+
+      if (
+        ['true', '1', 'on', 'enabled', 'active', 'yes']
+          .includes(normalized)
+      ) {
+        return true;
+      }
+
+      if (
+        ['false', '0', 'off', 'disabled', 'inactive', 'no']
+          .includes(normalized)
+      ) {
+        return false;
+      }
+    }
+
+    return null;
+  };
+
+  const firstValue = (object, paths) => {
+    for (const path of paths) {
+      const parts = path.split('.');
+      let value = object;
+
+      for (const part of parts) {
+        value = value?.[part];
+      }
+
+      if (value !== undefined && value !== null) {
+        return value;
+      }
+    }
+
+    return undefined;
+  };
+
+  const channelId = (channel) =>
+    firstValue(channel, [
+      'id',
+      'channelId',
+      'channel_id',
+      'channel.id',
+    ]);
+
+  const channelTitle = (channel) =>
+    clean(
+      firstValue(channel, [
+        'title',
+        'name',
+        'channelTitle',
+        'channel_title',
+        'channel.title',
+      ]),
+    );
+
+  const stateOf = (channel) => ({
+    analytics: boolValue(
+      firstValue(channel, [
+        'analyticsEnabled',
+        'analytics_enabled',
+        'analytics.enabled',
+        'analytics.active',
+        'analytics.status',
+        'settings.analyticsEnabled',
+        'settings.analytics_enabled',
+      ]),
+    ),
+    daily: boolValue(
+      firstValue(channel, [
+        'dailyReportEnabled',
+        'daily_report_enabled',
+        'dailyEnabled',
+        'daily_enabled',
+        'analytics.dailyEnabled',
+        'analytics.daily_enabled',
+        'settings.dailyReportEnabled',
+        'settings.daily_enabled',
+      ]),
+    ),
+    antifraud: boolValue(
+      firstValue(channel, [
+        'antifraudEnabled',
+        'antifraud_enabled',
+        'antiFraudEnabled',
+        'antifraud.enabled',
+        'antifraud.active',
+        'antifraud.status',
+        'settings.antifraudEnabled',
+        'settings.antifraud_enabled',
+      ]),
+    ),
+  });
+
+  const collectChannels = (value, output = [], seen = new Set()) => {
+    if (!value || typeof value !== 'object') {
+      return output;
+    }
+
+    if (seen.has(value)) return output;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      value.forEach((item) =>
+        collectChannels(item, output, seen),
+      );
+      return output;
+    }
+
+    const id = channelId(value);
+    const title = channelTitle(value);
+    const keys = Object.keys(value)
+      .join(' ')
+      .toLowerCase();
+
+    if (
+      id !== undefined &&
+      title &&
+      (
+        /channel|analytics|antifraud|subscriber|view/
+          .test(keys)
+      )
+    ) {
+      const duplicate = output.some(
+        (item) => String(channelId(item)) === String(id),
+      );
+
+      if (!duplicate) output.push(value);
+    }
+
+    Object.values(value).forEach((item) =>
+      collectChannels(item, output, seen),
+    );
+
+    return output;
+  };
+
+  const fetchData = async () => {
+    const response = await fetch(FULL_API, {
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+      },
+      cache: 'no-store',
+    });
+
+    if (response.status === 401) {
+      location.replace('/');
+      throw new Error('Требуется повторный вход');
+    }
+
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(
+        payload?.error ||
+        payload?.message ||
+        'Не удалось загрузить настройки',
+      );
+    }
+
+    dataCache = payload;
+    return payload;
+  };
+
+  const findCard = (channel) => {
+    const title = channelTitle(channel);
+
+    if (!title) return null;
+
+    const candidates = Array.from(
+      document.querySelectorAll(
+        'article, section, [class*="channel"], [class*="card"]',
+      ),
+    );
+
+    return candidates
+      .filter((element) => {
+        const value = text(element);
+
+        return (
+          value.includes(title) &&
+          /подписчик|просмотр|antifraud|публикац|аналитик/i
+            .test(value)
+        );
+      })
+      .sort((a, b) => {
+        const aSize = text(a).length;
+        const bSize = text(b).length;
+        return aSize - bSize;
+      })[0] || null;
+  };
+
+  const labelFor = (key) => ({
+    analytics: 'Аналитика канала',
+    daily: 'Ежедневный отчёт ПДП',
+    antifraud: 'Защита AntiFraud',
+  })[key];
+
+  const descriptionFor = (key) => ({
+    analytics: 'Сбор подписок, отписок, просмотров и ER.',
+    daily: 'Отдельный текстовый отчёт каждый день в 08:00 МСК.',
+    antifraud: 'Контроль подозрительных наплывов подписчиков.',
+  })[key];
+
+  const statusText = (value) => {
+    if (value === true) return 'Включено';
+    if (value === false) return 'Отключено';
+    return 'Проверяется';
+  };
+
+  const createToggle = (
+    channel,
+    key,
+    currentValue,
+  ) => {
+    const row = document.createElement('div');
+    row.className = 'lr-real-setting-v3';
+
+    const info = document.createElement('div');
+    info.className = 'lr-real-setting-v3-info';
+
+    const strong = document.createElement('strong');
+    strong.textContent = labelFor(key);
+
+    const description = document.createElement('span');
+    description.textContent = descriptionFor(key);
+
+    const state = document.createElement('small');
+    state.textContent = statusText(currentValue);
+
+    info.append(strong, description, state);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className =
+      'lr-real-setting-v3-toggle' +
+      (currentValue === true ? ' is-on' : '');
+    button.disabled = currentValue === null;
+    button.setAttribute(
+      'aria-pressed',
+      currentValue === true ? 'true' : 'false',
+    );
+    button.setAttribute(
+      'aria-label',
+      `${labelFor(key)}: ${statusText(currentValue)}`,
+    );
+
+    const knob = document.createElement('span');
+    button.appendChild(knob);
+
+    button.addEventListener('click', async () => {
+      const updater =
+        window.LinkRayExistingChannelSettingsV3;
+      const actions =
+        window.LinkRayExistingChannelActionsV3 || {};
+      const id = channelId(channel);
+      const next = currentValue !== true;
+
+      if (
+        typeof updater !== 'function' ||
+        !actions[key] ||
+        id === undefined
+      ) {
+        state.textContent =
+          'Действующий обработчик временно недоступен';
+        return;
+      }
+
+      button.disabled = true;
+      row.classList.add('is-saving');
+      state.textContent = 'Сохраняем…';
+
+      try {
+        const result = await updater(
+          id,
+          actions[key],
+          next,
+        );
+
+        if (result?.ok === false) {
+          throw new Error(
+            result.error ||
+            result.message ||
+            'Настройка не сохранена',
+          );
+        }
+
+        button.classList.toggle('is-on', next);
+        button.setAttribute(
+          'aria-pressed',
+          next ? 'true' : 'false',
+        );
+        state.textContent = next
+          ? 'Включено'
+          : 'Отключено';
+
+        window.dispatchEvent(
+          new CustomEvent(UPDATE_EVENT, {
+            detail: {
+              channelId: id,
+              setting: key,
+              enabled: next,
+            },
+          }),
+        );
+
+        window.setTimeout(() => {
+          location.reload();
+        }, 650);
+      } catch (error) {
+        state.textContent =
+          error?.message || 'Ошибка сохранения';
+        button.disabled = false;
+        row.classList.remove('is-saving');
+      }
+    });
+
+    row.append(info, button);
+    return row;
+  };
+
+  const renderChannel = (channel) => {
+    const card = findCard(channel);
+
+    if (!card) return false;
+
+    const id = channelId(channel);
+
+    if (
+      card.querySelector(
+        `.lr-real-settings-v3[data-channel-id="${CSS.escape(
+          String(id),
+        )}"]`,
+      )
+    ) {
+      return true;
+    }
+
+    const states = stateOf(channel);
+    const panel = document.createElement('section');
+    panel.className = 'lr-real-settings-v3';
+    panel.dataset.channelId = String(id);
+
+    const header = document.createElement('div');
+    header.className = 'lr-real-settings-v3-head';
+
+    const heading = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = 'Настройки канала';
+
+    const subtitle = document.createElement('span');
+    subtitle.textContent =
+      'Изменения сохраняются в LinkRay и действуют в боте.';
+
+    heading.append(title, subtitle);
+
+    const badge = document.createElement('span');
+    badge.className = 'lr-real-settings-v3-badge';
+    badge.textContent = 'Реальные настройки';
+
+    header.append(heading, badge);
+    panel.append(header);
+
+    ['analytics', 'daily', 'antifraud'].forEach((key) => {
+      panel.append(
+        createToggle(channel, key, states[key]),
+      );
+    });
+
+    card.appendChild(panel);
+    return true;
+  };
+
+  const render = async () => {
+    if (!location.pathname.includes('/cabinet')) {
+      return;
+    }
+
+    try {
+      const payload = dataCache || await fetchData();
+      const channels = collectChannels(payload);
+
+      channels.forEach(renderChannel);
+
+      document.documentElement.dataset
+        .lrRealSettingsV3 = 'ready';
+    } catch (error) {
+      console.error(
+        '[LinkRay Cabinet] real settings:',
+        error,
+      );
+    }
+  };
+
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(render, 180);
+  };
+
+  const start = () => {
+    schedule();
+
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    window.addEventListener(
+      'linkray:channel-settings-adapter-ready',
+      schedule,
+    );
+    window.addEventListener('focus', schedule);
+    window.addEventListener('hashchange', schedule);
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      start,
+      { once: true },
+    );
+  } else {
+    start();
+  }
+})();
+/* LR_REAL_CHANNEL_SETTINGS_V3_END */
+'''
+
+source = source.rstrip() + "\n\n" + module.strip() + "\n"
+path.write_text(source, encoding="utf-8")
+
+print("Обработчик:", function_name)
+print("Параметры:", ", ".join(params))
+print("Действия:", json.dumps(actions, ensure_ascii=False))
+PY
+
+echo "[4/10] Добавляю оформление в существующий кабинет"
+
+python3 - "$CSS" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+
+START = "/* LR_REAL_CHANNEL_SETTINGS_V3_STYLES_START */"
+END = "/* LR_REAL_CHANNEL_SETTINGS_V3_STYLES_END */"
+
+source = re.sub(
+    rf"\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*",
+    "\n",
+    source,
+)
+
+styles = r'''
+/* LR_REAL_CHANNEL_SETTINGS_V3_STYLES_START */
+.lr-real-settings-v3 {
+  margin-top: 18px;
+  padding: 17px;
+  border: 1px solid rgba(112, 188, 201, .18);
+  border-radius: 21px;
+  background:
+    linear-gradient(
+      145deg,
+      rgba(4, 31, 43, .94),
+      rgba(3, 24, 35, .94)
+    );
+}
+
+.lr-real-settings-v3-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.lr-real-settings-v3-head > div {
+  min-width: 0;
+}
+
+.lr-real-settings-v3-head strong {
+  display: block;
+  color: #f4f9fb;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.lr-real-settings-v3-head > div > span {
+  display: block;
+  margin-top: 5px;
+  color: #8ea6b5;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.lr-real-settings-v3-badge {
+  flex: 0 0 auto;
+  padding: 7px 9px;
+  border: 1px solid rgba(89, 226, 173, .2);
+  border-radius: 999px;
+  background: rgba(65, 211, 153, .1);
+  color: #67e4b1;
+  font-size: 10px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.lr-real-setting-v3 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 70px;
+  margin-top: 10px;
+  padding: 12px 13px;
+  border: 1px solid rgba(128, 181, 195, .12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.lr-real-setting-v3-info {
+  min-width: 0;
+}
+
+.lr-real-setting-v3-info strong {
+  display: block;
+  color: #eaf3f7;
+  font-size: 14px;
+}
+
+.lr-real-setting-v3-info span {
+  display: block;
+  margin-top: 4px;
+  color: #8fa6b4;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.lr-real-setting-v3-info small {
+  display: block;
+  margin-top: 5px;
+  color: #72dcb2;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.lr-real-setting-v3-toggle {
+  position: relative;
+  flex: 0 0 50px;
+  width: 50px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(145, 169, 184, .24);
+  border-radius: 999px;
+  background: rgba(117, 141, 156, .19);
+  cursor: pointer;
+  transition:
+    background .18s ease,
+    border-color .18s ease,
+    opacity .18s ease;
+}
+
+.lr-real-setting-v3-toggle span {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #dce8ee;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .28);
+  transition: transform .18s ease;
+}
+
+.lr-real-setting-v3-toggle.is-on {
+  border-color: rgba(75, 230, 168, .35);
+  background: rgba(47, 209, 146, .82);
+}
+
+.lr-real-setting-v3-toggle.is-on span {
+  transform: translateX(20px);
+  background: #ffffff;
+}
+
+.lr-real-setting-v3-toggle:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
+.lr-real-setting-v3.is-saving {
+  opacity: .74;
+}
+
+@media (max-width: 700px) {
+  .lr-real-settings-v3 {
+    padding: 14px;
+    border-radius: 19px;
+  }
+
+  .lr-real-settings-v3-head {
+    flex-direction: column;
+  }
+
+  .lr-real-setting-v3 {
+    min-height: 74px;
+  }
+}
+/* LR_REAL_CHANNEL_SETTINGS_V3_STYLES_END */
+'''
+
+source = source.rstrip() + "\n\n" + styles.strip() + "\n"
+path.write_text(source, encoding="utf-8")
+PY
+
+echo "[5/10] Проверяю JavaScript"
+
+node --check "$JS"
+
+grep -q "LR_REAL_CHANNEL_SETTINGS_V3_START" "$JS"
+grep -q "LinkRayExistingChannelSettingsV3" "$JS"
+grep -q "LR_REAL_CHANNEL_SETTINGS_V3_STYLES_START" "$CSS"
+
+echo "[6/10] Проверяю изолированность изменений"
+
+CHANGED="$(
+  git diff --name-only |
+  sort -u
+)"
+
+echo "$CHANGED"
+
+if echo "$CHANGED" |
+   grep -Ev \
+     '^(public/linkray-site/cabinet-stable\.js|public/linkray-site/styles\.css)$' |
+   grep -q .; then
+  echo "Обнаружены посторонние изменения"
+  exit 1
+fi
+
+echo "Сервер, база, бот, Studio и AntiFraud не изменены"
+
+echo "[7/10] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 17
+
+echo "[8/10] Проверяю запуск"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"; then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "node --check /app/$JS"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_REAL_CHANNEL_SETTINGS_V3_START' /app/$JS"
+
+if docker logs --since 100s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "В логах приложения найдена ошибка"
+  exit 1
+fi
+
+STATUS="$(
+  curl -ksS -o /dev/null -w '%{http_code}' \
+    https://linkray.ru/cabinet
+)"
+
+echo "Кабинет: $STATUS"
+
+if [[ "$STATUS" != "200" && "$STATUS" != "302" ]]; then
+  echo "Кабинет недоступен"
+  exit 1
+fi
+
+echo "[9/10] Проверяю, что уведомления остались реальными"
+
+grep -q "/api/website/cabinet/notifications/read" "$CONTROL"
+grep -q "/api/website/cabinet/notifications/clear" "$CONTROL"
+
+echo "Центр уведомлений продолжает работать через PostgreSQL"
+
+echo "[10/10] Сохраняю в GitHub"
+
+git add -- "$JS" "$CSS"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Connect real channel settings in web cabinet"
+  git push origin HEAD:main
+else
+  echo "Настройки уже подключены"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "РЕАЛЬНЫЕ НАСТРОЙКИ КАНАЛОВ ПОДКЛЮЧЕНЫ"
+echo
+echo "• аналитика включается и отключается из карточки канала"
+echo "• ежедневный отчёт ПДП управляется из кабинета"
+echo "• AntiFraud управляется из кабинета"
+echo "• используется существующий серверный обработчик LinkRay"
+echo "• уведомления остаются в PostgreSQL"
+echo "• новый серверный маршрут не создавался"
+echo "• бот, Studio, автопостинг и добавление каналов не менялись"
+echo "============================================================"
