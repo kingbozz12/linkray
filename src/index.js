@@ -12801,37 +12801,21 @@ async function __lrDeactivateChannelAfterBotRemoved(update) {
   matchedIds = [...new Set(matchedIds)].filter(Boolean);
 
   if (matchedIds.length) {
-    await query(
-      `UPDATE channels
-       SET is_active = false,
-           updated_at = now()
-       WHERE id = ANY($1::int[])`,
-      [matchedIds]
-    ).catch((e) => console.error('[bot removed cleanup] update channels', e?.message || e));
+    const removed = await lrHardDeleteChannelsV89({
+      channelIds: matchedIds,
+      maxChatId: id,
+    });
 
-    await query(
-      `UPDATE scheduled_posts
-       SET status = 'deleted',
-           updated_at = now()
-       WHERE channel_id = ANY($1::int[])
-         AND status::text = 'scheduled'`,
-      [matchedIds]
-    ).catch(() => {});
-
-    await query(
-      `UPDATE channel_signatures
-       SET is_active = false,
-           updated_at = now()
-       WHERE channel_id = ANY($1::int[])`,
-      [matchedIds]
-    ).catch(() => {});
-
-    console.log('[bot removed cleanup] channel deactivated', JSON.stringify({
-      ids: matchedIds,
-      maxChatId: id || null,
-      title: title || null,
-      link: link || null
-    }));
+    console.log(
+      '[bot removed cleanup] channel fully deleted',
+      JSON.stringify({
+        ids: matchedIds,
+        maxChatId: id || null,
+        title: title || null,
+        link: link || null,
+        removed,
+      }),
+    );
   } else {
     console.log('[bot removed cleanup] bot_removed received but channel not found', JSON.stringify({
       maxChatId: id || null,
@@ -22409,82 +22393,136 @@ function lrV47DraftHasContent(draft) {
   return false;
 }
 
-async function lrV47Channels(subjectId = '') {
-  /* LR_USER_SCOPED_STUDIO_CHANNELS_V87_6
-   *
-   * Показываем только активные каналы текущего пользователя.
-   * Достаточно реальной связи lr_user_channels или владельца
-   * owner_max_user_id. Временные role/access_source/
-   * last_verified_at не используются для постоянного доступа.
+async function lrV47Channels() {
+  /* LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_START */
+  /*
+   * Штатный getChannels остаётся первым источником.
+   * Его пустой массив больше не завершает функцию:
+   * тогда используются активные каналы PostgreSQL.
    */
-  const subject = String(subjectId || '')
-    .replace(/^user:/, '')
-    .trim();
+  try {
+    if (typeof getChannels === 'function') {
+      const result = await getChannels();
+      const nativeChannels = Array.isArray(result)
+        ? result
+        : lrV47Rows(result);
 
-  if (!/^\d+$/.test(subject)) {
+      const activeNative = nativeChannels.filter(
+        (channel) => channel?.is_active !== false,
+      );
+
+      if (activeNative.length) {
+        console.log(
+          '[v89 studio channels] native list used',
+          JSON.stringify({ count: activeNative.length }),
+        );
+        return activeNative;
+      }
+
+      console.log(
+        '[v89 studio channels] native list empty, using database',
+      );
+    }
+  } catch (error) {
     console.error(
-      '[v87.6 studio channels] invalid user context',
-      JSON.stringify({ subjectId })
+      '[v89 studio channels] native getChannels failed',
+      error?.stack || error?.message || error,
     );
-    return [];
   }
 
   try {
     const channels = lrV47Rows(await query(`
-      WITH actor AS (
-        SELECT
-          id,
-          max_user_id,
-          private_chat_id
-        FROM public.lr_users
-        WHERE max_user_id::text=$1
-           OR private_chat_id::text=$1
-        ORDER BY id
-        LIMIT 1
-      )
-      SELECT DISTINCT
-        channel.id,
-        channel.max_chat_id,
-        channel.title,
-        channel.link,
-        channel.is_active,
-        channel.updated_at
-      FROM public.channels channel
-      LEFT JOIN actor
-        ON true
-      LEFT JOIN public.lr_user_channels access
-        ON access.channel_id=channel.id
-       AND access.user_id=actor.id
-      WHERE COALESCE(channel.is_active, true)=true
-        AND (
-          access.user_id IS NOT NULL
-          OR channel.owner_max_user_id::text=$1
-          OR channel.owner_max_user_id::text=
-             COALESCE(actor.max_user_id::text, '')
-        )
+      SELECT
+        id,
+        max_chat_id,
+        title,
+        link,
+        is_active,
+        updated_at
+      FROM public.channels
+      WHERE COALESCE(is_active, true)=true
       ORDER BY
-        channel.updated_at DESC NULLS LAST,
-        channel.id DESC
-    `, [subject]));
+        COALESCE(updated_at, bot_added_at, now()) DESC,
+        id DESC
+    `));
 
     console.log(
-      '[v87.6 studio channels] resolved',
+      '[v89 studio channels] database list used',
       JSON.stringify({
-        subject,
         count: channels.length,
         ids: channels.map((channel) => channel.id),
-      })
+      }),
     );
 
     return channels;
   } catch (error) {
     console.error(
-      '[v87.6 studio channels] scoped query failed',
-      error?.stack || error?.message || error
+      '[v89 studio channels] database query failed',
+      error?.stack || error?.message || error,
     );
     return [];
   }
 }
+
+/**
+ * Физически удаляет канал и связанные данные.
+ * SQL-функция создаётся миграцией V89.
+ */
+async function lrHardDeleteChannelsV89({
+  channelIds = [],
+  maxChatId = '',
+} = {}) {
+  const ids = [
+    ...new Set(
+      (Array.isArray(channelIds) ? channelIds : [channelIds])
+        .map(Number)
+        .filter(Number.isFinite),
+    ),
+  ];
+
+  const chatIds = [
+    ...new Set(
+      [maxChatId]
+        .flat()
+        .map((value) => String(value || '').trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (!ids.length && !chatIds.length) {
+    return {
+      channels: 0,
+      related: 0,
+    };
+  }
+
+  const result = lrV47Rows(await query(
+    `
+      SELECT public.lr_hard_delete_channels_v89(
+        $1::integer[],
+        $2::text[]
+      ) AS result
+    `,
+    [ids, chatIds],
+  ));
+
+  const payload = result[0]?.result || {
+    channels: 0,
+    related: 0,
+  };
+
+  console.log(
+    '[v89 channel lifecycle] hard delete complete',
+    JSON.stringify({
+      ids,
+      chatIds,
+      result: payload,
+    }),
+  );
+
+  return payload;
+}
+/* LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_END */
 
 
 
@@ -23971,16 +24009,24 @@ async function lrV47HandleBotRemoved(update) {
 
   const removedChatId = lrV47ChatId(update);
 
+  let hardDeleteResult = {
+    channels: 0,
+    related: 0,
+  };
+
   try {
     if (removedChatId) {
-      await query(
-        `UPDATE channels
-         SET is_active=false, updated_at=now()
-         WHERE max_chat_id::text=$1`,
-        [String(removedChatId)]
-      ).catch(() => {});
+      hardDeleteResult = await lrHardDeleteChannelsV89({
+        maxChatId: removedChatId,
+      });
     }
-  } catch {}
+  } catch (error) {
+    console.error(
+      '[v89 channel lifecycle] removal failed',
+      error?.stack || error?.message || error,
+    );
+    throw error;
+  }
 
   const targets = new Set(['405954311']);
 
@@ -24006,7 +24052,7 @@ async function lrV47HandleBotRemoved(update) {
     await lrV47Msg(target, `✅ <b>Канал удалён из LinkRay</b>
 
 Бот был удалён из администраторов канала.
-Канал отключён в базе и больше не будет использоваться для постов.`, [
+Канал и все связанные данные полностью удалены из LinkRay.`, [
       [lrV47Btn('⬅️ Главное меню', 'main:menu')]
     ], 'html');
   }
