@@ -19315,7 +19315,180 @@ async function lrV15FetchChannelMeta(candidate) { const out = { ...candidate }; 
 function lrV15AdminFromData(data) { for (const box of [data, data?.member, data?.user, data?.result, data?.profile, data?.payload].filter(Boolean)) { if (box.is_admin === true || box.isAdmin === true || box.admin === true || box.role === 'admin' || box.role === 'administrator') return true; const perms = box.permissions || box.rights || box.chat_permissions || box.chatPermissions; if (Array.isArray(perms)) { const set = new Set(perms.map(x => String(x).toLowerCase())); if (set.has('write') || set.has('read_all_messages') || set.has('add_remove_members') || set.has('change_chat_info') || set.has('edit') || set.has('delete')) return true; } } return false; }
 async function lrV15CheckAdmin(maxChatId) { const id = lrV15Clean(maxChatId,300); if (!/^-\d+$/.test(id)) return { ok:false, admin:false, status:0 }; let last = { ok:false, admin:false, status:0 }; for (const path of [`/chats/${encodeURIComponent(id)}/members/me`, `/chats/${encodeURIComponent(id)}/members/me/`]) { try { const r = await lrV15ApiGet(path); last = { ok:r.ok, admin:r.ok && lrV15AdminFromData(r.data), status:r.status, data:r.data }; console.log('[v15 native] members/me', JSON.stringify({ id, status:r.status, ok:last.ok, admin:last.admin })); if (r.status !== 404) return last; } catch(e) { console.error('[v15 native] members/me failed', e?.message || e); } } return last; }
 async function lrV15UpsertChannel(candidate) { const maxChatId = lrV15Clean(candidate.id || candidate.max_chat_id || candidate.maxChatId, 300); const title = lrV15GoodTitle(candidate.title); const link = lrV15Clean(candidate.link || '', 600) || null; if (!/^-\d+$/.test(maxChatId)) throw new Error('Не найден ID канала из пересланного поста.'); if (!title) throw new Error('Не удалось получить настоящее название канала. Перешлите другой пост из канала.'); const rows = await query(`INSERT INTO channels(max_chat_id,title,link,is_public,is_channel,bot_added_at,updated_at) VALUES($1,$2,$3,$4,true,now(),now()) ON CONFLICT(max_chat_id) DO UPDATE SET title=EXCLUDED.title, link=COALESCE(EXCLUDED.link, channels.link), is_public=EXCLUDED.is_public, is_channel=true, bot_added_at=COALESCE(channels.bot_added_at, now()), updated_at=now() RETURNING id,max_chat_id,title,link,is_public`, [String(maxChatId), title, link, Boolean(link)]); await query('UPDATE channels SET is_active=true, updated_at=now() WHERE max_chat_id=$1', [String(maxChatId)]).catch(()=>{}); return lrV15Rows(rows)[0] || { max_chat_id:maxChatId, title, link }; }
-async function lrV15HandleAddChannelForward(update, chatId, key) { const candidates = lrV15ChannelCandidates(update); console.log('[v15 native] add candidates', JSON.stringify(candidates.slice(0,12))); if (!candidates.length) { await msg(chatId, `⚠️ <b>Канал не найден</b>\n\nПерешлите именно любой пост из нужного канала в этот чат.`, lrV15Buttons(), 'html'); return true; } let notAdmin = null, lastError = ''; for (const raw of candidates) { if (!/^-\d+$/.test(String(raw.id || ''))) continue; const candidate = await lrV15FetchChannelMeta(raw); const title = lrV15GoodTitle(candidate.title); if (!title) { lastError = 'Не удалось получить настоящее название канала.'; continue; } const admin = await lrV15CheckAdmin(candidate.id); if (!admin.ok || !admin.admin) { notAdmin = candidate; continue; } try { const saved = await lrV15UpsertChannel(candidate); /* LR_PROFILE_V15_CHANNEL_LINK_V1 */ await lrProfileLinkChannel(lrProfileMaxUserId(update), saved?.id).catch((e)=>console.error('[LR profile channel V15]',e?.message||e)); await clearSession(key).catch(()=>{}); await msg(chatId, `✅ <b>Канал подключён к LinkRay</b>\n\n${lrV15Esc(saved.title || title)}\n\nКанал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`, lrV15Buttons(), 'html'); console.log('[v15 native] channel saved final', JSON.stringify(saved)); return true; } catch(e) { lastError = e?.message || String(e); console.error('[v15 native] upsert failed', e?.stack || e?.message || e); } } if (notAdmin) { const title = lrV15GoodTitle(notAdmin.title) || 'канал'; await msg(chatId, `❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrV15Esc(title)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nКанал не добавлен в базу.`, lrV15Buttons(), 'html'); return true; } await msg(chatId, `⚠️ <b>Канал не добавлен</b>\n\n${lrV15Esc(lastError || 'Не удалось определить канал из пересланного поста.')}\n\nПерешлите другой пост из этого канала.`, lrV15Buttons(), 'html'); return true; }
+
+/* LR_NATIVE_CHANNEL_CONFIRM_V84_START */
+async function lrV84SendConnectedNotice(
+  chatId,
+  text,
+  rows,
+  update,
+) {
+  const targetChatId =
+    String(chatId || '').trim();
+
+  if (!targetChatId) {
+    console.error(
+      '[native channel confirm v84] empty chatId',
+    );
+
+    return false;
+  }
+
+  /*
+   * Главный способ: прямой запрос MAX API по личному chat_id.
+   * Этот chatId уже используется рабочим меню бота.
+   */
+  if (
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const response =
+        await lrV37ApiPostMessage(
+          { chat_id: targetChatId },
+          text,
+          rows,
+        );
+
+      console.log(
+        '[native channel confirm v84] direct chat result',
+        JSON.stringify({
+          chatId: targetChatId,
+          status: response?.status || 0,
+          ok: Boolean(response?.ok),
+          preview:
+            String(response?.raw || '')
+              .slice(0, 240),
+        }),
+      );
+
+      if (response?.ok) {
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        '[native channel confirm v84] direct chat failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  /*
+   * Второй способ — уже рабочий механизм уведомлений,
+   * который используется при удалении канала.
+   */
+  if (
+    typeof lrV37DirectNotifyUser === 'function'
+  ) {
+    try {
+      const sent =
+        await lrV37DirectNotifyUser(
+          text,
+          rows,
+          update,
+        );
+
+      console.log(
+        '[native channel confirm v84] direct user result',
+        JSON.stringify({
+          chatId: targetChatId,
+          ok: Boolean(sent),
+        }),
+      );
+
+      if (sent) {
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        '[native channel confirm v84] direct user failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  /*
+   * Старый msg оставляем только резервным вариантом.
+   */
+  if (typeof msg === 'function') {
+    try {
+      const result =
+        await msg(
+          targetChatId,
+          text,
+          rows,
+          'html',
+        );
+
+      const sent = result !== false;
+
+      console.log(
+        '[native channel confirm v84] msg fallback result',
+        JSON.stringify({
+          chatId: targetChatId,
+          ok: sent,
+        }),
+      );
+
+      if (sent) {
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        '[native channel confirm v84] msg fallback failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  console.error(
+    '[native channel confirm v84] all delivery methods failed',
+    JSON.stringify({
+      chatId: targetChatId,
+    }),
+  );
+
+  return false;
+}
+
+console.log(
+  '[native channel confirm v84] installed inside lrV15 success branch',
+);
+/* LR_NATIVE_CHANNEL_CONFIRM_V84_END */
+
+async function lrV15HandleAddChannelForward(update, chatId, key) { const candidates = lrV15ChannelCandidates(update); console.log('[v15 native] add candidates', JSON.stringify(candidates.slice(0,12))); if (!candidates.length) { await msg(chatId, `⚠️ <b>Канал не найден</b>\n\nПерешлите именно любой пост из нужного канала в этот чат.`, lrV15Buttons(), 'html'); return true; } let notAdmin = null, lastError = ''; for (const raw of candidates) { if (!/^-\d+$/.test(String(raw.id || ''))) continue; const candidate = await lrV15FetchChannelMeta(raw); const title = lrV15GoodTitle(candidate.title); if (!title) { lastError = 'Не удалось получить настоящее название канала.'; continue; } const admin = await lrV15CheckAdmin(candidate.id); if (!admin.ok || !admin.admin) { notAdmin = candidate; continue; } try { const saved = await lrV15UpsertChannel(candidate); /* LR_PROFILE_V15_CHANNEL_LINK_V1 */ await lrProfileLinkChannel(lrProfileMaxUserId(update), saved?.id).catch((e)=>console.error('[LR profile channel V15]',e?.message||e)); const __lrV84Text =
+          `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV15Esc(saved.title || title)}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`;
+
+        const __lrV84Rows =
+          lrV15Buttons();
+
+        const __lrV84Delivered =
+          await lrV84SendConnectedNotice(
+            chatId,
+            __lrV84Text,
+            __lrV84Rows,
+            update,
+          );
+
+        if (__lrV84Delivered) {
+          await clearSession(key).catch(()=>{});
+        } else {
+          console.error(
+            '[native channel confirm v84] channel saved but notice not delivered',
+            JSON.stringify({
+              chatId: String(chatId || ''),
+              key: String(key || ''),
+              channelId: saved?.id,
+              maxChatId: saved?.max_chat_id,
+              title: saved?.title || title,
+            }),
+          );
+        }
+
+        console.log('[v15 native] channel saved final', JSON.stringify(saved)); return true; } catch(e) { lastError = e?.message || String(e); console.error('[v15 native] upsert failed', e?.stack || e?.message || e); } } if (notAdmin) { const title = lrV15GoodTitle(notAdmin.title) || 'канал'; await msg(chatId, `❌ <b>Бот не является администратором канала</b>\n\nКанал: <b>${lrV15Esc(title)}</b>\n\nСначала добавьте LinkRay в администраторы канала и выдайте право публикации.\n\nКанал не добавлен в базу.`, lrV15Buttons(), 'html'); return true; } await msg(chatId, `⚠️ <b>Канал не добавлен</b>\n\n${lrV15Esc(lastError || 'Не удалось определить канал из пересланного поста.')}\n\nПерешлите другой пост из этого канала.`, lrV15Buttons(), 'html'); return true; }
 async function lrV15SendChannelSelect(chatId, key, draft, multi=false) {
   /* LR_V44_SAVE_DRAFT_ON_CHANNEL_SELECT */
   try {
