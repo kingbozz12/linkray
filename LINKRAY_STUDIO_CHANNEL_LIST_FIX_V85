@@ -1,0 +1,495 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-studio-channels-v85.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежнюю версию Studio"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю текущую ветку выбора каналов"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q "async function lrV15SendChannelSelect" "$FILE"
+grep -q "const channels = await getChannels();" "$FILE"
+grep -q "Сначала добавьте канал в LinkRay" "$FILE"
+
+echo "[2/8] Исправляю только получение каналов в Studio"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+START = "/* LR_STUDIO_CHANNEL_LIST_V85_START */"
+END = "/* LR_STUDIO_CHANNEL_LIST_V85_END */"
+
+source = re.sub(
+    rf"\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*",
+    "\n",
+    source,
+)
+
+source = source.replace(
+    "const channels = await lrStudioChannelsV85(chatId, key);",
+    "const channels = await getChannels();",
+)
+
+def function_range(text: str, name: str):
+    token = f"async function {name}"
+    start = text.find(token)
+    if start < 0:
+        raise SystemExit(f"Не найдена функция {name}")
+
+    brace = text.find("{", start)
+    if brace < 0:
+        raise SystemExit(f"Не найдено начало функции {name}")
+
+    depth = 0
+    quote = None
+    escaped = False
+    template_depth = 0
+
+    i = brace
+    while i < len(text):
+        ch = text[i]
+
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif quote == "`" and ch == "$" and i + 1 < len(text) and text[i + 1] == "{":
+                template_depth += 1
+                i += 1
+            elif quote == "`" and ch == "}" and template_depth:
+                template_depth -= 1
+            elif ch == quote and not template_depth:
+                quote = None
+        else:
+            if ch in ("'", '"', "`"):
+                quote = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return start, i + 1
+
+        i += 1
+
+    raise SystemExit(f"Не найден конец функции {name}")
+
+fn_start, fn_end = function_range(
+    source,
+    "lrV15SendChannelSelect",
+)
+
+function_text = source[fn_start:fn_end]
+needle = "const channels = await getChannels();"
+
+if function_text.count(needle) != 1:
+    raise SystemExit(
+        "В lrV15SendChannelSelect найдено вызовов "
+        f"getChannels(): {function_text.count(needle)}, ожидался один"
+    )
+
+function_text = function_text.replace(
+    needle,
+    "const channels = await lrStudioChannelsV85(chatId, key);",
+    1,
+)
+
+source = (
+    source[:fn_start]
+    + function_text
+    + source[fn_end:]
+)
+
+helper = r"""
+/* LR_STUDIO_CHANNEL_LIST_V85_START */
+function lrStudioRowsV85(result) {
+  return Array.isArray(result)
+    ? result
+    : Array.isArray(result?.rows)
+      ? result.rows
+      : [];
+}
+
+function lrStudioIdentitiesV85(chatId, key) {
+  const values = new Set();
+
+  const add = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return;
+
+    values.add(raw);
+
+    const plain = raw.replace(/^user:/, '');
+    if (plain) values.add(plain);
+  };
+
+  add(chatId);
+  add(key);
+
+  try {
+    if (typeof lrProfileMaxUserId === 'function') {
+      add(
+        lrProfileMaxUserId(
+          globalThis.__lastUpdate || {},
+        ),
+      );
+    }
+  } catch (error) {
+    console.error(
+      '[studio channels v85] profile identity failed',
+      error?.message || error,
+    );
+  }
+
+  try {
+    if (typeof lrV47SenderId === 'function') {
+      add(
+        lrV47SenderId(
+          globalThis.__lastUpdate || {},
+        ),
+      );
+    }
+  } catch {}
+
+  return [...values].filter(Boolean);
+}
+
+async function lrStudioChannelsV85(chatId, key) {
+  let nativeChannels = [];
+
+  try {
+    if (typeof getChannels === 'function') {
+      nativeChannels = lrStudioRowsV85(
+        await getChannels(),
+      );
+    }
+  } catch (error) {
+    console.error(
+      '[studio channels v85] native getChannels failed',
+      error?.stack || error?.message || error,
+    );
+  }
+
+  if (nativeChannels.length) {
+    console.log(
+      '[studio channels v85] native channels used',
+      JSON.stringify({
+        count: nativeChannels.length,
+      }),
+    );
+
+    return nativeChannels;
+  }
+
+  const identities =
+    lrStudioIdentitiesV85(chatId, key);
+
+  let linkedChannels = [];
+
+  if (identities.length) {
+    try {
+      linkedChannels = lrStudioRowsV85(
+        await query(
+          `
+            SELECT DISTINCT
+              c.id,
+              c.max_chat_id,
+              c.title,
+              c.link,
+              c.is_active,
+              c.updated_at
+            FROM public.channels c
+            LEFT JOIN public.lr_user_channels uc
+              ON uc.channel_id=c.id
+            LEFT JOIN public.lr_users u
+              ON u.id=uc.user_id
+            WHERE COALESCE(c.is_active, true)=true
+              AND (
+                c.owner_max_user_id::text
+                  = ANY($1::text[])
+                OR u.max_user_id::text
+                  = ANY($1::text[])
+                OR u.private_chat_id::text
+                  = ANY($1::text[])
+              )
+            ORDER BY
+              c.updated_at DESC NULLS LAST,
+              c.id DESC
+          `,
+          [identities],
+        ),
+      );
+    } catch (error) {
+      console.error(
+        '[studio channels v85] linked DB query failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (linkedChannels.length) {
+    console.log(
+      '[studio channels v85] linked DB channels used',
+      JSON.stringify({
+        count: linkedChannels.length,
+        identities,
+      }),
+    );
+
+    return linkedChannels;
+  }
+
+  /*
+   * Безопасное восстановление для текущей установки:
+   * если в LinkRay только один настоящий пользователь,
+   * все активные каналы принадлежат ему. При появлении
+   * второго пользователя этот резервный путь отключается.
+   */
+  try {
+    const userRows = lrStudioRowsV85(
+      await query(
+        `
+          SELECT
+            id,
+            max_user_id,
+            private_chat_id
+          FROM public.lr_users
+          WHERE COALESCE(is_blocked, false)=false
+            AND LOWER(COALESCE(display_name, ''))
+                NOT LIKE 'linkray%'
+            AND LOWER(COALESCE(username, ''))
+                NOT LIKE '%\\_bot' ESCAPE '\\'
+          ORDER BY id
+          LIMIT 2
+        `,
+      ),
+    );
+
+    if (userRows.length === 1) {
+      const activeChannels = lrStudioRowsV85(
+        await query(
+          `
+            SELECT
+              id,
+              max_chat_id,
+              title,
+              link,
+              is_active,
+              updated_at
+            FROM public.channels
+            WHERE COALESCE(is_active, true)=true
+            ORDER BY
+              updated_at DESC NULLS LAST,
+              id DESC
+          `,
+        ),
+      );
+
+      if (activeChannels.length) {
+        console.log(
+          '[studio channels v85] single-user recovery used',
+          JSON.stringify({
+            count: activeChannels.length,
+            userId: userRows[0]?.id || null,
+          }),
+        );
+
+        return activeChannels;
+      }
+    } else {
+      console.error(
+        '[studio channels v85] recovery blocked for multiple users',
+        JSON.stringify({
+          realUsers: userRows.length,
+          identities,
+        }),
+      );
+    }
+  } catch (error) {
+    console.error(
+      '[studio channels v85] single-user recovery failed',
+      error?.stack || error?.message || error,
+    );
+  }
+
+  console.error(
+    '[studio channels v85] no channels resolved',
+    JSON.stringify({
+      nativeCount: nativeChannels.length,
+      linkedCount: linkedChannels.length,
+      identities,
+    }),
+  );
+
+  return [];
+}
+
+console.log(
+  '[studio channels v85] installed: DB fallback for channel selector',
+);
+/* LR_STUDIO_CHANNEL_LIST_V85_END */
+"""
+
+source = (
+    source[:fn_start]
+    + helper
+    + "\n"
+    + source[fn_start:]
+)
+
+path.write_text(source, encoding="utf-8")
+
+checks = [
+    START,
+    "async function lrStudioChannelsV85",
+    "const channels = await lrStudioChannelsV85(chatId, key);",
+    "[studio channels v85] single-user recovery used",
+]
+
+for check in checks:
+    if check not in source:
+        raise SystemExit(
+            f"Не установлен элемент: {check}"
+        )
+
+if source.count(START) != 1:
+    raise SystemExit(
+        "Блок V85 установлен некорректно"
+    )
+
+if source.count(
+    "const channels = await lrStudioChannelsV85(chatId, key);"
+) != 1:
+    raise SystemExit(
+        "Функция выбора каналов изменена некорректно"
+    )
+
+print("Исправлен только lrV15SendChannelSelect")
+print("Добавлен безопасный DB fallback")
+PY
+
+echo "[3/8] Проверяю JavaScript"
+
+node --check "$FILE"
+
+grep -q \
+  "LR_STUDIO_CHANNEL_LIST_V85_START" \
+  "$FILE"
+
+grep -q \
+  "lrStudioChannelsV85(chatId, key)" \
+  "$FILE"
+
+echo "[4/8] Показываю состояние каналов без изменений базы"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -At -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}" \
+    -c "
+      SELECT
+        '\''Активных каналов: '\'' ||
+        COUNT(*)
+      FROM public.channels
+      WHERE COALESCE(is_active, true)=true;
+
+      SELECT
+        '\''Настоящих пользователей: '\'' ||
+        COUNT(*)
+      FROM public.lr_users
+      WHERE COALESCE(is_blocked, false)=false
+        AND LOWER(COALESCE(display_name, '\'''\''))
+            NOT LIKE '\''linkray%'\''
+        AND LOWER(COALESCE(username, '\'''\''))
+            NOT LIKE '\''%\_bot'\'' ESCAPE '\''\'';
+    "
+'
+
+echo "[5/8] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[6/8] Проверяю запуск"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_STUDIO_CHANNEL_LIST_V85_START' /app/src/index.js"
+
+if docker logs --since 80s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После запуска обнаружена ошибка"
+  exit 1
+fi
+
+docker logs --since 80s linkray-app 2>&1 |
+  grep -F \
+    "[studio channels v85] installed" |
+  tail -n 1
+
+echo "[7/8] Сохраняю исправление в GitHub"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Fix Studio channel list database fallback"
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено"
+fi
+
+echo "[8/8] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "СПИСОК КАНАЛОВ В STUDIO ИСПРАВЛЕН"
+echo
+echo "• изменена только функция выбора каналов Studio"
+echo "• сначала используется прежний getChannels()"
+echo "• при пустом результате читаются каналы пользователя из БД"
+echo "• для одной реальной учётной записи доступно безопасное восстановление"
+echo "• при нескольких пользователях чужие каналы не показываются"
+echo "• добавление, удаление, AntiFraud и автопостинг не изменялись"
+echo "============================================================"
