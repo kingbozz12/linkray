@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+INDEX="public/linkray-site/index.html"
+BACKUP="$(mktemp -d /tmp/linkray-faq-ready.XXXXXX)"
+DONE=0
+
+restore_index() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежний FAQ"
+  cp -f "$BACKUP/index.html" "$INDEX"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущий FAQ восстановлен"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_index
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/7] Проверяю главную страницу"
+
+test -f "$INDEX"
+cp -f "$INDEX" "$BACKUP/index.html"
+
+grep -q 'id="lr-mobile-faq"' "$INDEX"
+grep -q 'id="faq"' "$INDEX"
+grep -q 'id="lr-seo-schema-v4"' "$INDEX"
+
+echo "[2/7] Обновляю мобильный и основной FAQ"
+
+python3 - <<'PY'
+from pathlib import Path
+import html
+import json
+import re
+
+path = Path("public/linkray-site/index.html")
+source = path.read_text(encoding="utf-8")
+
+questions = [
+    (
+        "Как войти в личный кабинет?",
+        "Нажмите «Открыть кабинет», введите свой ID LinkRay "
+        "и подтвердите вход кодом, который бот отправит вам в MAX.",
+    ),
+    (
+        "Как подключить канал?",
+        "Добавьте LinkRay администратором канала с необходимыми "
+        "правами и перешлите боту любой пост из этого канала.",
+    ),
+    (
+        "Что показывает личный кабинет?",
+        "В кабинете доступны подключённые каналы, подписчики, "
+        "просмотры, прирост аудитории, ER, графики, состояние "
+        "аналитики, AntiFraud и последние публикации.",
+    ),
+    (
+        "Сайт заменяет бота?",
+        "Нет. Сайт и бот работают вместе: кабинет показывает "
+        "данные и отчёты, а создание и редактирование публикаций "
+        "выполняется в LinkRay Studio внутри MAX.",
+    ),
+    (
+        "Когда становится доступен полный отчёт?",
+        "Текущие показатели появляются по мере сбора данных. "
+        "Полный графический отчёт становится доступен после "
+        "накопления минимум 24 часов аналитики по каналу.",
+    ),
+    (
+        "Сайт работает на телефоне?",
+        "Да. Главная страница и личный кабинет адаптированы "
+        "для телефонов, планшетов и компьютеров и открываются "
+        "в обычном браузере.",
+    ),
+]
+
+def details_html(indent):
+    blocks = []
+
+    for question, answer in questions:
+        blocks.append(
+            indent + "<details>\n"
+            + indent + "  <summary>" + html.escape(question) + "</summary>\n"
+            + indent + "  <p>" + html.escape(answer) + "</p>\n"
+            + indent + "</details>"
+        )
+
+    return "\n\n".join(blocks)
+
+mobile = (
+    '<section id="lr-mobile-faq" class="lr-m-section lr-m-faq">\n'
+    '  <div class="lr-m-section-head">\n'
+    '    <span>FAQ</span>\n'
+    '    <h2>Частые вопросы</h2>\n'
+    '    <p>Вход, подключение каналов, кабинет и отчёты.</p>\n'
+    '  </div>\n\n'
+    '  <div class="lr-m-faq-list">\n'
+    + details_html("    ")
+    + '\n  </div>\n'
+    '</section>'
+)
+
+desktop = (
+    '<section class="section" id="faq">\n'
+    '  <div class="shell faq-grid">\n'
+    '    <div class="section-heading reveal">\n'
+    '      <span class="section-kicker">FAQ</span>\n'
+    '      <h2>Частые вопросы</h2>\n'
+    '      <p>Вход, подключение каналов, кабинет и отчёты.</p>\n'
+    '    </div>\n\n'
+    '    <div class="faq-list reveal">\n'
+    + details_html("      ")
+    + '\n    </div>\n'
+    '  </div>\n'
+    '</section>'
+)
+
+mobile_pattern = re.compile(
+    r"<section\b(?=[^>]*\bid\s*=\s*['\"]lr-mobile-faq['\"])[^>]*>"
+    r"[\s\S]*?"
+    r"(?=<section\b(?=[^>]*\bclass\s*=\s*['\"][^'\"]*lr-m-final[^'\"]*['\"])[^>]*>)",
+    flags=re.I,
+)
+
+source, mobile_count = mobile_pattern.subn(
+    lambda _match: mobile + "\n\n",
+    source,
+    count=1,
+)
+
+if mobile_count != 1:
+    raise SystemExit(
+        f"Не удалось заменить мобильный FAQ: найдено блоков {mobile_count}"
+    )
+
+desktop_pattern = re.compile(
+    r"<section\b(?=[^>]*\bid\s*=\s*['\"]faq['\"])[^>]*>"
+    r"[\s\S]*?"
+    r"(?=<section\b(?=[^>]*\bclass\s*=\s*['\"][^'\"]*cta-section[^'\"]*['\"])[^>]*>)",
+    flags=re.I,
+)
+
+source, desktop_count = desktop_pattern.subn(
+    lambda _match: desktop + "\n\n",
+    source,
+    count=1,
+)
+
+if desktop_count != 1:
+    raise SystemExit(
+        f"Не удалось заменить основной FAQ: найдено блоков {desktop_count}"
+    )
+
+schema_pattern = re.compile(
+    r"(<script\b(?=[^>]*\bid\s*=\s*['\"]lr-seo-schema-v4['\"])"
+    r"[^>]*\btype\s*=\s*['\"]application/ld\+json['\"][^>]*>)"
+    r"([\s\S]*?)"
+    r"(</script>)",
+    flags=re.I,
+)
+
+schema_match = schema_pattern.search(source)
+
+if not schema_match:
+    raise SystemExit("Не найдена SEO-разметка FAQ")
+
+try:
+    schema = json.loads(
+        html.unescape(schema_match.group(2)).strip()
+    )
+except Exception as error:
+    raise SystemExit(
+        f"Не удалось прочитать JSON-LD: {error}"
+    )
+
+graph = schema.get("@graph")
+
+if not isinstance(graph, list):
+    raise SystemExit("В JSON-LD отсутствует @graph")
+
+faq_node = next(
+    (
+        node
+        for node in graph
+        if isinstance(node, dict)
+        and node.get("@type") == "FAQPage"
+    ),
+    None,
+)
+
+if faq_node is None:
+    faq_node = {
+        "@type": "FAQPage",
+        "@id": "https://linkray.ru/#faq",
+    }
+    graph.append(faq_node)
+
+faq_node["mainEntity"] = [
+    {
+        "@type": "Question",
+        "name": question,
+        "acceptedAnswer": {
+            "@type": "Answer",
+            "text": answer,
+        },
+    }
+    for question, answer in questions
+]
+
+schema_json = json.dumps(
+    schema,
+    ensure_ascii=False,
+    separators=(",", ":"),
+).replace("</", "<\\/")
+
+schema_tag = (
+    schema_match.group(1)
+    + schema_json
+    + schema_match.group(3)
+)
+
+source = (
+    source[:schema_match.start()]
+    + schema_tag
+    + source[schema_match.end():]
+)
+
+path.write_text(source, encoding="utf-8")
+
+required = [
+    "Частые вопросы",
+    "Как войти в личный кабинет?",
+    "Как подключить канал?",
+    "Что показывает личный кабинет?",
+    "Сайт заменяет бота?",
+    "Когда становится доступен полный отчёт?",
+    "Сайт работает на телефоне?",
+]
+
+for text in required:
+    if source.count(text) < 2:
+        raise SystemExit(
+            f"Текст не установлен в обе версии FAQ: {text}"
+        )
+
+print("Мобильный FAQ, основной FAQ и JSON-LD обновлены")
+PY
+
+echo "[3/7] Проверяю результат до сборки"
+
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+source = Path(
+    "public/linkray-site/index.html"
+).read_text(encoding="utf-8")
+
+mobile = re.search(
+    r"<section\b(?=[^>]*\bid\s*=\s*['\"]lr-mobile-faq['\"])[^>]*>"
+    r"[\s\S]*?"
+    r"(?=<section\b(?=[^>]*\bclass\s*=\s*['\"][^'\"]*lr-m-final)",
+    source,
+    flags=re.I,
+)
+
+desktop = re.search(
+    r"<section\b(?=[^>]*\bid\s*=\s*['\"]faq['\"])[^>]*>"
+    r"[\s\S]*?"
+    r"(?=<section\b(?=[^>]*\bclass\s*=\s*['\"][^'\"]*cta-section)",
+    source,
+    flags=re.I,
+)
+
+if not mobile or not desktop:
+    raise SystemExit("После изменения FAQ-блоки не найдены")
+
+if mobile.group(0).count("<details>") != 6:
+    raise SystemExit("В мобильном FAQ должно быть 6 вопросов")
+
+if desktop.group(0).count("<details>") != 6:
+    raise SystemExit("В основном FAQ должно быть 6 вопросов")
+
+schema_match = re.search(
+    r"<script\b(?=[^>]*\bid\s*=\s*['\"]lr-seo-schema-v4['\"])[^>]*>"
+    r"([\s\S]*?)"
+    r"</script>",
+    source,
+    flags=re.I,
+)
+
+if not schema_match:
+    raise SystemExit("JSON-LD после изменения не найден")
+
+schema = json.loads(schema_match.group(1))
+
+faq = next(
+    node
+    for node in schema["@graph"]
+    if node.get("@type") == "FAQPage"
+)
+
+if len(faq.get("mainEntity", [])) != 6:
+    raise SystemExit("В JSON-LD должно быть 6 вопросов")
+
+print("Локальная проверка FAQ пройдена")
+PY
+
+echo "[4/7] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[5/7] Проверяю опубликованную страницу"
+
+STATUS="$(
+  curl -sS \
+    -o "$BACKUP/live-index.html" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/
+)"
+
+echo "Главная: $STATUS"
+[[ "$STATUS" == "200" ]]
+
+grep -q "Частые вопросы" "$BACKUP/live-index.html"
+grep -q "Как войти в личный кабинет?" "$BACKUP/live-index.html"
+grep -q "Сайт заменяет бота?" "$BACKUP/live-index.html"
+grep -q "Сайт работает на телефоне?" "$BACKUP/live-index.html"
+
+echo "[6/7] Проверяю журнал запуска"
+
+if docker logs --since 45s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[7/7] Сохраняю только FAQ"
+
+git add -- "$INDEX"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Update FAQ for ready LinkRay website"
+  git push origin HEAD:main
+else
+  echo "FAQ уже обновлён"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "FAQ ГОТОВОГО САЙТА LINKRAY ОБНОВЛЁН"
+echo
+echo "• обновлён мобильный FAQ"
+echo "• обновлён FAQ для компьютера"
+echo "• добавлены вопросы о входе и подключении канала"
+echo "• описаны кабинет, отчёты и работа вместе с ботом"
+echo "• указана полноценная мобильная адаптация"
+echo "• обновлена FAQ-разметка для поисковиков"
+echo "• остальные разделы сайта не изменялись"
+echo "============================================================"
