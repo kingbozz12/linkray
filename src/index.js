@@ -23028,16 +23028,340 @@ async function lrV47StartCreate(update) {
   );
 }
 
+
+/* LR_CHANNEL_ADD_STATE_V82_START */
+function lrV82FreshWait(state) {
+  return Boolean(
+    state &&
+    Date.now() - Number(state.ts || 0)
+      < 30 * 60 * 1000
+  );
+}
+
+function lrV82UserId(update) {
+  try {
+    if (typeof lrV36UserId === 'function') {
+      const value = String(
+        lrV36UserId(update) || '',
+      ).trim();
+
+      if (value && !value.startsWith('-')) {
+        return value;
+      }
+    }
+  } catch {}
+
+  const candidates = [
+    update?.callback?.user?.user_id,
+    update?.callback?.user?.userId,
+    update?.message?.sender?.user_id,
+    update?.message?.sender?.userId,
+    update?.sender?.user_id,
+    update?.sender?.userId,
+    update?.user_id,
+    update?.userId,
+  ];
+
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+
+    if (value && !value.startsWith('-')) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+async function lrV82ResolveAddWait(update) {
+  const eventKey = String(
+    lrV47Key(update) || '',
+  ).trim();
+
+  const session = eventKey
+    ? await lrV47GetSession(eventKey)
+    : null;
+
+  const local = eventKey
+    ? await lrV47StateGet(
+        `lr_v47_add_wait:${eventKey}`,
+      )
+    : null;
+
+  const global =
+    await lrV47StateGet(
+      'lr_v47_add_wait_global',
+    );
+
+  const state =
+    lrV82FreshWait(local)
+      ? local
+      : lrV82FreshWait(global)
+        ? global
+        : null;
+
+  if (
+    !state &&
+    session?.state !== 'wait_add_channel'
+  ) {
+    return null;
+  }
+
+  return {
+    ...(state || {}),
+    eventKey,
+    key: String(
+      state?.key ||
+      eventKey ||
+      '',
+    ).trim(),
+    privateChatId: String(
+      state?.privateChatId ||
+      state?.chatId ||
+      lrV47PrivateChatId(update) ||
+      '',
+    ).trim(),
+    userId: String(
+      state?.userId ||
+      lrV82UserId(update) ||
+      '',
+    ).trim(),
+    baselineId: Number(
+      state?.baselineId ||
+      session?.data?.baselineId ||
+      session?.baselineId ||
+      0,
+    ),
+  };
+}
+
+async function lrV82NotifyConnected(
+  chatId,
+  key,
+  channel,
+  waitState = {},
+) {
+  if (!channel) return false;
+
+  const targetChatId = String(
+    waitState?.privateChatId ||
+    chatId ||
+    '',
+  ).trim();
+
+  const userId = String(
+    waitState?.userId ||
+    '',
+  ).trim();
+
+  const stateKey =
+    `lr_v47_connected_notified:${targetChatId}:${channel.id}`;
+
+  const previous =
+    await lrV47StateGet(stateKey);
+
+  if (
+    previous &&
+    Date.now() - Number(previous.ts || 0)
+      < 30_000
+  ) {
+    console.log(
+      '[channel add v82] duplicate confirmation skipped',
+      JSON.stringify({
+        targetChatId,
+        userId,
+        channelId: channel.id,
+      }),
+    );
+
+    return true;
+  }
+
+  if (previous) {
+    await lrV47StateDelLike([stateKey]);
+  }
+
+  const text =
+    `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV47Esc(channel.title || 'Канал')}
+
+Канал сохранён и доступен в Studio, автоподписях, аналитике и отчётах.`;
+
+  const rows = [[
+    lrV47Btn(
+      '⬅️ Главное меню',
+      'main:menu',
+    ),
+  ]];
+
+  let ok = false;
+
+  /*
+   * Сначала используем user_id, сохранённый в момент
+   * нажатия «Добавить канал». Этот способ уже работает
+   * для сообщения об удалении канала.
+   */
+  if (
+    userId &&
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const result =
+        await lrV37ApiPostMessage(
+          { user_id: userId },
+          text,
+          rows,
+        );
+
+      ok = Boolean(result?.ok);
+
+      console.log(
+        '[channel add v82] direct user confirmation',
+        JSON.stringify({
+          userId,
+          status: result?.status || 0,
+          ok,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        '[channel add v82] direct user confirmation failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (!ok && targetChatId) {
+    try {
+      ok = Boolean(
+        await lrV47Msg(
+          targetChatId,
+          text,
+          rows,
+          'html',
+        ),
+      );
+
+      console.log(
+        '[channel add v82] private chat confirmation',
+        JSON.stringify({
+          targetChatId,
+          ok,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        '[channel add v82] private chat confirmation failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (
+    !ok &&
+    targetChatId &&
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const result =
+        await lrV37ApiPostMessage(
+          { chat_id: targetChatId },
+          text,
+          rows,
+        );
+
+      ok = Boolean(result?.ok);
+
+      console.log(
+        '[channel add v82] direct chat confirmation',
+        JSON.stringify({
+          targetChatId,
+          status: result?.status || 0,
+          ok,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        '[channel add v82] direct chat confirmation failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (ok) {
+    await lrV47StateSet(
+      stateKey,
+      {
+        chatId: targetChatId,
+        userId,
+        key,
+        channel,
+        ts: Date.now(),
+      },
+    );
+
+    console.log(
+      '[channel add v82] confirmation delivered',
+      JSON.stringify({
+        targetChatId,
+        userId,
+        channelId: channel.id,
+        title: channel.title,
+      }),
+    );
+  } else {
+    console.error(
+      '[channel add v82] confirmation delivery failed',
+      JSON.stringify({
+        targetChatId,
+        userId,
+        channelId: channel.id,
+      }),
+    );
+  }
+
+  return ok;
+}
+/* LR_CHANNEL_ADD_STATE_V82_END */
+
 async function lrV47ShowAddChannel(update) {
   const callbackId = lrV47CallbackId(update);
   const chatId = lrV47PrivateChatId(update);
   const key = lrV47Key(update);
+  const userId = lrV82UserId(update);
 
-  const baseline = lrV47Rows(await query(`SELECT COALESCE(MAX(id),0)::int AS id FROM channels`).catch(() => [{ id: 0 }]))[0]?.id || 0;
+  const baseline = lrV47Rows(
+    await query(
+      `SELECT COALESCE(MAX(id),0)::int AS id FROM channels`
+    ).catch(() => [{ id: 0 }])
+  )[0]?.id || 0;
 
-  await lrV47SetSession(key, 'wait_add_channel', { mode: 'add_channel', chatId, ts: Date.now(), baselineId: baseline });
-  await lrV47StateSet(`lr_v47_add_wait:${key}`, { privateChatId: chatId, key, baselineId: baseline, ts: Date.now() });
-  await lrV47StateSet(`lr_v47_add_wait_global`, { privateChatId: chatId, key, baselineId: baseline, ts: Date.now() });
+  const waitState = {
+    mode: 'add_channel',
+    privateChatId: chatId,
+    chatId,
+    userId,
+    key,
+    baselineId: baseline,
+    ts: Date.now(),
+  };
+
+  await lrV47SetSession(
+    key,
+    'wait_add_channel',
+    waitState,
+  );
+
+  await lrV47StateSet(
+    `lr_v47_add_wait:${key}`,
+    waitState,
+  );
+
+  await lrV47StateSet(
+    'lr_v47_add_wait_global',
+    waitState,
+  );
 
   const text = `━━━━━━━━━━━━━━
 🔗 <b>Добавить канал</b>
@@ -23050,22 +23374,34 @@ async function lrV47ShowAddChannel(update) {
 Если LinkRay не является администратором — канал не будет добавлен.
 ━━━━━━━━━━━━━━`;
 
-  console.log('[v47 final] add channel mode enabled', JSON.stringify({ chatId, key, baseline }));
+  console.log(
+    '[channel add v82] add mode enabled',
+    JSON.stringify({
+      chatId,
+      userId,
+      key,
+      baseline,
+    }),
+  );
 
-  return lrV47Cb(callbackId, chatId, text, [[lrV47Btn('⬅️ В меню', 'main:menu')]], 'html');
+  return lrV47Cb(
+    callbackId,
+    chatId,
+    text,
+    [[
+      lrV47Btn(
+        '⬅️ В меню',
+        'main:menu',
+      ),
+    ]],
+    'html',
+  );
 }
-
 async function lrV47IsAddMode(update) {
-  const key = lrV47Key(update);
-  const session = await lrV47GetSession(key);
-  if (session?.state === 'wait_add_channel') return true;
-
-  const st = await lrV47StateGet(`lr_v47_add_wait:${key}`);
-  if (st && Date.now() - Number(st.ts || 0) < 30 * 60 * 1000) return true;
-
-  return false;
+  return Boolean(
+    await lrV82ResolveAddWait(update),
+  );
 }
-
 async function lrV47LatestChannelAfter(baselineId = 0) {
   try {
     const rows = lrV47Rows(await query(
@@ -23084,88 +23420,154 @@ async function lrV47LatestChannelAfter(baselineId = 0) {
   }
 }
 
-async function lrV47NotifyConnected(chatId, key, channel) {
-  if (!channel) return false;
-
-  const stateKey = `lr_v47_connected_notified:${chatId}:${channel.id}`;
-
-  if (await lrV47StateGet(stateKey)) {
-    console.log('[v47 final] duplicate connected notification skipped', JSON.stringify({ chatId, id: channel.id }));
-    return true;
-  }
-
-  const ok = await lrV47Msg(chatId, `✅ <b>Канал подключён к LinkRay</b>
-
-${lrV47Esc(channel.title || 'Канал')}
-
-Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`, [
-    [lrV47Btn('⬅️ Главное меню', 'main:menu')]
-  ], 'html');
-
-  if (ok) {
-    await lrV47StateSet(stateKey, { chatId, key, channel, ts: Date.now() });
-    console.log('[v47 final] connected notification done', JSON.stringify({
-      chatId,
-      key,
-      id: channel.id,
-      max_chat_id: channel.max_chat_id,
-      title: channel.title
-    }));
-  }
-
-  return ok;
+async function lrV47NotifyConnected(
+  chatId,
+  key,
+  channel,
+  waitState = {},
+) {
+  return lrV82NotifyConnected(
+    chatId,
+    key,
+    channel,
+    waitState,
+  );
 }
-
 async function lrV47HandleAddForward(update) {
-  const isAdd = await lrV47IsAddMode(update);
-  if (!isAdd) return false;
+  const waitState =
+    await lrV82ResolveAddWait(update);
 
-  const chatId = lrV47PrivateChatId(update);
-  const key = lrV47Key(update);
-  const st = await lrV47StateGet(`lr_v47_add_wait:${key}`) || await lrV47StateGet('lr_v47_add_wait_global') || {};
-  const baseline = Number(st.baselineId || 0);
+  if (!waitState) return false;
 
-  console.log('[v47 final] add forward intercepted', JSON.stringify({ chatId, key, baseline }));
+  const chatId =
+    waitState.privateChatId;
+
+  const key =
+    waitState.key ||
+    waitState.eventKey ||
+    chatId;
+
+  const baseline =
+    Number(waitState.baselineId || 0);
+
+  console.log(
+    '[channel add v82] forwarded post intercepted',
+    JSON.stringify({
+      chatId,
+      userId: waitState.userId,
+      key,
+      eventKey: waitState.eventKey,
+      baseline,
+    }),
+  );
 
   let result = false;
+
   try {
-    if (typeof maybeRegisterChannel === 'function') {
-      result = await maybeRegisterChannel(update);
+    if (
+      typeof maybeRegisterChannel === 'function'
+    ) {
+      result =
+        await maybeRegisterChannel(update);
     }
-  } catch (e) {
-    console.error('[v47 final] maybeRegisterChannel failed', e?.stack || e?.message || e);
+  } catch (error) {
+    console.error(
+      '[channel add v82] maybeRegisterChannel failed',
+      error?.stack || error?.message || error,
+    );
   }
 
-  const channel = await lrV47LatestChannelAfter(baseline);
+  let channel =
+    await lrV47LatestChannelAfter(
+      baseline,
+    );
+
+  if (!channel && result === true) {
+    channel =
+      await lrV47LatestChannelAfter(0);
+  }
 
   if (channel) {
-    await lrV47ClearSession(key);
-    await lrV47StateDelLike([`lr_v47_add_wait:${key}`, 'lr_v47_add_wait_global']);
-    await lrV47NotifyConnected(chatId, key, channel);
+    const notified =
+      await lrV47NotifyConnected(
+        chatId,
+        key,
+        channel,
+        waitState,
+      );
+
+    if (notified) {
+      await lrV47ClearSession(key);
+
+      if (
+        waitState.eventKey &&
+        waitState.eventKey !== key
+      ) {
+        await lrV47ClearSession(
+          waitState.eventKey,
+        );
+      }
+
+      await lrV47StateDelLike([
+        `lr_v47_add_wait:${key}`,
+        waitState.eventKey
+          ? `lr_v47_add_wait:${waitState.eventKey}`
+          : '',
+        'lr_v47_add_wait_global',
+      ].filter(Boolean));
+    }
+
+    /*
+     * Пересылку не передаём в Studio:
+     * канал уже зарегистрирован.
+     */
     return true;
   }
 
-  if (result === true) {
-    // На случай, если maybeRegisterChannel вернул true, но канал уже был старый.
-    const old = await lrV47LatestChannelAfter(0);
-    if (old) {
-      await lrV47ClearSession(key);
-      await lrV47NotifyConnected(chatId, key, old);
-      return true;
-    }
-  }
-
-  await lrV47Msg(chatId, `❌ <b>Бот не является администратором канала</b>
+  const failureText =
+    `❌ <b>Бот не является администратором канала</b>
 
 Сначала добавьте LinkRay в администраторы канала и выдайте право публикации.
 
-Канал не добавлен в базу.`, [
-    [lrV47Btn('⬅️ Главное меню', 'main:menu')]
-  ], 'html');
+Канал не добавлен в базу.`;
+
+  const rows = [[
+    lrV47Btn(
+      '⬅️ Главное меню',
+      'main:menu',
+    ),
+  ]];
+
+  let failureSent = false;
+
+  if (
+    waitState.userId &&
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const response =
+        await lrV37ApiPostMessage(
+          { user_id: waitState.userId },
+          failureText,
+          rows,
+        );
+
+      failureSent =
+        Boolean(response?.ok);
+    } catch {}
+  }
+
+  if (!failureSent && chatId) {
+    await lrV47Msg(
+      chatId,
+      failureText,
+      rows,
+      'html',
+    );
+  }
 
   return true;
 }
-
 async function lrV47HandleMainForward(update) {
   if (!lrV47LooksForwarded(update)) return false;
 
@@ -25091,425 +25493,6 @@ try {
     console.log('[v61 labels] cb wrapped');
   }
 } catch (e) { console.error('[v61 labels] cb wrap failed', e?.message || e); }
-
-
-/* LR_CHANNEL_ADD_V79_START */
-async function lrV79StateGet(key) {
-  try {
-    if (typeof lrV47StateGet === 'function') {
-      return await lrV47StateGet(key);
-    }
-  } catch {}
-
-  try {
-    const result = await query(
-      `
-        SELECT data
-        FROM lr_bot_state
-        WHERE key=$1
-        LIMIT 1
-      `,
-      [String(key)],
-    );
-
-    const rows = Array.isArray(result)
-      ? result
-      : Array.isArray(result?.rows)
-        ? result.rows
-        : [];
-
-    return rows[0]?.data || null;
-  } catch {}
-
-  return null;
-}
-
-async function lrV79StateDelete(keys) {
-  const clean = [...new Set(
-    (keys || [])
-      .map((value) => String(value || '').trim())
-      .filter(Boolean),
-  )];
-
-  if (!clean.length) return;
-
-  try {
-    await query(
-      `DELETE FROM lr_bot_state WHERE key=ANY($1::text[])`,
-      [clean],
-    );
-  } catch (error) {
-    console.error(
-      '[channel add v79] state cleanup failed',
-      error?.message || error,
-    );
-  }
-}
-
-function lrV79PrivateChatId(update, globalState) {
-  const saved = String(
-    globalState?.privateChatId ||
-    globalState?.chatId ||
-    '',
-  ).trim();
-
-  if (saved) return saved;
-
-  try {
-    if (typeof lrV47PrivateChatId === 'function') {
-      const value = lrV47PrivateChatId(update);
-      if (value) return String(value);
-    }
-  } catch {}
-
-  try {
-    if (typeof lrProfileMaxUserId === 'function') {
-      const value = lrProfileMaxUserId(update);
-      if (value) return String(value);
-    }
-  } catch {}
-
-  return String(
-    update?.message?.sender?.user_id ||
-    update?.message?.sender?.userId ||
-    update?.sender?.user_id ||
-    update?.sender?.userId ||
-    update?.user_id ||
-    update?.userId ||
-    '',
-  ).trim();
-}
-
-function lrV79UpdateType(update) {
-  try {
-    if (typeof lrV61Type === 'function') {
-      return String(lrV61Type(update) || '');
-    }
-  } catch {}
-
-  return String(
-    update?.update_type ||
-    update?.type ||
-    update?.event_type ||
-    '',
-  );
-}
-
-function lrV79LooksLikeMessage(update) {
-  const type = lrV79UpdateType(update);
-
-  if (
-    type &&
-    !/message_created|message_callback/i.test(type)
-  ) {
-    return false;
-  }
-
-  try {
-    const payload =
-      typeof lrV61Payload === 'function'
-        ? lrV61Payload(update)
-        : '';
-
-    if (
-      payload &&
-      typeof payload === 'string' &&
-      payload !== '[object Object]'
-    ) {
-      return false;
-    }
-  } catch {}
-
-  return true;
-}
-
-async function lrV79LatestChannel(baselineId) {
-  try {
-    const result = await query(
-      `
-        SELECT
-          id,
-          max_chat_id,
-          title,
-          link,
-          is_active,
-          updated_at
-        FROM channels
-        WHERE id>$1
-           OR updated_at>NOW()-INTERVAL '5 minutes'
-        ORDER BY updated_at DESC, id DESC
-        LIMIT 1
-      `,
-      [Number(baselineId || 0)],
-    );
-
-    const rows = Array.isArray(result)
-      ? result
-      : Array.isArray(result?.rows)
-        ? result.rows
-        : [];
-
-    return rows[0] || null;
-  } catch (error) {
-    console.error(
-      '[channel add v79] channel lookup failed',
-      error?.message || error,
-    );
-    return null;
-  }
-}
-
-async function lrV79Send(chatId, text, rows = []) {
-  if (!chatId) return false;
-
-  try {
-    if (typeof lrV47Msg === 'function') {
-      await lrV47Msg(chatId, text, rows, 'html');
-      return true;
-    }
-  } catch (error) {
-    console.error(
-      '[channel add v79] lrV47Msg failed',
-      error?.message || error,
-    );
-  }
-
-  try {
-    if (typeof msg === 'function') {
-      await msg(chatId, text, rows, 'html');
-      return true;
-    }
-  } catch (error) {
-    console.error(
-      '[channel add v79] msg failed',
-      error?.message || error,
-    );
-  }
-
-  return false;
-}
-
-async function lrV79HandleAddChannelEarly(update) {
-  if (!lrV79LooksLikeMessage(update)) return false;
-
-  const globalState =
-    await lrV79StateGet('lr_v47_add_wait_global');
-
-  if (!globalState) return false;
-
-  const startedAt = Number(globalState.ts || 0);
-
-  if (
-    startedAt > 0 &&
-    Date.now() - startedAt > 30 * 60 * 1000
-  ) {
-    await lrV79StateDelete([
-      'lr_v47_add_wait_global',
-    ]);
-    return false;
-  }
-
-  const privateChatId =
-    lrV79PrivateChatId(update, globalState);
-
-  const storedKey = String(
-    globalState.key || privateChatId || '',
-  ).trim();
-
-  const baselineId = Number(
-    globalState.baselineId || 0,
-  );
-
-  if (!privateChatId) {
-    console.error(
-      '[channel add v79] private chat id not resolved',
-    );
-    return false;
-  }
-
-  const lockKey =
-    `lr_v79_add_lock:${privateChatId}`;
-
-  const lock = await lrV79StateGet(lockKey);
-
-  if (
-    lock &&
-    Date.now() - Number(lock.ts || 0) < 15_000
-  ) {
-    return true;
-  }
-
-  try {
-    if (typeof lrV47StateSet === 'function') {
-      await lrV47StateSet(lockKey, {
-        ts: Date.now(),
-      });
-    }
-  } catch {}
-
-  console.log(
-    '[channel add v79] forwarded post intercepted',
-    JSON.stringify({
-      privateChatId,
-      storedKey,
-      baselineId,
-      type: lrV79UpdateType(update),
-    }),
-  );
-
-  let registrationResult = false;
-  let registrationError = null;
-
-  try {
-    registrationResult =
-      await maybeRegisterChannel(update);
-  } catch (error) {
-    registrationError = error;
-    console.error(
-      '[channel add v79] maybeRegisterChannel failed',
-      error?.stack || error?.message || error,
-    );
-  }
-
-  const channel =
-    await lrV79LatestChannel(baselineId);
-
-  if (channel) {
-    try {
-      await query(
-        `
-          UPDATE channels
-          SET is_active=true,
-              updated_at=NOW()
-          WHERE id=$1
-        `,
-        [Number(channel.id)],
-      );
-    } catch {}
-
-    const notificationKeys = [
-      `lr_v47_connected_notified:${privateChatId}:${channel.id}`,
-      `lr_v31_channel_connected_notified:${privateChatId}:${channel.id}`,
-      `lr_v35_channel_connected_notified:${privateChatId}:${channel.id}`,
-    ];
-
-    await lrV79StateDelete(notificationKeys);
-
-    const title = String(
-      channel.title || 'Канал',
-    )
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-
-    const button =
-      typeof callbackButton === 'function'
-        ? callbackButton(
-            '⬅️ Главное меню',
-            'main:menu',
-          )
-        : {
-            type: 'callback',
-            text: '⬅️ Главное меню',
-            payload: 'main:menu',
-          };
-
-    await lrV79Send(
-      privateChatId,
-      `✅ Канал подключён к LinkRay
-
-<b>${title}</b>
-
-Канал сохранён и доступен в Studio, автоподписях, аналитике и отчётах.`,
-      [[button]],
-    );
-
-    const cleanupKeys = [
-      'lr_v47_add_wait_global',
-      `lr_v47_add_wait:${storedKey}`,
-      `lr_v47_add_wait:${privateChatId}`,
-      `lr_v31_add_wait:${storedKey}`,
-      `lr_v31_add_wait:${privateChatId}`,
-      'lr_v31_add_wait_global',
-      lockKey,
-    ];
-
-    await lrV79StateDelete(cleanupKeys);
-
-    try {
-      if (typeof lrV47ClearSession === 'function') {
-        if (storedKey) {
-          await lrV47ClearSession(storedKey);
-        }
-        if (
-          privateChatId &&
-          privateChatId !== storedKey
-        ) {
-          await lrV47ClearSession(privateChatId);
-        }
-      }
-    } catch {}
-
-    console.log(
-      '[channel add v79] connected successfully',
-      JSON.stringify({
-        privateChatId,
-        channelId: channel.id,
-        maxChatId: channel.max_chat_id,
-        registrationResult,
-      }),
-    );
-
-    return true;
-  }
-
-  await lrV79StateDelete([lockKey]);
-
-  const errorText = registrationError
-    ? String(
-        registrationError.message ||
-        registrationError,
-      )
-    : '';
-
-  const button =
-    typeof callbackButton === 'function'
-      ? callbackButton(
-          '⬅️ В меню',
-          'main:menu',
-        )
-      : {
-          type: 'callback',
-          text: '⬅️ В меню',
-          payload: 'main:menu',
-        };
-
-  await lrV79Send(
-    privateChatId,
-    `❌ Канал не подключён
-
-LinkRay не смог подтвердить права администратора и право публикации.
-
-Проверьте права бота в канале и перешлите пост ещё раз.${errorText ? `
-
-Техническая причина: ${errorText.slice(0, 250)}` : ''}`,
-    [[button]],
-  );
-
-  console.log(
-    '[channel add v79] channel not registered',
-    JSON.stringify({
-      privateChatId,
-      baselineId,
-      registrationResult,
-      error: errorText.slice(0, 250),
-    }),
-  );
-
-  return true;
-}
-/* LR_CHANNEL_ADD_V79_END */
-
 app.use(async function lrV61ForwardMainBeforeFallback(req, res, next) {
   try {
     if (req.method !== 'POST' || !String(req.path || req.url || '').includes('/webhook')) return next();
@@ -26784,82 +26767,7 @@ lrV47Channels = async function lrV78ActiveChannelsOnly() {
   });
 };
 
-lrV47NotifyConnected =
-  async function lrV78NotifyConnected(chatId, key, channel) {
-    if (!channel) return false;
-
-    const stateKey =
-      `lr_v47_connected_notified:${chatId}:${channel.id}`;
-
-    const previous = await lrV47StateGet(stateKey);
-    const previousTs = Number(previous?.ts || 0);
-
-    /*
-     * Подавляем только второй webhook одного подключения.
-     * Старая запись больше не блокирует повторное подключение.
-     */
-    if (
-      previous &&
-      previousTs > 0 &&
-      Date.now() - previousTs < 20_000
-    ) {
-      console.log(
-        '[channel lifecycle v78] duplicate add webhook skipped',
-        JSON.stringify({
-          chatId,
-          id: channel.id,
-        }),
-      );
-
-      return true;
-    }
-
-    if (previous) {
-      await lrV47StateDelLike([stateKey]);
-    }
-
-    const ok = await lrV47Msg(
-      chatId,
-      `✅ Канал подключён к LinkRay
-
-${lrV47Esc(channel.title || 'Канал')}
-
-Канал сохранён и доступен для постов, автоподписей, аналитики и отчётов.`,
-      [
-        [
-          lrV47Btn(
-            '⬅️ Главное меню',
-            'main:menu',
-          ),
-        ],
-      ],
-      'html',
-    );
-
-    if (ok) {
-      await lrV47StateSet(stateKey, {
-        chatId,
-        key,
-        channel: {
-          id: channel.id,
-          max_chat_id: channel.max_chat_id,
-          title: channel.title,
-        },
-        ts: Date.now(),
-      });
-
-      console.log(
-        '[channel lifecycle v78] connected notification sent',
-        JSON.stringify({
-          chatId,
-          id: channel.id,
-          maxChatId: channel.max_chat_id,
-        }),
-      );
-    }
-
-    return ok;
-  };
+lrV47NotifyConnected = lrV82NotifyConnected;
 
 lrV47HandleBotRemoved =
   async function lrV78HandleBotRemoved(update) {
@@ -27002,503 +26910,9 @@ console.log(
   '[channel lifecycle v78] installed: add confirmation, full removal, active lists',
 );
 /* LR_CHANNEL_LIFECYCLE_V78_END */
-
-
-/* LR_CHANNEL_CONFIRM_DIRECT_V80_START */
-/*
- * Регистрацию канала не меняем.
- * После успешной записи в channels отправляем подтверждение
- * напрямую пользователю, который переслал пост.
- */
-function lrV80Clean(value, max = 4000) {
-  const text = String(value ?? '').trim();
-
-  if (
-    !text ||
-    text.length > max ||
-    ['undefined', 'null', 'nan', '[object object]']
-      .includes(text.toLowerCase())
-  ) {
-    return '';
-  }
-
-  return text;
-}
-
-function lrV80Rows(result) {
-  return Array.isArray(result)
-    ? result
-    : Array.isArray(result?.rows)
-      ? result.rows
-      : [];
-}
-
-function lrV80Esc(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function lrV80UserId(update) {
-  const helpers = [
-    'lrV36UserId',
-    'lrProfileMaxUserId',
-    'getUserId',
-  ];
-
-  for (const name of helpers) {
-    try {
-      const helper = globalThis[name];
-
-      if (typeof helper === 'function') {
-        const value = lrV80Clean(helper(update), 100);
-
-        if (value && !value.startsWith('-')) {
-          return value;
-        }
-      }
-    } catch {}
-  }
-
-  const candidates = [
-    update?.message?.sender?.user_id,
-    update?.message?.sender?.userId,
-    update?.body?.message?.sender?.user_id,
-    update?.body?.message?.sender?.userId,
-    update?.sender?.user_id,
-    update?.sender?.userId,
-    update?.user?.user_id,
-    update?.user?.userId,
-    update?.callback?.user?.user_id,
-    update?.callback?.user?.userId,
-    update?.user_id,
-    update?.userId,
-  ];
-
-  for (const candidate of candidates) {
-    const value = lrV80Clean(candidate, 100);
-
-    if (value && !value.startsWith('-')) {
-      return value;
-    }
-  }
-
-  return '';
-}
-
-async function lrV80BeforeChannel() {
-  try {
-    const rows = lrV80Rows(
-      await query(
-        `
-          SELECT
-            COALESCE(MAX(id), 0) AS max_id,
-            NOW() AS started_at
-          FROM channels
-        `,
-      ),
-    );
-
-    return {
-      maxId: Number(rows[0]?.max_id || 0),
-      startedAt:
-        rows[0]?.started_at ||
-        new Date().toISOString(),
-    };
-  } catch {
-    return {
-      maxId: 0,
-      startedAt: new Date().toISOString(),
-    };
-  }
-}
-
-async function lrV80SavedChannel(before) {
-  try {
-    const rows = lrV80Rows(
-      await query(
-        `
-          SELECT
-            id,
-            max_chat_id,
-            title,
-            link,
-            is_active,
-            updated_at
-          FROM channels
-          WHERE COALESCE(is_active, true)=true
-            AND (
-              id>$1
-              OR updated_at >=
-                $2::timestamptz - INTERVAL '10 seconds'
-            )
-          ORDER BY
-            updated_at DESC NULLS LAST,
-            id DESC
-          LIMIT 1
-        `,
-        [
-          Number(before?.maxId || 0),
-          before?.startedAt ||
-            new Date().toISOString(),
-        ],
-      ),
-    );
-
-    return rows[0] || null;
-  } catch (error) {
-    console.error(
-      '[channel confirm v80] saved channel lookup failed',
-      error?.message || error,
-    );
-
-    return null;
-  }
-}
-
-async function lrV80WasSent(userId, channelId) {
-  try {
-    const key =
-      `lr_v80_channel_confirm:${userId}:${channelId}`;
-
-    const rows = lrV80Rows(
-      await query(
-        `
-          SELECT key
-          FROM lr_bot_state
-          WHERE key=$1
-            AND updated_at >
-              NOW() - INTERVAL '60 seconds'
-          LIMIT 1
-        `,
-        [key],
-      ),
-    );
-
-    return Boolean(rows[0]);
-  } catch {
-    return false;
-  }
-}
-
-async function lrV80RememberSent(userId, channel) {
-  const key =
-    `lr_v80_channel_confirm:${userId}:${channel.id}`;
-
-  try {
-    await query(
-      `
-        INSERT INTO lr_bot_state (
-          key,
-          value,
-          updated_at
-        )
-        VALUES ($1,$2,NOW())
-        ON CONFLICT (key)
-        DO UPDATE SET
-          value=EXCLUDED.value,
-          updated_at=NOW()
-      `,
-      [
-        key,
-        JSON.stringify({
-          userId,
-          channelId: channel.id,
-          maxChatId: channel.max_chat_id,
-          ts: Date.now(),
-        }),
-      ],
-    );
-  } catch (error) {
-    console.error(
-      '[channel confirm v80] remember failed',
-      error?.message || error,
-    );
-  }
-}
-
-function lrV80Buttons() {
-  try {
-    if (typeof lrV37ButtonRows === 'function') {
-      return lrV37ButtonRows();
-    }
-  } catch {}
-
-  try {
-    if (typeof callbackButton === 'function') {
-      return [[
-        callbackButton(
-          '⬅️ Главное меню',
-          'main:menu',
-        ),
-      ]];
-    }
-  } catch {}
-
-  return [];
-}
-
-async function lrV80SendDirect(userId, text, rows, update) {
-  if (userId) {
-    try {
-      if (typeof lrV37ApiPostMessage === 'function') {
-        const response = await lrV37ApiPostMessage(
-          { user_id: userId },
-          text,
-          rows,
-        );
-
-        if (response?.ok) {
-          console.log(
-            '[channel confirm v80] sent by direct user_id',
-            JSON.stringify({
-              userId,
-              status: response.status,
-            }),
-          );
-
-          return true;
-        }
-
-        console.error(
-          '[channel confirm v80] direct user_id failed',
-          JSON.stringify({
-            userId,
-            status: response?.status || 0,
-            preview:
-              String(response?.raw || '')
-                .slice(0, 300),
-          }),
-        );
-      }
-    } catch (error) {
-      console.error(
-        '[channel confirm v80] direct API exception',
-        error?.stack || error?.message || error,
-      );
-    }
-  }
-
-  try {
-    if (typeof lrV37DirectNotifyUser === 'function') {
-      const ok = await lrV37DirectNotifyUser(
-        text,
-        rows,
-        update,
-      );
-
-      if (ok) {
-        console.log(
-          '[channel confirm v80] sent by direct helper',
-        );
-
-        return true;
-      }
-    }
-  } catch (error) {
-    console.error(
-      '[channel confirm v80] direct helper failed',
-      error?.message || error,
-    );
-  }
-
-  if (userId) {
-    try {
-      if (typeof msg === 'function') {
-        await msg(
-          userId,
-          text,
-          rows,
-          'html',
-        );
-
-        console.log(
-          '[channel confirm v80] sent by msg fallback',
-          JSON.stringify({ userId }),
-        );
-
-        return true;
-      }
-    } catch (error) {
-      console.error(
-        '[channel confirm v80] msg fallback failed',
-        error?.message || error,
-      );
-    }
-  }
-
-  return false;
-}
-
-async function lrV80ClearAddMode(update, userId) {
-  const keys = new Set([
-    'lr_v47_add_wait_global',
-    'lr_v34_add_wait_global',
-    'lr_v31_add_wait_global',
-    'lr_v30_add_wait_global',
-    'lr_v29_add_wait_global',
-  ]);
-
-  try {
-    if (typeof lrV47Key === 'function') {
-      const key = lrV80Clean(lrV47Key(update), 100);
-
-      if (key) {
-        keys.add(`lr_v47_add_wait:${key}`);
-      }
-    }
-  } catch {}
-
-  if (userId) {
-    for (const prefix of [
-      'lr_v47_add_wait',
-      'lr_v34_add_wait',
-      'lr_v31_add_wait',
-      'lr_v30_add_wait',
-      'lr_v29_add_wait',
-    ]) {
-      keys.add(`${prefix}:${userId}`);
-      keys.add(`${prefix}:user:${userId}`);
-    }
-  }
-
-  try {
-    await query(
-      `
-        DELETE FROM lr_bot_state
-        WHERE key=ANY($1::text[])
-      `,
-      [[...keys]],
-    );
-  } catch {}
-
-  try {
-    if (userId) {
-      await query(
-        `
-          DELETE FROM bot_sessions
-          WHERE user_id::text=ANY($1::text[])
-        `,
-        [[
-          String(userId),
-          `user:${userId}`,
-        ]],
-      );
-    }
-  } catch {}
-}
-
-const lrV80MaybeRegisterOriginal =
-  maybeRegisterChannel;
-
-maybeRegisterChannel =
-  async function lrV80MaybeRegisterChannel(update) {
-    const before = await lrV80BeforeChannel();
-    const result =
-      await lrV80MaybeRegisterOriginal(update);
-
-    const channel =
-      await lrV80SavedChannel(before);
-
-    if (!channel) {
-      console.log(
-        '[channel confirm v80] registration returned without changed channel',
-        JSON.stringify({
-          result: Boolean(result),
-        }),
-      );
-
-      return result;
-    }
-
-    const userId = lrV80UserId(update);
-
-    if (!userId) {
-      console.error(
-        '[channel confirm v80] sender user_id not found',
-        JSON.stringify({
-          channelId: channel.id,
-          maxChatId: channel.max_chat_id,
-        }),
-      );
-
-      return result;
-    }
-
-    if (
-      await lrV80WasSent(
-        userId,
-        channel.id,
-      )
-    ) {
-      console.log(
-        '[channel confirm v80] duplicate skipped',
-        JSON.stringify({
-          userId,
-          channelId: channel.id,
-        }),
-      );
-
-      return result;
-    }
-
-    const title =
-      lrV80Esc(
-        channel.title || 'Канал',
-      );
-
-    const text =
-      `✅ Канал подключён к LinkRay
-
-<b>${title}</b>
-
-Канал сохранён и доступен в Studio, автоподписях, аналитике и отчётах.`;
-
-    const sent = await lrV80SendDirect(
-      userId,
-      text,
-      lrV80Buttons(),
-      update,
-    );
-
-    if (sent) {
-      await lrV80RememberSent(
-        userId,
-        channel,
-      );
-
-      await lrV80ClearAddMode(
-        update,
-        userId,
-      );
-
-      console.log(
-        '[channel confirm v80] completed',
-        JSON.stringify({
-          userId,
-          channelId: channel.id,
-          maxChatId: channel.max_chat_id,
-          title: channel.title,
-        }),
-      );
-    } else {
-      console.error(
-        '[channel confirm v80] all delivery methods failed',
-        JSON.stringify({
-          userId,
-          channelId: channel.id,
-        }),
-      );
-    }
-
-    return result;
-  };
-
 console.log(
-  '[channel confirm v80] installed: confirmation by sender user_id',
+  '[channel add v82] installed: global wait, saved chat and user confirmation',
 );
-/* LR_CHANNEL_CONFIRM_DIRECT_V80_END */
 
 await ensureDb();
 startAutopostWorker().catch(e => console.error('[autopost start]', e));
