@@ -1,0 +1,995 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-site-ready-favicon-faq-v1"
+SITE="public/linkray-site"
+INDEX="$SITE/index.html"
+BACKUP="$(mktemp -d /tmp/linkray-site-ready.XXXXXX)"
+DONE=0
+
+ROOT_ICON_FILES=(
+  "public/favicon.ico"
+  "public/favicon.png"
+  "public/favicon-32.png"
+  "public/favicon-64.png"
+  "public/apple-touch-icon.png"
+  "public/icon-192.png"
+  "public/icon-512.png"
+)
+
+restore_all() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию сайта"
+
+  rm -rf "$SITE"
+  cp -a "$BACKUP/linkray-site" "$SITE"
+
+  for file in "${ROOT_ICON_FILES[@]}"; do
+    key="$(printf '%s' "$file" | tr '/' '_')"
+
+    if [[ -f "$BACKUP/$key.exists" ]]; then
+      cp -f "$BACKUP/$key" "$file"
+    else
+      rm -f "$file"
+    fi
+  done
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_all
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/9] Проверяю текущий сайт"
+
+test -f "$INDEX"
+test -f "$SITE/linkray-logo-exact.webp"
+
+cp -a "$SITE" "$BACKUP/linkray-site"
+
+for file in "${ROOT_ICON_FILES[@]}"; do
+  key="$(printf '%s' "$file" | tr '/' '_')"
+
+  if [[ -f "$file" ]]; then
+    cp -f "$file" "$BACKUP/$key"
+    touch "$BACKUP/$key.exists"
+  fi
+done
+
+echo "[2/9] Создаю настоящие PNG-значки LinkRay"
+
+ICON_SOURCE="$SITE/linkray-logo-exact.webp"
+ICON_TMP="$(mktemp -d /tmp/linkray-icons.XXXXXX)"
+ICON_READY=0
+
+test -f "$ICON_SOURCE"
+
+# Способ 1: sharp внутри уже работающего контейнера LinkRay.
+if docker exec linkray-app node --input-type=module -e '
+  import fs from "node:fs/promises";
+  import sharpModule from "sharp";
+
+  const sharp = sharpModule.default || sharpModule;
+  const source = "/app/public/linkray-site/linkray-logo-exact.webp";
+  const output = "/tmp/linkray-icons-v3";
+
+  await fs.rm(output, { recursive: true, force: true });
+  await fs.mkdir(output, { recursive: true });
+
+  for (const size of [16, 32, 64, 180, 192, 512]) {
+    await sharp(source)
+      .resize(size, size, {
+        fit: "cover",
+        position: "centre",
+      })
+      .png({
+        compressionLevel: 9,
+        adaptiveFiltering: true,
+      })
+      .toFile(`${output}/${size}.png`);
+  }
+' >/dev/null 2>&1; then
+  if docker cp \
+    linkray-app:/tmp/linkray-icons-v3/. \
+    "$ICON_TMP/" >/dev/null 2>&1; then
+    ICON_READY=1
+    echo "PNG созданы через sharp внутри linkray-app"
+  fi
+fi
+
+# Способ 2: Pillow на VPS.
+if [[ "$ICON_READY" != "1" ]] &&
+   python3 -c 'from PIL import Image' >/dev/null 2>&1; then
+  ICON_SOURCE="$ICON_SOURCE" ICON_TMP="$ICON_TMP" python3 - <<'PY'
+from pathlib import Path
+from PIL import Image
+import os
+
+source = Path(os.environ["ICON_SOURCE"])
+output = Path(os.environ["ICON_TMP"])
+output.mkdir(parents=True, exist_ok=True)
+
+with Image.open(source) as original:
+    image = original.convert("RGBA")
+
+    for size in (16, 32, 64, 180, 192, 512):
+        resized = image.resize(
+            (size, size),
+            Image.Resampling.LANCZOS,
+        )
+        resized.save(
+            output / f"{size}.png",
+            format="PNG",
+            optimize=True,
+        )
+PY
+  ICON_READY=1
+  echo "PNG созданы через Pillow"
+fi
+
+# Способ 3: ImageMagick.
+if [[ "$ICON_READY" != "1" ]]; then
+  IM_COMMAND=""
+
+  if command -v magick >/dev/null 2>&1; then
+    IM_COMMAND="magick"
+  elif command -v convert >/dev/null 2>&1; then
+    IM_COMMAND="convert"
+  fi
+
+  if [[ -n "$IM_COMMAND" ]]; then
+    IMAGE_MAGICK_OK=1
+
+    for size in 16 32 64 180 192 512; do
+      if ! "$IM_COMMAND" "$ICON_SOURCE" \
+        -resize "${size}x${size}^" \
+        -gravity center \
+        -extent "${size}x${size}" \
+        "$ICON_TMP/${size}.png" >/dev/null 2>&1; then
+        IMAGE_MAGICK_OK=0
+        break
+      fi
+    done
+
+    if [[ "$IMAGE_MAGICK_OK" == "1" ]]; then
+      ICON_READY=1
+      echo "PNG созданы через ImageMagick"
+    fi
+  fi
+fi
+
+# Способ 4: FFmpeg.
+if [[ "$ICON_READY" != "1" ]] &&
+   command -v ffmpeg >/dev/null 2>&1; then
+  FFMPEG_OK=1
+
+  for size in 16 32 64 180 192 512; do
+    if ! ffmpeg -loglevel error -y \
+      -i "$ICON_SOURCE" \
+      -vf "scale=${size}:${size}:force_original_aspect_ratio=increase,crop=${size}:${size}" \
+      -frames:v 1 \
+      "$ICON_TMP/${size}.png"; then
+      FFMPEG_OK=0
+      break
+    fi
+  done
+
+  if [[ "$FFMPEG_OK" == "1" ]]; then
+    ICON_READY=1
+    echo "PNG созданы через FFmpeg"
+  fi
+fi
+
+if [[ "$ICON_READY" != "1" ]]; then
+  echo "Не удалось преобразовать WebP-логотип в PNG ни одним способом."
+  echo "Сайт не изменялся."
+  exit 1
+fi
+
+echo "[2.1/9] Проверяю полученные изображения"
+
+ICON_TMP="$ICON_TMP" python3 - <<'PY'
+from pathlib import Path
+import os
+import struct
+
+directory = Path(os.environ["ICON_TMP"])
+signature = b"\x89PNG\r\n\x1a\n"
+
+for size in (16, 32, 64, 180, 192, 512):
+    file = directory / f"{size}.png"
+
+    if not file.exists():
+        raise SystemExit(
+            f"Не создан файл {file.name}"
+        )
+
+    data = file.read_bytes()
+
+    if not data.startswith(signature) or len(data) < 24:
+        raise SystemExit(
+            f"{file.name} не является PNG"
+        )
+
+    width = struct.unpack(">I", data[16:20])[0]
+    height = struct.unpack(">I", data[20:24])[0]
+
+    if (width, height) != (size, size):
+        raise SystemExit(
+            f"{file.name}: получен размер {width}×{height}, "
+            f"ожидался {size}×{size}"
+        )
+
+print("Все размеры PNG проверены")
+PY
+
+cp -f "$ICON_TMP/16.png" "$SITE/favicon-16.png"
+cp -f "$ICON_TMP/32.png" "$SITE/favicon-32.png"
+cp -f "$ICON_TMP/64.png" "$SITE/favicon-64.png"
+cp -f "$ICON_TMP/180.png" "$SITE/apple-touch-icon.png"
+cp -f "$ICON_TMP/192.png" "$SITE/icon-192.png"
+cp -f "$ICON_TMP/512.png" "$SITE/icon-512.png"
+
+cp -f "$ICON_TMP/64.png" "public/favicon.png"
+cp -f "$ICON_TMP/32.png" "public/favicon-32.png"
+cp -f "$ICON_TMP/64.png" "public/favicon-64.png"
+cp -f "$ICON_TMP/180.png" "public/apple-touch-icon.png"
+cp -f "$ICON_TMP/192.png" "public/icon-192.png"
+cp -f "$ICON_TMP/512.png" "public/icon-512.png"
+
+ICON_TMP="$ICON_TMP" python3 - <<'PY'
+from pathlib import Path
+import os
+import struct
+
+png = (
+    Path(os.environ["ICON_TMP"]) / "64.png"
+).read_bytes()
+
+header = struct.pack("<HHH", 0, 1, 1)
+entry = struct.pack(
+    "<BBBBHHII",
+    64,
+    64,
+    0,
+    0,
+    1,
+    32,
+    len(png),
+    22,
+)
+
+Path("public/favicon.ico").write_bytes(
+    header + entry + png
+)
+
+print("favicon.ico создан")
+PY
+
+rm -rf "$ICON_TMP"
+
+echo "[3/9] Обновляю manifest и значки во всех страницах"
+
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+site = Path("public/linkray-site")
+version = "20260806-site-ready-favicon-faq-v1"
+
+manifest_path = site / "site.webmanifest"
+
+try:
+    manifest = json.loads(
+        manifest_path.read_text(encoding="utf-8")
+    )
+except Exception:
+    manifest = {}
+
+manifest.update({
+    "name": "LinkRay — управление каналами MAX",
+    "short_name": "LinkRay",
+    "description": (
+        "Автопостинг, аналитика и защита каналов MAX."
+    ),
+    "lang": "ru",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#03131d",
+    "theme_color": "#03131d",
+    "icons": [
+        {
+            "src": (
+                f"/linkray-site/icon-192.png?v={version}"
+            ),
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any",
+        },
+        {
+            "src": (
+                f"/linkray-site/icon-512.png?v={version}"
+            ),
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any",
+        },
+    ],
+})
+
+manifest_path.write_text(
+    json.dumps(
+        manifest,
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n",
+    encoding="utf-8",
+)
+
+icon_block = f'''
+<!-- LINKRAY_BROWSER_IDENTITY_V1_START -->
+<link rel="icon"
+      href="/favicon.ico?v={version}"
+      sizes="any">
+<link rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="/linkray-site/favicon-32.png?v={version}">
+<link rel="icon"
+      type="image/png"
+      sizes="64x64"
+      href="/linkray-site/favicon-64.png?v={version}">
+<link rel="shortcut icon"
+      href="/favicon.ico?v={version}">
+<link rel="apple-touch-icon"
+      sizes="180x180"
+      href="/linkray-site/apple-touch-icon.png?v={version}">
+<link rel="manifest"
+      href="/linkray-site/site.webmanifest?v={version}">
+<meta name="application-name" content="LinkRay">
+<meta name="apple-mobile-web-app-title" content="LinkRay">
+<!-- LINKRAY_BROWSER_IDENTITY_V1_END -->
+'''.strip()
+
+for html_path in site.glob("*.html"):
+    source = html_path.read_text(encoding="utf-8")
+
+    source = re.sub(
+        r"\s*<!-- LINKRAY_BROWSER_IDENTITY_V1_START -->"
+        r"[\s\S]*?"
+        r"<!-- LINKRAY_BROWSER_IDENTITY_V1_END -->\s*",
+        "\n",
+        source,
+        flags=re.I,
+    )
+
+    source = re.sub(
+        r"\s*<link\b[^>]*\brel\s*=\s*"
+        r"['\"](?:icon|shortcut icon|apple-touch-icon|manifest)"
+        r"['\"][^>]*>\s*",
+        "\n",
+        source,
+        flags=re.I,
+    )
+
+    source = re.sub(
+        r"\s*<meta\b[^>]*\bname\s*=\s*"
+        r"['\"](?:application-name|apple-mobile-web-app-title)"
+        r"['\"][^>]*>\s*",
+        "\n",
+        source,
+        flags=re.I,
+    )
+
+    viewport = re.search(
+        r"<meta\b[^>]*\bname\s*=\s*"
+        r"['\"]viewport['\"][^>]*>",
+        source,
+        flags=re.I,
+    )
+
+    if viewport:
+        insert_at = viewport.end()
+    else:
+        head = re.search(r"<head[^>]*>", source, flags=re.I)
+
+        if not head:
+            raise SystemExit(
+                f"В {html_path} не найден <head>"
+            )
+
+        insert_at = head.end()
+
+    source = (
+        source[:insert_at]
+        + "\n"
+        + icon_block
+        + source[insert_at:]
+    )
+
+    html_path.write_text(source, encoding="utf-8")
+
+print("Manifest и HTML-значки обновлены")
+PY
+
+echo "[4/9] Обновляю готовую платформу и FAQ"
+
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+path = Path("public/linkray-site/index.html")
+source = path.read_text(encoding="utf-8")
+
+mobile_platform = r'''
+<section id="lr-mobile-platform"
+         class="lr-m-section lr-m-platform">
+  <div class="lr-m-platform-card">
+    <span class="lr-m-kicker">LinkRay Platform</span>
+
+    <h2>Сайт и бот работают вместе</h2>
+
+    <p>
+      Личный кабинет LinkRay уже доступен. На сайте можно
+      просматривать каналы, аналитику, AntiFraud, публикации
+      и скачивать отчёты, а создание постов остаётся в Studio MAX.
+    </p>
+
+    <div class="lr-m-roadmap">
+      <div>
+        <b>01</b>
+        <span>
+          <strong>Безопасный вход</strong>
+          Подтверждение выполняется кодом, который приходит
+          пользователю в LinkRay MAX.
+        </span>
+      </div>
+
+      <div>
+        <b>02</b>
+        <span>
+          <strong>Кабинет каналов</strong>
+          Подключённые каналы, показатели, публикации
+          и состояние функций в одном месте.
+        </span>
+      </div>
+
+      <div>
+        <b>03</b>
+        <span>
+          <strong>Web Analytics</strong>
+          Подписчики, просмотры, прирост, ER, графики,
+          AntiFraud и готовые отчёты.
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+'''.strip()
+
+mobile_faq = r'''
+<section id="lr-mobile-faq"
+         class="lr-m-section lr-m-faq">
+  <div class="lr-m-section-head">
+    <span>FAQ</span>
+    <h2>Работа с LinkRay</h2>
+    <p>Вход, подключение каналов, аналитика и Studio.</p>
+  </div>
+
+  <div class="lr-m-faq-list">
+    <details>
+      <summary>Как войти в личный кабинет?</summary>
+      <p>
+        Нажмите «Открыть кабинет», введите свой ID LinkRay
+        и подтвердите вход кодом, который бот отправит в MAX.
+      </p>
+    </details>
+
+    <details>
+      <summary>Как подключить канал?</summary>
+      <p>
+        Добавьте LinkRay администратором канала с необходимыми
+        правами и перешлите боту любой пост из этого канала.
+      </p>
+    </details>
+
+    <details>
+      <summary>Что показывает личный кабинет?</summary>
+      <p>
+        Подключённые каналы, подписчиков, просмотры, прирост,
+        ER, графики, состояние аналитики, AntiFraud
+        и последние публикации.
+      </p>
+    </details>
+
+    <details>
+      <summary>Когда становится доступен полный отчёт?</summary>
+      <p>
+        Сбор начинается после включения аналитики.
+        Текущие показатели появляются по мере сбора,
+        а полный отчёт формируется после накопления
+        минимум 24 часов данных.
+      </p>
+    </details>
+
+    <details>
+      <summary>Где создавать и редактировать посты?</summary>
+      <p>
+        Публикации создаются и редактируются в LinkRay Studio
+        внутри MAX. Сайт дополняет Studio аналитикой,
+        статусами каналов и отчётами.
+      </p>
+    </details>
+  </div>
+</section>
+'''.strip()
+
+desktop_faq = r'''
+<section class="section" id="faq">
+  <div class="shell faq-grid">
+    <div class="section-heading reveal">
+      <span class="section-kicker">FAQ</span>
+      <h2>Работа с LinkRay</h2>
+      <p>Вход, подключение каналов, аналитика и Studio.</p>
+    </div>
+
+    <div class="faq-list reveal">
+      <details>
+        <summary>Как войти в личный кабинет?</summary>
+        <p>
+          Нажмите «Открыть кабинет», введите свой ID LinkRay
+          и подтвердите вход кодом, который бот отправит в MAX.
+        </p>
+      </details>
+
+      <details>
+        <summary>Как подключить канал?</summary>
+        <p>
+          Добавьте LinkRay администратором канала с необходимыми
+          правами и перешлите боту любой пост из этого канала.
+        </p>
+      </details>
+
+      <details>
+        <summary>Что показывает личный кабинет?</summary>
+        <p>
+          Подключённые каналы, подписчиков, просмотры, прирост,
+          ER, графики, состояние аналитики, AntiFraud
+          и последние публикации.
+        </p>
+      </details>
+
+      <details>
+        <summary>Когда становится доступен полный отчёт?</summary>
+        <p>
+          Сбор начинается после включения аналитики.
+          Текущие показатели появляются по мере сбора,
+          а полный отчёт формируется после накопления
+          минимум 24 часов данных.
+        </p>
+      </details>
+
+      <details>
+        <summary>Где создавать и редактировать посты?</summary>
+        <p>
+          Публикации создаются и редактируются в LinkRay Studio
+          внутри MAX. Сайт дополняет Studio аналитикой,
+          статусами каналов и отчётами.
+        </p>
+      </details>
+    </div>
+  </div>
+</section>
+'''.strip()
+
+mobile_platform_pattern = re.compile(
+    r"<section\s+id=['\"]lr-mobile-platform['\"]"
+    r"[\s\S]*?"
+    r"(?=<section\s+id=['\"]lr-mobile-faq['\"])",
+    flags=re.I,
+)
+
+source, count = mobile_platform_pattern.subn(
+    lambda _match: mobile_platform + "\n\n",
+    source,
+    count=1,
+)
+
+if count != 1:
+    raise SystemExit(
+        "Не найден мобильный блок платформы"
+    )
+
+mobile_faq_pattern = re.compile(
+    r"<section\s+id=['\"]lr-mobile-faq['\"]"
+    r"[\s\S]*?"
+    r"(?=<section\s+class=['\"]lr-m-final['\"])",
+    flags=re.I,
+)
+
+source, count = mobile_faq_pattern.subn(
+    lambda _match: mobile_faq + "\n\n",
+    source,
+    count=1,
+)
+
+if count != 1:
+    raise SystemExit(
+        "Не найден мобильный FAQ"
+    )
+
+desktop_faq_pattern = re.compile(
+    r"<section\s+class=['\"]section['\"]\s+id=['\"]faq['\"]"
+    r"[\s\S]*?"
+    r"(?=<section\s+class=['\"]section cta-section['\"])",
+    flags=re.I,
+)
+
+source, count = desktop_faq_pattern.subn(
+    lambda _match: desktop_faq + "\n\n",
+    source,
+    count=1,
+)
+
+if count != 1:
+    raise SystemExit(
+        "Не найден основной FAQ"
+    )
+
+source = source.replace(
+    "<h2>Сайт станет продолжением бота</h2>",
+    "<h2>Сайт и бот работают вместе</h2>",
+)
+
+source = source.replace(
+    '''Публичная версия уже показывает продукт. Архитектура подготовлена для следующего этапа:
+
+личного кабинета, календаря публикаций и расширенной веб-аналитики.''',
+    '''Личный кабинет LinkRay уже работает. На сайте доступны связанные каналы,
+аналитика, AntiFraud, публикации и отчёты, а создание контента
+продолжается в LinkRay Studio внутри MAX.''',
+)
+
+source = source.replace(
+    "<div><span>01</span><p><b>Вход через MAX</b>"
+    "<small>Единый профиль пользователя и доступ к связанным каналам."
+    "</small></p></div>",
+    "<div><span>01</span><p><b>Безопасный вход</b>"
+    "<small>Подтверждение кодом, который приходит пользователю в MAX."
+    "</small></p></div>",
+)
+
+source = source.replace(
+    "<div><span>02</span><p><b>Контент-план</b>"
+    "<small>Календарь публикаций с просмотром и редактированием."
+    "</small></p></div>",
+    "<div><span>02</span><p><b>Кабинет каналов</b>"
+    "<small>Показатели, публикации и состояния функций в одном месте."
+    "</small></p></div>",
+)
+
+source = source.replace(
+    "<div><span>03</span><p><b>Web Analytics</b>"
+    "<small>Графики аудитории, просмотров и рекламных размещений."
+    "</small></p></div>",
+    "<div><span>03</span><p><b>Web Analytics</b>"
+    "<small>Подписчики, просмотры, ER, AntiFraud и отчёты."
+    "</small></p></div>",
+)
+
+source = source.replace(
+    "<div class=\"window-head\"><i></i><i></i><i></i>"
+    "<span>app.linkray.ru</span></div>",
+    "<div class=\"window-head\"><i></i><i></i><i></i>"
+    "<span>linkray.ru/cabinet</span></div>",
+)
+
+faq_entries = [
+    {
+        "@type": "Question",
+        "name": "Как войти в личный кабинет LinkRay?",
+        "acceptedAnswer": {
+            "@type": "Answer",
+            "text": (
+                "Нажмите «Открыть кабинет», введите ID LinkRay "
+                "и подтвердите вход кодом, который бот отправит в MAX."
+            ),
+        },
+    },
+    {
+        "@type": "Question",
+        "name": "Как подключить канал к LinkRay?",
+        "acceptedAnswer": {
+            "@type": "Answer",
+            "text": (
+                "Добавьте LinkRay администратором канала "
+                "и перешлите боту любой пост из этого канала."
+            ),
+        },
+    },
+    {
+        "@type": "Question",
+        "name": "Что показывает личный кабинет LinkRay?",
+        "acceptedAnswer": {
+            "@type": "Answer",
+            "text": (
+                "Кабинет показывает подключённые каналы, "
+                "подписчиков, просмотры, прирост, ER, графики, "
+                "состояние аналитики, AntiFraud и публикации."
+            ),
+        },
+    },
+    {
+        "@type": "Question",
+        "name": "Когда становится доступен полный отчёт?",
+        "acceptedAnswer": {
+            "@type": "Answer",
+            "text": (
+                "Текущие показатели появляются по мере сбора, "
+                "а полный отчёт формируется после накопления "
+                "минимум 24 часов данных."
+            ),
+        },
+    },
+    {
+        "@type": "Question",
+        "name": "Где создавать и редактировать посты?",
+        "acceptedAnswer": {
+            "@type": "Answer",
+            "text": (
+                "Публикации создаются и редактируются "
+                "в LinkRay Studio внутри MAX."
+            ),
+        },
+    },
+]
+
+schema = {
+    "@context": "https://schema.org",
+    "@graph": [
+        {
+            "@type": "WebSite",
+            "@id": "https://linkray.ru/#website",
+            "url": "https://linkray.ru/",
+            "name": "LinkRay",
+            "alternateName": "LinkRay для MAX",
+            "inLanguage": "ru-RU",
+            "description": (
+                "Автопостинг, аналитика, рекламные закупы "
+                "и AntiFraud-защита каналов MAX."
+            ),
+        },
+        {
+            "@type": "SoftwareApplication",
+            "@id": "https://linkray.ru/#application",
+            "name": "LinkRay",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "MAX Messenger и Web",
+            "url": "https://linkray.ru/",
+            "image": (
+                "/linkray-site/linkray-logo-exact.webp"
+            ),
+            "description": (
+                "Бот и личный кабинет для автопостинга, "
+                "аналитики, рекламных закупов и защиты "
+                "каналов MAX от накрутки."
+            ),
+            "featureList": [
+                "Отложенный постинг в каналы MAX",
+                "Личный кабинет связанных каналов",
+                "Аналитика подписок, отписок и просмотров",
+                "Учёт рекламных закупов и CPM",
+                "AntiFraud-защита от подозрительных наплывов",
+            ],
+            "publisher": {
+                "@type": "Organization",
+                "name": "LinkRay",
+                "url": "https://linkray.ru/",
+            },
+        },
+        {
+            "@type": "FAQPage",
+            "@id": "https://linkray.ru/#faq",
+            "mainEntity": faq_entries,
+        },
+    ],
+}
+
+schema_tag = (
+    '<script id="lr-seo-schema-v4" '
+    'type="application/ld+json">'
+    + json.dumps(
+        schema,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    + "</script>"
+)
+
+schema_pattern = re.compile(
+    r"<script\s+id=['\"]lr-seo-schema-v4['\"]"
+    r"[^>]*>[\s\S]*?</script>",
+    flags=re.I,
+)
+
+source, count = schema_pattern.subn(
+    lambda _match: schema_tag,
+    source,
+    count=1,
+)
+
+if count != 1:
+    raise SystemExit(
+        "Не найдена SEO-разметка FAQ"
+    )
+
+path.write_text(source, encoding="utf-8")
+
+required = [
+    "Сайт и бот работают вместе",
+    "Как войти в личный кабинет?",
+    "Что показывает личный кабинет?",
+    "Где создавать и редактировать посты?",
+    "linkray.ru/cabinet",
+]
+
+for text in required:
+    if text not in source:
+        raise SystemExit(
+            f"Не установлен текст: {text}"
+        )
+
+for obsolete in [
+    "будущая веб-платформа",
+    "Сайт станет продолжением бота",
+    "Следующий этап — личный кабинет",
+]:
+    if obsolete in source:
+        raise SystemExit(
+            f"Осталась устаревшая фраза: {obsolete}"
+        )
+
+print("Платформа и FAQ обновлены")
+PY
+
+echo "[5/9] Проверяю файлы до сборки"
+
+python3 - <<'PY'
+from pathlib import Path
+import json
+
+site = Path("public/linkray-site")
+
+for html_path in site.glob("*.html"):
+    source = html_path.read_text(encoding="utf-8")
+
+    if source.count(
+        "LINKRAY_BROWSER_IDENTITY_V1_START"
+    ) != 1:
+        raise SystemExit(
+            f"Неверный блок значков в {html_path}"
+        )
+
+manifest = json.loads(
+    (site / "site.webmanifest").read_text(
+        encoding="utf-8"
+    )
+)
+
+if manifest.get("short_name") != "LinkRay":
+    raise SystemExit("Manifest не обновлён")
+
+for file in [
+    Path("public/favicon.ico"),
+    site / "favicon-32.png",
+    site / "favicon-64.png",
+    site / "apple-touch-icon.png",
+    site / "icon-192.png",
+    site / "icon-512.png",
+]:
+    if not file.exists() or file.stat().st_size < 100:
+        raise SystemExit(
+            f"Не создан значок: {file}"
+        )
+
+print("Локальная проверка пройдена")
+PY
+
+echo "[6/9] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[7/9] Проверяю сайт после сборки"
+
+echo "Главная: $(
+  curl -fsS -o /dev/null -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/
+)"
+
+echo "Favicon ICO: $(
+  curl -fsS -o /dev/null -w '%{http_code}' \
+    --max-time 20 \
+    "https://linkray.ru/favicon.ico?v=$VERSION"
+)"
+
+echo "Favicon PNG: $(
+  curl -fsS -o /dev/null -w '%{http_code}' \
+    --max-time 20 \
+    "https://linkray.ru/linkray-site/favicon-32.png?v=$VERSION"
+)"
+
+echo "Manifest: $(
+  curl -fsS -o /dev/null -w '%{http_code}' \
+    --max-time 20 \
+    "https://linkray.ru/linkray-site/site.webmanifest?v=$VERSION"
+)"
+
+LIVE_HTML="$(
+  curl -fsS --max-time 20 \
+    https://linkray.ru/
+)"
+
+printf '%s' "$LIVE_HTML" |
+  grep -q "Сайт и бот работают вместе"
+
+printf '%s' "$LIVE_HTML" |
+  grep -q "Как войти в личный кабинет?"
+
+printf '%s' "$LIVE_HTML" |
+  grep -q "LINKRAY_BROWSER_IDENTITY_V1_START"
+
+echo "[8/9] Проверяю журнал запуска"
+
+if docker logs --since 60s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[9/9] Сохраняю проверенную версию"
+
+git add -- \
+  "$SITE" \
+  "${ROOT_ICON_FILES[@]}"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Update LinkRay favicon and ready website FAQ"
+  git push origin HEAD:main
+else
+  echo "Изменения уже сохранены"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ЛОГОТИП БРАУЗЕРА И FAQ САЙТА ОБНОВЛЕНЫ"
+echo
+echo "• вкладки и список открытых страниц используют логотип LinkRay"
+echo "• добавлены favicon.ico, PNG, Apple Touch и manifest"
+echo "• значки подключены на главной и в личном кабинете"
+echo "• удалены формулировки о будущем запуске сайта"
+echo "• FAQ заменён вопросами о готовом сервисе"
+echo "• SEO-разметка FAQ обновлена"
+echo "============================================================"
