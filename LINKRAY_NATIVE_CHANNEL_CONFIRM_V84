@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-native-v84.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/7] Проверяю фактическую функцию добавления"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q \
+  "async function lrV15HandleAddChannelForward" \
+  "$FILE"
+
+grep -q \
+  "return lrV15HandleAddChannelForward" \
+  "$FILE"
+
+echo "[2/7] Исправляю отправку после сохранения канала"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+START = "/* LR_NATIVE_CHANNEL_CONFIRM_V84_START */"
+END = "/* LR_NATIVE_CHANNEL_CONFIRM_V84_END */"
+
+source = re.sub(
+    rf"\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*",
+    "\n",
+    source,
+)
+
+helper = r'''
+/* LR_NATIVE_CHANNEL_CONFIRM_V84_START */
+async function lrV84SendConnectedNotice(
+  chatId,
+  text,
+  rows,
+  update,
+) {
+  const targetChatId =
+    String(chatId || '').trim();
+
+  if (!targetChatId) {
+    console.error(
+      '[native channel confirm v84] empty chatId',
+    );
+
+    return false;
+  }
+
+  /*
+   * Главный способ: прямой запрос MAX API по личному chat_id.
+   * Этот chatId уже используется рабочим меню бота.
+   */
+  if (
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const response =
+        await lrV37ApiPostMessage(
+          { chat_id: targetChatId },
+          text,
+          rows,
+        );
+
+      console.log(
+        '[native channel confirm v84] direct chat result',
+        JSON.stringify({
+          chatId: targetChatId,
+          status: response?.status || 0,
+          ok: Boolean(response?.ok),
+          preview:
+            String(response?.raw || '')
+              .slice(0, 240),
+        }),
+      );
+
+      if (response?.ok) {
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        '[native channel confirm v84] direct chat failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  /*
+   * Второй способ — уже рабочий механизм уведомлений,
+   * который используется при удалении канала.
+   */
+  if (
+    typeof lrV37DirectNotifyUser === 'function'
+  ) {
+    try {
+      const sent =
+        await lrV37DirectNotifyUser(
+          text,
+          rows,
+          update,
+        );
+
+      console.log(
+        '[native channel confirm v84] direct user result',
+        JSON.stringify({
+          chatId: targetChatId,
+          ok: Boolean(sent),
+        }),
+      );
+
+      if (sent) {
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        '[native channel confirm v84] direct user failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  /*
+   * Старый msg оставляем только резервным вариантом.
+   */
+  if (typeof msg === 'function') {
+    try {
+      const result =
+        await msg(
+          targetChatId,
+          text,
+          rows,
+          'html',
+        );
+
+      const sent = result !== false;
+
+      console.log(
+        '[native channel confirm v84] msg fallback result',
+        JSON.stringify({
+          chatId: targetChatId,
+          ok: sent,
+        }),
+      );
+
+      if (sent) {
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        '[native channel confirm v84] msg fallback failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  console.error(
+    '[native channel confirm v84] all delivery methods failed',
+    JSON.stringify({
+      chatId: targetChatId,
+    }),
+  );
+
+  return false;
+}
+
+console.log(
+  '[native channel confirm v84] installed inside lrV15 success branch',
+);
+/* LR_NATIVE_CHANNEL_CONFIRM_V84_END */
+'''
+
+function_start = source.find(
+    "async function lrV15HandleAddChannelForward"
+)
+
+function_end = source.find(
+    "async function lrV15SendChannelSelect",
+    function_start,
+)
+
+if function_start < 0 or function_end < 0:
+    raise SystemExit(
+        "Не найдены границы lrV15HandleAddChannelForward"
+    )
+
+function = source[
+    function_start:function_end
+]
+
+clear_anchor = (
+    "await clearSession(key).catch(()=>{});"
+)
+
+clear_pos = function.find(clear_anchor)
+
+log_pos = function.find(
+    "console.log('[v15 native] channel saved final'",
+    clear_pos,
+)
+
+if clear_pos < 0 or log_pos < 0:
+    raise SystemExit(
+        "Не найден успешный участок после сохранения канала"
+    )
+
+old_success = function[
+    clear_pos:log_pos
+]
+
+if "Канал подключён к LinkRay" not in old_success:
+    raise SystemExit(
+        "Найденный участок не содержит подтверждение подключения"
+    )
+
+new_success = r'''const __lrV84Text =
+          `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV15Esc(saved.title || title)}
+
+Канал сохранён в базе и теперь доступен для постов, автоподписей, аналитики и отчётов.`;
+
+        const __lrV84Rows =
+          lrV15Buttons();
+
+        const __lrV84Delivered =
+          await lrV84SendConnectedNotice(
+            chatId,
+            __lrV84Text,
+            __lrV84Rows,
+            update,
+          );
+
+        if (__lrV84Delivered) {
+          await clearSession(key).catch(()=>{});
+        } else {
+          console.error(
+            '[native channel confirm v84] channel saved but notice not delivered',
+            JSON.stringify({
+              chatId: String(chatId || ''),
+              key: String(key || ''),
+              channelId: saved?.id,
+              maxChatId: saved?.max_chat_id,
+              title: saved?.title || title,
+            }),
+          );
+        }
+
+        '''
+
+function = (
+    function[:clear_pos]
+    + new_success
+    + function[log_pos:]
+)
+
+source = (
+    source[:function_start]
+    + function
+    + source[function_end:]
+)
+
+insert_at = source.find(
+    "async function lrV15HandleAddChannelForward"
+)
+
+if insert_at < 0:
+    raise SystemExit(
+        "Не найдено место установки помощника V84"
+    )
+
+source = (
+    source[:insert_at]
+    + helper
+    + "\n"
+    + source[insert_at:]
+)
+
+path.write_text(
+    source,
+    encoding="utf-8",
+)
+
+checks = [
+    "LR_NATIVE_CHANNEL_CONFIRM_V84_START",
+    "lrV84SendConnectedNotice(",
+    "__lrV84Delivered",
+    "[native channel confirm v84] direct chat result",
+]
+
+for check in checks:
+    if check not in source:
+        raise SystemExit(
+            f"Не установлен элемент: {check}"
+        )
+
+if source.count(
+    "async function lrV84SendConnectedNotice"
+) != 1:
+    raise SystemExit(
+        "Помощник V84 установлен некорректно"
+    )
+
+if source.count(
+    "const __lrV84Delivered"
+) != 1:
+    raise SystemExit(
+        "Успешная ветка V15 изменена некорректно"
+    )
+
+print(
+    "Успешная ветка lrV15HandleAddChannelForward исправлена"
+)
+PY
+
+echo "[3/7] Проверяю синтаксис"
+
+node --check "$FILE"
+
+grep -q \
+  "LR_NATIVE_CHANNEL_CONFIRM_V84_START" \
+  "$FILE"
+
+grep -q \
+  "const __lrV84Delivered" \
+  "$FILE"
+
+echo "[4/7] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[5/7] Проверяю запуск и установленный код"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_NATIVE_CHANNEL_CONFIRM_V84_START' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'const __lrV84Delivered' /app/src/index.js"
+
+if docker logs --since 70s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После сборки обнаружена ошибка"
+  exit 1
+fi
+
+docker logs --since 70s linkray-app 2>&1 |
+  grep -F \
+    "[native channel confirm v84] installed" |
+  tail -n 1
+
+echo "[6/7] Сохраняю исправление"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Fix confirmation in native channel add handler"
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено"
+fi
+
+echo "[7/7] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "УВЕДОМЛЕНИЕ ДОБАВЛЕНИЯ ИСПРАВЛЕНО В РАБОЧЕЙ ФУНКЦИИ V15"
+echo
+echo "• исправлена lrV15HandleAddChannelForward"
+echo "• сохранение канала не изменялось"
+echo "• сначала используется прямой MAX API по chat_id"
+echo "• затем рабочий механизм уведомления пользователя"
+echo "• старый msg оставлен резервным способом"
+echo "• Studio и автопостинг не изменялись"
+echo "============================================================"
