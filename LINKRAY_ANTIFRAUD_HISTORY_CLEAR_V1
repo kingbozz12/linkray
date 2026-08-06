@@ -1,0 +1,761 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-af-history-clear.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию AntiFraud"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю текущий экран и таблицу"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q "История наплывов" "$FILE"
+grep -q "К каналу" "$FILE"
+grep -q "async function lrV57Webhook" "$FILE"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -At -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}" \
+    -c "
+      SELECT COUNT(*)
+      FROM information_schema.tables
+      WHERE table_schema='\''public'\''
+        AND table_name='\''lr_antifraud_waves'\'';
+    "
+' | grep -qx "1"
+
+echo "[2/8] Добавляю кнопку и обработку очистки"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+START = "/* LR_ANTIFRAUD_HISTORY_CLEAR_V1_START */"
+END = "/* LR_ANTIFRAUD_HISTORY_CLEAR_V1_END */"
+HOOK_START = "/* LR_ANTIFRAUD_HISTORY_CLEAR_V1_HOOK_START */"
+HOOK_END = "/* LR_ANTIFRAUD_HISTORY_CLEAR_V1_HOOK_END */"
+
+source = re.sub(
+    rf"\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*",
+    "\n",
+    source,
+)
+
+source = re.sub(
+    rf"\s*{re.escape(HOOK_START)}[\s\S]*?{re.escape(HOOK_END)}\s*",
+    "\n",
+    source,
+)
+
+history_pos = source.find("История наплывов")
+
+if history_pos < 0:
+    raise SystemExit(
+        "Не найден экран «История наплывов»"
+    )
+
+left = max(0, history_pos - 22000)
+right = min(len(source), history_pos + 22000)
+window = source[left:right]
+
+if "lr_antifraud_waves" not in window:
+    raise SystemExit(
+        "Экран истории не использует lr_antifraud_waves"
+    )
+
+id_variable = next(
+    (
+        name
+        for name in (
+            "channelId",
+            "channel_id",
+            "selectedChannelId",
+            "currentChannelId",
+            "id",
+        )
+        if re.search(
+            rf"\b{re.escape(name)}\b",
+            window,
+        )
+    ),
+    None,
+)
+
+if id_variable is None:
+    raise SystemExit(
+        "Не найдена переменная идентификатора канала"
+    )
+
+back_pattern = re.compile(
+    r"\[\s*callbackButton\(\s*(['\"])"
+    r"⬅️\s*К\s+каналу\1\s*,",
+    flags=re.I,
+)
+
+back_matches = list(
+    back_pattern.finditer(window)
+)
+
+if not back_matches:
+    raise SystemExit(
+        "Не найдена кнопка «⬅️ К каналу»"
+    )
+
+relative_history = history_pos - left
+back_match = min(
+    back_matches,
+    key=lambda item: abs(
+        item.start() - relative_history
+    ),
+)
+
+if "lr:af:history:clear:" not in window:
+    absolute = left + back_match.start()
+
+    clear_row = (
+        "[callbackButton("
+        "'🗑 Очистить историю', "
+        f"`lr:af:history:clear:${{String({id_variable})}}`"
+        ")],\n"
+    )
+
+    source = (
+        source[:absolute]
+        + clear_row
+        + source[absolute:]
+    )
+
+helper = r"""
+/* LR_ANTIFRAUD_HISTORY_CLEAR_V1_START */
+function lrAfHistoryRowsV1(result) {
+  return Array.isArray(result)
+    ? result
+    : Array.isArray(result?.rows)
+      ? result.rows
+      : [];
+}
+
+function lrAfHistoryIdentV1(value) {
+  const text = String(value || '');
+
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(text)) {
+    throw new Error(
+      `Недопустимый SQL-идентификатор: ${text}`,
+    );
+  }
+
+  return `"${text}"`;
+}
+
+function lrAfHistoryPayloadV1(update) {
+  try {
+    if (typeof getCallbackPayload === 'function') {
+      const value = getCallbackPayload(update);
+
+      if (typeof value === 'string' && value) {
+        return value;
+      }
+    }
+  } catch {}
+
+  return String(
+    update?.callback?.payload ||
+    update?.callback?.payload?.payload ||
+    update?.message?.callback?.payload ||
+    update?.body?.callback?.payload ||
+    update?.payload ||
+    update?.body?.payload ||
+    update?.data ||
+    '',
+  );
+}
+
+function lrAfHistoryChatIdV1(update) {
+  try {
+    if (typeof getChatId === 'function') {
+      const value = String(getChatId(update) || '');
+      if (value) return value;
+    }
+  } catch {}
+
+  return String(
+    update?.message?.recipient?.chat_id ||
+    update?.message?.chat_id ||
+    update?.body?.message?.recipient?.chat_id ||
+    update?.body?.message?.chat_id ||
+    update?.chat_id ||
+    update?.chatId ||
+    '',
+  );
+}
+
+function lrAfHistoryCallbackIdV1(update) {
+  try {
+    if (typeof getCallbackId === 'function') {
+      return String(getCallbackId(update) || '');
+    }
+  } catch {}
+
+  return String(
+    update?.callback?.callback_id ||
+    update?.callback?.id ||
+    update?.body?.callback?.callback_id ||
+    update?.body?.callback?.id ||
+    '',
+  );
+}
+
+function lrAfHistoryButtonV1(text, payload) {
+  if (typeof callbackButton === 'function') {
+    return callbackButton(text, payload);
+  }
+
+  if (typeof lrV47Btn === 'function') {
+    return lrV47Btn(text, payload);
+  }
+
+  return {
+    type: 'callback',
+    text,
+    payload,
+  };
+}
+
+async function lrAfHistoryRenderV1(
+  update,
+  text,
+  rows,
+) {
+  const chatId = lrAfHistoryChatIdV1(update);
+  const callbackId =
+    lrAfHistoryCallbackIdV1(update);
+
+  try {
+    if (
+      callbackId &&
+      typeof lrV47Cb === 'function'
+    ) {
+      await lrV47Cb(
+        callbackId,
+        chatId,
+        text,
+        rows,
+        'html',
+      );
+      return true;
+    }
+  } catch (error) {
+    console.error(
+      '[antifraud history clear v1] edit failed',
+      error?.message || error,
+    );
+  }
+
+  if (typeof msg === 'function') {
+    await msg(
+      chatId,
+      text,
+      rows,
+      'html',
+    );
+    return true;
+  }
+
+  return false;
+}
+
+async function lrAfHistoryResolveChannelV1(token) {
+  const rows = lrAfHistoryRowsV1(
+    await query(
+      `
+        SELECT id, max_chat_id, title
+        FROM channels
+        WHERE CAST(id AS TEXT)=$1
+           OR CAST(max_chat_id AS TEXT)=$1
+        LIMIT 1
+      `,
+      [String(token)],
+    ),
+  );
+
+  return rows[0] || null;
+}
+
+async function lrAfHistorySchemaV1() {
+  const rows = lrAfHistoryRowsV1(
+    await query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema='public'
+          AND table_name='lr_antifraud_waves'
+      `,
+    ),
+  );
+
+  return new Set(
+    rows.map((row) => String(row.column_name)),
+  );
+}
+
+async function lrAfHistoryClearDbV1(token) {
+  const channel =
+    await lrAfHistoryResolveChannelV1(token);
+
+  if (!channel) {
+    throw new Error('Канал не найден в базе.');
+  }
+
+  const columns =
+    await lrAfHistorySchemaV1();
+
+  const channelColumn = [
+    'channel_id',
+    'max_chat_id',
+    'chat_id',
+    'channel_chat_id',
+    'target_channel_id',
+  ].find((name) => columns.has(name));
+
+  if (!channelColumn) {
+    throw new Error(
+      'В таблице наплывов не найден столбец канала.',
+    );
+  }
+
+  const values = [
+    String(channel.id),
+    String(channel.max_chat_id || ''),
+  ].filter(Boolean);
+
+  let ids = [];
+
+  if (columns.has('id')) {
+    ids = lrAfHistoryRowsV1(
+      await query(
+        `
+          SELECT CAST(id AS TEXT) AS id
+          FROM public.lr_antifraud_waves
+          WHERE CAST(
+            ${lrAfHistoryIdentV1(channelColumn)}
+            AS TEXT
+          ) = ANY($1::text[])
+        `,
+        [values],
+      ),
+    )
+      .map((row) => String(row.id || ''))
+      .filter(Boolean);
+  }
+
+  const countRows = lrAfHistoryRowsV1(
+    await query(
+      `
+        SELECT COUNT(*)::int AS count
+        FROM public.lr_antifraud_waves
+        WHERE CAST(
+          ${lrAfHistoryIdentV1(channelColumn)}
+          AS TEXT
+        ) = ANY($1::text[])
+      `,
+      [values],
+    ),
+  );
+
+  const deleted = Number(
+    countRows[0]?.count || 0,
+  );
+
+  let relatedDeleted = 0;
+
+  if (ids.length) {
+    const children = lrAfHistoryRowsV1(
+      await query(
+        `
+          SELECT DISTINCT
+            table_name,
+            column_name
+          FROM information_schema.columns
+          WHERE table_schema='public'
+            AND table_name<>'lr_antifraud_waves'
+            AND (
+              table_name ILIKE '%antifraud%'
+              OR table_name ILIKE '%wave%'
+            )
+            AND column_name IN (
+              'wave_id',
+              'antifraud_wave_id'
+            )
+        `,
+      ),
+    );
+
+    for (const child of children) {
+      const table =
+        String(child.table_name || '');
+
+      const column =
+        String(child.column_name || '');
+
+      if (
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)
+      ) {
+        continue;
+      }
+
+      const childCount = lrAfHistoryRowsV1(
+        await query(
+          `
+            SELECT COUNT(*)::int AS count
+            FROM ${lrAfHistoryIdentV1(table)}
+            WHERE CAST(
+              ${lrAfHistoryIdentV1(column)}
+              AS TEXT
+            ) = ANY($1::text[])
+          `,
+          [ids],
+        ),
+      );
+
+      await query(
+        `
+          DELETE FROM ${lrAfHistoryIdentV1(table)}
+          WHERE CAST(
+            ${lrAfHistoryIdentV1(column)}
+            AS TEXT
+          ) = ANY($1::text[])
+        `,
+        [ids],
+      );
+
+      relatedDeleted += Number(
+        childCount[0]?.count || 0,
+      );
+    }
+  }
+
+  await query(
+    `
+      DELETE FROM public.lr_antifraud_waves
+      WHERE CAST(
+        ${lrAfHistoryIdentV1(channelColumn)}
+        AS TEXT
+      ) = ANY($1::text[])
+    `,
+    [values],
+  );
+
+  return {
+    channel,
+    deleted,
+    relatedDeleted,
+  };
+}
+
+async function lrAfHistoryHandleV1(update) {
+  const payload =
+    lrAfHistoryPayloadV1(update);
+
+  const askPrefix =
+    'lr:af:history:clear:';
+
+  const yesPrefix =
+    'lr:af:history:clear:yes:';
+
+  if (!payload.startsWith(askPrefix)) {
+    return false;
+  }
+
+  if (payload.startsWith(yesPrefix)) {
+    const token =
+      payload.slice(yesPrefix.length);
+
+    const result =
+      await lrAfHistoryClearDbV1(token);
+
+    const title = String(
+      result.channel.title || 'Канал',
+    )
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    await lrAfHistoryRenderV1(
+      update,
+      `✅ <b>История наплывов очищена</b>
+
+Канал: ${title}
+
+Удалено периодов: <b>${result.deleted}</b>`,
+      [[
+        lrAfHistoryButtonV1(
+          '⬅️ В AntiFraud',
+          'main:antifraud',
+        ),
+      ]],
+    );
+
+    console.log(
+      '[antifraud history clear v1] database cleared',
+      JSON.stringify({
+        channelId: result.channel.id,
+        maxChatId: result.channel.max_chat_id,
+        deleted: result.deleted,
+        relatedDeleted: result.relatedDeleted,
+      }),
+    );
+
+    return true;
+  }
+
+  const token =
+    payload.slice(askPrefix.length);
+
+  if (!token) {
+    throw new Error(
+      'Не указан канал для очистки истории.',
+    );
+  }
+
+  await lrAfHistoryRenderV1(
+    update,
+    `⚠️ <b>Очистить историю наплывов?</b>
+
+Все обнаруженные периоды этого канала будут удалены из базы без возможности восстановления.
+
+Настройки AntiFraud и текущая защита канала останутся без изменений.`,
+    [
+      [
+        lrAfHistoryButtonV1(
+          '🗑 Да, очистить',
+          `${yesPrefix}${token}`,
+        ),
+      ],
+      [
+        lrAfHistoryButtonV1(
+          '⬅️ Отмена',
+          'main:antifraud',
+        ),
+      ],
+    ],
+  );
+
+  return true;
+}
+
+console.log(
+  '[antifraud history clear v1] installed',
+);
+/* LR_ANTIFRAUD_HISTORY_CLEAR_V1_END */
+"""
+
+insert_at = source.rfind("await ensureDb();")
+
+if insert_at < 0:
+    raise SystemExit(
+        "Не найдено место перед запуском приложения"
+    )
+
+source = (
+    source[:insert_at]
+    + helper
+    + "\n"
+    + source[insert_at:]
+)
+
+webhook_match = re.search(
+    r"async function lrV57Webhook\s*"
+    r"\(\s*req\s*,\s*res\s*\)\s*\{",
+    source,
+)
+
+if not webhook_match:
+    raise SystemExit(
+        "Не найдена функция lrV57Webhook"
+    )
+
+hook = r"""
+  /* LR_ANTIFRAUD_HISTORY_CLEAR_V1_HOOK_START */
+  try {
+    if (
+      await lrAfHistoryHandleV1(
+        req.body || {},
+      )
+    ) {
+      return res.json({
+        ok: true,
+        handled:
+          'antifraud_history_clear_v1',
+      });
+    }
+  } catch (error) {
+    console.error(
+      '[antifraud history clear v1] callback failed',
+      error?.stack || error?.message || error,
+    );
+
+    return res.status(500).json({
+      ok: false,
+      error:
+        'Не удалось очистить историю наплывов.',
+    });
+  }
+  /* LR_ANTIFRAUD_HISTORY_CLEAR_V1_HOOK_END */
+
+"""
+
+source = (
+    source[:webhook_match.end()]
+    + "\n"
+    + hook
+    + source[webhook_match.end():]
+)
+
+path.write_text(
+    source,
+    encoding="utf-8",
+)
+
+checks = [
+    START,
+    HOOK_START,
+    "lr:af:history:clear:",
+    "🗑 Очистить историю",
+    "lrAfHistoryClearDbV1",
+    "antifraud_history_clear_v1",
+]
+
+for check in checks:
+    if check not in source:
+        raise SystemExit(
+            f"Не установлен элемент: {check}"
+        )
+
+if source.count(START) != 1:
+    raise SystemExit(
+        "Основной блок установлен некорректно"
+    )
+
+if source.count(HOOK_START) != 1:
+    raise SystemExit(
+        "Ветка webhook установлена некорректно"
+    )
+
+print("Переменная канала:", id_variable)
+print("Кнопка и очистка установлены")
+PY
+
+echo "[3/8] Проверяю синтаксис"
+
+node --check "$FILE"
+
+grep -q \
+  "LR_ANTIFRAUD_HISTORY_CLEAR_V1_START" \
+  "$FILE"
+
+grep -q \
+  "🗑 Очистить историю" \
+  "$FILE"
+
+echo "[4/8] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[5/8] Проверяю запуск"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_ANTIFRAUD_HISTORY_CLEAR_V1_START' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q '🗑 Очистить историю' /app/src/index.js"
+
+if docker logs --since 70s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После сборки обнаружена ошибка"
+  exit 1
+fi
+
+docker logs --since 70s linkray-app 2>&1 |
+  grep -F \
+    "[antifraud history clear v1] installed" |
+  tail -n 1
+
+echo "[6/8] Проверяю, что таблица не изменилась при установке"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -At -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}" \
+    -c "SELECT COUNT(*) FROM public.lr_antifraud_waves;"
+' > "$BACKUP/waves-count.txt"
+
+echo "Текущих записей наплывов: $(cat "$BACKUP/waves-count.txt")"
+echo "Установщик записи не удалял."
+
+echo "[7/8] Сохраняю исправление"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Add AntiFraud history database cleanup"
+  git push origin HEAD:main
+else
+  echo "Очистка истории уже установлена"
+fi
+
+echo "[8/8] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ОЧИСТКА ИСТОРИИ НАПЛЫВОВ УСТАНОВЛЕНА"
+echo
+echo "• добавлена кнопка «Очистить историю»"
+echo "• перед удалением запрашивается подтверждение"
+echo "• удаляются наплывы только выбранного канала"
+echo "• удаление выполняется непосредственно в PostgreSQL"
+echo "• связанные записи wave_id также очищаются"
+echo "• настройки AntiFraud не изменяются"
+echo "• Studio и автопостинг не изменялись"
+echo "============================================================"
