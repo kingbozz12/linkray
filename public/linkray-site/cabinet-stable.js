@@ -1224,3 +1224,430 @@
 
   load();
 })();
+
+/* LINKRAY_CABINET_REAL_SETTINGS_FRONT_V7_START */
+(() => {
+  'use strict';
+
+  if (!location.pathname.startsWith('/cabinet')) return;
+
+  const LIST_API = '/api/website/cabinet/channel-settings';
+  const state = new Map();
+  const orderedItems = [];
+  let loaded = false;
+  let loadPromise = null;
+  let renderQueued = false;
+
+  const text = (value) => String(value ?? '').trim();
+
+  function normalized(value) {
+    return text(value)
+      .toLocaleLowerCase('ru-RU')
+      .replace(/ё/g, 'е')
+      .replace(/[«»"'`]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function toast(message, isError = false) {
+    let element = document.getElementById('lr-settings-toast-v7');
+
+    if (!element) {
+      element = document.createElement('div');
+      element.id = 'lr-settings-toast-v7';
+      element.className = 'lr-settings-toast-v7';
+      document.body.appendChild(element);
+    }
+
+    element.textContent = message;
+    element.classList.toggle('error', Boolean(isError));
+    element.classList.add('show');
+
+    window.clearTimeout(toast.timer);
+    toast.timer = window.setTimeout(() => {
+      element.classList.remove('show');
+    }, 2600);
+  }
+
+  async function jsonResponse(response) {
+    const contentType =
+      response.headers.get('content-type') || '';
+
+    if (contentType.includes('application/json')) {
+      return response.json();
+    }
+
+    return {
+      ok: false,
+      error: (await response.text()).slice(0, 400),
+    };
+  }
+
+  async function loadSettings(force = false) {
+    if (loadPromise && !force) return loadPromise;
+
+    loadPromise = (async () => {
+      const response = await fetch(LIST_API, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+      });
+
+      const body = await jsonResponse(response);
+
+      if (!response.ok || body?.ok === false) {
+        throw new Error(
+          body?.error || `Ошибка API ${response.status}`,
+        );
+      }
+
+      state.clear();
+      orderedItems.length = 0;
+
+      for (const item of Array.isArray(body?.channels)
+        ? body.channels
+        : []) {
+        const id = text(item?.id);
+        if (!id) continue;
+
+        const normalizedItem = {
+          ...item,
+          id,
+          title: text(item?.title),
+        };
+
+        state.set(id, normalizedItem);
+        orderedItems.push(normalizedItem);
+      }
+
+      loaded = true;
+      queueRender();
+      return body;
+    })()
+      .catch((error) => {
+        console.error(
+          '[LinkRay Cabinet Settings V7]',
+          error,
+        );
+        loaded = false;
+        return null;
+      })
+      .finally(() => {
+        loadPromise = null;
+      });
+
+    return loadPromise;
+  }
+
+  function statusLabel(item) {
+    return item.analyticsReady
+      ? 'Данные доступны'
+      : 'Ожидаются первые данные';
+  }
+
+  function rowTemplate({
+    label,
+    description,
+    setting,
+    enabled,
+    disabled = false,
+  }) {
+    const control = setting
+      ? `
+          <label class="lr-settings-switch-v7">
+            <input
+              type="checkbox"
+              data-lr-setting="${setting}"
+              ${enabled ? 'checked' : ''}
+              ${disabled ? 'disabled' : ''}
+            >
+            <span aria-hidden="true"></span>
+          </label>
+        `
+      : `
+          <span class="lr-settings-status-v7">
+            ${description}
+          </span>
+        `;
+
+    return `
+      <div class="lr-settings-row-v7">
+        <div>
+          <strong>${label}</strong>
+          ${
+            setting
+              ? `<small>${description}</small>`
+              : '<small>Сбор работает автоматически для подключённого канала</small>'
+          }
+        </div>
+        ${control}
+      </div>
+    `;
+  }
+
+  function panelTemplate(item) {
+    return `
+      <section
+        class="lr-real-settings-v7"
+        data-lr-settings-panel="${item.id}"
+      >
+        <div class="lr-settings-title-v7">
+          <strong>Управление каналом</strong>
+          <span>Настройки сохраняются сразу</span>
+        </div>
+
+        ${rowTemplate({
+          label: 'Аналитика канала',
+          description: statusLabel(item),
+        })}
+
+        ${rowTemplate({
+          label: 'Ежедневный отчёт ПДП',
+          description: item.dailyAvailable
+            ? 'Отправка каждый день в 08:00 МСК'
+            : 'Сначала откройте LinkRay в MAX',
+          setting: 'daily',
+          enabled: Boolean(item.dailyEnabled),
+          disabled: !item.dailyAvailable,
+        })}
+
+        ${rowTemplate({
+          label: 'Защита AntiFraud',
+          description: 'Круглосуточная проверка наплывов',
+          setting: 'antifraud',
+          enabled: Boolean(item.antifraudEnabled),
+        })}
+      </section>
+    `;
+  }
+
+  function channelCards() {
+    const direct = [
+      ...document.querySelectorAll('.channel-card'),
+    ].filter(
+      (element) =>
+        !element.classList.contains('lr-real-settings-v7') &&
+        !element.closest('.lr-real-settings-v7'),
+    );
+
+    if (direct.length) return direct;
+
+    return [
+      ...document.querySelectorAll(
+        'article[class*="channel"], section[class*="channel-card"]',
+      ),
+    ].filter(
+      (element) =>
+        !element.classList.contains('lr-real-settings-v7') &&
+        !element.closest('.lr-real-settings-v7'),
+    );
+  }
+
+  function explicitChannelId(card) {
+    const values = [
+      card.getAttribute('data-channel-id'),
+      card.getAttribute('data-id'),
+      card.dataset?.channelId,
+      card.querySelector('[data-channel-id]')
+        ?.getAttribute('data-channel-id'),
+      card.querySelector('[data-id]')?.getAttribute('data-id'),
+    ];
+
+    return values
+      .map(text)
+      .find((value) => state.has(value)) || '';
+  }
+
+  function titleMatch(card, usedIds) {
+    const cardText = normalized(card.innerText || card.textContent);
+
+    if (!cardText) return null;
+
+    const matches = orderedItems.filter((item) => {
+      if (usedIds.has(item.id)) return false;
+
+      const title = normalized(item.title);
+      return title.length >= 2 && cardText.includes(title);
+    });
+
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function attachPanel(card, item) {
+    if (!card || !item) return false;
+
+    card.setAttribute('data-channel-id', item.id);
+
+    const existing = [
+      ...card.querySelectorAll('[data-lr-settings-panel]'),
+    ].find(
+      (element) =>
+        text(element.getAttribute('data-lr-settings-panel')) ===
+        item.id,
+    );
+
+    if (existing) return true;
+
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = panelTemplate(item).trim();
+    const panel = wrapper.firstElementChild;
+
+    if (!panel) return false;
+
+    card.appendChild(panel);
+    return true;
+  }
+
+  function renderPanels() {
+    renderQueued = false;
+    if (!loaded || !orderedItems.length) return;
+
+    const cards = channelCards();
+    if (!cards.length) return;
+
+    const usedIds = new Set();
+    const unresolvedCards = [];
+
+    for (const card of cards) {
+      const id = explicitChannelId(card);
+      const item = id ? state.get(id) : titleMatch(card, usedIds);
+
+      if (item) {
+        attachPanel(card, item);
+        usedIds.add(item.id);
+      } else {
+        unresolvedCards.push(card);
+      }
+    }
+
+    const remainingItems = orderedItems.filter(
+      (item) => !usedIds.has(item.id),
+    );
+
+    /*
+     * Безопасный резерв: текущий кабинет выводит карточки в том же
+     * порядке, что API. Он используется только при полном совпадении
+     * количества ещё не сопоставленных карточек и каналов.
+     */
+    if (
+      unresolvedCards.length > 0 &&
+      unresolvedCards.length === remainingItems.length
+    ) {
+      unresolvedCards.forEach((card, index) => {
+        attachPanel(card, remainingItems[index]);
+      });
+    }
+  }
+
+  function queueRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    window.requestAnimationFrame(renderPanels);
+  }
+
+  async function save(input) {
+    const panel = input.closest('[data-lr-settings-panel]');
+    const channelId = text(
+      panel?.getAttribute('data-lr-settings-panel'),
+    );
+    const setting = text(
+      input.getAttribute('data-lr-setting'),
+    );
+    const item = state.get(channelId);
+
+    if (!item || !['daily', 'antifraud'].includes(setting)) {
+      return;
+    }
+
+    const previous =
+      setting === 'daily'
+        ? Boolean(item.dailyEnabled)
+        : Boolean(item.antifraudEnabled);
+    const enabled = Boolean(input.checked);
+
+    input.disabled = true;
+    panel?.classList.add('saving');
+
+    try {
+      const response = await fetch(
+        `/api/website/cabinet/channel/${encodeURIComponent(
+          channelId,
+        )}/settings`,
+        {
+          method: 'PATCH',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+          },
+          body: JSON.stringify({
+            setting,
+            enabled,
+          }),
+        },
+      );
+
+      const body = await jsonResponse(response);
+
+      if (!response.ok || body?.ok === false) {
+        throw new Error(
+          body?.error || `Ошибка API ${response.status}`,
+        );
+      }
+
+      if (setting === 'daily') {
+        item.dailyEnabled = enabled;
+      } else {
+        item.antifraudEnabled = enabled;
+      }
+
+      state.set(channelId, item);
+      toast('Настройка канала сохранена');
+    } catch (error) {
+      input.checked = previous;
+      toast(
+        error?.message || 'Не удалось сохранить настройку',
+        true,
+      );
+    } finally {
+      input.disabled = false;
+      panel?.classList.remove('saving');
+    }
+  }
+
+  document.addEventListener('change', (event) => {
+    const input = event.target.closest(
+      'input[data-lr-setting]',
+    );
+
+    if (input) save(input);
+  });
+
+  const observer = new MutationObserver(() => {
+    queueRender();
+  });
+
+  function boot() {
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    loadSettings();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, {
+      once: true,
+    });
+  } else {
+    boot();
+  }
+})();
+/* LINKRAY_CABINET_REAL_SETTINGS_FRONT_V7_END */

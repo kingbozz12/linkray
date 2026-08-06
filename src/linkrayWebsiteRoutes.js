@@ -2993,6 +2993,384 @@ function lrAccurateSnapshotMatches(snapshot, identifiers) {
   );
   // LINKRAY_SAME_BOT_REPORT_ROUTE_V1_END
 
+
+  // LINKRAY_CABINET_REAL_SETTINGS_V7_START
+  function lrV7SettingsOwnerChatId(identity) {
+    return lrC5Text(
+      lrC5Pick(
+        identity?.user || {},
+        [
+          'private_chat_id',
+          'privateChatId',
+          'chat_id',
+          'chatId',
+        ],
+        identity?.maxUserId || '',
+      ),
+    );
+  }
+
+  function lrV7SettingsChannelValues(raw) {
+    return [
+      raw?.id,
+      raw?.channel_id,
+      raw?.max_chat_id,
+      raw?.chat_id,
+      raw?.max_channel_id,
+    ]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean);
+  }
+
+  async function lrV7SettingsIdentity(req) {
+    const identity = await lrC5Session(req);
+
+    if (!identity?.userId) {
+      const error = new Error(
+        'Сессия входа закончилась. Войдите заново.',
+      );
+      error.statusCode = 401;
+      throw error;
+    }
+
+    return identity;
+  }
+
+  async function lrV7SettingsMembership(identity, requestedId) {
+    const safeRequestedId = String(requestedId || '').trim();
+
+    if (!safeRequestedId) return null;
+
+    const memberships = (
+      await lrC5LoadChannels(identity)
+    ).filter(({ raw }) => lrC5ActiveChannel(raw));
+
+    const membership = memberships.find(({ raw }) =>
+      lrV7SettingsChannelValues(raw).includes(safeRequestedId),
+    );
+
+    if (!membership) return null;
+
+    const raw = membership.raw || {};
+    const internalId = lrC5Text(
+      lrC5Pick(raw, ['id', 'channel_id']),
+    );
+
+    if (!/^\d+$/.test(internalId)) return null;
+
+    return {
+      ...membership,
+      raw,
+      internalId,
+      maxChatId: lrC5Text(
+        lrC5Pick(
+          raw,
+          ['max_chat_id', 'chat_id', 'max_channel_id'],
+        ),
+      ),
+      title: lrC5Text(
+        lrC5Pick(
+          raw,
+          ['title', 'name', 'channel_title', 'display_name'],
+          `Канал ${internalId}`,
+        ),
+      ),
+    };
+  }
+
+  async function lrV7SettingsRows(sql, params = []) {
+    return lrC5Rows(await lrCabinetQuery(sql, params));
+  }
+
+  app.get(
+    '/api/website/cabinet/channel-settings',
+    applyWebsiteHeaders,
+    lrC5Async(async (req, res) => {
+      try {
+        const identity = await lrV7SettingsIdentity(req);
+        const payload = await lrC5CabinetPayload(req);
+        const ownerChatId = lrV7SettingsOwnerChatId(identity);
+
+        const memberships = (
+          await lrC5LoadChannels(identity)
+        ).filter(({ raw }) => lrC5ActiveChannel(raw));
+
+        const internalIds = memberships
+          .map(({ raw }) =>
+            lrC5Text(lrC5Pick(raw, ['id', 'channel_id'])),
+          )
+          .filter((value) => /^\d+$/.test(value));
+
+        const dailyRows =
+          ownerChatId && internalIds.length
+            ? await lrV7SettingsRows(
+                `
+                  SELECT
+                    channel_id::text AS channel_id,
+                    enabled
+                  FROM public.lr_channel_analytics_daily_channels
+                  WHERE owner_chat_id=$1
+                    AND channel_id=ANY($2::bigint[])
+                `,
+                [ownerChatId, internalIds],
+              )
+            : [];
+
+        const antifraudRows = internalIds.length
+          ? await lrV7SettingsRows(
+              `
+                SELECT
+                  channel_id::text AS channel_id,
+                  enabled
+                FROM public.lr_antifraud_channels
+                WHERE channel_id=ANY($1::bigint[])
+              `,
+              [internalIds],
+            )
+          : [];
+
+        const dailyById = new Map(
+          dailyRows.map((row) => [
+            String(row.channel_id),
+            Boolean(row.enabled),
+          ]),
+        );
+
+        const antifraudById = new Map(
+          antifraudRows.map((row) => [
+            String(row.channel_id),
+            Boolean(row.enabled),
+          ]),
+        );
+
+        const payloadChannels = Array.isArray(payload?.channels)
+          ? payload.channels
+          : [];
+
+        const payloadById = new Map(
+          payloadChannels.map((channel) => [
+            String(channel?.id ?? channel?.channelId ?? ''),
+            channel,
+          ]),
+        );
+
+        const channels = memberships
+          .map(({ raw }) => {
+            const id = lrC5Text(
+              lrC5Pick(raw, ['id', 'channel_id']),
+            );
+
+            if (!/^\d+$/.test(id)) return null;
+
+            const current = payloadById.get(id) || {};
+            const title = lrC5Text(
+              lrC5Pick(
+                {
+                  ...raw,
+                  ...current,
+                },
+                ['title', 'name', 'channel_title', 'display_name'],
+                `Канал ${id}`,
+              ),
+            );
+
+            return {
+              id,
+              title,
+              analyticsReady: Boolean(
+                current.analyticsReady === true ||
+                  current.analytics?.ready === true ||
+                  current.analytics?.enabled === true,
+              ),
+              analyticsMode: 'automatic',
+              dailyAvailable: Boolean(ownerChatId),
+              dailyEnabled: Boolean(dailyById.get(id)),
+              antifraudEnabled: Boolean(antifraudById.get(id)),
+            };
+          })
+          .filter(Boolean);
+
+        res.setHeader('Cache-Control', 'private, no-store');
+
+        return res.json({
+          ok: true,
+          channels,
+          analyticsManagedAutomatically: true,
+        });
+      } catch (error) {
+        const status = Number(error?.statusCode || 500);
+
+        console.error(
+          '[LinkRay Cabinet Settings V7 GET]',
+          error?.stack || error?.message || error,
+        );
+
+        return res.status(status).json({
+          ok: false,
+          error:
+            status === 401
+              ? 'Сессия входа закончилась. Войдите заново.'
+              : 'Не удалось загрузить настройки каналов.',
+        });
+      }
+    }),
+  );
+
+  app.patch(
+    '/api/website/cabinet/channel/:channelId/settings',
+    applyWebsiteHeaders,
+    lrC5Async(async (req, res) => {
+      try {
+        const identity = await lrV7SettingsIdentity(req);
+        const requestedId = String(
+          req.params.channelId || '',
+        ).trim();
+
+        const membership = await lrV7SettingsMembership(
+          identity,
+          requestedId,
+        );
+
+        if (!membership) {
+          return res.status(404).json({
+            ok: false,
+            error: 'Канал не найден или нет доступа к нему.',
+          });
+        }
+
+        const setting = String(req.body?.setting || '').trim();
+        const enabled = req.body?.enabled;
+
+        if (!['daily', 'antifraud'].includes(setting)) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Неизвестная настройка канала.',
+          });
+        }
+
+        if (typeof enabled !== 'boolean') {
+          return res.status(400).json({
+            ok: false,
+            error: 'Значение настройки должно быть true или false.',
+          });
+        }
+
+        if (setting === 'daily') {
+          const ownerChatId = lrV7SettingsOwnerChatId(identity);
+
+          if (!ownerChatId) {
+            return res.status(409).json({
+              ok: false,
+              error:
+                'Не найден личный чат MAX. Откройте LinkRay в MAX один раз.',
+            });
+          }
+
+          await lrCabinetQuery(
+            `
+              INSERT INTO public.lr_channel_analytics_daily_channels (
+                owner_chat_id,
+                channel_id,
+                enabled,
+                updated_at
+              )
+              VALUES ($1,$2::bigint,$3,NOW())
+              ON CONFLICT (owner_chat_id, channel_id)
+              DO UPDATE SET
+                enabled=EXCLUDED.enabled,
+                updated_at=NOW()
+            `,
+            [
+              ownerChatId,
+              membership.internalId,
+              enabled,
+            ],
+          );
+        }
+
+        if (setting === 'antifraud') {
+          if (!membership.maxChatId) {
+            return res.status(409).json({
+              ok: false,
+              error: 'У канала не сохранён MAX chat ID.',
+            });
+          }
+
+          await lrCabinetQuery(
+            `
+              INSERT INTO public.lr_antifraud_channels (
+                channel_id,
+                max_chat_id,
+                title,
+                updated_at
+              )
+              VALUES ($1::bigint,$2,$3,NOW())
+              ON CONFLICT (channel_id)
+              DO UPDATE SET
+                max_chat_id=EXCLUDED.max_chat_id,
+                title=EXCLUDED.title,
+                updated_at=NOW()
+            `,
+            [
+              membership.internalId,
+              membership.maxChatId,
+              membership.title,
+            ],
+          );
+
+          await lrCabinetQuery(
+            `
+              UPDATE public.lr_antifraud_channels
+              SET
+                enabled=$2,
+                enabled_at=CASE
+                  WHEN $2 THEN COALESCE(enabled_at,NOW())
+                  ELSE enabled_at
+                END,
+                learning_started_at=CASE
+                  WHEN $2 THEN COALESCE(learning_started_at,NOW())
+                  ELSE learning_started_at
+                END,
+                disabled_at=CASE
+                  WHEN $2 THEN NULL
+                  ELSE NOW()
+                END,
+                updated_at=NOW()
+              WHERE channel_id=$1::bigint
+            `,
+            [membership.internalId, enabled],
+          );
+        }
+
+        res.setHeader('Cache-Control', 'private, no-store');
+
+        return res.json({
+          ok: true,
+          channelId: membership.internalId,
+          setting,
+          enabled,
+        });
+      } catch (error) {
+        const status = Number(error?.statusCode || 500);
+
+        console.error(
+          '[LinkRay Cabinet Settings V7 PATCH]',
+          error?.stack || error?.message || error,
+        );
+
+        return res.status(status).json({
+          ok: false,
+          error:
+            status === 401
+              ? 'Сессия входа закончилась. Войдите заново.'
+              : 'Не удалось сохранить настройку канала.',
+        });
+      }
+    }),
+  );
+  // LINKRAY_CABINET_REAL_SETTINGS_V7_END
+
+
 app.get(
     ['/cabinet', '/cabinet/'],
     applyWebsiteHeaders,
