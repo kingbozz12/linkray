@@ -327,7 +327,421 @@ export function mountLinkRayWebsiteRoutes(app) {
   }
 
   
-  // LINKRAY_STABLE_CABINET_ROUTE_START
+  
+// LINKRAY_ACCURATE_CHANNEL_METRICS_V2_START
+function lrAccurateRows(result) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.rows)) return result.rows;
+  return [];
+}
+
+function lrAccurateFirst(result) {
+  return lrAccurateRows(result)[0] ?? null;
+}
+
+function lrAccuratePick(object, names, fallback = null) {
+  if (!object || typeof object !== 'object') return fallback;
+
+  for (const name of names) {
+    const value = object[name];
+
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+
+  return fallback;
+}
+
+function lrAccurateNumberOrNull(value) {
+  if (value === undefined || value === null || value === '') return null;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function lrAccurateBoolean(value, fallback = false) {
+  if (value === true || value === 1 || value === '1') return true;
+  if (value === false || value === 0 || value === '0') return false;
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+
+  if (['true', 'yes', 'on', 'enabled', 'active'].includes(normalized)) {
+    return true;
+  }
+
+  if (['false', 'no', 'off', 'disabled', 'inactive'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function lrAccurateParseCookies(req) {
+  const result = {};
+  const source = String(req.headers.cookie ?? '');
+
+  for (const part of source.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+
+    const name = part.slice(0, separator).trim();
+    const rawValue = part.slice(separator + 1).trim();
+
+    if (!name) continue;
+
+    try {
+      result[name] = decodeURIComponent(rawValue);
+    } catch {
+      result[name] = rawValue;
+    }
+  }
+
+  return result;
+}
+
+async function lrAccurateSession(req) {
+  const cookies = lrAccurateParseCookies(req);
+  const token = String(cookies.lr_web_session ?? '').trim();
+
+  if (!token) return null;
+
+  const { createHash } = await import('node:crypto');
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+
+  const session = lrAccurateFirst(
+    await query(
+      `
+        SELECT
+          s.id AS session_id,
+          s.user_id,
+          u.max_user_id,
+          u.display_name
+        FROM public.lr_web_sessions s
+        JOIN public.lr_users u
+          ON u.id = s.user_id
+        WHERE s.token_hash = $1
+          AND s.expires_at > NOW()
+          AND s.revoked_at IS NULL
+          AND COALESCE(u.is_blocked, FALSE) = FALSE
+        ORDER BY s.created_at DESC, s.id DESC
+        LIMIT 1
+      `,
+      [tokenHash],
+    ),
+  );
+
+  if (!session) return null;
+
+  query(
+    `
+      UPDATE public.lr_web_sessions
+      SET last_seen_at = NOW()
+      WHERE id = $1
+    `,
+    [session.session_id],
+  ).catch(() => {});
+
+  return session;
+}
+
+function lrAccurateCleanUrl(value) {
+  const url = String(value ?? '').trim();
+
+  if (
+    url.startsWith('https://') ||
+    url.startsWith('http://') ||
+    url.startsWith('/')
+  ) {
+    return url;
+  }
+
+  return null;
+}
+
+function lrAccurateSnapshotMatches(snapshot, identifiers) {
+  const values = [
+    snapshot?.channel_key,
+    snapshot?.link,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+
+  return values.some((value) => identifiers.has(value));
+}
+
+app.get(
+  '/api/website/cabinet/overview',
+  applyWebsiteHeaders,
+  asyncRoute(async (req, res) => {
+    const session = await lrAccurateSession(req);
+
+    if (!session?.user_id) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Сессия входа закончилась. Войдите заново.',
+      });
+    }
+
+    const membershipRows = lrAccurateRows(
+      await query(
+        `
+          SELECT
+            to_jsonb(c) AS channel,
+            to_jsonb(uc) AS membership
+          FROM public.lr_user_channels uc
+          JOIN public.channels c
+            ON c.id = uc.channel_id
+          WHERE uc.user_id = $1
+          ORDER BY c.id ASC
+        `,
+        [session.user_id],
+      ),
+    );
+
+    const baseChannels = membershipRows
+      .map((row) => {
+        const channel = row.channel ?? {};
+        const membership = row.membership ?? {};
+
+        if (channel.is_active === false) return null;
+
+        const id = lrAccuratePick(channel, ['id']);
+        if (id === null || id === undefined) return null;
+
+        const maxChatId = String(
+          lrAccuratePick(channel, [
+            'max_chat_id',
+            'chat_id',
+            'channel_id',
+          ], ''),
+        ).trim();
+
+        const link = String(
+          lrAccuratePick(channel, [
+            'link',
+            'public_link',
+            'channel_link',
+            'url',
+          ], ''),
+        ).trim();
+
+        const identifiers = new Set(
+          [
+            String(id),
+            maxChatId,
+            link,
+          ].filter(Boolean),
+        );
+
+        return {
+          raw: channel,
+          membership,
+          id: String(id),
+          maxChatId,
+          link,
+          identifiers,
+        };
+      })
+      .filter(Boolean);
+
+    const allIdentifiers = [
+      ...new Set(
+        baseChannels.flatMap((channel) => [...channel.identifiers]),
+      ),
+    ];
+
+    const snapshots = allIdentifiers.length
+      ? lrAccurateRows(
+          await query(
+            `
+              SELECT
+                channel_key,
+                link,
+                title,
+                avatar_url,
+                subscribers,
+                views24,
+                views48,
+                views72,
+                er24,
+                delta_day,
+                captured_at
+              FROM public.lr_channel_analytics_snapshots
+              WHERE CAST(channel_key AS TEXT) = ANY($1::text[])
+                 OR COALESCE(CAST(link AS TEXT), '') = ANY($1::text[])
+              ORDER BY captured_at DESC NULLS LAST
+            `,
+            [allIdentifiers],
+          ),
+        )
+      : [];
+
+    const channelIds = baseChannels
+      .map((channel) => Number(channel.id))
+      .filter((value) => Number.isInteger(value) && value > 0);
+
+    const antifraudRows = channelIds.length
+      ? lrAccurateRows(
+          await query(
+            `
+              SELECT to_jsonb(a) AS antifraud
+              FROM public.lr_antifraud_channels a
+              WHERE a.channel_id = ANY($1::bigint[])
+            `,
+            [channelIds],
+          ).catch(() => []),
+        )
+      : [];
+
+    const antifraudById = new Map(
+      antifraudRows.map((row) => {
+        const antifraud = row.antifraud ?? {};
+        return [String(antifraud.channel_id), antifraud];
+      }),
+    );
+
+    const channels = baseChannels.map((base) => {
+      const snapshot =
+        snapshots.find((item) =>
+          lrAccurateSnapshotMatches(item, base.identifiers),
+        ) ?? null;
+
+      const analyticsReady = Boolean(snapshot?.captured_at);
+
+      const subscribers = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.subscribers)
+        : null;
+
+      const views24 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.views24)
+        : null;
+
+      const views48 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.views48)
+        : null;
+
+      const views72 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.views72)
+        : null;
+
+      const er24 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.er24)
+        : null;
+
+      const deltaDay = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.delta_day)
+        : null;
+
+      const antifraud = antifraudById.get(base.id) ?? {};
+
+      return {
+        id: base.id,
+        maxChatId: base.maxChatId,
+        link: base.link || null,
+        title: String(
+          lrAccuratePick(
+            {
+              ...snapshot,
+              ...base.raw,
+            },
+            [
+              'title',
+              'name',
+              'channel_title',
+              'display_name',
+            ],
+            `Канал ${base.id}`,
+          ),
+        ),
+        avatar: lrAccurateCleanUrl(
+          lrAccuratePick(
+            {
+              ...snapshot,
+              ...base.raw,
+            },
+            [
+              'avatar_url',
+              'photo_url',
+              'image_url',
+              'avatar',
+            ],
+          ),
+        ),
+        role: String(
+          lrAccuratePick(
+            base.membership,
+            ['role', 'access_role', 'member_role'],
+            'Администратор',
+          ),
+        ),
+        analyticsReady,
+        subscribers,
+        views24,
+        views48,
+        views72,
+        er24,
+        deltaDay,
+        capturedAt: snapshot?.captured_at ?? null,
+        antifraudEnabled: lrAccurateBoolean(
+          lrAccuratePick(
+            antifraud,
+            [
+              'enabled',
+              'is_enabled',
+              'active',
+              'is_active',
+            ],
+          ),
+        ),
+      };
+    });
+
+    const readyChannels = channels.filter(
+      (channel) => channel.analyticsReady,
+    );
+
+    const sumNullable = (field) =>
+      readyChannels.reduce(
+        (sum, channel) => sum + Number(channel[field] ?? 0),
+        0,
+      );
+
+    return res.json({
+      ok: true,
+      user: {
+        id: String(session.user_id),
+        linkrayId: String(session.user_id).padStart(6, '0'),
+        displayName: String(
+          session.display_name || `Пользователь ${session.user_id}`,
+        ),
+        maxUserId: String(session.max_user_id ?? ''),
+      },
+      summary: {
+        channels: channels.length,
+        analyticsReadyChannels: readyChannels.length,
+        subscribers:
+          readyChannels.length > 0
+            ? sumNullable('subscribers')
+            : null,
+        views24:
+          readyChannels.length > 0
+            ? sumNullable('views24')
+            : null,
+        deltaDay:
+          readyChannels.length > 0
+            ? sumNullable('deltaDay')
+            : null,
+      },
+      channels,
+      metricsSource: 'lr_channel_analytics_snapshots',
+      updatedAt: new Date().toISOString(),
+    });
+  }),
+);
+// LINKRAY_ACCURATE_CHANNEL_METRICS_V2_END
+
+// LINKRAY_STABLE_CABINET_ROUTE_START
   app.get(['/cabinet', '/cabinet/'], applyWebsiteHeaders, (_req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -628,647 +1042,6 @@ app.use('/linkray-site', applyWebsiteHeaders);
       return res.json({ ok: true });
     })
   );
-
-  app.get(
-    '/api/website/cabinet/overview',
-    requireSession(async (req, res) => {
-      const session = req.linkraySession;
-
-      const channelRows = await query(
-        `
-          SELECT
-            to_jsonb(c) AS channel_data,
-            uc.role,
-            uc.access_source,
-            uc.linked_at
-          FROM public.lr_user_channels uc
-          JOIN public.channels c ON c.id = uc.channel_id
-          WHERE uc.user_id = $1
-          ORDER BY
-            COALESCE(c.is_active, true) DESC,
-            c.title NULLS LAST,
-            c.id
-        `,
-        [session.user_id]
-      );
-
-      const channels = channelRows.map(safeChannel);
-
-      res.setHeader('Cache-Control', 'no-store');
-      return res.json({
-        ok: true,
-        user: {
-          id: Number(session.user_id),
-          linkrayId: String(session.user_id).padStart(6, '0'),
-          maxUserId: String(session.max_user_id || ''),
-          displayName: String(session.display_name || 'Пользователь LinkRay'),
-        },
-        summary: {
-          channels: channels.length,
-          activeChannels: channels.filter((channel) => channel.isActive).length,
-          subscribers: channels.reduce(
-            (total, channel) =>
-              total + (Number.isFinite(channel.subscribers) ? channel.subscribers : 0),
-            0
-          ),
-        },
-        channels,
-      });
-    })
-  );
-
-  
-// LINKRAY_REAL_CABINET_API_V1_START
-const lrCabinetColumnsCache = new Map();
-
-function lrCabinetRows(result) {
-  if (Array.isArray(result)) return result;
-  if (Array.isArray(result?.rows)) return result.rows;
-  return [];
-}
-
-function lrCabinetFirst(result) {
-  return lrCabinetRows(result)[0] ?? null;
-}
-
-function lrCabinetQuoteIdentifier(value) {
-  return `"${String(value).replaceAll('"', '""')}"`;
-}
-
-function lrCabinetPick(object, names, fallback = null) {
-  if (!object || typeof object !== 'object') return fallback;
-
-  for (const name of names) {
-    const value = object[name];
-
-    if (value !== undefined && value !== null && value !== '') {
-      return value;
-    }
-  }
-
-  return fallback;
-}
-
-function lrCabinetNumber(value, fallback = 0) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
-function lrCabinetBoolean(value, fallback = false) {
-  if (value === true || value === 1 || value === '1') return true;
-  if (value === false || value === 0 || value === '0') return false;
-
-  const normalized = String(value ?? '').trim().toLowerCase();
-
-  if (['true', 'yes', 'on', 'enabled', 'active'].includes(normalized)) {
-    return true;
-  }
-
-  if (['false', 'no', 'off', 'disabled', 'inactive'].includes(normalized)) {
-    return false;
-  }
-
-  return fallback;
-}
-
-async function lrCabinetTableColumns(tableName) {
-  if (lrCabinetColumnsCache.has(tableName)) {
-    return lrCabinetColumnsCache.get(tableName);
-  }
-
-  const result = await query(
-    `
-      SELECT column_name, data_type
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = $1
-      ORDER BY ordinal_position
-    `,
-    [tableName],
-  );
-
-  const columns = new Map(
-    lrCabinetRows(result).map((row) => [
-      String(row.column_name),
-      String(row.data_type ?? ''),
-    ]),
-  );
-
-  lrCabinetColumnsCache.set(tableName, columns);
-  return columns;
-}
-
-function lrCabinetColumn(columns, names) {
-  for (const name of names) {
-    if (columns.has(name)) return name;
-  }
-
-  return null;
-}
-
-async function lrCabinetResolveSession(req) {
-  const rawCookie = String(req.headers.cookie ?? '');
-
-  const cookieValues = rawCookie
-    .split(';')
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => {
-      const separator = entry.indexOf('=');
-      return separator >= 0 ? entry.slice(separator + 1) : '';
-    })
-    .filter(Boolean)
-    .map((value) => {
-      try {
-        return decodeURIComponent(value);
-      } catch {
-        return value;
-      }
-    });
-
-  if (!cookieValues.length) return null;
-
-  const { createHash } = await import('node:crypto');
-
-  const hashes = [...new Set(
-    cookieValues.map((value) =>
-      createHash('sha256').update(String(value)).digest('hex'),
-    ),
-  )];
-
-  if (!hashes.length) return null;
-
-  const session = lrCabinetFirst(
-    await query(
-      `
-        SELECT *
-        FROM public.lr_web_sessions
-        WHERE token_hash = ANY($1::text[])
-          AND (expires_at IS NULL OR expires_at > NOW())
-          AND revoked_at IS NULL
-        ORDER BY created_at DESC NULLS LAST, id DESC
-        LIMIT 1
-      `,
-      [hashes],
-    ),
-  );
-
-  if (!session) return null;
-
-  try {
-    await query(
-      `
-        UPDATE public.lr_web_sessions
-        SET last_seen_at = NOW()
-        WHERE id = $1
-      `,
-      [session.id],
-    );
-  } catch (error) {
-    console.warn('[LinkRay cabinet] last_seen update failed:', error?.message);
-  }
-
-  return session;
-}
-
-async function lrCabinetLatestByChannel(tableName, channelId) {
-  try {
-    const columns = await lrCabinetTableColumns(tableName);
-    if (!columns.size) return null;
-
-    const channelColumn = lrCabinetColumn(columns, [
-      'channel_id',
-      'max_chat_id',
-      'chat_id',
-      'channel_chat_id',
-      'max_channel_id',
-    ]);
-
-    if (!channelColumn) return null;
-
-    const orderColumn = lrCabinetColumn(columns, [
-      'snapshot_at',
-      'captured_at',
-      'measured_at',
-      'updated_at',
-      'created_at',
-      'date',
-      'id',
-    ]);
-
-    const orderSql = orderColumn
-      ? `ORDER BY ${lrCabinetQuoteIdentifier(orderColumn)} DESC NULLS LAST`
-      : '';
-
-    return lrCabinetFirst(
-      await query(
-        `
-          SELECT *
-          FROM public.${lrCabinetQuoteIdentifier(tableName)}
-          WHERE CAST(${lrCabinetQuoteIdentifier(channelColumn)} AS TEXT) = $1
-          ${orderSql}
-          LIMIT 1
-        `,
-        [String(channelId)],
-      ),
-    );
-  } catch (error) {
-    console.warn(
-      `[LinkRay cabinet] ${tableName} lookup failed:`,
-      error?.message,
-    );
-    return null;
-  }
-}
-
-async function lrCabinetAntifraudEventCount(channelId) {
-  try {
-    const columns = await lrCabinetTableColumns('lr_antifraud_events');
-    if (!columns.size) return 0;
-
-    const channelColumn = lrCabinetColumn(columns, [
-      'channel_id',
-      'max_chat_id',
-      'chat_id',
-      'channel_chat_id',
-    ]);
-
-    if (!channelColumn) return 0;
-
-    const timeColumn = lrCabinetColumn(columns, [
-      'detected_at',
-      'event_at',
-      'created_at',
-      'updated_at',
-      'started_at',
-    ]);
-
-    const timeSql = timeColumn
-      ? `AND ${lrCabinetQuoteIdentifier(timeColumn)} >= NOW() - INTERVAL '24 hours'`
-      : '';
-
-    const row = lrCabinetFirst(
-      await query(
-        `
-          SELECT COUNT(*)::int AS count
-          FROM public.lr_antifraud_events
-          WHERE CAST(${lrCabinetQuoteIdentifier(channelColumn)} AS TEXT) = $1
-          ${timeSql}
-        `,
-        [String(channelId)],
-      ),
-    );
-
-    return lrCabinetNumber(row?.count);
-  } catch (error) {
-    console.warn(
-      '[LinkRay cabinet] antifraud event count failed:',
-      error?.message,
-    );
-    return 0;
-  }
-}
-
-async function lrCabinetUserChannels(userId) {
-  const columns = await lrCabinetTableColumns('lr_user_channels');
-
-  if (!columns.size) return [];
-
-  const userColumn = lrCabinetColumn(columns, [
-    'user_id',
-    'linkray_user_id',
-    'owner_user_id',
-    'admin_user_id',
-  ]);
-
-  if (!userColumn) return [];
-
-  const orderColumn = lrCabinetColumn(columns, [
-    'created_at',
-    'added_at',
-    'updated_at',
-    'id',
-  ]);
-
-  const orderSql = orderColumn
-    ? `ORDER BY ${lrCabinetQuoteIdentifier(orderColumn)} ASC NULLS LAST`
-    : '';
-
-  return lrCabinetRows(
-    await query(
-      `
-        SELECT *
-        FROM public.lr_user_channels
-        WHERE ${lrCabinetQuoteIdentifier(userColumn)} = $1
-        ${orderSql}
-      `,
-      [userId],
-    ),
-  );
-}
-
-function lrCabinetSafeAvatar(value) {
-  const avatar = String(value ?? '').trim();
-
-  if (
-    avatar.startsWith('https://') ||
-    avatar.startsWith('http://') ||
-    avatar.startsWith('/')
-  ) {
-    return avatar;
-  }
-
-  return null;
-}
-
-app.get(
-  '/api/website/cabinet/overview',
-  applyWebsiteHeaders,
-  asyncRoute(async (req, res) => {
-    const session = await lrCabinetResolveSession(req);
-
-    if (!session?.user_id) {
-      return res.status(401).json({
-        ok: false,
-        error: 'Сессия истекла. Войдите заново.',
-      });
-    }
-
-    const user =
-      lrCabinetFirst(
-        await query(
-          `
-            SELECT *
-            FROM public.lr_users
-            WHERE id = $1
-            LIMIT 1
-          `,
-          [session.user_id],
-        ),
-      ) ??
-      lrCabinetFirst(
-        await query(
-          `
-            SELECT *
-            FROM public.lr_real_users
-            WHERE id = $1
-            LIMIT 1
-          `,
-          [session.user_id],
-        ),
-      );
-
-    if (!user) {
-      return res.status(404).json({
-        ok: false,
-        error: 'Профиль LinkRay не найден.',
-      });
-    }
-
-    const membershipRows = await lrCabinetUserChannels(session.user_id);
-    const channels = [];
-
-    for (const membership of membershipRows) {
-      const channelId = lrCabinetPick(membership, [
-        'channel_id',
-        'max_chat_id',
-        'chat_id',
-        'channel_chat_id',
-        'max_channel_id',
-      ]);
-
-      if (channelId === null || channelId === undefined) continue;
-
-      const [
-        analytics,
-        metrics,
-        settings,
-        antifraud,
-        avatarRow,
-      ] = await Promise.all([
-        lrCabinetLatestByChannel(
-          'lr_channel_analytics_snapshots',
-          channelId,
-        ),
-        lrCabinetLatestByChannel('lr_channel_metrics_state', channelId),
-        lrCabinetLatestByChannel(
-          'lr_channel_analytics_settings',
-          channelId,
-        ),
-        lrCabinetLatestByChannel('lr_antifraud_channels', channelId),
-        lrCabinetLatestByChannel('lr_channel_avatar_cache', channelId),
-      ]);
-
-      const combined = {
-        ...settings,
-        ...metrics,
-        ...analytics,
-        ...membership,
-      };
-
-      const title = String(
-        lrCabinetPick(combined, [
-          'channel_title',
-          'title',
-          'channel_name',
-          'name',
-          'display_name',
-        ], `Канал ${channelId}`),
-      );
-
-      const subscribers = lrCabinetNumber(
-        lrCabinetPick(combined, [
-          'subscribers',
-          'subscriber_count',
-          'members',
-          'member_count',
-          'participants_count',
-          'current_members',
-          'total_members',
-          'audience',
-        ]),
-      );
-
-      const views24 = lrCabinetNumber(
-        lrCabinetPick(combined, [
-          'views24',
-          'views_24',
-          'views_24h',
-          'views24h',
-          'views_last_24h',
-          'post_views_24h',
-        ]),
-      );
-
-      const joined24 = lrCabinetNumber(
-        lrCabinetPick(combined, [
-          'joined24',
-          'joined_24',
-          'joined_24h',
-          'subscribed_24h',
-          'subscriptions_24h',
-          'new_members_24h',
-        ]),
-      );
-
-      const left24 = lrCabinetNumber(
-        lrCabinetPick(combined, [
-          'left24',
-          'left_24',
-          'left_24h',
-          'unsubscribed_24h',
-          'unsubscriptions_24h',
-          'lost_members_24h',
-        ]),
-      );
-
-      const storedEr = lrCabinetNumber(
-        lrCabinetPick(combined, [
-          'er',
-          'er_percent',
-          'engagement_rate',
-          'engagement_rate_percent',
-        ]),
-        Number.NaN,
-      );
-
-      const er = Number.isFinite(storedEr)
-        ? storedEr
-        : subscribers > 0
-          ? (views24 / subscribers) * 100
-          : 0;
-
-      const antifraudEnabled = lrCabinetBoolean(
-        lrCabinetPick(antifraud, [
-          'enabled',
-          'is_enabled',
-          'active',
-          'is_active',
-          'protection_enabled',
-        ]),
-      );
-
-      const antifraudStatus = String(
-        lrCabinetPick(antifraud, [
-          'status',
-          'state',
-          'protection_status',
-        ], antifraudEnabled ? 'Защита включена' : 'Защита выключена'),
-      );
-
-      const alertCount24 = await lrCabinetAntifraudEventCount(channelId);
-
-      const avatar = lrCabinetSafeAvatar(
-        lrCabinetPick(
-          {
-            ...avatarRow,
-            ...combined,
-          },
-          [
-            'avatar_url',
-            'photo_url',
-            'image_url',
-            'avatar',
-            'photo',
-          ],
-        ),
-      );
-
-      channels.push({
-        id: String(channelId),
-        title,
-        avatar,
-        role: String(
-          lrCabinetPick(membership, [
-            'role',
-            'access_role',
-            'member_role',
-          ], 'Администратор'),
-        ),
-        subscribers,
-        views24,
-        joined24,
-        left24,
-        net24: joined24 - left24,
-        er: Number(er.toFixed(2)),
-        antifraudEnabled,
-        antifraudStatus,
-        alertCount24,
-      });
-    }
-
-    const displayName = String(
-      lrCabinetPick(user, [
-        'display_name',
-        'full_name',
-        'name',
-        'first_name',
-        'username',
-      ], 'Пользователь LinkRay'),
-    );
-
-    const rawLinkRayId = lrCabinetPick(user, [
-      'linkray_id',
-      'profile_number',
-      'public_id',
-      'number',
-      'id',
-    ], session.user_id);
-
-    const numericLinkRayId = Number(rawLinkRayId);
-    const linkrayId = Number.isFinite(numericLinkRayId)
-      ? String(numericLinkRayId).padStart(6, '0')
-      : String(rawLinkRayId);
-
-    const totalSubscribers = channels.reduce(
-      (sum, channel) => sum + channel.subscribers,
-      0,
-    );
-
-    const totalViews24 = channels.reduce(
-      (sum, channel) => sum + channel.views24,
-      0,
-    );
-
-    const totalNet24 = channels.reduce(
-      (sum, channel) => sum + channel.net24,
-      0,
-    );
-
-    const protectedChannels = channels.filter(
-      (channel) => channel.antifraudEnabled,
-    ).length;
-
-    const alerts24 = channels.reduce(
-      (sum, channel) => sum + channel.alertCount24,
-      0,
-    );
-
-    return res.json({
-      ok: true,
-      user: {
-        id: String(user.id ?? session.user_id),
-        linkrayId,
-        displayName,
-        maxUserId: String(
-          lrCabinetPick(user, ['max_user_id', 'maxUserId'], ''),
-        ),
-      },
-      summary: {
-        channels: channels.length,
-        subscribers: totalSubscribers,
-        views24: totalViews24,
-        net24: totalNet24,
-        protectedChannels,
-        alerts24,
-      },
-      channels,
-      studioUrl: 'https://max.ru/se13353901_bot',
-      updatedAt: new Date().toISOString(),
-    });
-  }),
-);
-// LINKRAY_REAL_CABINET_API_V1_END
 
 
 app.get('/cabinet', applyWebsiteHeaders, (_req, res) => {
