@@ -1,0 +1,1229 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+SERVER="src/linkrayWebsiteRoutes.js"
+FRONT="public/linkray-site/cabinet-stable.js"
+CSS="public/linkray-site/cabinet-stable.css"
+HTML="public/linkray-site/cabinet-stable.html"
+VERSION="20260807-real-settings-v4"
+START_COMMIT="$(git rev-parse HEAD)"
+BACKUP="/opt/linkray-backups/cabinet-real-settings-v4-$(date +%Y%m%d-%H%M%S)"
+COMMITTED=0
+
+mkdir -p "$BACKUP"
+
+rollback() {
+  local code=$?
+  trap - ERR
+
+  echo
+  echo "[ОТКАТ] Ошибка на шаге установки. Возвращаю прежний кабинет."
+
+  for file in "$SERVER" "$FRONT" "$CSS" "$HTML"; do
+    if [[ -f "$BACKUP/$file" ]]; then
+      mkdir -p "$(dirname "$file")"
+      cp -f "$BACKUP/$file" "$file"
+    fi
+  done
+
+  if [[ "$COMMITTED" == "1" ]]; then
+    git reset --hard "$START_COMMIT" >/dev/null 2>&1 || true
+  fi
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+
+  echo "[ОТКАТ] Предыдущая версия восстановлена."
+  exit "$code"
+}
+trap rollback ERR
+
+echo "[1/10] Проверяю репозиторий"
+
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "Остановка: в репозитории есть незавершённые изменения."
+  git status --short
+  exit 1
+fi
+
+git pull --ff-only
+
+for file in "$SERVER" "$FRONT" "$CSS" "$HTML"; do
+  [[ -f "$file" ]] || {
+    echo "Не найден обязательный файл: $file"
+    exit 1
+  }
+  mkdir -p "$BACKUP/$(dirname "$file")"
+  cp -a "$file" "$BACKUP/$file"
+done
+
+echo "[2/10] Проверяю реальные таблицы без изменения базы"
+
+DB_CHECK="$(
+docker exec -i linkray-postgres sh -lc '
+  psql -At -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}"
+' <<'SQL'
+SELECT
+  CASE WHEN to_regclass('public.lr_channel_analytics_daily_channels') IS NOT NULL
+       THEN 'daily_table=ok' ELSE 'daily_table=missing' END;
+SELECT
+  CASE WHEN to_regclass('public.lr_antifraud_channels') IS NOT NULL
+       THEN 'antifraud_table=ok' ELSE 'antifraud_table=missing' END;
+SELECT
+  CASE WHEN (
+    SELECT count(*)
+    FROM information_schema.columns
+    WHERE table_schema='public'
+      AND table_name='lr_channel_analytics_daily_channels'
+      AND column_name IN ('owner_chat_id','channel_id','enabled','updated_at')
+  )=4 THEN 'daily_columns=ok' ELSE 'daily_columns=missing' END;
+SELECT
+  CASE WHEN (
+    SELECT count(*)
+    FROM information_schema.columns
+    WHERE table_schema='public'
+      AND table_name='lr_antifraud_channels'
+      AND column_name IN (
+        'channel_id','max_chat_id','title','enabled',
+        'enabled_at','disabled_at','learning_started_at','updated_at'
+      )
+  )=8 THEN 'antifraud_columns=ok' ELSE 'antifraud_columns=missing' END;
+SELECT
+  CASE WHEN EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema='public'
+      AND table_name='lr_users'
+      AND column_name='private_chat_id'
+  ) THEN 'private_chat_id=ok' ELSE 'private_chat_id=missing' END;
+SQL
+)"
+
+printf '%s\n' "$DB_CHECK"
+
+for required in \
+  "daily_table=ok" \
+  "antifraud_table=ok" \
+  "daily_columns=ok" \
+  "antifraud_columns=ok" \
+  "private_chat_id=ok"
+do
+  grep -qx "$required" <<<"$DB_CHECK" || {
+    echo "Остановка: база не соответствует ожидаемой схеме: $required"
+    exit 1
+  }
+done
+
+echo "[3/10] Добавляю отдельный защищённый API настроек"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+START = "// LINKRAY_CABINET_REAL_SETTINGS_V4_START"
+END = "// LINKRAY_CABINET_REAL_SETTINGS_V4_END"
+
+source = re.sub(
+    rf"\n?\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*\n?",
+    "\n",
+    source,
+    count=1,
+)
+
+anchor = "  app.get(\n    ['/cabinet', '/cabinet/'],"
+
+if source.count(anchor) != 1:
+    raise SystemExit(
+        "Не найдена единственная точка перед маршрутом /cabinet."
+    )
+
+block = r'''
+  // LINKRAY_CABINET_REAL_SETTINGS_V4_START
+  function lrV4SettingsOwnerChatId(identity) {
+    return lrC5Text(
+      lrC5Pick(
+        identity?.user || {},
+        [
+          'private_chat_id',
+          'privateChatId',
+          'chat_id',
+          'chatId',
+        ],
+        identity?.maxUserId || '',
+      ),
+    );
+  }
+
+  function lrV4SettingsChannelValues(raw) {
+    return [
+      raw?.id,
+      raw?.channel_id,
+      raw?.max_chat_id,
+      raw?.chat_id,
+      raw?.max_channel_id,
+    ]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean);
+  }
+
+  async function lrV4SettingsIdentity(req) {
+    const identity = await lrC5Session(req);
+
+    if (!identity?.userId) {
+      const error = new Error(
+        'Сессия входа закончилась. Войдите заново.',
+      );
+      error.statusCode = 401;
+      throw error;
+    }
+
+    return identity;
+  }
+
+  async function lrV4SettingsMembership(identity, requestedId) {
+    const safeRequestedId = String(requestedId || '').trim();
+
+    if (!safeRequestedId) return null;
+
+    const memberships = (
+      await lrC5LoadChannels(identity)
+    ).filter(({ raw }) => lrC5ActiveChannel(raw));
+
+    const membership = memberships.find(({ raw }) =>
+      lrV4SettingsChannelValues(raw).includes(safeRequestedId),
+    );
+
+    if (!membership) return null;
+
+    const raw = membership.raw || {};
+    const internalId = lrC5Text(
+      lrC5Pick(raw, ['id', 'channel_id']),
+    );
+
+    if (!/^\d+$/.test(internalId)) return null;
+
+    return {
+      ...membership,
+      raw,
+      internalId,
+      maxChatId: lrC5Text(
+        lrC5Pick(
+          raw,
+          ['max_chat_id', 'chat_id', 'max_channel_id'],
+        ),
+      ),
+      title: lrC5Text(
+        lrC5Pick(
+          raw,
+          ['title', 'name', 'channel_title', 'display_name'],
+          `Канал ${internalId}`,
+        ),
+      ),
+    };
+  }
+
+  async function lrV4SettingsRows(sql, params = []) {
+    return lrC5Rows(await lrCabinetQuery(sql, params));
+  }
+
+  app.get(
+    '/api/website/cabinet/channel-settings',
+    applyWebsiteHeaders,
+    lrC5Async(async (req, res) => {
+      try {
+        const identity = await lrV4SettingsIdentity(req);
+        const payload = await lrC5CabinetPayload(req);
+        const ownerChatId = lrV4SettingsOwnerChatId(identity);
+
+        const memberships = (
+          await lrC5LoadChannels(identity)
+        ).filter(({ raw }) => lrC5ActiveChannel(raw));
+
+        const internalIds = memberships
+          .map(({ raw }) =>
+            lrC5Text(lrC5Pick(raw, ['id', 'channel_id'])),
+          )
+          .filter((value) => /^\d+$/.test(value));
+
+        const dailyRows =
+          ownerChatId && internalIds.length
+            ? await lrV4SettingsRows(
+                `
+                  SELECT
+                    channel_id::text AS channel_id,
+                    enabled
+                  FROM public.lr_channel_analytics_daily_channels
+                  WHERE owner_chat_id=$1
+                    AND channel_id=ANY($2::bigint[])
+                `,
+                [ownerChatId, internalIds],
+              )
+            : [];
+
+        const antifraudRows = internalIds.length
+          ? await lrV4SettingsRows(
+              `
+                SELECT
+                  channel_id::text AS channel_id,
+                  enabled
+                FROM public.lr_antifraud_channels
+                WHERE channel_id=ANY($1::bigint[])
+              `,
+              [internalIds],
+            )
+          : [];
+
+        const dailyById = new Map(
+          dailyRows.map((row) => [
+            String(row.channel_id),
+            Boolean(row.enabled),
+          ]),
+        );
+
+        const antifraudById = new Map(
+          antifraudRows.map((row) => [
+            String(row.channel_id),
+            Boolean(row.enabled),
+          ]),
+        );
+
+        const payloadChannels = Array.isArray(payload?.channels)
+          ? payload.channels
+          : [];
+
+        const payloadById = new Map(
+          payloadChannels.map((channel) => [
+            String(channel?.id ?? channel?.channelId ?? ''),
+            channel,
+          ]),
+        );
+
+        const channels = memberships
+          .map(({ raw }) => {
+            const id = lrC5Text(
+              lrC5Pick(raw, ['id', 'channel_id']),
+            );
+
+            if (!/^\d+$/.test(id)) return null;
+
+            const current = payloadById.get(id) || {};
+            const title = lrC5Text(
+              lrC5Pick(
+                {
+                  ...raw,
+                  ...current,
+                },
+                ['title', 'name', 'channel_title', 'display_name'],
+                `Канал ${id}`,
+              ),
+            );
+
+            return {
+              id,
+              title,
+              analyticsReady: Boolean(
+                current.analyticsReady === true ||
+                  current.analytics?.ready === true ||
+                  current.analytics?.enabled === true,
+              ),
+              analyticsMode: 'automatic',
+              dailyAvailable: Boolean(ownerChatId),
+              dailyEnabled: Boolean(dailyById.get(id)),
+              antifraudEnabled: Boolean(antifraudById.get(id)),
+            };
+          })
+          .filter(Boolean);
+
+        res.setHeader('Cache-Control', 'private, no-store');
+
+        return res.json({
+          ok: true,
+          channels,
+          analyticsManagedAutomatically: true,
+        });
+      } catch (error) {
+        const status = Number(error?.statusCode || 500);
+
+        console.error(
+          '[LinkRay Cabinet Settings V4 GET]',
+          error?.stack || error?.message || error,
+        );
+
+        return res.status(status).json({
+          ok: false,
+          error:
+            status === 401
+              ? 'Сессия входа закончилась. Войдите заново.'
+              : 'Не удалось загрузить настройки каналов.',
+        });
+      }
+    }),
+  );
+
+  app.patch(
+    '/api/website/cabinet/channel/:channelId/settings',
+    applyWebsiteHeaders,
+    lrC5Async(async (req, res) => {
+      try {
+        const identity = await lrV4SettingsIdentity(req);
+        const requestedId = String(
+          req.params.channelId || '',
+        ).trim();
+
+        const membership = await lrV4SettingsMembership(
+          identity,
+          requestedId,
+        );
+
+        if (!membership) {
+          return res.status(404).json({
+            ok: false,
+            error: 'Канал не найден или нет доступа к нему.',
+          });
+        }
+
+        const setting = String(req.body?.setting || '').trim();
+        const enabled = req.body?.enabled;
+
+        if (!['daily', 'antifraud'].includes(setting)) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Неизвестная настройка канала.',
+          });
+        }
+
+        if (typeof enabled !== 'boolean') {
+          return res.status(400).json({
+            ok: false,
+            error: 'Значение настройки должно быть true или false.',
+          });
+        }
+
+        if (setting === 'daily') {
+          const ownerChatId = lrV4SettingsOwnerChatId(identity);
+
+          if (!ownerChatId) {
+            return res.status(409).json({
+              ok: false,
+              error:
+                'Не найден личный чат MAX. Откройте LinkRay в MAX один раз.',
+            });
+          }
+
+          await lrCabinetQuery(
+            `
+              INSERT INTO public.lr_channel_analytics_daily_channels (
+                owner_chat_id,
+                channel_id,
+                enabled,
+                updated_at
+              )
+              VALUES ($1,$2::bigint,$3,NOW())
+              ON CONFLICT (owner_chat_id, channel_id)
+              DO UPDATE SET
+                enabled=EXCLUDED.enabled,
+                updated_at=NOW()
+            `,
+            [
+              ownerChatId,
+              membership.internalId,
+              enabled,
+            ],
+          );
+        }
+
+        if (setting === 'antifraud') {
+          if (!membership.maxChatId) {
+            return res.status(409).json({
+              ok: false,
+              error: 'У канала не сохранён MAX chat ID.',
+            });
+          }
+
+          await lrCabinetQuery(
+            `
+              INSERT INTO public.lr_antifraud_channels (
+                channel_id,
+                max_chat_id,
+                title,
+                updated_at
+              )
+              VALUES ($1::bigint,$2,$3,NOW())
+              ON CONFLICT (channel_id)
+              DO UPDATE SET
+                max_chat_id=EXCLUDED.max_chat_id,
+                title=EXCLUDED.title,
+                updated_at=NOW()
+            `,
+            [
+              membership.internalId,
+              membership.maxChatId,
+              membership.title,
+            ],
+          );
+
+          await lrCabinetQuery(
+            `
+              UPDATE public.lr_antifraud_channels
+              SET
+                enabled=$2,
+                enabled_at=CASE
+                  WHEN $2 THEN COALESCE(enabled_at,NOW())
+                  ELSE enabled_at
+                END,
+                learning_started_at=CASE
+                  WHEN $2 THEN COALESCE(learning_started_at,NOW())
+                  ELSE learning_started_at
+                END,
+                disabled_at=CASE
+                  WHEN $2 THEN NULL
+                  ELSE NOW()
+                END,
+                updated_at=NOW()
+              WHERE channel_id=$1::bigint
+            `,
+            [membership.internalId, enabled],
+          );
+        }
+
+        res.setHeader('Cache-Control', 'private, no-store');
+
+        return res.json({
+          ok: true,
+          channelId: membership.internalId,
+          setting,
+          enabled,
+        });
+      } catch (error) {
+        const status = Number(error?.statusCode || 500);
+
+        console.error(
+          '[LinkRay Cabinet Settings V4 PATCH]',
+          error?.stack || error?.message || error,
+        );
+
+        return res.status(status).json({
+          ok: false,
+          error:
+            status === 401
+              ? 'Сессия входа закончилась. Войдите заново.'
+              : 'Не удалось сохранить настройку канала.',
+        });
+      }
+    }),
+  );
+  // LINKRAY_CABINET_REAL_SETTINGS_V4_END
+'''
+
+source = source.replace(anchor, block + "\n\n" + anchor, 1)
+
+if source.count(START) != 1 or source.count(END) != 1:
+    raise SystemExit("Маркер API настроек установлен некорректно.")
+
+path.write_text(source, encoding="utf-8")
+print("Защищённые GET/PATCH маршруты добавлены.")
+PY
+
+echo "[4/10] Подключаю панель к существующим карточкам каналов"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("public/linkray-site/cabinet-stable.js")
+source = path.read_text(encoding="utf-8")
+
+START = "/* LINKRAY_CABINET_REAL_SETTINGS_FRONT_V4_START */"
+END = "/* LINKRAY_CABINET_REAL_SETTINGS_FRONT_V4_END */"
+
+source = re.sub(
+    rf"\n?{re.escape(START)}[\s\S]*?{re.escape(END)}\s*\n?",
+    "\n",
+    source,
+    count=1,
+)
+
+old_card = '<article class="channel-card">'
+new_card = (
+    '<article class="channel-card" '
+    'data-channel-id="${escapeHtml(channel.id)}">'
+)
+
+if old_card in source:
+    if source.count(old_card) != 1:
+        raise SystemExit(
+            "Найдено несколько шаблонов channel-card без ID."
+        )
+    source = source.replace(old_card, new_card, 1)
+elif 'class="channel-card" data-channel-id=' not in source:
+    raise SystemExit(
+        "Не удалось добавить data-channel-id в карточку канала."
+    )
+
+module = r'''
+/* LINKRAY_CABINET_REAL_SETTINGS_FRONT_V4_START */
+(() => {
+  'use strict';
+
+  if (!location.pathname.startsWith('/cabinet')) return;
+
+  const LIST_API = '/api/website/cabinet/channel-settings';
+  const state = new Map();
+  let loaded = false;
+  let loadPromise = null;
+  let renderQueued = false;
+
+  const text = (value) => String(value ?? '').trim();
+
+  function toast(message, isError = false) {
+    let element = document.getElementById('lr-settings-toast-v4');
+
+    if (!element) {
+      element = document.createElement('div');
+      element.id = 'lr-settings-toast-v4';
+      element.className = 'lr-settings-toast-v4';
+      document.body.appendChild(element);
+    }
+
+    element.textContent = message;
+    element.classList.toggle('error', Boolean(isError));
+    element.classList.add('show');
+
+    window.clearTimeout(toast.timer);
+    toast.timer = window.setTimeout(() => {
+      element.classList.remove('show');
+    }, 2600);
+  }
+
+  async function jsonResponse(response) {
+    const contentType =
+      response.headers.get('content-type') || '';
+
+    if (contentType.includes('application/json')) {
+      return response.json();
+    }
+
+    return {
+      ok: false,
+      error: (await response.text()).slice(0, 400),
+    };
+  }
+
+  async function loadSettings(force = false) {
+    if (loadPromise && !force) return loadPromise;
+
+    loadPromise = (async () => {
+      const response = await fetch(LIST_API, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+      });
+
+      const body = await jsonResponse(response);
+
+      if (!response.ok || body?.ok === false) {
+        throw new Error(
+          body?.error || `Ошибка API ${response.status}`,
+        );
+      }
+
+      state.clear();
+
+      for (const item of Array.isArray(body?.channels)
+        ? body.channels
+        : []) {
+        const id = text(item?.id);
+        if (id) state.set(id, { ...item, id });
+      }
+
+      loaded = true;
+      queueRender();
+      return body;
+    })()
+      .catch((error) => {
+        console.error(
+          '[LinkRay Cabinet Settings V4]',
+          error,
+        );
+        loaded = false;
+        return null;
+      })
+      .finally(() => {
+        loadPromise = null;
+      });
+
+    return loadPromise;
+  }
+
+  function statusLabel(item) {
+    return item.analyticsReady
+      ? 'Данные доступны'
+      : 'Ожидаются первые данные';
+  }
+
+  function rowTemplate({
+    label,
+    description,
+    setting,
+    enabled,
+    disabled = false,
+  }) {
+    const control = setting
+      ? `
+          <label class="lr-settings-switch-v4">
+            <input
+              type="checkbox"
+              data-lr-setting="${setting}"
+              ${enabled ? 'checked' : ''}
+              ${disabled ? 'disabled' : ''}
+            >
+            <span aria-hidden="true"></span>
+          </label>
+        `
+      : `
+          <span class="lr-settings-status-v4">
+            ${description}
+          </span>
+        `;
+
+    return `
+      <div class="lr-settings-row-v4">
+        <div>
+          <strong>${label}</strong>
+          ${
+            setting
+              ? `<small>${description}</small>`
+              : '<small>Сбор работает автоматически для подключённого канала</small>'
+          }
+        </div>
+        ${control}
+      </div>
+    `;
+  }
+
+  function panelTemplate(item) {
+    return `
+      <section
+        class="lr-real-settings-v4"
+        data-lr-settings-panel="${item.id}"
+      >
+        <div class="lr-settings-title-v4">
+          <strong>Управление каналом</strong>
+          <span>Настройки сохраняются сразу</span>
+        </div>
+
+        ${rowTemplate({
+          label: 'Аналитика канала',
+          description: statusLabel(item),
+        })}
+
+        ${rowTemplate({
+          label: 'Ежедневный отчёт ПДП',
+          description: item.dailyAvailable
+            ? 'Отправка каждый день в 08:00 МСК'
+            : 'Сначала откройте LinkRay в MAX',
+          setting: 'daily',
+          enabled: Boolean(item.dailyEnabled),
+          disabled: !item.dailyAvailable,
+        })}
+
+        ${rowTemplate({
+          label: 'Защита AntiFraud',
+          description: 'Круглосуточная проверка наплывов',
+          setting: 'antifraud',
+          enabled: Boolean(item.antifraudEnabled),
+        })}
+      </section>
+    `;
+  }
+
+  function renderPanels() {
+    renderQueued = false;
+    if (!loaded) return;
+
+    document
+      .querySelectorAll('.channel-card[data-channel-id]')
+      .forEach((card) => {
+        const id = text(card.getAttribute('data-channel-id'));
+        const item = state.get(id);
+
+        if (!item) return;
+
+        const current = card.querySelector(
+          `.lr-real-settings-v4[data-lr-settings-panel="${CSS.escape(id)}"]`,
+        );
+
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = panelTemplate(item).trim();
+        const next = wrapper.firstElementChild;
+
+        if (!next) return;
+
+        if (current) return;
+        card.appendChild(next);
+      });
+  }
+
+  function queueRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    window.requestAnimationFrame(renderPanels);
+  }
+
+  async function save(input) {
+    const panel = input.closest('[data-lr-settings-panel]');
+    const channelId = text(
+      panel?.getAttribute('data-lr-settings-panel'),
+    );
+    const setting = text(
+      input.getAttribute('data-lr-setting'),
+    );
+    const item = state.get(channelId);
+
+    if (!item || !['daily', 'antifraud'].includes(setting)) {
+      return;
+    }
+
+    const previous =
+      setting === 'daily'
+        ? Boolean(item.dailyEnabled)
+        : Boolean(item.antifraudEnabled);
+    const enabled = Boolean(input.checked);
+
+    input.disabled = true;
+    panel?.classList.add('saving');
+
+    try {
+      const response = await fetch(
+        `/api/website/cabinet/channel/${encodeURIComponent(
+          channelId,
+        )}/settings`,
+        {
+          method: 'PATCH',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+          },
+          body: JSON.stringify({
+            setting,
+            enabled,
+          }),
+        },
+      );
+
+      const body = await jsonResponse(response);
+
+      if (!response.ok || body?.ok === false) {
+        throw new Error(
+          body?.error || `Ошибка API ${response.status}`,
+        );
+      }
+
+      if (setting === 'daily') {
+        item.dailyEnabled = enabled;
+      } else {
+        item.antifraudEnabled = enabled;
+      }
+
+      state.set(channelId, item);
+      toast('Настройка канала сохранена');
+    } catch (error) {
+      input.checked = previous;
+      toast(
+        error?.message || 'Не удалось сохранить настройку',
+        true,
+      );
+    } finally {
+      input.disabled = false;
+      panel?.classList.remove('saving');
+    }
+  }
+
+  document.addEventListener('change', (event) => {
+    const input = event.target.closest(
+      'input[data-lr-setting]',
+    );
+
+    if (input) save(input);
+  });
+
+  const observer = new MutationObserver(() => {
+    queueRender();
+  });
+
+  function boot() {
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    loadSettings();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, {
+      once: true,
+    });
+  } else {
+    boot();
+  }
+})();
+/* LINKRAY_CABINET_REAL_SETTINGS_FRONT_V4_END */
+'''
+
+source = source.rstrip() + "\n\n" + module.strip() + "\n"
+
+if source.count(START) != 1 or source.count(END) != 1:
+    raise SystemExit("Frontend-маркер установлен некорректно.")
+
+path.write_text(source, encoding="utf-8")
+print("Панель добавлена к существующим карточкам.")
+PY
+
+echo "[5/10] Добавляю мобильные стили"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("public/linkray-site/cabinet-stable.css")
+source = path.read_text(encoding="utf-8")
+
+START = "/* LINKRAY_CABINET_REAL_SETTINGS_STYLES_V4_START */"
+END = "/* LINKRAY_CABINET_REAL_SETTINGS_STYLES_V4_END */"
+
+source = re.sub(
+    rf"\n?{re.escape(START)}[\s\S]*?{re.escape(END)}\s*\n?",
+    "\n",
+    source,
+    count=1,
+)
+
+styles = r'''
+/* LINKRAY_CABINET_REAL_SETTINGS_STYLES_V4_START */
+.lr-real-settings-v4 {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(151, 179, 198, 0.18);
+  border-radius: 18px;
+  background: rgba(5, 22, 34, 0.42);
+  transition: opacity 0.18s ease;
+}
+
+.lr-real-settings-v4.saving {
+  opacity: 0.68;
+}
+
+.lr-settings-title-v4 {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px 10px;
+}
+
+.lr-settings-title-v4 strong {
+  font-size: 15px;
+  color: #f4f8fb;
+}
+
+.lr-settings-title-v4 span {
+  max-width: 145px;
+  text-align: right;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #8198aa;
+}
+
+.lr-settings-row-v4 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 62px;
+  padding: 10px 2px;
+  border-top: 1px solid rgba(151, 179, 198, 0.12);
+}
+
+.lr-settings-row-v4 > div {
+  min-width: 0;
+}
+
+.lr-settings-row-v4 strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.3;
+  color: #eef5f8;
+}
+
+.lr-settings-row-v4 small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #8399aa;
+}
+
+.lr-settings-status-v4 {
+  flex: 0 0 auto;
+  max-width: 120px;
+  padding: 7px 10px;
+  border: 1px solid rgba(76, 224, 166, 0.24);
+  border-radius: 999px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #65e6b1;
+  background: rgba(38, 163, 116, 0.12);
+}
+
+.lr-settings-switch-v4 {
+  position: relative;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 28px;
+}
+
+.lr-settings-switch-v4 input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.lr-settings-switch-v4 span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(144, 165, 181, 0.28);
+  border-radius: 999px;
+  background: rgba(91, 112, 127, 0.22);
+  transition: 0.18s ease;
+}
+
+.lr-settings-switch-v4 span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #9aabb7;
+  transition: 0.18s ease;
+}
+
+.lr-settings-switch-v4 input:checked + span {
+  border-color: rgba(63, 229, 165, 0.48);
+  background: rgba(24, 188, 123, 0.28);
+}
+
+.lr-settings-switch-v4 input:checked + span::after {
+  transform: translateX(20px);
+  background: #55e6ad;
+}
+
+.lr-settings-switch-v4 input:disabled + span {
+  opacity: 0.4;
+}
+
+.lr-settings-toast-v4 {
+  position: fixed;
+  z-index: 10000;
+  left: 50%;
+  bottom: calc(112px + env(safe-area-inset-bottom, 0px));
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 11px 15px;
+  border: 1px solid rgba(74, 225, 164, 0.25);
+  border-radius: 14px;
+  color: #eafff6;
+  background: rgba(7, 43, 35, 0.96);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  text-align: center;
+  opacity: 0;
+  transform: translate(-50%, 12px);
+  pointer-events: none;
+  transition: 0.18s ease;
+}
+
+.lr-settings-toast-v4.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.lr-settings-toast-v4.error {
+  border-color: rgba(255, 112, 132, 0.3);
+  color: #fff1f3;
+  background: rgba(67, 20, 29, 0.96);
+}
+
+@media (max-width: 560px) {
+  .lr-real-settings-v4 {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .lr-settings-title-v4 {
+    display: block;
+  }
+
+  .lr-settings-title-v4 span {
+    display: block;
+    max-width: none;
+    margin-top: 4px;
+    text-align: left;
+  }
+
+  .lr-settings-row-v4 {
+    min-height: 66px;
+  }
+
+  .lr-settings-status-v4 {
+    max-width: 108px;
+  }
+}
+/* LINKRAY_CABINET_REAL_SETTINGS_STYLES_V4_END */
+'''
+
+source = source.rstrip() + "\n\n" + styles.strip() + "\n"
+
+if source.count(START) != 1 or source.count(END) != 1:
+    raise SystemExit("CSS-маркер установлен некорректно.")
+
+path.write_text(source, encoding="utf-8")
+print("Стили добавлены.")
+PY
+
+echo "[6/10] Обновляю версию ресурсов"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("public/linkray-site/cabinet-stable.html")
+source = path.read_text(encoding="utf-8")
+version = "20260807-real-settings-v4"
+
+js_count = len(re.findall(r'cabinet-stable\.js(?:\?v=[^"\']*)?', source))
+css_count = len(re.findall(r'cabinet-stable\.css(?:\?v=[^"\']*)?', source))
+
+if js_count < 1 or css_count < 1:
+    raise SystemExit(
+        f"Не найдены ссылки ресурсов: js={js_count}, css={css_count}"
+    )
+
+source = re.sub(
+    r'cabinet-stable\.js(?:\?v=[^"\']*)?',
+    f'cabinet-stable.js?v={version}',
+    source,
+)
+
+source = re.sub(
+    r'cabinet-stable\.css(?:\?v=[^"\']*)?',
+    f'cabinet-stable.css?v={version}',
+    source,
+)
+
+path.write_text(source, encoding="utf-8")
+print("Кэш-версия обновлена.")
+PY
+
+echo "[7/10] Проверяю код до запуска"
+
+node --check "$SERVER"
+node --check "$FRONT"
+
+grep -q "LINKRAY_CABINET_REAL_SETTINGS_V4_START" "$SERVER"
+grep -q "LINKRAY_CABINET_REAL_SETTINGS_FRONT_V4_START" "$FRONT"
+grep -q "LINKRAY_CABINET_REAL_SETTINGS_STYLES_V4_START" "$CSS"
+
+SERVER_MARKERS="$(grep -c "LINKRAY_CABINET_REAL_SETTINGS_V4_START" "$SERVER")"
+FRONT_MARKERS="$(grep -c "LINKRAY_CABINET_REAL_SETTINGS_FRONT_V4_START" "$FRONT")"
+
+[[ "$SERVER_MARKERS" == "1" ]]
+[[ "$FRONT_MARKERS" == "1" ]]
+
+echo "[8/10] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 14
+
+echo "[9/10] Проверяю запуск без изменения настроек"
+
+MAIN_CODE="$(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/)"
+CABINET_CODE="$(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/cabinet)"
+JS_CODE="$(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.js?v=$VERSION")"
+CSS_CODE="$(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.css?v=$VERSION")"
+GET_NO_COOKIE="$(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/api/website/cabinet/channel-settings)"
+PATCH_NO_COOKIE="$(
+  curl -sS -o /dev/null -w '%{http_code}' \
+    -X PATCH \
+    -H 'Content-Type: application/json' \
+    --data '{"setting":"antifraud","enabled":true}' \
+    https://linkray.ru/api/website/cabinet/channel/0/settings
+)"
+
+echo "Главная: $MAIN_CODE"
+echo "Кабинет: $CABINET_CODE"
+echo "JavaScript: $JS_CODE"
+echo "CSS: $CSS_CODE"
+echo "GET без cookie: $GET_NO_COOKIE"
+echo "PATCH без cookie: $PATCH_NO_COOKIE"
+
+[[ "$MAIN_CODE" == "200" ]]
+[[ "$CABINET_CODE" == "200" ]]
+[[ "$JS_CODE" == "200" ]]
+[[ "$CSS_CODE" == "200" ]]
+[[ "$GET_NO_COOKIE" == "401" ]]
+[[ "$PATCH_NO_COOKIE" == "401" ]]
+
+LOGS="$(docker compose logs --since=4m app 2>&1 || true)"
+
+if printf '%s\n' "$LOGS" | grep -Eqi \
+  "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module|Identifier .* already been declared"
+then
+  printf '%s\n' "$LOGS" | tail -220
+  echo "В логах найдена критическая ошибка."
+  exit 1
+fi
+
+echo "[10/10] Сохраняю изолированное изменение в GitHub"
+
+git add -- "$SERVER" "$FRONT" "$CSS" "$HTML"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Add real per-channel cabinet settings v4"
+  COMMITTED=1
+  git push origin HEAD:main
+else
+  echo "Изменения уже применены."
+fi
+
+trap - ERR
+
+echo
+echo "============================================================"
+echo "РЕАЛЬНЫЕ НАСТРОЙКИ КАНАЛОВ V4 ПОДКЛЮЧЕНЫ"
+echo
+echo "• Ежедневный отчёт ПДП сохраняется в действующей таблице"
+echo "• AntiFraud включается через действующую конфигурацию"
+echo "• Аналитика показана как автоматический статус без фиктивного переключателя"
+echo "• Studio, автопостинг, добавление и удаление каналов не изменялись"
+echo "• Проверочные запросы не меняли настройки пользователя"
+echo "Резервная копия: $BACKUP"
+echo "============================================================"
