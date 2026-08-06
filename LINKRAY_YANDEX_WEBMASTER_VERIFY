@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+ROUTES="src/linkrayWebsiteRoutes.js"
+VERIFY_FILE="public/linkray-site/yandex_ac09981992f2e20e.html"
+VERIFY_URL="https://linkray.ru/yandex_ac09981992f2e20e.html"
+BACKUP="$(mktemp -d /tmp/linkray-yandex-verify.XXXXXX)"
+DONE=0
+
+restore_all() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+
+  if [[ -f "$BACKUP/routes.exists" ]]; then
+    cp -f "$BACKUP/routes" "$ROUTES"
+  fi
+
+  if [[ -f "$BACKUP/verify.exists" ]]; then
+    cp -f "$BACKUP/verify-file" "$VERIFY_FILE"
+  else
+    rm -f "$VERIFY_FILE"
+  fi
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_all
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/7] Сохраняю резервную копию"
+
+test -f "$ROUTES"
+cp -f "$ROUTES" "$BACKUP/routes"
+touch "$BACKUP/routes.exists"
+
+if [[ -f "$VERIFY_FILE" ]]; then
+  cp -f "$VERIFY_FILE" "$BACKUP/verify-file"
+  touch "$BACKUP/verify.exists"
+fi
+
+echo "[2/7] Создаю файл подтверждения Яндекса"
+
+mkdir -p "$(dirname "$VERIFY_FILE")"
+
+cat > "$VERIFY_FILE" <<'HTML'
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  </head>
+  <body>Verification: ac09981992f2e20e</body>
+</html>
+HTML
+
+echo "[3/7] Подключаю файл по адресу в корне сайта"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+start_marker = "// LINKRAY_YANDEX_VERIFY_V1_START"
+end_marker = "// LINKRAY_YANDEX_VERIFY_V1_END"
+
+if start_marker in source:
+    print("Маршрут подтверждения уже присутствует")
+else:
+    route = """  // LINKRAY_YANDEX_VERIFY_V1_START
+  app.get(
+    '/yandex_ac09981992f2e20e.html',
+    applyWebsiteHeaders,
+    (_req, res) => {
+      sendSiteFile(
+        res,
+        'yandex_ac09981992f2e20e.html',
+        'public, max-age=300',
+      );
+    },
+  );
+  // LINKRAY_YANDEX_VERIFY_V1_END
+
+"""
+
+    anchors = [
+        "  app.get('/robots.txt'",
+        '  app.get("/robots.txt"',
+        "  app.get('/sitemap.xml'",
+        '  app.get("/sitemap.xml"',
+        "  app.get('/site.webmanifest'",
+        '  app.get("/site.webmanifest"',
+        "  app.get('/go-bot'",
+        '  app.get("/go-bot"',
+    ]
+
+    position = -1
+
+    for anchor in anchors:
+        candidate = source.find(anchor)
+        if candidate >= 0:
+            position = candidate
+            break
+
+    if position < 0:
+        mount = source.find(
+            "export function mountLinkRayWebsiteRoutes"
+        )
+
+        if mount < 0:
+            raise SystemExit(
+                "Не найдена функция mountLinkRayWebsiteRoutes"
+            )
+
+        opening = source.find("{", mount)
+
+        if opening < 0:
+            raise SystemExit(
+                "Не найдено начало функции маршрутов сайта"
+            )
+
+        position = opening + 1
+        route = "\n" + route
+
+    source = source[:position] + route + source[position:]
+    path.write_text(source, encoding="utf-8")
+
+if source.count(
+    "'/yandex_ac09981992f2e20e.html'"
+) != 1:
+    raise SystemExit(
+        "Маршрут подтверждения установлен некорректно"
+    )
+
+print("Маршрут подтверждения подключён")
+PY
+
+echo "[4/7] Проверяю синтаксис"
+
+node --check "$ROUTES"
+
+grep -q \
+  "Verification: ac09981992f2e20e" \
+  "$VERIFY_FILE"
+
+grep -q \
+  "LINKRAY_YANDEX_VERIFY_V1_START" \
+  "$ROUTES"
+
+echo "[5/7] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[6/7] Проверяю файл на сайте"
+
+STATUS="$(
+  curl -sS \
+    -o "$BACKUP/live-verification.html" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    "$VERIFY_URL"
+)"
+
+echo "Файл подтверждения: $STATUS"
+[[ "$STATUS" == "200" ]]
+
+grep -q \
+  "Verification: ac09981992f2e20e" \
+  "$BACKUP/live-verification.html"
+
+if docker logs --since 45s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[7/7] Сохраняю проверенную версию"
+
+git add -- "$ROUTES" "$VERIFY_FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Add Yandex Webmaster verification file"
+  git push origin HEAD:main
+else
+  echo "Файл подтверждения уже установлен"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ЯНДЕКС ВЕБМАСТЕР ГОТОВ К ПОДТВЕРЖДЕНИЮ"
+echo
+echo "$VERIFY_URL"
+echo
+echo "Теперь вернись в Яндекс Вебмастер и нажми «Подтвердить»."
+echo "============================================================"
