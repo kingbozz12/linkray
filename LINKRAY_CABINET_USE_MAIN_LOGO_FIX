@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+INDEX="public/linkray-site/index.html"
+CABINET="public/linkray-site/cabinet-stable.html"
+VERSION="20260806-cabinet-main-logo-v1"
+BACKUP="$(mktemp -d /tmp/linkray-cabinet-logo.XXXXXX)"
+DONE=0
+
+restore_cabinet() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежний кабинет"
+
+  cp -f "$BACKUP/cabinet-stable.html" "$CABINET"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+
+  echo "[ОТКАТ] Кабинет восстановлен"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_cabinet
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/7] Проверяю главную страницу и кабинет"
+
+test -f "$INDEX"
+test -f "$CABINET"
+
+cp -f "$CABINET" "$BACKUP/cabinet-stable.html"
+
+echo "[2/7] Копирую логотип главного сайта в кабинет"
+
+python3 - <<'PY'
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qsl, urlencode
+import re
+
+index_path = Path("public/linkray-site/index.html")
+cabinet_path = Path("public/linkray-site/cabinet-stable.html")
+
+index = index_path.read_text(encoding="utf-8")
+cabinet = cabinet_path.read_text(encoding="utf-8")
+
+version = "20260806-cabinet-main-logo-v1"
+start_marker = "<!-- LINKRAY_CABINET_MAIN_LOGO_V1_START -->"
+end_marker = "<!-- LINKRAY_CABINET_MAIN_LOGO_V1_END -->"
+
+def head_content(source: str, filename: str) -> str:
+    match = re.search(
+        r"<head\b[^>]*>([\s\S]*?)</head>",
+        source,
+        flags=re.I,
+    )
+
+    if not match:
+        raise SystemExit(f"В {filename} не найден блок <head>")
+
+    return match.group(1)
+
+def attr(tag: str, name: str) -> str:
+    match = re.search(
+        rf"\b{re.escape(name)}\s*=\s*(['\"])(.*?)\1",
+        tag,
+        flags=re.I | re.S,
+    )
+
+    return match.group(2).strip() if match else ""
+
+def is_icon_link(tag: str) -> bool:
+    rel = attr(tag, "rel").lower()
+    rel_parts = set(rel.split())
+
+    return bool(
+        "icon" in rel_parts
+        or "shortcut" in rel_parts
+        or "apple-touch-icon" in rel_parts
+        or "mask-icon" in rel_parts
+    )
+
+def cache_bust_href(href: str) -> str:
+    href = href.strip()
+
+    if not href or href.startswith("data:"):
+        return href
+
+    absolute = urljoin("https://linkray.ru/", href)
+    parsed = urlsplit(absolute)
+
+    if parsed.netloc and parsed.netloc != "linkray.ru":
+        return href
+
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["v"] = version
+
+    return urlunsplit((
+        "",
+        "",
+        parsed.path or "/",
+        urlencode(query),
+        parsed.fragment,
+    ))
+
+main_head = head_content(index, "index.html")
+
+main_icon_tags = [
+    tag
+    for tag in re.findall(
+        r"<link\b[^>]*>",
+        main_head,
+        flags=re.I | re.S,
+    )
+    if is_icon_link(tag)
+]
+
+# Главный сайт может использовать стандартный /favicon.ico
+# без явного link-тега. Тогда подключаем этот же адрес.
+if not main_icon_tags:
+    if Path("public/favicon.ico").exists():
+        main_icon_tags = [
+            '<link rel="icon" href="/favicon.ico">'
+        ]
+    elif Path(
+        "public/linkray-site/linkray-logo-exact.webp"
+    ).exists():
+        main_icon_tags = [
+            (
+                '<link rel="icon" type="image/webp" '
+                'href="/linkray-site/linkray-logo-exact.webp">'
+            )
+        ]
+    else:
+        raise SystemExit(
+            "На главной странице не найден подключённый логотип"
+        )
+
+prepared_tags = []
+
+for tag in main_icon_tags:
+    href = attr(tag, "href")
+
+    if not href:
+        continue
+
+    updated_href = cache_bust_href(href)
+
+    updated_tag = re.sub(
+        r"(\bhref\s*=\s*)(['\"])(.*?)\2",
+        lambda match: (
+            f'{match.group(1)}"{updated_href}"'
+        ),
+        tag,
+        count=1,
+        flags=re.I | re.S,
+    )
+
+    prepared_tags.append(updated_tag.strip())
+
+if not prepared_tags:
+    raise SystemExit(
+        "Не удалось получить адрес логотипа главного сайта"
+    )
+
+# Удаляем только старый блок этого патча.
+cabinet = re.sub(
+    rf"\s*{re.escape(start_marker)}"
+    rf"[\s\S]*?"
+    rf"{re.escape(end_marker)}\s*",
+    "\n",
+    cabinet,
+    flags=re.I,
+)
+
+# Удаляем существующие favicon-теги только из кабинета,
+# чтобы браузер не выбирал старый значок.
+cabinet = re.sub(
+    r"\s*<link\b(?=[^>]*\brel\s*=\s*"
+    r"(['\"])[^'\"]*(?:icon|shortcut|apple-touch-icon|mask-icon)"
+    r"[^'\"]*\1)[^>]*>\s*",
+    "\n",
+    cabinet,
+    flags=re.I | re.S,
+)
+
+block = (
+    start_marker
+    + "\n"
+    + "\n".join(prepared_tags)
+    + "\n"
+    + '<meta name="application-name" content="LinkRay">\n'
+    + '<meta name="apple-mobile-web-app-title" content="LinkRay">\n'
+    + end_marker
+)
+
+viewport = re.search(
+    r"<meta\b[^>]*\bname\s*=\s*"
+    r"(['\"])viewport\1[^>]*>",
+    cabinet,
+    flags=re.I | re.S,
+)
+
+if viewport:
+    insert_at = viewport.end()
+else:
+    head = re.search(r"<head\b[^>]*>", cabinet, flags=re.I)
+
+    if not head:
+        raise SystemExit(
+            "В cabinet-stable.html не найден блок <head>"
+        )
+
+    insert_at = head.end()
+
+cabinet = (
+    cabinet[:insert_at]
+    + "\n"
+    + block
+    + cabinet[insert_at:]
+)
+
+cabinet_path.write_text(cabinet, encoding="utf-8")
+
+print("Подключённые адреса логотипа:")
+for tag in prepared_tags:
+    print("•", attr(tag, "href"))
+PY
+
+echo "[3/7] Проверяю изменение"
+
+grep -q "LINKRAY_CABINET_MAIN_LOGO_V1_START" "$CABINET"
+
+ICON_HREF="$(
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+source = Path(
+    "public/linkray-site/cabinet-stable.html"
+).read_text(encoding="utf-8")
+
+block = re.search(
+    r"<!-- LINKRAY_CABINET_MAIN_LOGO_V1_START -->"
+    r"([\s\S]*?)"
+    r"<!-- LINKRAY_CABINET_MAIN_LOGO_V1_END -->",
+    source,
+)
+
+if not block:
+    raise SystemExit(1)
+
+tag = re.search(
+    r"<link\b[^>]*\brel\s*=\s*"
+    r"(['\"])[^'\"]*icon[^'\"]*\1[^>]*>",
+    block.group(1),
+    flags=re.I | re.S,
+)
+
+if not tag:
+    raise SystemExit(1)
+
+href = re.search(
+    r"\bhref\s*=\s*(['\"])(.*?)\1",
+    tag.group(0),
+    flags=re.I | re.S,
+)
+
+if not href:
+    raise SystemExit(1)
+
+print(href.group(2).strip())
+PY
+)"
+
+test -n "$ICON_HREF"
+echo "Логотип кабинета: $ICON_HREF"
+
+echo "[4/7] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[5/7] Проверяю кабинет и файл логотипа"
+
+CABINET_STATUS="$(
+  curl -sS \
+    -o "$BACKUP/cabinet-live.html" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/cabinet
+)"
+
+ICON_URL="$ICON_HREF"
+
+if [[ "$ICON_URL" != http://* && "$ICON_URL" != https://* ]]; then
+  ICON_URL="https://linkray.ru${ICON_URL}"
+fi
+
+ICON_STATUS="$(
+  curl -sS \
+    -o /dev/null \
+    -w '%{http_code}' \
+    --max-time 20 \
+    "$ICON_URL"
+)"
+
+echo "Кабинет: $CABINET_STATUS"
+echo "Логотип: $ICON_STATUS"
+
+[[ "$CABINET_STATUS" == "200" ]]
+[[ "$ICON_STATUS" == "200" ]]
+
+grep -q \
+  "LINKRAY_CABINET_MAIN_LOGO_V1_START" \
+  "$BACKUP/cabinet-live.html"
+
+echo "[6/7] Проверяю журнал запуска"
+
+if docker logs --since 45s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[7/7] Сохраняю только изменение кабинета"
+
+git add -- "$CABINET"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Use main LinkRay favicon in web cabinet"
+  git push origin HEAD:main
+else
+  echo "Логотип уже подключён"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ЛОГОТИП ГЛАВНОГО САЙТА ПОДКЛЮЧЁН К КАБИНЕТУ"
+echo
+echo "• использован существующий значок главной страницы"
+echo "• новые изображения не создавались"
+echo "• главная страница и FAQ не изменялись"
+echo "• бот, аналитика и Studio не изменялись"
+echo "============================================================"
