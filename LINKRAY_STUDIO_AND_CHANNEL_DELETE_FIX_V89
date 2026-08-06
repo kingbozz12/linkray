@@ -1,0 +1,760 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+MIGRATION="migrations/20260807_linkray_channel_hard_delete_v89.sql"
+BACKUP="$(mktemp -d /tmp/linkray-channel-lifecycle-v89.XXXXXX)"
+DONE=0
+
+restore_code() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежний код приложения"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Код восстановлен"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_code
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/10] Проверяю актуальный код"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q "async function lrV47Channels" "$FILE"
+grep -q "async function lrV47ShowChannelSelect" "$FILE"
+grep -q "async function lrV47OpenEditor" "$FILE"
+grep -q "async function lrV47HandleBotRemoved" "$FILE"
+grep -q "async function __lrDeactivateChannelAfterBotRemoved" "$FILE"
+grep -q "async function maybeRegisterChannel" "$FILE"
+
+echo "[2/10] Сохраняю количество каналов до исправления"
+
+ACTIVE_BEFORE="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels WHERE COALESCE(is_active,true)=true;"
+  '
+)"
+
+INACTIVE_BEFORE="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels WHERE COALESCE(is_active,true)=false;"
+  '
+)"
+
+echo "Активных каналов: $ACTIVE_BEFORE"
+echo "Старых неактивных каналов: $INACTIVE_BEFORE"
+
+if [[ "$ACTIVE_BEFORE" -lt 1 ]]; then
+  echo "В базе нет активных каналов. Исправление остановлено."
+  exit 1
+fi
+
+echo "[3/10] Исправляю выбор каналов и существующие обработчики удаления"
+
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+MARKER = "LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89"
+
+
+def function_range(text: str, name: str):
+    token = f"async function {name}"
+    start = text.find(token)
+
+    if start < 0:
+        raise SystemExit(f"Не найдена функция {name}")
+
+    brace = text.find("{", start)
+    if brace < 0:
+        raise SystemExit(f"Не найдено начало функции {name}")
+
+    depth = 0
+    quote = None
+    escaped = False
+    template_depth = 0
+    i = brace
+
+    while i < len(text):
+        ch = text[i]
+
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif (
+                quote == "`"
+                and ch == "$"
+                and i + 1 < len(text)
+                and text[i + 1] == "{"
+            ):
+                template_depth += 1
+                i += 1
+            elif (
+                quote == "`"
+                and ch == "}"
+                and template_depth
+            ):
+                template_depth -= 1
+            elif ch == quote and not template_depth:
+                quote = None
+        else:
+            if ch in ("'", '"', "`"):
+                quote = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return start, i + 1
+
+        i += 1
+
+    raise SystemExit(f"Не найден конец функции {name}")
+
+
+def function_hash(text: str, name: str) -> str:
+    start, end = function_range(text, name)
+    return hashlib.sha256(
+        text[start:end].encode("utf-8")
+    ).hexdigest()
+
+
+protected_names = [
+    "maybeRegisterChannel",
+    "lrV47ShowChannelSelect",
+    "lrV47OpenEditor",
+    "lrV47HandleSelectedChannels",
+    "lrV47ShowAddChannel",
+    "lrV47HandleAddForward",
+]
+
+protected_before = {
+    name: function_hash(source, name)
+    for name in protected_names
+}
+
+source = re.sub(
+    r"\s*/\* LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_START \*/"
+    r"[\s\S]*?"
+    r"/\* LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_END \*/\s*",
+    "\n",
+    source,
+)
+
+start, end = function_range(source, "lrV47Channels")
+
+new_channels = r'''async function lrV47Channels() {
+  /* LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_START */
+  /*
+   * Штатный getChannels остаётся первым источником.
+   * Его пустой массив больше не завершает функцию:
+   * тогда используются активные каналы PostgreSQL.
+   */
+  try {
+    if (typeof getChannels === 'function') {
+      const result = await getChannels();
+      const nativeChannels = Array.isArray(result)
+        ? result
+        : lrV47Rows(result);
+
+      const activeNative = nativeChannels.filter(
+        (channel) => channel?.is_active !== false,
+      );
+
+      if (activeNative.length) {
+        console.log(
+          '[v89 studio channels] native list used',
+          JSON.stringify({ count: activeNative.length }),
+        );
+        return activeNative;
+      }
+
+      console.log(
+        '[v89 studio channels] native list empty, using database',
+      );
+    }
+  } catch (error) {
+    console.error(
+      '[v89 studio channels] native getChannels failed',
+      error?.stack || error?.message || error,
+    );
+  }
+
+  try {
+    const channels = lrV47Rows(await query(`
+      SELECT
+        id,
+        max_chat_id,
+        title,
+        link,
+        is_active,
+        updated_at
+      FROM public.channels
+      WHERE COALESCE(is_active, true)=true
+      ORDER BY
+        COALESCE(updated_at, bot_added_at, now()) DESC,
+        id DESC
+    `));
+
+    console.log(
+      '[v89 studio channels] database list used',
+      JSON.stringify({
+        count: channels.length,
+        ids: channels.map((channel) => channel.id),
+      }),
+    );
+
+    return channels;
+  } catch (error) {
+    console.error(
+      '[v89 studio channels] database query failed',
+      error?.stack || error?.message || error,
+    );
+    return [];
+  }
+}
+
+/**
+ * Физически удаляет канал и связанные данные.
+ * SQL-функция создаётся миграцией V89.
+ */
+async function lrHardDeleteChannelsV89({
+  channelIds = [],
+  maxChatId = '',
+} = {}) {
+  const ids = [
+    ...new Set(
+      (Array.isArray(channelIds) ? channelIds : [channelIds])
+        .map(Number)
+        .filter(Number.isFinite),
+    ),
+  ];
+
+  const chatIds = [
+    ...new Set(
+      [maxChatId]
+        .flat()
+        .map((value) => String(value || '').trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (!ids.length && !chatIds.length) {
+    return {
+      channels: 0,
+      related: 0,
+    };
+  }
+
+  const result = lrV47Rows(await query(
+    `
+      SELECT public.lr_hard_delete_channels_v89(
+        $1::integer[],
+        $2::text[]
+      ) AS result
+    `,
+    [ids, chatIds],
+  ));
+
+  const payload = result[0]?.result || {
+    channels: 0,
+    related: 0,
+  };
+
+  console.log(
+    '[v89 channel lifecycle] hard delete complete',
+    JSON.stringify({
+      ids,
+      chatIds,
+      result: payload,
+    }),
+  );
+
+  return payload;
+}
+/* LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_END */'''
+
+source = source[:start] + new_channels + source[end:]
+
+start, end = function_range(
+    source,
+    "__lrDeactivateChannelAfterBotRemoved",
+)
+fn = source[start:end]
+
+block_pattern = re.compile(
+    r"if\s*\(\s*matchedIds\.length\s*\)\s*\{"
+    r"[\s\S]*?"
+    r"\}\s*else\s*\{",
+)
+
+match = block_pattern.search(fn)
+
+if not match:
+    raise SystemExit(
+        "Не найден блок matchedIds в "
+        "__lrDeactivateChannelAfterBotRemoved"
+    )
+
+replacement = r'''if (matchedIds.length) {
+    const removed = await lrHardDeleteChannelsV89({
+      channelIds: matchedIds,
+      maxChatId: id,
+    });
+
+    console.log(
+      '[bot removed cleanup] channel fully deleted',
+      JSON.stringify({
+        ids: matchedIds,
+        maxChatId: id || null,
+        title: title || null,
+        link: link || null,
+        removed,
+      }),
+    );
+  } else {'''
+
+fn = fn[:match.start()] + replacement + fn[match.end():]
+source = source[:start] + fn + source[end:]
+
+start, end = function_range(source, "lrV47HandleBotRemoved")
+fn = source[start:end]
+
+old_update = re.compile(
+    r"try\s*\{\s*if\s*\(\s*removedChatId\s*\)\s*\{\s*"
+    r"await\s+query\(\s*"
+    r"`UPDATE\s+channels\s+SET\s+is_active\s*=\s*false"
+    r"[\s\S]*?"
+    r"\.catch\(\(\)\s*=>\s*\{\}\)\s*;\s*"
+    r"\}\s*\}\s*catch\s*\{\s*\}",
+    re.I,
+)
+
+match = old_update.search(fn)
+
+if not match:
+    raise SystemExit(
+        "Не найден старый UPDATE is_active=false "
+        "в lrV47HandleBotRemoved"
+    )
+
+new_delete = r'''let hardDeleteResult = {
+    channels: 0,
+    related: 0,
+  };
+
+  try {
+    if (removedChatId) {
+      hardDeleteResult = await lrHardDeleteChannelsV89({
+        maxChatId: removedChatId,
+      });
+    }
+  } catch (error) {
+    console.error(
+      '[v89 channel lifecycle] removal failed',
+      error?.stack || error?.message || error,
+    );
+    throw error;
+  }'''
+
+fn = fn[:match.start()] + new_delete + fn[match.end():]
+
+fn = fn.replace(
+    "Канал отключён в базе и больше не будет использоваться для постов.",
+    "Канал и все связанные данные полностью удалены из LinkRay.",
+)
+
+source = source[:start] + fn + source[end:]
+
+for name, old_hash in protected_before.items():
+    new_hash = function_hash(source, name)
+    if new_hash != old_hash:
+        raise SystemExit(
+            f"Защищённая функция изменилась: {name}"
+        )
+
+required = [
+    MARKER,
+    "native list empty, using database",
+    "WHERE COALESCE(is_active, true)=true",
+    "lrHardDeleteChannelsV89",
+    "channel fully deleted",
+    "все связанные данные полностью удалены",
+]
+
+for item in required:
+    if item not in source:
+        raise SystemExit(
+            f"Не установлен обязательный элемент: {item}"
+        )
+
+if source.count(
+    "LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_START"
+) != 1:
+    raise SystemExit("Блок V89 установлен некорректно")
+
+path.write_text(source, encoding="utf-8")
+
+print("Исправлена реальная функция lrV47Channels")
+print("Пустой getChannels теперь переходит к PostgreSQL")
+print("Оба существующих обработчика удаления переведены на hard delete")
+print("Добавление каналов, редактор и публикация не изменены")
+PY
+
+echo "[4/10] Проверяю JavaScript"
+
+node --check "$FILE"
+
+grep -q \
+  "LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_START" \
+  "$FILE"
+
+grep -q \
+  "native list empty, using database" \
+  "$FILE"
+
+grep -q \
+  "lrHardDeleteChannelsV89" \
+  "$FILE"
+
+echo "[5/10] Создаю миграцию полного удаления"
+
+mkdir -p migrations
+
+cat > "$MIGRATION" <<'SQL'
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.lr_hard_delete_channels_v89(
+  p_channel_ids integer[],
+  p_max_chat_ids text[]
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $lr_v89$
+DECLARE
+  target_ids integer[];
+  target_ids_text text[];
+  target_chats text[];
+  item record;
+  sql_text text;
+  pass_no integer;
+  affected integer;
+  related_total bigint := 0;
+  channel_total integer := 0;
+  expected_total integer := 0;
+BEGIN
+  SELECT COALESCE(array_agg(DISTINCT value), ARRAY[]::integer[])
+  INTO target_ids
+  FROM unnest(COALESCE(p_channel_ids, ARRAY[]::integer[])) AS value
+  WHERE value IS NOT NULL;
+
+  SELECT COALESCE(array_agg(DISTINCT btrim(value)), ARRAY[]::text[])
+  INTO target_chats
+  FROM unnest(COALESCE(p_max_chat_ids, ARRAY[]::text[])) AS value
+  WHERE value IS NOT NULL
+    AND btrim(value) <> '';
+
+  SELECT COALESCE(array_agg(value::text), ARRAY[]::text[])
+  INTO target_ids_text
+  FROM unnest(target_ids) AS value;
+
+  SELECT COUNT(*)
+  INTO expected_total
+  FROM public.channels
+  WHERE id = ANY(target_ids)
+     OR max_chat_id::text = ANY(target_chats);
+
+  IF expected_total = 0 THEN
+    RETURN jsonb_build_object(
+      'channels', 0,
+      'related', 0
+    );
+  END IF;
+
+  FOR pass_no IN 1..12 LOOP
+    FOR item IN
+      SELECT
+        columns.table_schema,
+        columns.table_name,
+        bool_or(columns.column_name='channel_id') AS has_channel_id,
+        bool_or(columns.column_name='max_chat_id') AS has_max_chat_id,
+        bool_or(columns.column_name='chat_id') AS has_chat_id
+      FROM information_schema.columns columns
+      JOIN information_schema.tables tables
+        ON tables.table_schema=columns.table_schema
+       AND tables.table_name=columns.table_name
+      WHERE columns.table_schema='public'
+        AND tables.table_type='BASE TABLE'
+        AND columns.table_name<>'channels'
+        AND columns.column_name IN (
+          'channel_id',
+          'max_chat_id',
+          'chat_id'
+        )
+      GROUP BY
+        columns.table_schema,
+        columns.table_name
+      ORDER BY
+        columns.table_name
+    LOOP
+      sql_text := format(
+        'DELETE FROM %I.%I WHERE false',
+        item.table_schema,
+        item.table_name
+      );
+
+      IF item.has_channel_id THEN
+        sql_text := sql_text ||
+          ' OR CAST(channel_id AS text)=ANY($1::text[])';
+      END IF;
+
+      IF item.has_max_chat_id THEN
+        sql_text := sql_text ||
+          ' OR CAST(max_chat_id AS text)=ANY($2::text[])';
+      END IF;
+
+      IF item.has_chat_id THEN
+        sql_text := sql_text ||
+          ' OR CAST(chat_id AS text)=ANY($2::text[])';
+      END IF;
+
+      BEGIN
+        EXECUTE sql_text
+        USING target_ids_text, target_chats;
+
+        GET DIAGNOSTICS affected = ROW_COUNT;
+        related_total := related_total + affected;
+      EXCEPTION
+        WHEN foreign_key_violation THEN
+          NULL;
+        WHEN invalid_text_representation THEN
+          NULL;
+        WHEN datatype_mismatch THEN
+          NULL;
+      END;
+    END LOOP;
+  END LOOP;
+
+  IF to_regclass('public.lr_bot_state') IS NOT NULL
+     AND cardinality(target_chats) > 0 THEN
+    DELETE FROM public.lr_bot_state state
+    WHERE EXISTS (
+      SELECT 1
+      FROM unnest(target_chats) AS chat_id
+      WHERE state.key LIKE '%' || chat_id || '%'
+         OR state.value::text LIKE '%' || chat_id || '%'
+    );
+
+    GET DIAGNOSTICS affected = ROW_COUNT;
+    related_total := related_total + affected;
+  END IF;
+
+  DELETE FROM public.channels
+  WHERE id = ANY(target_ids)
+     OR max_chat_id::text = ANY(target_chats);
+
+  GET DIAGNOSTICS channel_total = ROW_COUNT;
+
+  IF channel_total <> expected_total THEN
+    RAISE EXCEPTION
+      'Удалено каналов %, ожидалось %. Осталась внешняя связь.',
+      channel_total,
+      expected_total;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'channels', channel_total,
+    'related', related_total
+  );
+END;
+$lr_v89$;
+
+COMMENT ON FUNCTION public.lr_hard_delete_channels_v89(
+  integer[],
+  text[]
+) IS
+'Полное удаление канала LinkRay и всех связанных записей.';
+
+DO $cleanup$
+DECLARE
+  old_ids integer[];
+  old_chat_ids text[];
+BEGIN
+  SELECT
+    COALESCE(array_agg(id), ARRAY[]::integer[]),
+    COALESCE(array_agg(max_chat_id::text), ARRAY[]::text[])
+  INTO old_ids, old_chat_ids
+  FROM public.channels
+  WHERE COALESCE(is_active, true)=false;
+
+  IF cardinality(old_ids) > 0 THEN
+    PERFORM public.lr_hard_delete_channels_v89(
+      old_ids,
+      old_chat_ids
+    );
+  END IF;
+END;
+$cleanup$;
+
+COMMIT;
+SQL
+
+echo "[6/10] Применяю миграцию и удаляю старые неактивные каналы"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}"
+' < "$MIGRATION"
+
+ACTIVE_AFTER_CLEANUP="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels WHERE COALESCE(is_active,true)=true;"
+  '
+)"
+
+INACTIVE_AFTER_CLEANUP="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels WHERE COALESCE(is_active,true)=false;"
+  '
+)"
+
+if [[ "$ACTIVE_BEFORE" != "$ACTIVE_AFTER_CLEANUP" ]]; then
+  echo "Количество активных каналов изменилось"
+  exit 1
+fi
+
+if [[ "$INACTIVE_AFTER_CLEANUP" != "0" ]]; then
+  echo "Неактивные каналы остались в базе"
+  exit 1
+fi
+
+echo "Активных каналов сохранено: $ACTIVE_AFTER_CLEANUP"
+echo "Неактивных каналов осталось: $INACTIVE_AFTER_CLEANUP"
+
+echo "[7/10] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 18
+
+echo "[8/10] Проверяю запуск и сохранность систем"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_CHANNEL_LIFECYCLE_AND_STUDIO_V89_START' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'async function maybeRegisterChannel' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'async function lrV47OpenEditor' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'async function lrV47HandleSelectedChannels' /app/src/index.js"
+
+if docker logs --since 100s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После запуска обнаружена ошибка"
+  exit 1
+fi
+
+echo "[9/10] Проверяю итоговое состояние"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -P pager=off -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}" \
+    -c "
+      SELECT
+        id,
+        title,
+        max_chat_id
+      FROM public.channels
+      ORDER BY id;
+    "
+'
+
+FINAL_COUNT="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels;"
+  '
+)"
+
+if [[ "$FINAL_COUNT" != "$ACTIVE_BEFORE" ]]; then
+  echo "Итоговое количество каналов неверное: $FINAL_COUNT"
+  exit 1
+fi
+
+echo "В базе осталось активных каналов: $FINAL_COUNT"
+
+echo "[10/10] Сохраняю исправление в GitHub"
+
+git add -- "$FILE" "$MIGRATION"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Fix Studio channels and hard-delete removed channels"
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "STUDIO И ЖИЗНЕННЫЙ ЦИКЛ КАНАЛОВ ИСПРАВЛЕНЫ"
+echo
+echo "• в базе остались только действующие каналы"
+echo "• пустой getChannels больше не скрывает каналы PostgreSQL"
+echo "• при отправке поста открывается выбор каналов"
+echo "• после выбора канала открывается существующий редактор"
+echo "• при удалении бота канал физически удаляется"
+echo "• связанные данные канала также удаляются"
+echo "• добавление каналов не изменялось"
+echo "• редактор и автопостинг не переписывались"
+echo "• AntiFraud не переписывался"
+echo "============================================================"
