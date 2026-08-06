@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-studio-channels-v86.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежнюю версию Studio"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/7] Проверяю существующие функции Studio"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q \
+  "async function lrV15SendChannelSelect" \
+  "$FILE"
+
+grep -q \
+  "async function lrV47Channels" \
+  "$FILE"
+
+grep -q \
+  "async function lrV15HandleAddChannelForward" \
+  "$FILE"
+
+echo "[2/7] Меняю только источник списка каналов"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+name = "lrV15SendChannelSelect"
+token = f"async function {name}"
+
+start = source.find(token)
+
+if start < 0:
+    raise SystemExit(
+        f"Не найдена функция {name}"
+    )
+
+brace = source.find("{", start)
+
+if brace < 0:
+    raise SystemExit(
+        f"Не найдено начало функции {name}"
+    )
+
+depth = 0
+quote = None
+escaped = False
+template_depth = 0
+end = None
+i = brace
+
+while i < len(source):
+    ch = source[i]
+
+    if quote:
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif (
+            quote == "`"
+            and ch == "$"
+            and i + 1 < len(source)
+            and source[i + 1] == "{"
+        ):
+            template_depth += 1
+            i += 1
+        elif (
+            quote == "`"
+            and ch == "}"
+            and template_depth
+        ):
+            template_depth -= 1
+        elif ch == quote and not template_depth:
+            quote = None
+    else:
+        if ch in ("'", '"', "`"):
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+
+            if depth == 0:
+                end = i + 1
+                break
+
+    i += 1
+
+if end is None:
+    raise SystemExit(
+        f"Не найден конец функции {name}"
+    )
+
+function = source[start:end]
+
+old = "const channels = await getChannels();"
+new = "const channels = await lrV47Channels();"
+
+if function.count(old) != 1:
+    raise SystemExit(
+        "В функции выбора каналов найдено вызовов "
+        f"getChannels(): {function.count(old)}, "
+        "ожидался ровно один"
+    )
+
+function = function.replace(old, new, 1)
+
+updated = (
+    source[:start]
+    + function
+    + source[end:]
+)
+
+if updated.count(new) < 1:
+    raise SystemExit(
+        "Новый источник каналов не установлен"
+    )
+
+# Важные функции добавления каналов должны остаться на месте.
+required = [
+    "async function lrV15HandleAddChannelForward",
+    "async function maybeRegisterChannel",
+    "async function lrV47ShowAddChannel",
+    "async function lrV47HandleAddForward",
+]
+
+for item in required:
+    if item not in updated:
+        raise SystemExit(
+            f"После изменения отсутствует функция: {item}"
+        )
+
+path.write_text(
+    updated,
+    encoding="utf-8",
+)
+
+print(
+    "Изменена одна строка внутри "
+    "lrV15SendChannelSelect"
+)
+print(
+    "getChannels() -> lrV47Channels()"
+)
+PY
+
+echo "[3/7] Проверяю точность изменения"
+
+node --check "$FILE"
+
+python3 - <<'PY'
+from pathlib import Path
+import difflib
+
+before = Path(
+    next(
+        Path("/tmp").glob(
+            "linkray-studio-channels-v86.*/index.js"
+        )
+    )
+).read_text(encoding="utf-8")
+
+after = Path(
+    "src/index.js"
+).read_text(encoding="utf-8")
+
+removed = []
+added = []
+
+for line in difflib.ndiff(
+    before.splitlines(),
+    after.splitlines(),
+):
+    if line.startswith("- "):
+        removed.append(line[2:])
+    elif line.startswith("+ "):
+        added.append(line[2:])
+
+expected_old = (
+    "const channels = await getChannels();"
+)
+expected_new = (
+    "const channels = await lrV47Channels();"
+)
+
+if len(removed) != 1 or expected_old not in removed[0]:
+    raise SystemExit(
+        "Обнаружено неожиданное удаление в index.js"
+    )
+
+if len(added) != 1 or expected_new not in added[0]:
+    raise SystemExit(
+        "Обнаружено неожиданное добавление в index.js"
+    )
+
+print("Проверено: изменена только одна строка")
+PY
+
+echo "[4/7] Проверяю, что база не изменяется"
+
+BEFORE_CHANNELS="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels;"
+  '
+)"
+
+echo "Каналов в базе: $BEFORE_CHANNELS"
+
+echo "[5/7] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[6/7] Проверяю запуск и сохранность систем"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'const channels = await lrV47Channels();' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'async function lrV15HandleAddChannelForward' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'async function lrV47ShowAddChannel' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'async function lrV47HandleAddForward' /app/src/index.js"
+
+if docker logs --since 80s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После запуска обнаружена ошибка"
+  exit 1
+fi
+
+AFTER_CHANNELS="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels;"
+  '
+)"
+
+if [[ "$BEFORE_CHANNELS" != "$AFTER_CHANNELS" ]]; then
+  echo "Количество каналов изменилось при установке"
+  exit 1
+fi
+
+echo "База не изменена: $AFTER_CHANNELS каналов"
+
+echo "[7/7] Сохраняю исправление в GitHub"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Use active channel fallback in Studio selector"
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "СПИСОК КАНАЛОВ STUDIO ИСПРАВЛЕН БЕЗ ИЗМЕНЕНИЯ ДРУГИХ СИСТЕМ"
+echo
+echo "• изменена ровно одна строка в lrV15SendChannelSelect"
+echo "• используется существующий lrV47Channels"
+echo "• добавление и удаление каналов не изменялись"
+echo "• AntiFraud не изменялся"
+echo "• автопостинг и редактор не переписывались"
+echo "• таблицы и записи PostgreSQL не изменялись"
+echo "============================================================"
