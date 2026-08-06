@@ -10367,18 +10367,18 @@ app.use(async function lrCleanSignatureMiddleware(req, res, next) {
     async function lrSigChannels(onlyIds) {
       if (onlyIds && onlyIds.length) {
         const r = await query(
-          'SELECT * FROM channels WHERE id = ANY($1::int[]) ORDER BY id',
+          'SELECT * FROM channels WHERE id = ANY($1::int[]) AND COALESCE(is_active,true)=true ORDER BY id',
           [onlyIds.map(Number)]
         );
         return lrRows(r);
       }
 
-      const r = await query('SELECT * FROM channels ORDER BY id');
+      const r = await query('SELECT * FROM channels WHERE COALESCE(is_active,true)=true ORDER BY id');
       return lrRows(r);
     }
 
     async function lrSigChannel(channelId) {
-      const r = await query('SELECT * FROM channels WHERE id=$1 LIMIT 1', [Number(channelId)]);
+      const r = await query('SELECT * FROM channels WHERE id=$1 AND COALESCE(is_active,true)=true LIMIT 1', [Number(channelId)]);
       return lrRows(r)[0] || null;
     }
 
@@ -26324,6 +26324,256 @@ try {
   console.error('[heading quote patch] hydrate wrapper failed:', error?.message || error);
 }
 // LR_APPEND_HEADING_QUOTE_SAFE_V2_END
+
+
+/* LR_CHANNEL_LIFECYCLE_V78_START */
+/*
+ * Единая изолированная правка жизненного цикла каналов.
+ * Автопостинг, редактор и публикации не изменяются.
+ */
+const lrV78OriginalChannels = lrV47Channels;
+const lrV78OriginalBotRemoved = lrV47HandleBotRemoved;
+
+lrV47Channels = async function lrV78ActiveChannelsOnly() {
+  const rows = await lrV78OriginalChannels();
+
+  return lrV47Rows(rows).filter((channel) => {
+    const value = channel?.is_active;
+
+    if (value === false || value === 0 || value === '0') {
+      return false;
+    }
+
+    if (
+      typeof value === 'string' &&
+      ['false', 'off', 'inactive', 'deleted']
+        .includes(value.trim().toLowerCase())
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+};
+
+lrV47NotifyConnected =
+  async function lrV78NotifyConnected(chatId, key, channel) {
+    if (!channel) return false;
+
+    const stateKey =
+      `lr_v47_connected_notified:${chatId}:${channel.id}`;
+
+    const previous = await lrV47StateGet(stateKey);
+    const previousTs = Number(previous?.ts || 0);
+
+    /*
+     * Подавляем только второй webhook одного подключения.
+     * Старая запись больше не блокирует повторное подключение.
+     */
+    if (
+      previous &&
+      previousTs > 0 &&
+      Date.now() - previousTs < 20_000
+    ) {
+      console.log(
+        '[channel lifecycle v78] duplicate add webhook skipped',
+        JSON.stringify({
+          chatId,
+          id: channel.id,
+        }),
+      );
+
+      return true;
+    }
+
+    if (previous) {
+      await lrV47StateDelLike([stateKey]);
+    }
+
+    const ok = await lrV47Msg(
+      chatId,
+      `✅ Канал подключён к LinkRay
+
+${lrV47Esc(channel.title || 'Канал')}
+
+Канал сохранён и доступен для постов, автоподписей, аналитики и отчётов.`,
+      [
+        [
+          lrV47Btn(
+            '⬅️ Главное меню',
+            'main:menu',
+          ),
+        ],
+      ],
+      'html',
+    );
+
+    if (ok) {
+      await lrV47StateSet(stateKey, {
+        chatId,
+        key,
+        channel: {
+          id: channel.id,
+          max_chat_id: channel.max_chat_id,
+          title: channel.title,
+        },
+        ts: Date.now(),
+      });
+
+      console.log(
+        '[channel lifecycle v78] connected notification sent',
+        JSON.stringify({
+          chatId,
+          id: channel.id,
+          maxChatId: channel.max_chat_id,
+        }),
+      );
+    }
+
+    return ok;
+  };
+
+lrV47HandleBotRemoved =
+  async function lrV78HandleBotRemoved(update) {
+    let robustRemoved = false;
+
+    try {
+      robustRemoved =
+        typeof __lrCh3IsBotRemoved === 'function' &&
+        __lrCh3IsBotRemoved(update);
+    } catch {}
+
+    const type = lrV47Type(update);
+
+    if (
+      !robustRemoved &&
+      !/bot_removed|bot_left|chat_deleted|bot_deleted|member_removed|chat_member_removed/i
+        .test(type)
+    ) {
+      return false;
+    }
+
+    /*
+     * Старые ключи подтверждения удаляются сразу.
+     * После повторного добавления того же канала
+     * пользователь снова получит подтверждение.
+     */
+    await query(
+      `
+        DELETE FROM lr_bot_state
+        WHERE key LIKE 'lr_v47_connected_notified:%'
+           OR key LIKE 'lr_v31_channel_connected_notified:%'
+           OR key LIKE 'lr_v35_channel_connected_notified:%'
+      `,
+    ).catch((error) => {
+      console.error(
+        '[channel lifecycle v78] clear notification state failed',
+        error?.message || error,
+      );
+    });
+
+    /*
+     * Используем уже существующую полную очистку:
+     * она удаляет канал и все таблицы, связанные через channel_id,
+     * а затем отправляет одно уведомление владельцу.
+     */
+    if (
+      typeof __lrCh3HandleBotRemoved === 'function'
+    ) {
+      try {
+        const handled =
+          await __lrCh3HandleBotRemoved(update);
+
+        if (handled) {
+          console.log(
+            '[channel lifecycle v78] full removal completed',
+            JSON.stringify({
+              type,
+              chatId: lrV47ChatId(update),
+            }),
+          );
+
+          return true;
+        }
+      } catch (error) {
+        console.error(
+          '[channel lifecycle v78] full removal failed',
+          error?.stack || error?.message || error,
+        );
+      }
+    }
+
+    /*
+     * Резервный путь для неизвестного формата события MAX.
+     * Даже здесь канал и подпись исчезают из рабочих меню.
+     */
+    const removedChatId = lrV47ChatId(update);
+
+    if (removedChatId) {
+      const found = lrV47Rows(
+        await query(
+          `
+            SELECT id
+            FROM channels
+            WHERE max_chat_id::text=$1
+          `,
+          [String(removedChatId)],
+        ).catch(() => []),
+      );
+
+      const ids = found
+        .map((row) => Number(row.id))
+        .filter(Number.isFinite);
+
+      if (ids.length) {
+        await query(
+          `
+            UPDATE channels
+            SET is_active=false,
+                updated_at=now()
+            WHERE id=ANY($1::int[])
+          `,
+          [ids],
+        ).catch(() => {});
+
+        await query(
+          `
+            UPDATE channel_signatures
+            SET is_active=false,
+                updated_at=now()
+            WHERE channel_id=ANY($1::int[])
+          `,
+          [ids],
+        ).catch(() => {});
+
+        await query(
+          `
+            DELETE FROM lr_user_channels
+            WHERE channel_id=ANY($1::int[])
+          `,
+          [ids],
+        ).catch(() => {});
+
+        await query(
+          `
+            UPDATE scheduled_posts
+            SET status='deleted',
+                updated_at=now()
+            WHERE channel_id=ANY($1::int[])
+              AND status::text='scheduled'
+          `,
+          [ids],
+        ).catch(() => {});
+      }
+    }
+
+    return lrV78OriginalBotRemoved(update);
+  };
+
+console.log(
+  '[channel lifecycle v78] installed: add confirmation, full removal, active lists',
+);
+/* LR_CHANNEL_LIFECYCLE_V78_END */
 
 await ensureDb();
 startAutopostWorker().catch(e => console.error('[autopost start]', e));
