@@ -1,0 +1,658 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-professional-charts-v1"
+JS="public/linkray-site/cabinet-stable.js"
+CSS="public/linkray-site/cabinet-stable.css"
+HTML="public/linkray-site/cabinet-stable.html"
+BACKUP="$(mktemp -d /tmp/linkray-professional-charts.XXXXXX)"
+DONE=0
+
+backup_file() {
+  local file="$1"
+  local key
+  key="$(printf '%s' "$file" | tr '/' '_')"
+  cp -f "$file" "$BACKUP/$key"
+}
+
+restore_all() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущие графики"
+
+  for file in "$JS" "$CSS" "$HTML"; do
+    key="$(printf '%s' "$file" | tr '/' '_')"
+    cp -f "$BACKUP/$key" "$file"
+  done
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_all
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю текущий кабинет"
+
+test -f "$JS"
+test -f "$CSS"
+test -f "$HTML"
+
+grep -q "function svgChart(points, field, cssClass)" "$JS"
+grep -q "function channelDetailHtml(channel)" "$JS"
+
+backup_file "$JS"
+backup_file "$CSS"
+backup_file "$HTML"
+
+echo "[2/8] Заменяю упрощённые линии профессиональными графиками"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+js_path = Path("public/linkray-site/cabinet-stable.js")
+css_path = Path("public/linkray-site/cabinet-stable.css")
+html_path = Path("public/linkray-site/cabinet-stable.html")
+
+js = js_path.read_text(encoding="utf-8")
+css = css_path.read_text(encoding="utf-8")
+html = html_path.read_text(encoding="utf-8")
+
+CSS_START = "/* LINKRAY_PROFESSIONAL_CHARTS_V1_START */"
+CSS_END = "/* LINKRAY_PROFESSIONAL_CHARTS_V1_END */"
+
+chart_function = r'''
+  /* LINKRAY_PROFESSIONAL_CHARTS_V1 */
+  function chartTimestamp(point, index) {
+    const raw = point?.capturedAt || point?.date;
+    const time = raw ? new Date(raw).getTime() : NaN;
+    return Number.isFinite(time) ? time : index;
+  }
+
+  function chartDateLabel(time, period) {
+    const date = new Date(time);
+    if (Number.isNaN(date.getTime())) return '';
+
+    return new Intl.DateTimeFormat('ru-RU', {
+      day: period === '24h' ? undefined : '2-digit',
+      month: period === '24h' ? undefined : '2-digit',
+      hour: period === '24h' ? '2-digit' : undefined,
+      minute: period === '24h' ? '2-digit' : undefined,
+    }).format(date);
+  }
+
+  function chartAxisNumber(value) {
+    const absolute = Math.abs(value);
+
+    if (absolute >= 1000000) {
+      return `${(value / 1000000).toFixed(1).replace('.0', '')} млн`;
+    }
+
+    if (absolute >= 10000) {
+      return `${(value / 1000).toFixed(1).replace('.0', '')} тыс.`;
+    }
+
+    return new Intl.NumberFormat('ru-RU', {
+      maximumFractionDigits: absolute < 10 ? 1 : 0,
+    }).format(value);
+  }
+
+  function chartNiceStep(range, targetTicks = 4) {
+    const safeRange = Math.max(Number(range) || 0, 1);
+    const rough = safeRange / Math.max(1, targetTicks - 1);
+    const power = 10 ** Math.floor(Math.log10(rough));
+    const fraction = rough / power;
+
+    const niceFraction =
+      fraction <= 1
+        ? 1
+        : fraction <= 2
+          ? 2
+          : fraction <= 5
+            ? 5
+            : 10;
+
+    return niceFraction * power;
+  }
+
+  function chartHash(value) {
+    let hash = 0;
+    const text = String(value);
+
+    for (let index = 0; index < text.length; index += 1) {
+      hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+    }
+
+    return Math.abs(hash);
+  }
+
+  function professionalChart(
+    sourcePoints,
+    field,
+    kind,
+    period,
+    channelId,
+  ) {
+    const prepared = (Array.isArray(sourcePoints) ? sourcePoints : [])
+      .map((point, index) => ({
+        point,
+        value: numberOrNull(point?.[field]),
+        time: chartTimestamp(point, index),
+        sourceIndex: index,
+      }))
+      .filter((item) => item.value !== null)
+      .sort((left, right) => {
+        if (left.time !== right.time) return left.time - right.time;
+        return left.sourceIndex - right.sourceIndex;
+      });
+
+    const deduplicated = [];
+
+    for (const item of prepared) {
+      const previous = deduplicated[deduplicated.length - 1];
+
+      if (previous && previous.time === item.time) {
+        deduplicated[deduplicated.length - 1] = item;
+      } else {
+        deduplicated.push(item);
+      }
+    }
+
+    if (deduplicated.length < 2) {
+      return `
+        <div class="lr-chart-empty">
+          <span class="lr-chart-empty-icon">↝</span>
+          <strong>Недостаточно данных</strong>
+          <small>
+            Для графика нужны минимум две разные точки наблюдения.
+          </small>
+        </div>
+      `;
+    }
+
+    const values = deduplicated.map((item) => item.value);
+    const rawMin = Math.min(...values);
+    const rawMax = Math.max(...values);
+    const rawRange = Math.max(rawMax - rawMin, 1);
+
+    const minimumVisualRange = Math.max(
+      kind === 'subscribers' ? Math.abs(rawMax) * 0.006 : 0,
+      rawRange * 1.5,
+      kind === 'subscribers' ? 10 : 5,
+    );
+
+    const centeredMin = (rawMin + rawMax - minimumVisualRange) / 2;
+    const centeredMax = (rawMin + rawMax + minimumVisualRange) / 2;
+    const step = chartNiceStep(centeredMax - centeredMin, 5);
+
+    let axisMin = Math.floor(centeredMin / step) * step;
+    let axisMax = Math.ceil(centeredMax / step) * step;
+
+    if (axisMax <= axisMin) {
+      axisMax = axisMin + step;
+    }
+
+    const width = 420;
+    const height = 232;
+    const plotLeft = 58;
+    const plotRight = 16;
+    const plotTop = 18;
+    const plotBottom = 42;
+    const plotWidth = width - plotLeft - plotRight;
+    const plotHeight = height - plotTop - plotBottom;
+
+    const firstTime = deduplicated[0].time;
+    const lastTime = deduplicated[deduplicated.length - 1].time;
+    const timeRange = Math.max(lastTime - firstTime, 1);
+    const valueRange = Math.max(axisMax - axisMin, 1);
+
+    const coordinates = deduplicated.map((item, index) => {
+      const timeRatio =
+        Number.isFinite(item.time) && lastTime !== firstTime
+          ? (item.time - firstTime) / timeRange
+          : index / Math.max(1, deduplicated.length - 1);
+
+      const x = plotLeft + timeRatio * plotWidth;
+      const y =
+        plotTop +
+        ((axisMax - item.value) / valueRange) * plotHeight;
+
+      return {
+        ...item,
+        x,
+        y,
+      };
+    });
+
+    const linePath = coordinates
+      .map(
+        (item, index) =>
+          `${index === 0 ? 'M' : 'L'} ${item.x.toFixed(2)} ${item.y.toFixed(2)}`,
+      )
+      .join(' ');
+
+    const areaPath = [
+      linePath,
+      `L ${coordinates[coordinates.length - 1].x.toFixed(2)} ${(plotTop + plotHeight).toFixed(2)}`,
+      `L ${coordinates[0].x.toFixed(2)} ${(plotTop + plotHeight).toFixed(2)}`,
+      'Z',
+    ].join(' ');
+
+    const gridCount = 4;
+    const grid = Array.from({ length: gridCount + 1 }, (_, index) => {
+      const ratio = index / gridCount;
+      const y = plotTop + ratio * plotHeight;
+      const value = axisMax - ratio * valueRange;
+
+      return `
+        <line class="lr-chart-grid-line"
+              x1="${plotLeft}"
+              y1="${y.toFixed(2)}"
+              x2="${width - plotRight}"
+              y2="${y.toFixed(2)}"/>
+        <text class="lr-chart-y-label"
+              x="${plotLeft - 9}"
+              y="${(y + 3).toFixed(2)}"
+              text-anchor="end">
+          ${escapeHtml(chartAxisNumber(value))}
+        </text>
+      `;
+    }).join('');
+
+    const labelIndexes = [
+      0,
+      Math.round((coordinates.length - 1) / 2),
+      coordinates.length - 1,
+    ].filter((value, index, array) => array.indexOf(value) === index);
+
+    const xLabels = labelIndexes.map((index, labelIndex) => {
+      const item = coordinates[index];
+      const anchor =
+        labelIndex === 0
+          ? 'start'
+          : labelIndex === labelIndexes.length - 1
+            ? 'end'
+            : 'middle';
+
+      return `
+        <text class="lr-chart-x-label"
+              x="${item.x.toFixed(2)}"
+              y="${height - 13}"
+              text-anchor="${anchor}">
+          ${escapeHtml(chartDateLabel(item.time, period))}
+        </text>
+      `;
+    }).join('');
+
+    const showAllPoints = coordinates.length <= 14;
+    const points = coordinates.map((item, index) => {
+      const last = index === coordinates.length - 1;
+
+      if (!showAllPoints && !last) return '';
+
+      return `
+        ${last ? `
+          <circle class="lr-chart-last-halo"
+                  cx="${item.x.toFixed(2)}"
+                  cy="${item.y.toFixed(2)}"
+                  r="9"/>
+        ` : ''}
+        <circle class="lr-chart-point ${last ? 'is-last' : ''}"
+                cx="${item.x.toFixed(2)}"
+                cy="${item.y.toFixed(2)}"
+                r="${last ? 4.5 : 3}">
+          <title>
+            ${escapeHtml(chartDateLabel(item.time, period))}: ${escapeHtml(formatNumber(item.value))}
+          </title>
+        </circle>
+      `;
+    }).join('');
+
+    const firstValue = coordinates[0].value;
+    const lastValue = coordinates[coordinates.length - 1].value;
+    const change = lastValue - firstValue;
+    const changeClass =
+      change > 0 ? 'positive' : change < 0 ? 'negative' : 'muted';
+
+    const uid = `lr-${kind}-${chartHash(
+      `${channelId}-${period}-${firstTime}-${lastTime}-${field}`,
+    )}`;
+
+    const strokeClass =
+      kind === 'subscribers'
+        ? 'lr-chart-line-subscribers'
+        : 'lr-chart-line-views';
+
+    const gradientStart =
+      kind === 'subscribers'
+        ? 'rgba(89,221,160,.30)'
+        : 'rgba(115,183,255,.28)';
+
+    const gradientEnd =
+      kind === 'subscribers'
+        ? 'rgba(89,221,160,0)'
+        : 'rgba(115,183,255,0)';
+
+    return `
+      <div class="lr-professional-chart">
+        <div class="lr-chart-summary">
+          <div>
+            <span>Текущее значение</span>
+            <strong>${escapeHtml(formatNumber(lastValue))}</strong>
+          </div>
+
+          <div>
+            <span>Изменение за период</span>
+            <strong class="${changeClass}">
+              ${escapeHtml(formatSigned(change))}
+            </strong>
+          </div>
+        </div>
+
+        <svg class="lr-chart-svg"
+             viewBox="0 0 ${width} ${height}"
+             role="img"
+             aria-label="График ${kind === 'subscribers' ? 'подписчиков' : 'просмотров'}">
+          <defs>
+            <linearGradient id="${uid}"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1">
+              <stop offset="0%" stop-color="${gradientStart}"/>
+              <stop offset="100%" stop-color="${gradientEnd}"/>
+            </linearGradient>
+          </defs>
+
+          ${grid}
+
+          <path class="lr-chart-area"
+                d="${areaPath}"
+                fill="url(#${uid})"/>
+
+          <path class="${strokeClass}"
+                d="${linePath}"/>
+
+          ${points}
+          ${xLabels}
+        </svg>
+      </div>
+    `;
+  }
+'''
+
+pattern = re.compile(
+    r"  function svgChart\(points, field, cssClass\) \{[\s\S]*?\n  \}\n\n  function channelPostRows",
+)
+
+match = pattern.search(js)
+if not match:
+    raise SystemExit("Не найдена старая функция svgChart")
+
+js = (
+    js[:match.start()]
+    + chart_function
+    + "\n\n  function channelPostRows"
+    + js[match.end():]
+)
+
+old = "${svgChart(points, 'subscribers', 'chart-line-subscribers')}"
+new = "${professionalChart(points, 'subscribers', 'subscribers', period, channel.id)}"
+if old not in js:
+    raise SystemExit("Не найден вызов графика подписчиков")
+js = js.replace(old, new, 1)
+
+old = "${svgChart(points, 'views24', 'chart-line-views')}"
+new = "${professionalChart(points, 'views24', 'views', period, channel.id)}"
+if old not in js:
+    raise SystemExit("Не найден вызов графика просмотров")
+js = js.replace(old, new, 1)
+
+css = re.sub(
+    rf"\n?{re.escape(CSS_START)}[\s\S]*?{re.escape(CSS_END)}\n?",
+    "\n",
+    css,
+)
+
+css_block = r'''
+/* LINKRAY_PROFESSIONAL_CHARTS_V1_START */
+.chart-card {
+  padding: 14px;
+  overflow: hidden;
+}
+
+.lr-professional-chart {
+  width: 100%;
+}
+
+.lr-chart-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.lr-chart-summary > div {
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,.065);
+  border-radius: 12px;
+  padding: 9px 10px;
+  background: rgba(255,255,255,.022);
+}
+
+.lr-chart-summary span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.lr-chart-summary strong {
+  display: block;
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lr-chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+  touch-action: manipulation;
+}
+
+.lr-chart-grid-line {
+  stroke: rgba(144, 170, 188, .12);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.lr-chart-y-label,
+.lr-chart-x-label {
+  fill: #7f96a8;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.lr-chart-area {
+  pointer-events: none;
+}
+
+.lr-chart-line-subscribers,
+.lr-chart-line-views {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,.22));
+}
+
+.lr-chart-line-subscribers {
+  stroke: #59dda0;
+}
+
+.lr-chart-line-views {
+  stroke: #73b7ff;
+}
+
+.lr-chart-point {
+  fill: #071b28;
+  stroke: #9fb2c0;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.lr-chart-point.is-last {
+  fill: #f4fbf8;
+  stroke: #59dda0;
+  stroke-width: 2.5;
+}
+
+.lr-chart-last-halo {
+  fill: rgba(89,221,160,.16);
+  stroke: none;
+  animation: lrChartPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes lrChartPulse {
+  0%, 100% {
+    opacity: .55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.lr-chart-empty {
+  min-height: 156px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.lr-chart-empty-icon {
+  color: rgba(141,163,181,.55);
+  font-size: 34px;
+  line-height: 1;
+}
+
+.lr-chart-empty strong {
+  color: #dbe7ed;
+  font-size: 13px;
+}
+
+.lr-chart-empty small {
+  max-width: 280px;
+  line-height: 1.45;
+}
+
+@media (max-width: 380px) {
+  .lr-chart-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .lr-chart-y-label,
+  .lr-chart-x-label {
+    font-size: 8px;
+  }
+}
+/* LINKRAY_PROFESSIONAL_CHARTS_V1_END */
+'''
+
+css = css.rstrip() + "\n\n" + css_block.strip() + "\n"
+
+version = "20260806-professional-charts-v1"
+
+html = re.sub(
+    r'cabinet-stable\.js(?:\?v=[^"\']*)?',
+    f'cabinet-stable.js?v={version}',
+    html,
+)
+html = re.sub(
+    r'cabinet-stable\.css(?:\?v=[^"\']*)?',
+    f'cabinet-stable.css?v={version}',
+    html,
+)
+
+js_path.write_text(js, encoding="utf-8")
+css_path.write_text(css, encoding="utf-8")
+html_path.write_text(html, encoding="utf-8")
+
+print("Профессиональные графики установлены")
+PY
+
+echo "[3/8] Проверяю JavaScript"
+
+node --check "$JS"
+
+grep -q "LINKRAY_PROFESSIONAL_CHARTS_V1" "$JS"
+grep -q "professionalChart" "$JS"
+grep -q "LINKRAY_PROFESSIONAL_CHARTS_V1_START" "$CSS"
+
+echo "[4/8] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[5/8] Проверяю страницу и ресурсы"
+
+CABINET_HTML="$(curl -fsS --max-time 20 https://linkray.ru/cabinet)"
+printf '%s' "$CABINET_HTML" |
+  grep -q "cabinet-stable.js?v=$VERSION"
+
+echo "Кабинет: 200"
+echo "JavaScript: $(curl -fsS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.js?v=$VERSION")"
+echo "CSS: $(curl -fsS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.css?v=$VERSION")"
+
+echo "[6/8] Проверяю запуск контейнера"
+
+if docker logs --since 45s linkray-app 2>&1 |
+   grep -E "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[7/8] Сохраняю проверенную правку"
+
+git add -- "$JS" "$CSS" "$HTML"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Improve analytics charts in LinkRay web cabinet"
+  git push origin HEAD:main
+else
+  echo "Правка уже сохранена"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo "[8/8] Готово"
+echo
+echo "============================================================"
+echo "ГРАФИКИ ЛИЧНОГО КАБИНЕТА ПЕРЕРАБОТАНЫ"
+echo
+echo "• спокойный и честный масштаб без ложного резкого обвала"
+echo "• шкала значений и горизонтальная сетка"
+echo "• даты и время на нижней оси"
+echo "• точки наблюдений и выделение последнего значения"
+echo "• текущее значение и изменение за выбранный период"
+echo "• сортировка по времени и удаление дублей"
+echo "• аккуратная заливка под линией"
+echo "============================================================"
