@@ -1,0 +1,614 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-native-add-v83.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/7] Проверяю реально работающую ветку v20.1"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q \
+  "\[v20.1 native\] wait_add_channel -> channel add" \
+  "$FILE"
+
+grep -q \
+  "maybeRegisterChannel" \
+  "$FILE"
+
+echo "[2/7] Подключаю подтверждение к ветке v20.1 native"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+START = "/* LR_NATIVE_CHANNEL_CONFIRM_V83_START */"
+END = "/* LR_NATIVE_CHANNEL_CONFIRM_V83_END */"
+
+source = re.sub(
+    rf"\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*",
+    "\n",
+    source,
+)
+
+source = source.replace(
+    "await lrV83RegisterAndNotifyNative(update, chatId, key)",
+    "await maybeRegisterChannel(update)",
+)
+
+helper = r'''
+/* LR_NATIVE_CHANNEL_CONFIRM_V83_START */
+const lrV83ConfirmationDedupe = new Map();
+
+function lrV83Rows(result) {
+  return Array.isArray(result)
+    ? result
+    : Array.isArray(result?.rows)
+      ? result.rows
+      : [];
+}
+
+function lrV83Esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+async function lrV83LatestChangedChannel(
+  baselineId,
+  startedAt,
+) {
+  try {
+    const result = await query(
+      `
+        SELECT
+          id,
+          max_chat_id,
+          title,
+          link,
+          is_active,
+          updated_at
+        FROM channels
+        WHERE COALESCE(is_active, true)=true
+          AND (
+            id>$1
+            OR updated_at >=
+              $2::timestamptz - INTERVAL '5 seconds'
+          )
+        ORDER BY
+          updated_at DESC NULLS LAST,
+          id DESC
+        LIMIT 1
+      `,
+      [
+        Number(baselineId || 0),
+        startedAt,
+      ],
+    );
+
+    return lrV83Rows(result)[0] || null;
+  } catch (error) {
+    console.error(
+      '[native channel confirm v83] lookup failed',
+      error?.stack || error?.message || error,
+    );
+
+    return null;
+  }
+}
+
+async function lrV83SendConfirmation(
+  chatId,
+  channel,
+) {
+  const targetChatId = String(chatId || '').trim();
+
+  if (!targetChatId || !channel) {
+    return false;
+  }
+
+  const dedupeKey =
+    `${targetChatId}:${channel.id}`;
+
+  const previous =
+    Number(lrV83ConfirmationDedupe.get(dedupeKey) || 0);
+
+  if (
+    previous &&
+    Date.now() - previous < 30_000
+  ) {
+    console.log(
+      '[native channel confirm v83] duplicate skipped',
+      JSON.stringify({
+        chatId: targetChatId,
+        channelId: channel.id,
+      }),
+    );
+
+    return true;
+  }
+
+  const text =
+    `✅ <b>Канал подключён к LinkRay</b>
+
+${lrV83Esc(channel.title || 'Канал')}
+
+Канал сохранён и доступен в Studio, автоподписях, аналитике и отчётах.`;
+
+  let rows = [];
+
+  try {
+    if (typeof lrV47Btn === 'function') {
+      rows = [[
+        lrV47Btn(
+          '⬅️ Главное меню',
+          'main:menu',
+        ),
+      ]];
+    } else if (
+      typeof callbackButton === 'function'
+    ) {
+      rows = [[
+        callbackButton(
+          '⬅️ Главное меню',
+          'main:menu',
+        ),
+      ]];
+    }
+  } catch {}
+
+  let delivered = false;
+
+  try {
+    if (typeof lrV47Msg === 'function') {
+      const result = await lrV47Msg(
+        targetChatId,
+        text,
+        rows,
+        'html',
+      );
+
+      delivered = result !== false;
+
+      console.log(
+        '[native channel confirm v83] lrV47Msg result',
+        JSON.stringify({
+          chatId: targetChatId,
+          channelId: channel.id,
+          delivered,
+        }),
+      );
+    }
+  } catch (error) {
+    console.error(
+      '[native channel confirm v83] lrV47Msg failed',
+      error?.stack || error?.message || error,
+    );
+  }
+
+  if (
+    !delivered &&
+    typeof lrV37ApiPostMessage === 'function'
+  ) {
+    try {
+      const result = await lrV37ApiPostMessage(
+        { chat_id: targetChatId },
+        text,
+        rows,
+      );
+
+      delivered = Boolean(result?.ok);
+
+      console.log(
+        '[native channel confirm v83] direct API result',
+        JSON.stringify({
+          chatId: targetChatId,
+          channelId: channel.id,
+          status: result?.status || 0,
+          delivered,
+          preview: String(
+            result?.raw || '',
+          ).slice(0, 180),
+        }),
+      );
+    } catch (error) {
+      console.error(
+        '[native channel confirm v83] direct API failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (!delivered) {
+    try {
+      if (typeof msg === 'function') {
+        const result = await msg(
+          targetChatId,
+          text,
+          rows,
+          'html',
+        );
+
+        delivered = result !== false;
+
+        console.log(
+          '[native channel confirm v83] msg fallback result',
+          JSON.stringify({
+            chatId: targetChatId,
+            channelId: channel.id,
+            delivered,
+          }),
+        );
+      }
+    } catch (error) {
+      console.error(
+        '[native channel confirm v83] msg fallback failed',
+        error?.stack || error?.message || error,
+      );
+    }
+  }
+
+  if (delivered) {
+    lrV83ConfirmationDedupe.set(
+      dedupeKey,
+      Date.now(),
+    );
+
+    setTimeout(() => {
+      lrV83ConfirmationDedupe.delete(dedupeKey);
+    }, 60_000).unref?.();
+  }
+
+  return delivered;
+}
+
+async function lrV83ClearAddState(
+  chatId,
+  key,
+) {
+  const values = [
+    String(chatId || '').trim(),
+    String(key || '').trim(),
+  ].filter(Boolean);
+
+  const keys = new Set([
+    'lr_v47_add_wait_global',
+    'lr_v34_add_wait_global',
+    'lr_v31_add_wait_global',
+    'lr_v30_add_wait_global',
+    'lr_v29_add_wait_global',
+  ]);
+
+  for (const value of values) {
+    for (const prefix of [
+      'lr_v47_add_wait',
+      'lr_v34_add_wait',
+      'lr_v31_add_wait',
+      'lr_v30_add_wait',
+      'lr_v29_add_wait',
+    ]) {
+      keys.add(`${prefix}:${value}`);
+      keys.add(`${prefix}:user:${value}`);
+    }
+  }
+
+  try {
+    await query(
+      `
+        DELETE FROM lr_bot_state
+        WHERE key=ANY($1::text[])
+      `,
+      [[...keys]],
+    );
+  } catch (error) {
+    console.error(
+      '[native channel confirm v83] state cleanup failed',
+      error?.message || error,
+    );
+  }
+
+  try {
+    if (
+      typeof lrV47ClearSession === 'function'
+    ) {
+      for (const value of values) {
+        await lrV47ClearSession(value);
+      }
+    }
+  } catch (error) {
+    console.error(
+      '[native channel confirm v83] session cleanup failed',
+      error?.message || error,
+    );
+  }
+}
+
+async function lrV83RegisterAndNotifyNative(
+  update,
+  chatId,
+  key,
+) {
+  const startedAt = new Date().toISOString();
+
+  let baselineId = 0;
+
+  try {
+    const rows = lrV83Rows(
+      await query(
+        `
+          SELECT COALESCE(MAX(id), 0) AS max_id
+          FROM channels
+        `,
+      ),
+    );
+
+    baselineId = Number(
+      rows[0]?.max_id || 0,
+    );
+  } catch {}
+
+  console.log(
+    '[native channel confirm v83] registration started',
+    JSON.stringify({
+      chatId: String(chatId || ''),
+      key: String(key || ''),
+      baselineId,
+    }),
+  );
+
+  const result =
+    await maybeRegisterChannel(update);
+
+  const channel =
+    await lrV83LatestChangedChannel(
+      baselineId,
+      startedAt,
+    );
+
+  if (!channel) {
+    console.error(
+      '[native channel confirm v83] registration finished without changed channel',
+      JSON.stringify({
+        chatId: String(chatId || ''),
+        key: String(key || ''),
+        result: Boolean(result),
+        baselineId,
+      }),
+    );
+
+    return result;
+  }
+
+  const delivered =
+    await lrV83SendConfirmation(
+      chatId,
+      channel,
+    );
+
+  if (delivered) {
+    await lrV83ClearAddState(
+      chatId,
+      key,
+    );
+  }
+
+  console.log(
+    '[native channel confirm v83] registration completed',
+    JSON.stringify({
+      chatId: String(chatId || ''),
+      key: String(key || ''),
+      channelId: channel.id,
+      maxChatId: channel.max_chat_id,
+      title: channel.title,
+      delivered,
+    }),
+  );
+
+  return result;
+}
+
+console.log(
+  '[native channel confirm v83] installed on v20.1 branch',
+);
+/* LR_NATIVE_CHANNEL_CONFIRM_V83_END */
+'''
+
+marker = (
+    "[v20.1 native] "
+    "wait_add_channel -> channel add"
+)
+
+marker_index = source.find(marker)
+
+if marker_index < 0:
+    raise SystemExit(
+        "Не найден лог рабочей ветки v20.1 native"
+    )
+
+window_start = marker_index
+window_end = min(
+    len(source),
+    marker_index + 8000,
+)
+
+window = source[window_start:window_end]
+
+call_pattern = re.compile(
+    r"await\s+maybeRegisterChannel\s*"
+    r"\(\s*update\s*\)",
+)
+
+matches = list(
+    call_pattern.finditer(window)
+)
+
+if len(matches) != 1:
+    raise SystemExit(
+        "Рядом с веткой v20.1 найдено вызовов "
+        f"maybeRegisterChannel(update): {len(matches)}, "
+        "ожидался ровно один"
+    )
+
+match = matches[0]
+
+absolute_start = (
+    window_start + match.start()
+)
+absolute_end = (
+    window_start + match.end()
+)
+
+source = (
+    source[:absolute_start]
+    + "await lrV83RegisterAndNotifyNative(update, chatId, key)"
+    + source[absolute_end:]
+)
+
+insert_at = source.rfind(
+    "await ensureDb();"
+)
+
+if insert_at < 0:
+    raise SystemExit(
+        "Не найдено безопасное место перед запуском приложения"
+    )
+
+source = (
+    source[:insert_at]
+    + helper
+    + "\n"
+    + source[insert_at:]
+)
+
+path.write_text(
+    source,
+    encoding="utf-8",
+)
+
+checks = [
+    "LR_NATIVE_CHANNEL_CONFIRM_V83_START",
+    "lrV83RegisterAndNotifyNative(update, chatId, key)",
+    "[native channel confirm v83] registration started",
+    "[native channel confirm v83] registration completed",
+]
+
+for check in checks:
+    if check not in source:
+        raise SystemExit(
+            f"Не установлен элемент: {check}"
+        )
+
+if source.count(
+    "await lrV83RegisterAndNotifyNative(update, chatId, key)"
+) != 1:
+    raise SystemExit(
+        "Рабочая ветка v20.1 изменена некорректно"
+    )
+
+print(
+    "Подтверждение подключено к фактической ветке v20.1 native"
+)
+PY
+
+echo "[3/7] Проверяю синтаксис"
+
+node --check "$FILE"
+
+grep -q \
+  "LR_NATIVE_CHANNEL_CONFIRM_V83_START" \
+  "$FILE"
+
+grep -q \
+  "lrV83RegisterAndNotifyNative(update, chatId, key)" \
+  "$FILE"
+
+echo "[4/7] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[5/7] Проверяю запуск и установленный код"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_NATIVE_CHANNEL_CONFIRM_V83_START' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'lrV83RegisterAndNotifyNative(update, chatId, key)' /app/src/index.js"
+
+if docker logs --since 70s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После сборки обнаружена ошибка"
+  exit 1
+fi
+
+docker logs --since 70s linkray-app 2>&1 |
+  grep -F \
+    "[native channel confirm v83] installed" |
+  tail -n 1
+
+echo "[6/7] Сохраняю исправление"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Notify user from native channel registration branch"
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено"
+fi
+
+echo "[7/7] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ПОДТВЕРЖДЕНИЕ ПОДКЛЮЧЕНО К РАБОЧЕЙ ВЕТКЕ V20.1"
+echo
+echo "• исправлена ветка, которая реально сохраняет канал"
+echo "• уведомление отправляется в личный chatId"
+echo "• используется тот же chatId, где открыто меню бота"
+echo "• после доставки режим добавления очищается"
+echo "• V82, Studio и автопостинг не переписывались"
+echo "============================================================"
