@@ -1,0 +1,484 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/linkrayAntiFraud24x7.js"
+BACKUP="$(mktemp -d /tmp/linkray-af-history-clear-v2.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежнюю версию AntiFraud"
+  cp -f "$BACKUP/linkrayAntiFraud24x7.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю фактический модуль истории"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/linkrayAntiFraud24x7.js"
+
+grep -q "async function showWaves" "$FILE"
+grep -q "async function waveById" "$FILE"
+grep -q "async function callbackChannelForAccess" "$FILE"
+grep -q "async function handleCallback" "$FILE"
+grep -q "lr_antifraud_waves" "$FILE"
+
+echo "[2/8] Добавляю очистку в существующий showWaves"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayAntiFraud24x7.js")
+source = path.read_text(encoding="utf-8")
+
+START = "/* LR_ANTIFRAUD_HISTORY_CLEAR_V2_START */"
+END = "/* LR_ANTIFRAUD_HISTORY_CLEAR_V2_END */"
+
+# Повторная установка безопасна.
+source = re.sub(
+    rf"\s*{re.escape(START)}[\s\S]*?{re.escape(END)}\s*",
+    "\n",
+    source,
+)
+
+source = source.replace(
+    "else if (action === 'waves_clear_prompt') await promptClearWaveHistory(update, num(parts[2])); ",
+    "",
+)
+source = source.replace(
+    "else if (action === 'waves_clear_confirm') await confirmClearWaveHistory(update, num(parts[2])); ",
+    "",
+)
+
+# Меняем только функцию showWaves.
+show_start = source.find("async function showWaves")
+show_end = source.find("async function waveById", show_start)
+
+if show_start < 0 or show_end < 0:
+    raise SystemExit("Не найдены границы showWaves")
+
+show = source[show_start:show_end]
+
+show = re.sub(
+    r"\s*if\s*\(\s*list\.length\s*\)\s*\{?\s*"
+    r"buttons\.push\(\s*\[\s*callbackButton\(\s*"
+    r"['\"]🗑 Очистить историю['\"]\s*,\s*"
+    r"`fraud:waves_clear_prompt:\$\{channelId\}`\s*"
+    r"\)\s*\]\s*\)\s*;?\s*\}?",
+    "\n",
+    show,
+)
+
+back_pattern = re.compile(
+    r"(?P<indent>^[ \t]*)buttons\.push\(\s*\[\s*"
+    r"callbackButton\(\s*['\"]⬅️\s*К\s+каналу['\"]\s*,\s*"
+    r"`fraud:channel:\$\{channelId\}`\s*\)\s*\]\s*\);",
+    re.M,
+)
+
+matches = list(back_pattern.finditer(show))
+
+if len(matches) != 1:
+    raise SystemExit(
+        f"В showWaves кнопка возврата найдена {len(matches)} раз"
+    )
+
+match = matches[0]
+indent = match.group("indent")
+
+clear_button = (
+    f"{indent}if (list.length) {{\n"
+    f"{indent}  buttons.push([\n"
+    f"{indent}    callbackButton(\n"
+    f"{indent}      '🗑 Очистить историю',\n"
+    f"{indent}      `fraud:waves_clear_prompt:${{channelId}}`,\n"
+    f"{indent}    ),\n"
+    f"{indent}  ]);\n"
+    f"{indent}}}\n"
+)
+
+show = show[:match.start()] + clear_button + match.group(0) + show[match.end():]
+source = source[:show_start] + show + source[show_end:]
+
+helper = r'''
+/* LR_ANTIFRAUD_HISTORY_CLEAR_V2_START */
+async function clearWaveHistoryFromDatabase(channelId) {
+  const safeChannelId = num(channelId);
+
+  if (!safeChannelId) {
+    throw new Error('Не указан канал для очистки истории.');
+  }
+
+  const waveIds = rows(await query(`
+    SELECT id::text AS id
+    FROM public.lr_antifraud_waves
+    WHERE channel_id=$1
+    ORDER BY id
+  `, [safeChannelId]))
+    .map((item) => idText(item?.id))
+    .filter(Boolean);
+
+  if (!waveIds.length) {
+    return { waves: 0, related: 0 };
+  }
+
+  const relatedColumns = rows(await query(`
+    SELECT DISTINCT
+      c.table_name,
+      c.column_name
+    FROM information_schema.columns c
+    JOIN information_schema.tables t
+      ON t.table_schema=c.table_schema
+     AND t.table_name=c.table_name
+    WHERE c.table_schema='public'
+      AND t.table_type='BASE TABLE'
+      AND c.table_name LIKE 'lr_antifraud_%'
+      AND c.table_name<>'lr_antifraud_waves'
+      AND c.column_name IN ('wave_id','last_wave_id')
+    ORDER BY
+      CASE c.column_name WHEN 'wave_id' THEN 0 ELSE 1 END,
+      c.table_name
+  `));
+
+  let related = 0;
+
+  for (const item of relatedColumns) {
+    const tableName = String(item?.table_name || '');
+    const columnName = String(item?.column_name || '');
+
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName) ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(columnName)
+    ) {
+      throw new Error(
+        `Небезопасный SQL-идентификатор: ${tableName}.${columnName}`,
+      );
+    }
+
+    const deleted = rows(await query(`
+      DELETE FROM public."${tableName}"
+      WHERE CAST("${columnName}" AS text)=ANY($1::text[])
+      RETURNING 1 AS deleted
+    `, [waveIds]));
+
+    related += deleted.length;
+  }
+
+  const deletedWaves = rows(await query(`
+    DELETE FROM public.lr_antifraud_waves
+    WHERE channel_id=$1
+    RETURNING id
+  `, [safeChannelId]));
+
+  return {
+    waves: deletedWaves.length,
+    related,
+  };
+}
+
+async function promptClearWaveHistory(update, channelId) {
+  const safeChannelId = num(channelId);
+  const channel = await configByChannelId(safeChannelId);
+
+  if (!channel) return showUserMenu(update);
+
+  const countRow = rows(await query(`
+    SELECT count(*)::int AS count
+    FROM public.lr_antifraud_waves
+    WHERE channel_id=$1
+  `, [safeChannelId]))[0] || {};
+
+  const count = num(countRow.count);
+
+  if (!count) {
+    return render(
+      update,
+      `━━━━━━━━━━━━━━\n` +
+      `📋 <b>История наплывов уже пуста</b>\n\n` +
+      `Канал: ${esc(
+        channel.current_title ||
+        channel.title ||
+        channel.max_chat_id
+      )}\n\n` +
+      `В базе нет сохранённых периодов.\n` +
+      `━━━━━━━━━━━━━━`,
+      [[
+        callbackButton(
+          '⬅️ К каналу',
+          `fraud:channel:${safeChannelId}`,
+        ),
+      ]],
+    );
+  }
+
+  return render(
+    update,
+    `━━━━━━━━━━━━━━\n` +
+    `⚠️ <b>Очистить историю наплывов?</b>\n\n` +
+    `Канал: ${esc(
+      channel.current_title ||
+      channel.title ||
+      channel.max_chat_id
+    )}\n` +
+    `Сохранённых периодов: ${count}\n\n` +
+    `Будут удалены сами наплывы и связанные ` +
+    `с ними события, проверки, действия и уведомления.\n\n` +
+    `Настройки защиты и белый список останутся.\n` +
+    `Восстановить историю после удаления нельзя.\n` +
+    `━━━━━━━━━━━━━━`,
+    [
+      [
+        callbackButton(
+          '🗑 Да, очистить из базы',
+          `fraud:waves_clear_confirm:${safeChannelId}`,
+        ),
+      ],
+      [
+        callbackButton(
+          '⬅️ Отмена',
+          `fraud:waves:${safeChannelId}:0`,
+        ),
+      ],
+    ],
+  );
+}
+
+async function confirmClearWaveHistory(update, channelId) {
+  const safeChannelId = num(channelId);
+  const channel = await configByChannelId(safeChannelId);
+
+  if (!channel) return showUserMenu(update);
+
+  const result = await clearWaveHistoryFromDatabase(safeChannelId);
+
+  log(
+    'wave history cleared:',
+    JSON.stringify({
+      channelId: safeChannelId,
+      waves: result.waves,
+      related: result.related,
+      actor: actorId(update) || '',
+    }),
+  );
+
+  return render(
+    update,
+    `━━━━━━━━━━━━━━\n` +
+    `✅ <b>История наплывов очищена</b>\n\n` +
+    `Канал: ${esc(
+      channel.current_title ||
+      channel.title ||
+      channel.max_chat_id
+    )}\n\n` +
+    `Удалено периодов: ${result.waves}\n` +
+    `Удалено связанных записей: ${result.related}\n\n` +
+    `Защита AntiFraud и её настройки не изменены.\n` +
+    `━━━━━━━━━━━━━━`,
+    [
+      [
+        callbackButton(
+          '📋 Открыть пустую историю',
+          `fraud:waves:${safeChannelId}:0`,
+        ),
+      ],
+      [
+        callbackButton(
+          '⬅️ К каналу',
+          `fraud:channel:${safeChannelId}`,
+        ),
+      ],
+    ],
+  );
+}
+/* LR_ANTIFRAUD_HISTORY_CLEAR_V2_END */
+'''
+
+anchor = "async function waveById(waveId)"
+if source.count(anchor) != 1:
+    raise SystemExit("Функция waveById найдена некорректно")
+source = source.replace(anchor, helper + "\n" + anchor, 1)
+
+# Расширяем существующую проверку доступа.
+access_start = source.find("async function callbackChannelForAccess")
+access_end = source.find("async function showUserMenu", access_start)
+if access_start < 0 or access_end < 0:
+    raise SystemExit("Не найдена callbackChannelForAccess")
+
+access = source[access_start:access_end]
+access_pattern = re.compile(
+    r"if\s*\(\s*\[(?P<items>[^\]]*?'channel'[^\]]*?'toggle'[^\]]*?'waves'[^\]]*?)\]"
+    r"\.includes\(action\)\s*\)\s*\{\s*return\s+num\(parts\[2\]\);\s*\}",
+    re.S,
+)
+access_match = access_pattern.search(access)
+if not access_match:
+    raise SystemExit("Не найден список действий канала")
+
+items = access_match.group("items")
+for action in ("waves_clear_prompt", "waves_clear_confirm"):
+    if f"'{action}'" not in items:
+        items = items.rstrip() + f", '{action}' "
+
+new_access_block = access_match.group(0).replace(
+    access_match.group("items"),
+    items,
+    1,
+)
+access = access[:access_match.start()] + new_access_block + access[access_match.end():]
+source = source[:access_start] + access + source[access_end:]
+
+# Подключаем два действия к существующему handleCallback.
+callback_start = source.find("async function handleCallback")
+callback_end = source.find("function handleEvent", callback_start)
+if callback_start < 0 or callback_end < 0:
+    raise SystemExit("Не найдена handleCallback")
+
+callback = source[callback_start:callback_end]
+waves_pattern = re.compile(
+    r"else\s+if\s*\(action\s*===\s*'waves'\)\s*"
+    r"await\s+showWaves\(update,\s*num\(parts\[2\]\),\s*num\(parts\[3\]\)\);"
+)
+waves_match = waves_pattern.search(callback)
+if not waves_match:
+    raise SystemExit("Не найдена ветка action === 'waves'")
+
+branches = (
+    "else if (action === 'waves_clear_prompt') "
+    "await promptClearWaveHistory(update, num(parts[2])); "
+    "else if (action === 'waves_clear_confirm') "
+    "await confirmClearWaveHistory(update, num(parts[2])); "
+    + waves_match.group(0)
+)
+callback = callback[:waves_match.start()] + branches + callback[waves_match.end():]
+source = source[:callback_start] + callback + source[callback_end:]
+
+path.write_text(source, encoding="utf-8")
+
+checks = [
+    START,
+    "🗑 Очистить историю",
+    "clearWaveHistoryFromDatabase",
+    "waves_clear_prompt",
+    "waves_clear_confirm",
+    "Да, очистить из базы",
+]
+for check in checks:
+    if check not in source:
+        raise SystemExit(f"Не установлен элемент: {check}")
+
+if source.count(START) != 1:
+    raise SystemExit("Блок очистки установлен некорректно")
+if source.count("action === 'waves_clear_prompt'") != 1:
+    raise SystemExit("Callback prompt установлен некорректно")
+if source.count("action === 'waves_clear_confirm'") != 1:
+    raise SystemExit("Callback confirm установлен некорректно")
+
+print("Кнопка добавлена в showWaves")
+print("Подтверждение добавлено")
+print("Физическое удаление из PostgreSQL добавлено")
+print("Проверка доступа сохранена")
+PY
+
+echo "[3/8] Проверяю JavaScript"
+
+node --check "$FILE"
+
+grep -q "LR_ANTIFRAUD_HISTORY_CLEAR_V2_START" "$FILE"
+grep -q "fraud:waves_clear_confirm:" "$FILE"
+
+echo "[4/8] Проверяю, что установщик ничего не удалил"
+
+BEFORE_COUNT="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.lr_antifraud_waves;"
+  '
+)"
+
+echo "Сохранённых периодов до перезапуска: $BEFORE_COUNT"
+
+echo "[5/8] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[6/8] Проверяю запуск и код контейнера"
+
+if ! docker compose ps --status running --services | grep -qx "app"; then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_ANTIFRAUD_HISTORY_CLEAR_V2_START' /app/src/linkrayAntiFraud24x7.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q '🗑 Очистить историю' /app/src/linkrayAntiFraud24x7.js"
+
+if docker logs --since 80s linkray-app 2>&1 | \
+   grep -E "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После запуска обнаружена ошибка"
+  exit 1
+fi
+
+AFTER_COUNT="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.lr_antifraud_waves;"
+  '
+)"
+
+if [[ "$BEFORE_COUNT" != "$AFTER_COUNT" ]]; then
+  echo "Количество записей изменилось во время установки"
+  exit 1
+fi
+
+echo "История не изменена установщиком: $AFTER_COUNT записей"
+
+echo "[7/8] Сохраняю исправление в GitHub"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Add AntiFraud wave history database cleanup"
+  git push origin HEAD:main
+else
+  echo "Очистка истории уже установлена"
+fi
+
+echo "[8/8] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ОЧИСТКА ИСТОРИИ НАПЛЫВОВ УСТАНОВЛЕНА"
+echo
+echo "• кнопка добавлена прямо в showWaves"
+echo "• перед удалением есть подтверждение"
+echo "• удаляются наплывы выбранного канала"
+echo "• связанные исторические записи также удаляются"
+echo "• настройки защиты и whitelist сохраняются"
+echo "• установщик сам ничего из базы не удаляет"
+echo "• Studio и автопостинг не изменялись"
+echo "============================================================"
