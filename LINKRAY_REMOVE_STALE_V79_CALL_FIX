@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-remove-v79-call.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/6] Проверяю точную ошибку V79"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q "lrV79HandleAddChannelEarly" "$FILE"
+grep -q "LR_CHANNEL_ADD_STATE_V82_START" "$FILE"
+
+echo "[2/6] Удаляю оставшийся вызов удалённого V79"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+patterns = [
+    re.compile(
+        r"""
+        \s*
+        if\s*\(
+          \s*await\s+lrV79HandleAddChannelEarly\s*\(
+            \s*req\.body\s*\|\|\s*\{\}\s*,?\s*
+          \)
+        \s*\)
+        \s*\{
+          \s*return\s+res\.json\s*\(
+            \s*\{
+              [\s\S]*?
+              handled\s*:\s*['"]lr_v79_add_channel['"]
+              [\s\S]*?
+            \}
+          \s*\)\s*;?
+        \s*\}
+        """,
+        flags=re.X,
+    ),
+    re.compile(
+        r"""
+        \s*
+        if\s*\(
+          \s*await\s+lrV79HandleAddChannelEarly\s*\(
+            [\s\S]*?
+          \)
+        \s*\)
+        \s*\{
+          [\s\S]*?
+          ['"]lr_v79_add_channel['"]
+          [\s\S]*?
+        \}
+        """,
+        flags=re.X,
+    ),
+]
+
+removed = 0
+
+for pattern in patterns:
+    source, count = pattern.subn(
+        "\n",
+        source,
+        count=1,
+    )
+    removed += count
+
+    if count:
+        break
+
+if removed != 1:
+    raise SystemExit(
+        f"Не удалось удалить вызов V79: удалено блоков {removed}"
+    )
+
+if "lrV79HandleAddChannelEarly" in source:
+    raise SystemExit(
+        "После исправления в коде осталась ссылка на V79"
+    )
+
+if "LR_CHANNEL_ADD_STATE_V82_START" not in source:
+    raise SystemExit(
+        "Действующий обработчик V82 не найден"
+    )
+
+path.write_text(source, encoding="utf-8")
+
+print("Сломанный вызов V79 удалён")
+print("Обработчик V82 сохранён")
+PY
+
+echo "[3/6] Проверяю синтаксис"
+
+node --check "$FILE"
+
+if grep -q "lrV79HandleAddChannelEarly" "$FILE"; then
+  echo "Ссылка на V79 всё ещё присутствует"
+  exit 1
+fi
+
+grep -q "LR_CHANNEL_ADD_STATE_V82_START" "$FILE"
+grep -q "lrV82ResolveAddWait" "$FILE"
+grep -q "lrV82NotifyConnected" "$FILE"
+
+echo "[4/6] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[5/6] Проверяю запуск"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "! grep -q 'lrV79HandleAddChannelEarly' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_CHANNEL_ADD_STATE_V82_START' /app/src/index.js"
+
+if docker logs --since 70s linkray-app 2>&1 |
+   grep -E \
+     "ReferenceError: lrV79HandleAddChannelEarly|SyntaxError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После сборки обнаружена ошибка"
+  exit 1
+fi
+
+echo "[6/6] Сохраняю исправление"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Remove stale V79 channel middleware call"
+  git push origin HEAD:main
+else
+  echo "Сломанный вызов уже удалён"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ОСТАВШИЙСЯ ВЫЗОВ V79 УДАЛЁН"
+echo
+echo "• ReferenceError устранён"
+echo "• webhook больше не падает перед V82"
+echo "• действующий обработчик V82 сохранён"
+echo "• база данных и автопостинг не изменялись"
+echo "============================================================"
