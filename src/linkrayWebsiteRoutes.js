@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { query } from './db.js';
 import { sendMaxMessage } from './maxClient.js';
 
+// LINKRAY_CABINET_SUITE_V5_IMPORT
+import { query as lrCabinetQuery } from './db.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const siteRoot = path.resolve(__dirname, '../public/linkray-site');
@@ -321,6 +323,1270 @@ function safeChannel(row) {
   };
 }
 
+
+// LINKRAY_CABINET_SUITE_V5_MODULE_START
+const LR_CABINET_BOT_URL = 'https://max.ru/se13353901_bot';
+
+function lrC5Rows(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.rows)) return value.rows;
+  return [];
+}
+
+function lrC5Pick(object, names, fallback = null) {
+  if (!object || typeof object !== 'object') return fallback;
+
+  for (const name of names) {
+    const value = object[name];
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+
+  return fallback;
+}
+
+function lrC5Number(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function lrC5Bool(value, fallback = false) {
+  if (value === true || value === 1 || value === '1') return true;
+  if (value === false || value === 0 || value === '0') return false;
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+
+  if (['true', 'yes', 'on', 'enabled', 'active', 'safe'].includes(normalized)) {
+    return true;
+  }
+
+  if (['false', 'no', 'off', 'disabled', 'inactive'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function lrC5Text(value, fallback = '') {
+  const text = String(value ?? '').trim();
+  return text || fallback;
+}
+
+function lrC5Ident(value) {
+  const name = String(value ?? '').trim();
+
+  if (!/^[a-z_][a-z0-9_]*$/i.test(name)) {
+    throw new Error(`Недопустимый SQL-идентификатор: ${name}`);
+  }
+
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+async function lrC5SafeQuery(sql, params = [], label = 'query') {
+  try {
+    return lrC5Rows(await lrCabinetQuery(sql, params));
+  } catch (error) {
+    console.error(
+      `[LinkRay Cabinet ${label}]`,
+      error?.message || error,
+    );
+    return [];
+  }
+}
+
+async function lrC5TableExists(table) {
+  const rows = await lrC5SafeQuery(
+    `SELECT to_regclass($1) AS relation`,
+    [`public.${table}`],
+    `table:${table}`,
+  );
+
+  return Boolean(rows[0]?.relation);
+}
+
+async function lrC5Columns(table) {
+  if (!(await lrC5TableExists(table))) return new Set();
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema='public'
+        AND table_name=$1
+    `,
+    [table],
+    `columns:${table}`,
+  );
+
+  return new Set(rows.map((row) => String(row.column_name)));
+}
+
+function lrC5Column(columns, candidates) {
+  return candidates.find((name) => columns.has(name)) || null;
+}
+
+function lrC5ParseCookies(req) {
+  const result = {};
+  const raw = String(req.headers.cookie ?? '');
+
+  for (const part of raw.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+
+    const name = part.slice(0, separator).trim();
+    const rawValue = part.slice(separator + 1).trim();
+
+    if (!name) continue;
+
+    try {
+      result[name] = decodeURIComponent(rawValue);
+    } catch {
+      result[name] = rawValue;
+    }
+  }
+
+  return result;
+}
+
+async function lrC5Hash(value) {
+  const { createHash } = await import('node:crypto');
+  return createHash('sha256').update(String(value)).digest('hex');
+}
+
+async function lrC5Session(req) {
+  const sessionColumns = await lrC5Columns('lr_web_sessions');
+  if (!sessionColumns.size) return null;
+
+  const hashColumn = lrC5Column(
+    sessionColumns,
+    ['token_hash', 'session_hash', 'challenge_hash'],
+  );
+
+  if (!hashColumn) return null;
+
+  const cookies = lrC5ParseCookies(req);
+  const preferredNames = [
+    'lr_web_session',
+    'linkray_session',
+    'lr_session',
+    'session',
+  ];
+
+  const candidates = [];
+
+  for (const name of preferredNames) {
+    if (cookies[name]) candidates.push(cookies[name]);
+  }
+
+  for (const value of Object.values(cookies)) {
+    if (value && !candidates.includes(value)) {
+      candidates.push(value);
+    }
+  }
+
+  const where = [`s.${lrC5Ident(hashColumn)}=$1`];
+
+  if (sessionColumns.has('expires_at')) {
+    where.push(`s."expires_at">NOW()`);
+  }
+
+  if (sessionColumns.has('revoked_at')) {
+    where.push(`s."revoked_at" IS NULL`);
+  }
+
+  for (const token of candidates.slice(0, 12)) {
+    const tokenHash = await lrC5Hash(token);
+
+    const rows = await lrC5SafeQuery(
+      `
+        SELECT to_jsonb(s) AS session
+        FROM public.lr_web_sessions s
+        WHERE ${where.join(' AND ')}
+        ORDER BY ${
+          sessionColumns.has('created_at')
+            ? 's."created_at" DESC'
+            : 's."id" DESC'
+        }
+        LIMIT 1
+      `,
+      [tokenHash],
+      'session',
+    );
+
+    const session = rows[0]?.session;
+    if (!session) continue;
+
+    const userId = lrC5Pick(session, ['user_id', 'lr_user_id']);
+    if (userId === null || userId === undefined) continue;
+
+    const userColumns = await lrC5Columns('lr_users');
+    let user = {};
+
+    if (userColumns.size) {
+      const userIdColumn = lrC5Column(
+        userColumns,
+        ['id', 'user_id', 'lr_user_id'],
+      );
+
+      if (userIdColumn) {
+        const userRows = await lrC5SafeQuery(
+          `
+            SELECT to_jsonb(u) AS user
+            FROM public.lr_users u
+            WHERE CAST(u.${lrC5Ident(userIdColumn)} AS TEXT)=$1
+            LIMIT 1
+          `,
+          [String(userId)],
+          'user',
+        );
+
+        user = userRows[0]?.user || {};
+      }
+    }
+
+    if (sessionColumns.has('last_seen_at')) {
+      const idColumn = lrC5Column(sessionColumns, ['id']);
+      if (idColumn && session[idColumn] !== undefined) {
+        lrC5SafeQuery(
+          `
+            UPDATE public.lr_web_sessions
+            SET "last_seen_at"=NOW()
+            WHERE ${lrC5Ident(idColumn)}=$1
+          `,
+          [session[idColumn]],
+          'session-touch',
+        );
+      }
+    }
+
+    return {
+      session,
+      user,
+      userId: String(userId),
+      maxUserId: lrC5Text(
+        lrC5Pick(user, ['max_user_id', 'maxUserId'], ''),
+      ),
+      displayName: lrC5Text(
+        lrC5Pick(
+          user,
+          [
+            'display_name',
+            'name',
+            'first_name',
+            'username',
+          ],
+          `Пользователь ${userId}`,
+        ),
+      ),
+    };
+  }
+
+  return null;
+}
+
+function lrC5NormalizeKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/+$/, '');
+}
+
+function lrC5Keys(object) {
+  const values = [
+    lrC5Pick(object, ['id']),
+    lrC5Pick(object, ['channel_id']),
+    lrC5Pick(object, ['max_chat_id']),
+    lrC5Pick(object, ['chat_id']),
+    lrC5Pick(object, ['max_channel_id']),
+    lrC5Pick(object, ['link']),
+    lrC5Pick(object, ['public_link']),
+    lrC5Pick(object, ['channel_link']),
+    lrC5Pick(object, ['url']),
+    lrC5Pick(object, ['channel_key']),
+  ];
+
+  return new Set(
+    values
+      .map(lrC5NormalizeKey)
+      .filter(Boolean),
+  );
+}
+
+function lrC5Intersects(left, right) {
+  for (const value of left) {
+    if (right.has(value)) return true;
+  }
+  return false;
+}
+
+function lrC5Time(object) {
+  const value = lrC5Pick(
+    object,
+    [
+      'captured_at',
+      'occurred_at',
+      'created_at',
+      'updated_at',
+      'publish_at',
+      'published_at',
+      'detected_at',
+      'started_at',
+      'last_seen_at',
+    ],
+  );
+
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+async function lrC5JsonRows(
+  table,
+  {
+    limit = 5000,
+    orderCandidates = [
+      'captured_at',
+      'occurred_at',
+      'created_at',
+      'updated_at',
+      'id',
+    ],
+    whereSql = '',
+    params = [],
+  } = {},
+) {
+  const columns = await lrC5Columns(table);
+  if (!columns.size) return [];
+
+  const orderColumn =
+    lrC5Column(columns, orderCandidates) ||
+    lrC5Column(columns, ['id']);
+
+  const orderSql = orderColumn
+    ? `ORDER BY t.${lrC5Ident(orderColumn)} DESC NULLS LAST`
+    : '';
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(t) AS row
+      FROM public.${lrC5Ident(table)} t
+      ${whereSql}
+      ${orderSql}
+      LIMIT ${Math.max(1, Math.min(Number(limit) || 1000, 20000))}
+    `,
+    params,
+    `rows:${table}`,
+  );
+
+  return rows.map((item) => item.row || {}).filter(Boolean);
+}
+
+async function lrC5LoadChannels(identity) {
+  const channelColumns = await lrC5Columns('channels');
+  if (!channelColumns.size) return [];
+
+  const channelIdColumn = lrC5Column(
+    channelColumns,
+    ['id', 'channel_id'],
+  );
+
+  if (!channelIdColumn) return [];
+
+  const userChannelColumns = await lrC5Columns('lr_user_channels');
+
+  if (userChannelColumns.size) {
+    const ucUserColumn = lrC5Column(
+      userChannelColumns,
+      ['user_id', 'lr_user_id', 'owner_user_id'],
+    );
+    const ucChannelColumn = lrC5Column(
+      userChannelColumns,
+      ['channel_id', 'channel_internal_id'],
+    );
+
+    if (ucUserColumn && ucChannelColumn) {
+      const identities = [
+        identity.userId,
+        identity.maxUserId,
+      ].filter(Boolean);
+
+      const rows = await lrC5SafeQuery(
+        `
+          SELECT
+            to_jsonb(c) AS channel,
+            to_jsonb(uc) AS membership
+          FROM public.lr_user_channels uc
+          JOIN public.channels c
+            ON CAST(c.${lrC5Ident(channelIdColumn)} AS TEXT)
+             = CAST(uc.${lrC5Ident(ucChannelColumn)} AS TEXT)
+          WHERE CAST(uc.${lrC5Ident(ucUserColumn)} AS TEXT)
+                = ANY($1::text[])
+          ORDER BY c.${lrC5Ident(channelIdColumn)} ASC
+        `,
+        [identities],
+        'user-channels',
+      );
+
+      if (rows.length) {
+        return rows
+          .map((row) => ({
+            raw: row.channel || {},
+            membership: row.membership || {},
+          }))
+          .filter(({ raw }) => raw && typeof raw === 'object');
+      }
+    }
+  }
+
+  const directUserColumn = lrC5Column(
+    channelColumns,
+    [
+      'user_id',
+      'owner_user_id',
+      'created_by_user_id',
+      'admin_user_id',
+      'max_user_id',
+      'owner_max_user_id',
+      'created_by_max_user_id',
+    ],
+  );
+
+  if (!directUserColumn) return [];
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(c) AS channel
+      FROM public.channels c
+      WHERE CAST(c.${lrC5Ident(directUserColumn)} AS TEXT)
+            = ANY($1::text[])
+      ORDER BY c.${lrC5Ident(channelIdColumn)} ASC
+    `,
+    [identities],
+    'direct-channels',
+  );
+
+  return rows.map((row) => ({
+    raw: row.channel || {},
+    membership: {},
+  }));
+}
+
+function lrC5ActiveChannel(channel) {
+  const active = lrC5Pick(
+    channel,
+    ['is_active', 'active', 'enabled'],
+    true,
+  );
+
+  return lrC5Bool(active, true);
+}
+
+function lrC5SnapshotSourceScore(snapshot) {
+  return lrC5Text(snapshot.collection_source) === 'max_api_collector_v1'
+    ? 1
+    : 0;
+}
+
+function lrC5MatchingRows(channelKeys, rows) {
+  return rows
+    .filter((row) => lrC5Intersects(channelKeys, lrC5Keys(row)))
+    .sort((a, b) => {
+      const sourceDiff =
+        lrC5SnapshotSourceScore(b) -
+        lrC5SnapshotSourceScore(a);
+
+      if (sourceDiff) return sourceDiff;
+      return lrC5Time(b) - lrC5Time(a);
+    });
+}
+
+function lrC5DailyHistory(rows, days = 30) {
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+  const daily = new Map();
+
+  for (const row of rows) {
+    const time = lrC5Time(row);
+    if (!time || time < since) continue;
+
+    const day = new Date(time).toISOString().slice(0, 10);
+    if (!daily.has(day)) {
+      daily.set(day, row);
+    }
+  }
+
+  return [...daily.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([date, row]) => ({
+      date,
+      capturedAt: lrC5Pick(row, ['captured_at']),
+      subscribers: lrC5Number(row.subscribers),
+      views24: lrC5Number(row.views24),
+      deltaDay: lrC5Number(row.delta_day),
+      er24: lrC5Number(row.er24),
+    }));
+}
+
+function lrC5HourlyHistory(rows) {
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+
+  return rows
+    .filter((row) => lrC5Time(row) >= since)
+    .slice(0, 48)
+    .reverse()
+    .map((row) => ({
+      capturedAt: lrC5Pick(row, ['captured_at']),
+      subscribers: lrC5Number(row.subscribers),
+      views24: lrC5Number(row.views24),
+      deltaDay: lrC5Number(row.delta_day),
+      er24: lrC5Number(row.er24),
+    }));
+}
+
+function lrC5Risk(config, events) {
+  const explicit = lrC5Text(
+    lrC5Pick(
+      config,
+      [
+        'risk_level',
+        'risk',
+        'status',
+        'safety_status',
+      ],
+      '',
+    ),
+  ).toLowerCase();
+
+  const score = lrC5Number(
+    lrC5Pick(config, ['risk_score', 'score']),
+  );
+
+  if (
+    explicit.includes('high') ||
+    explicit.includes('danger') ||
+    explicit.includes('unsafe') ||
+    explicit.includes('высок')
+  ) {
+    return { level: 'high', label: 'Высокий риск', score };
+  }
+
+  if (
+    explicit.includes('medium') ||
+    explicit.includes('warn') ||
+    explicit.includes('attention') ||
+    explicit.includes('сред')
+  ) {
+    return { level: 'medium', label: 'Требует внимания', score };
+  }
+
+  if (score !== null && score >= 70) {
+    return { level: 'high', label: 'Высокий риск', score };
+  }
+
+  if (score !== null && score >= 30) {
+    return { level: 'medium', label: 'Требует внимания', score };
+  }
+
+  const recentSince = Date.now() - 24 * 60 * 60 * 1000;
+  const recentEvents = events.filter(
+    (event) => lrC5Time(event) >= recentSince,
+  ).length;
+
+  if (recentEvents >= 5) {
+    return { level: 'high', label: 'Высокий риск', score };
+  }
+
+  if (recentEvents > 0) {
+    return { level: 'medium', label: 'Есть события', score };
+  }
+
+  return { level: 'safe', label: 'Угроз не обнаружено', score };
+}
+
+function lrC5PostStatus(row) {
+  const status = lrC5Text(
+    lrC5Pick(row, ['status', 'state'], 'unknown'),
+  ).toLowerCase();
+
+  if (status === 'scheduled') return 'scheduled';
+  if (status === 'published') return 'published';
+  if (status === 'error' || status === 'failed') return 'error';
+  if (status === 'canceled' || status === 'deleted') return 'deleted';
+  if (status === 'publishing') return 'publishing';
+
+  return status || 'unknown';
+}
+
+function lrC5Post(row, channelMap) {
+  const channelId = lrC5Text(
+    lrC5Pick(row, ['channel_id', 'channelId']),
+  );
+
+  const channel = channelMap.get(channelId);
+
+  return {
+    id: lrC5Text(lrC5Pick(row, ['id', 'post_id'])),
+    channelId,
+    channelTitle: channel?.title || lrC5Text(
+      lrC5Pick(row, ['channel_title']),
+      'Канал',
+    ),
+    status: lrC5PostStatus(row),
+    text: lrC5Text(
+      lrC5Pick(row, ['text', 'caption', 'content']),
+    ).slice(0, 220),
+    publishAt: lrC5Pick(row, ['publish_at', 'scheduled_at']),
+    publishedAt: lrC5Pick(row, ['published_at']),
+    createdAt: lrC5Pick(row, ['created_at']),
+    isAd: lrC5Bool(lrC5Pick(row, ['is_ad', 'advertising']), false),
+    cpm: lrC5Number(lrC5Pick(row, ['cpm'])),
+    error: lrC5Text(
+      lrC5Pick(row, ['error_message', 'last_error']),
+    ).slice(0, 300),
+  };
+}
+
+async function lrC5Subscription(identity) {
+  const columns = await lrC5Columns('lr_user_subscriptions');
+
+  if (!columns.size) {
+    return {
+      name: 'Бесплатный',
+      status: 'active',
+      endsAt: null,
+      channelLimit: null,
+    };
+  }
+
+  const userColumn = lrC5Column(
+    columns,
+    ['user_id', 'lr_user_id', 'max_user_id'],
+  );
+
+  if (!userColumn) {
+    return {
+      name: 'Бесплатный',
+      status: 'active',
+      endsAt: null,
+      channelLimit: null,
+    };
+  }
+
+  const identities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const orderColumn = lrC5Column(
+    columns,
+    ['expires_at', 'ends_at', 'created_at', 'id'],
+  );
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT to_jsonb(s) AS subscription
+      FROM public.lr_user_subscriptions s
+      WHERE CAST(s.${lrC5Ident(userColumn)} AS TEXT)
+            = ANY($1::text[])
+      ${
+        orderColumn
+          ? `ORDER BY s.${lrC5Ident(orderColumn)} DESC NULLS LAST`
+          : ''
+      }
+      LIMIT 1
+    `,
+    [identities],
+    'subscription',
+  );
+
+  const subscription = rows[0]?.subscription || {};
+  let tariff = {};
+
+  const tariffId = lrC5Pick(
+    subscription,
+    ['tariff_id', 'plan_id'],
+  );
+
+  if (
+    tariffId !== undefined &&
+    tariffId !== null &&
+    await lrC5TableExists('lr_tariffs')
+  ) {
+    const tariffColumns = await lrC5Columns('lr_tariffs');
+    const tariffIdColumn = lrC5Column(
+      tariffColumns,
+      ['id', 'tariff_id'],
+    );
+
+    if (tariffIdColumn) {
+      const tariffRows = await lrC5SafeQuery(
+        `
+          SELECT to_jsonb(t) AS tariff
+          FROM public.lr_tariffs t
+          WHERE CAST(t.${lrC5Ident(tariffIdColumn)} AS TEXT)=$1
+          LIMIT 1
+        `,
+        [String(tariffId)],
+        'tariff',
+      );
+
+      tariff = tariffRows[0]?.tariff || {};
+    }
+  }
+
+  return {
+    name: lrC5Text(
+      lrC5Pick(
+        tariff,
+        ['name', 'title'],
+        lrC5Pick(
+          subscription,
+          ['plan_name', 'tariff_name'],
+          'Бесплатный',
+        ),
+      ),
+    ),
+    status: lrC5Text(
+      lrC5Pick(subscription, ['status'], 'active'),
+    ),
+    startsAt: lrC5Pick(
+      subscription,
+      ['starts_at', 'started_at', 'created_at'],
+    ),
+    endsAt: lrC5Pick(
+      subscription,
+      ['expires_at', 'ends_at', 'end_at'],
+    ),
+    channelLimit: lrC5Number(
+      lrC5Pick(
+        tariff,
+        ['channel_limit', 'channels_limit', 'max_channels'],
+      ),
+    ),
+  };
+}
+
+async function lrC5TeamCounts(channelIds) {
+  const columns = await lrC5Columns('lr_user_channels');
+  if (!columns.size || !channelIds.length) return new Map();
+
+  const channelColumn = lrC5Column(
+    columns,
+    ['channel_id', 'channel_internal_id'],
+  );
+
+  if (!channelColumn) return new Map();
+
+  const rows = await lrC5SafeQuery(
+    `
+      SELECT
+        CAST(${lrC5Ident(channelColumn)} AS TEXT) AS channel_id,
+        COUNT(*)::int AS team_count
+      FROM public.lr_user_channels
+      WHERE CAST(${lrC5Ident(channelColumn)} AS TEXT)
+            = ANY($1::text[])
+      GROUP BY ${lrC5Ident(channelColumn)}
+    `,
+    [channelIds],
+    'team-counts',
+  );
+
+  return new Map(
+    rows.map((row) => [
+      String(row.channel_id),
+      Number(row.team_count || 0),
+    ]),
+  );
+}
+
+async function lrC5CabinetPayload(req) {
+  const identity = await lrC5Session(req);
+
+  if (!identity) {
+    const error = new Error(
+      'Сессия входа закончилась. Войдите заново.',
+    );
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const channelMemberships = (
+    await lrC5LoadChannels(identity)
+  ).filter(({ raw }) => lrC5ActiveChannel(raw));
+
+  const snapshotColumns = await lrC5Columns(
+    'lr_channel_analytics_snapshots',
+  );
+
+  const snapshotRows = await lrC5JsonRows(
+    'lr_channel_analytics_snapshots',
+    {
+      limit: 12000,
+      orderCandidates: ['captured_at', 'id'],
+      whereSql: snapshotColumns.has('captured_at')
+        ? `WHERE t."captured_at" >= NOW() - INTERVAL '32 days'`
+        : '',
+    },
+  );
+
+  const stateRows = await lrC5JsonRows(
+    'lr_channel_metrics_state',
+    {
+      limit: 3000,
+      orderCandidates: ['updated_at', 'last_success_at'],
+    },
+  );
+
+  const antifraudRows = await lrC5JsonRows(
+    'lr_antifraud_channels',
+    {
+      limit: 3000,
+      orderCandidates: ['updated_at', 'id'],
+    },
+  );
+
+  const antifraudEvents = await lrC5JsonRows(
+    'lr_antifraud_events',
+    {
+      limit: 5000,
+      orderCandidates: ['occurred_at', 'created_at', 'id'],
+    },
+  );
+
+  const antifraudWaves = await lrC5JsonRows(
+    'lr_antifraud_waves',
+    {
+      limit: 3000,
+      orderCandidates: ['detected_at', 'created_at', 'id'],
+    },
+  );
+
+  const baseChannels = channelMemberships.map(
+    ({ raw, membership }) => {
+      const id = lrC5Text(
+        lrC5Pick(raw, ['id', 'channel_id']),
+      );
+
+      return {
+        id,
+        raw,
+        membership,
+        keys: lrC5Keys(raw),
+        title: lrC5Text(
+          lrC5Pick(
+            raw,
+            ['title', 'name', 'channel_title', 'display_name'],
+            `Канал ${id}`,
+          ),
+        ),
+      };
+    },
+  );
+
+  const channelIds = baseChannels
+    .map((channel) => channel.id)
+    .filter(Boolean);
+
+  const teamCounts = await lrC5TeamCounts(channelIds);
+
+  const channelMap = new Map(
+    baseChannels.map((channel) => [
+      channel.id,
+      channel,
+    ]),
+  );
+
+  let scheduledRows = [];
+
+  if (channelIds.length) {
+    const scheduledColumns = await lrC5Columns('scheduled_posts');
+
+    if (scheduledColumns.size) {
+      const channelColumn = lrC5Column(
+        scheduledColumns,
+        ['channel_id'],
+      );
+
+      const orderColumn = lrC5Column(
+        scheduledColumns,
+        ['publish_at', 'created_at', 'id'],
+      );
+
+      if (channelColumn) {
+        scheduledRows = await lrC5JsonRows(
+          'scheduled_posts',
+          {
+            limit: 500,
+            orderCandidates: [
+              orderColumn || 'publish_at',
+              'created_at',
+              'id',
+            ],
+            whereSql:
+              `WHERE CAST(t.${lrC5Ident(channelColumn)} AS TEXT)`
+              + ` = ANY($1::text[])`,
+            params: [channelIds],
+          },
+        );
+      }
+    }
+  }
+
+  const posts = scheduledRows
+    .map((row) => lrC5Post(row, channelMap))
+    .sort((a, b) => {
+      const left = new Date(
+        a.publishAt || a.publishedAt || a.createdAt || 0,
+      ).getTime();
+
+      const right = new Date(
+        b.publishAt || b.publishedAt || b.createdAt || 0,
+      ).getTime();
+
+      return right - left;
+    });
+
+  const channels = baseChannels.map((base) => {
+    const matchingSnapshots = lrC5MatchingRows(
+      base.keys,
+      snapshotRows,
+    );
+
+    const latest = matchingSnapshots[0] || null;
+
+    const matchingStates = lrC5MatchingRows(
+      base.keys,
+      stateRows,
+    );
+
+    const state = matchingStates[0] || {};
+
+    const matchingConfigs = lrC5MatchingRows(
+      base.keys,
+      antifraudRows,
+    );
+
+    const antifraudConfig = matchingConfigs[0] || {};
+
+    const events = [
+      ...lrC5MatchingRows(base.keys, antifraudEvents),
+      ...lrC5MatchingRows(base.keys, antifraudWaves),
+    ].sort((a, b) => lrC5Time(b) - lrC5Time(a));
+
+    const risk = lrC5Risk(antifraudConfig, events);
+
+    const channelPosts = posts.filter(
+      (post) => post.channelId === base.id,
+    );
+
+    const firstSeen = lrC5Pick(
+      state,
+      ['first_seen_at', 'first_success_at'],
+    );
+
+    const firstSeenTime = firstSeen
+      ? new Date(firstSeen).getTime()
+      : 0;
+
+    const baselineComplete = lrC5Bool(
+      lrC5Pick(state, ['baseline_complete']),
+      firstSeenTime > 0 &&
+        Date.now() - firstSeenTime >= 24 * 60 * 60 * 1000,
+    );
+
+    const analyticsReady = Boolean(latest);
+    const full24hReady = analyticsReady && baselineComplete;
+
+    return {
+      id: base.id,
+      maxChatId: lrC5Text(
+        lrC5Pick(
+          base.raw,
+          ['max_chat_id', 'chat_id', 'max_channel_id'],
+        ),
+      ),
+      title: base.title,
+      link: lrC5Text(
+        lrC5Pick(
+          base.raw,
+          ['link', 'public_link', 'channel_link', 'url'],
+        ),
+      ),
+      role: lrC5Text(
+        lrC5Pick(
+          base.membership,
+          ['role', 'access_role', 'member_role'],
+          'Администратор',
+        ),
+      ),
+      teamCount: teamCounts.get(base.id) || 1,
+      botAccess: lrC5Bool(
+        lrC5Pick(
+          base.raw,
+          [
+            'bot_is_admin',
+            'is_bot_admin',
+            'bot_admin',
+            'has_access',
+          ],
+          true,
+        ),
+        true,
+      ),
+      analyticsReady,
+      full24hReady,
+      metrics: latest
+        ? {
+            subscribers: lrC5Number(latest.subscribers),
+            views24: lrC5Number(latest.views24),
+            views48: lrC5Number(latest.views48),
+            views72: lrC5Number(latest.views72),
+            viewsTotal: lrC5Number(latest.views_total),
+            er24: lrC5Number(latest.er24),
+            deltaDay: lrC5Number(latest.delta_day),
+            joined24h: lrC5Number(latest.joined_24h),
+            left24h: lrC5Number(latest.left_24h),
+            capturedAt: lrC5Pick(latest, ['captured_at']),
+            source: lrC5Text(
+              lrC5Pick(latest, ['collection_source']),
+            ),
+          }
+        : null,
+      history24h: lrC5HourlyHistory(matchingSnapshots),
+      history30d: lrC5DailyHistory(matchingSnapshots, 30),
+      collector: {
+        baselineComplete,
+        readyAt: lrC5Pick(state, ['ready_at']),
+        lastSuccessAt: lrC5Pick(
+          state,
+          ['last_success_at', 'last_collect_at'],
+        ),
+        lastError: lrC5Text(
+          lrC5Pick(state, ['last_error']),
+        ),
+      },
+      antifraud: {
+        enabled: lrC5Bool(
+          lrC5Pick(
+            antifraudConfig,
+            ['enabled', 'is_enabled', 'active', 'is_active'],
+            false,
+          ),
+          false,
+        ),
+        level: risk.level,
+        label: risk.label,
+        score: risk.score,
+        events24h: events.filter(
+          (event) =>
+            lrC5Time(event) >=
+            Date.now() - 24 * 60 * 60 * 1000,
+        ).length,
+        totalEvents: events.length,
+        lastEventAt: events[0]
+          ? new Date(lrC5Time(events[0])).toISOString()
+          : null,
+        pdpBefore: lrC5Number(
+          lrC5Pick(
+            events[0] || {},
+            [
+              'pdp_before',
+              'baseline_pdp',
+              'members_before',
+              'subscriber_count_before',
+            ],
+          ),
+        ),
+      },
+      posts: channelPosts.slice(0, 12),
+    };
+  });
+
+  const subscription = await lrC5Subscription(identity);
+
+  const notifications = [];
+
+  for (const channel of channels) {
+    if (!channel.botAccess) {
+      notifications.push({
+        type: 'access',
+        level: 'high',
+        title: `${channel.title}: нет доступа`,
+        text: 'Бот больше не является администратором канала.',
+        channelId: channel.id,
+      });
+    }
+
+    if (!channel.analyticsReady) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: данные собираются`,
+        text: 'Первый снимок аналитики ещё не получен.',
+        channelId: channel.id,
+      });
+    } else if (!channel.full24hReady) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: накапливаются 24 часа`,
+        text: 'Текущие показатели доступны, полный период ещё не завершён.',
+        channelId: channel.id,
+      });
+    }
+
+    if (channel.collector.lastError) {
+      notifications.push({
+        type: 'collector',
+        level: 'medium',
+        title: `${channel.title}: ошибка сбора`,
+        text: channel.collector.lastError,
+        channelId: channel.id,
+      });
+    }
+
+    if (channel.antifraud.level === 'high') {
+      notifications.push({
+        type: 'antifraud',
+        level: 'high',
+        title: `${channel.title}: высокий риск`,
+        text: `AntiFraud обнаружил событий за 24 часа: ${channel.antifraud.events24h}.`,
+        channelId: channel.id,
+      });
+    } else if (channel.antifraud.events24h > 0) {
+      notifications.push({
+        type: 'antifraud',
+        level: 'medium',
+        title: `${channel.title}: новые события AntiFraud`,
+        text: `Событий за 24 часа: ${channel.antifraud.events24h}.`,
+        channelId: channel.id,
+      });
+    }
+  }
+
+  for (const post of posts.filter(
+    (post) => post.status === 'error',
+  ).slice(0, 10)) {
+    notifications.push({
+      type: 'post',
+      level: 'high',
+      title: `${post.channelTitle}: ошибка публикации`,
+      text: post.error || 'Публикация завершилась ошибкой.',
+      channelId: post.channelId,
+    });
+  }
+
+  if (subscription.endsAt) {
+    const endTime = new Date(subscription.endsAt).getTime();
+    const daysLeft = Math.ceil(
+      (endTime - Date.now()) / (24 * 60 * 60 * 1000),
+    );
+
+    if (Number.isFinite(daysLeft) && daysLeft >= 0 && daysLeft <= 7) {
+      notifications.push({
+        type: 'subscription',
+        level: 'medium',
+        title: 'Заканчивается подписка',
+        text: `До окончания тарифа осталось дней: ${daysLeft}.`,
+      });
+    }
+  }
+
+  const readyChannels = channels.filter(
+    (channel) => channel.metrics,
+  );
+
+  const sum = (field) =>
+    readyChannels.reduce(
+      (total, channel) =>
+        total + Number(channel.metrics?.[field] ?? 0),
+      0,
+    );
+
+  const summary = {
+    channels: channels.length,
+    analyticsReadyChannels: readyChannels.length,
+    subscribers:
+      readyChannels.length > 0
+        ? sum('subscribers')
+        : null,
+    views24:
+      readyChannels.length > 0
+        ? sum('views24')
+        : null,
+    deltaDay:
+      readyChannels.length > 0
+        ? sum('deltaDay')
+        : null,
+    antifraudAlerts: channels.reduce(
+      (total, channel) =>
+        total + Number(channel.antifraud.events24h || 0),
+      0,
+    ),
+    scheduledPosts: posts.filter(
+      (post) => post.status === 'scheduled',
+    ).length,
+  };
+
+  return {
+    ok: true,
+    version: 'cabinet-suite-v5',
+    user: {
+      id: identity.userId,
+      linkrayId: String(identity.userId).padStart(6, '0'),
+      maxUserId: identity.maxUserId,
+      displayName: identity.displayName,
+      connectedChannels: channels.length,
+    },
+    profile: {
+      subscription,
+      botUrl: LR_CABINET_BOT_URL,
+    },
+    summary,
+    channels,
+    notifications: notifications.slice(0, 40),
+    posts: posts.slice(0, 40),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function lrC5Async(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+async function lrC5FullHandler(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const payload = await lrC5CabinetPayload(req);
+    return res.json(payload);
+  } catch (error) {
+    const status = Number(error?.statusCode || 500);
+
+    console.error(
+      '[LinkRay Cabinet API]',
+      error?.message || error,
+    );
+
+    return res.status(status).json({
+      ok: false,
+      error:
+        status === 401
+          ? 'Сессия входа закончилась. Войдите заново.'
+          : 'Не удалось загрузить данные кабинета.',
+    });
+  }
+}
+// LINKRAY_CABINET_SUITE_V5_MODULE_END
+
+
 export function mountLinkRayWebsiteRoutes(app) {
   if (!app || typeof app.use !== 'function' || typeof app.get !== 'function') {
     throw new TypeError('LinkRay website requires an Express application');
@@ -469,6 +1735,34 @@ function lrAccurateSnapshotMatches(snapshot, identifiers) {
 
   return values.some((value) => identifiers.has(value));
 }
+
+
+  // LINKRAY_CABINET_SUITE_V5_ROUTES_START
+  app.get(
+    ['/cabinet', '/cabinet/'],
+    applyWebsiteHeaders,
+    (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      return sendSiteFile(
+        res,
+        'cabinet-stable.html',
+        'no-store, no-cache, must-revalidate',
+      );
+    },
+  );
+
+  app.get(
+    '/api/website/cabinet/full',
+    applyWebsiteHeaders,
+    lrC5Async(lrC5FullHandler),
+  );
+
+  app.get(
+    '/api/website/cabinet/overview',
+    applyWebsiteHeaders,
+    lrC5Async(lrC5FullHandler),
+  );
+  // LINKRAY_CABINET_SUITE_V5_ROUTES_END
 
 app.get(
   '/api/website/cabinet/overview',
