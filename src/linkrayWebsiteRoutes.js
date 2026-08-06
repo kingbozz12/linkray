@@ -2563,6 +2563,20 @@ app.get('/cabinet', applyWebsiteHeaders, (_req, res) => {
     sendSiteFile(res, 'index.html');
   });
 
+  // LINKRAY_YANDEX_VERIFY_V1_START
+  app.get(
+    '/yandex_ac09981992f2e20e.html',
+    applyWebsiteHeaders,
+    (_req, res) => {
+      sendSiteFile(
+        res,
+        'yandex_ac09981992f2e20e.html',
+        'public, max-age=300',
+      );
+    },
+  );
+  // LINKRAY_YANDEX_VERIFY_V1_END
+
   app.get('/robots.txt', applyWebsiteHeaders, (_req, res) => {
     sendSiteFile(res, 'robots.txt', 'public, max-age=3600');
   });
