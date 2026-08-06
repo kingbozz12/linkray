@@ -1931,7 +1931,9 @@ function lrAccurateSnapshotMatches(snapshot, identifiers) {
 
         if (
           code === 'REPORT_NOT_READY' ||
-          code === 'CHANNEL_LINK_MISSING'
+          code === 'CHANNEL_LINK_MISSING' ||
+          code === 'BOT_REPORT_OUTPUT_UNSUPPORTED' ||
+          code === 'BOT_REPORT_EMPTY'
         ) {
           return res.status(409).json({
             ok: false,

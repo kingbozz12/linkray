@@ -7112,17 +7112,124 @@ async function lrV73SendDailyGroup(
 
 
 /* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_START */
-/**
- * Создаёт для сайта в точности ту же PNG-карточку,
- * которую бот отправляет при аналитике одного канала.
- *
- * Здесь специально повторно используются:
- *   1) getChannelMetricsReadiness;
- *   2) resolveChannel;
- *   3) renderSingle.
- *
- * Отдельного веб-дизайна отчёта больше нет.
- */
+async function lrWebsiteReportReadFile(candidate) {
+  const value = String(candidate || '').trim();
+  if (!value) return null;
+
+  const paths = [
+    value,
+    value.startsWith('file://')
+      ? new URL(value)
+      : null,
+    value.startsWith('/')
+      ? value
+      : path.resolve(process.cwd(), value),
+    value.startsWith('/generated/')
+      ? path.resolve(process.cwd(), 'public', value.slice(1))
+      : null,
+    value.startsWith('/public/')
+      ? path.resolve(process.cwd(), value.slice(1))
+      : null,
+  ].filter(Boolean);
+
+  for (const filePath of paths) {
+    try {
+      const data = await fs.readFile(filePath);
+      if (data?.length) return data;
+    } catch {}
+  }
+
+  return null;
+}
+
+async function lrWebsiteReportToPng(value, depth = 0) {
+  if (depth > 5 || value === null || value === undefined) {
+    return null;
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value.length ? value : null;
+  }
+
+  if (value instanceof Uint8Array) {
+    const buffer = Buffer.from(value);
+    return buffer.length ? buffer : null;
+  }
+
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+
+    if (/^data:image\/png;base64,/i.test(text)) {
+      const buffer = Buffer.from(
+        text.replace(/^data:image\/png;base64,/i, ''),
+        'base64',
+      );
+      return buffer.length ? buffer : null;
+    }
+
+    if (/^data:image\/svg\+xml;base64,/i.test(text)) {
+      const svg = Buffer.from(
+        text.replace(/^data:image\/svg\+xml;base64,/i, ''),
+        'base64',
+      );
+      return sharp(svg).png().toBuffer();
+    }
+
+    if (/^<svg[\s>]/i.test(text)) {
+      return sharp(Buffer.from(text)).png().toBuffer();
+    }
+
+    const file = await lrWebsiteReportReadFile(text);
+    if (file) {
+      if (
+        file.subarray(0, 8).equals(
+          Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        )
+      ) {
+        return file;
+      }
+
+      return sharp(file).png().toBuffer();
+    }
+
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    const directKeys = [
+      'buffer',
+      'data',
+      'png',
+      'image',
+      'content',
+      'body',
+      'output',
+      'result',
+      'svg',
+      'filePath',
+      'filepath',
+      'file_path',
+      'path',
+      'filename',
+      'url',
+    ];
+
+    for (const key of directKeys) {
+      if (!(key in value)) continue;
+
+      const converted = await lrWebsiteReportToPng(
+        value[key],
+        depth + 1,
+      );
+
+      if (converted?.length) return converted;
+    }
+  }
+
+  return null;
+}
+
 export async function renderLinkRayWebsiteBotReport(input = {}) {
   const link = String(
     input?.link ||
@@ -7158,43 +7265,48 @@ export async function renderLinkRayWebsiteBotReport(input = {}) {
     _lrIndex: 0,
   });
 
-  /*
-   * Это тот же вызов, что используется в handleLinks()
-   * при отправке в бот одной ссылки.
-   */
-  const image = await renderSingle(resolved);
+  const rendered = await renderSingle(resolved);
 
-  let buffer = null;
+  let buffer = await lrWebsiteReportToPng(rendered);
 
-  if (typeof lrV33ToPngBuffer === 'function') {
-    buffer = await lrV33ToPngBuffer(image);
+  if (
+    !buffer &&
+    typeof lrV33ToPngBuffer === 'function'
+  ) {
+    try {
+      buffer = await lrV33ToPngBuffer(rendered);
+    } catch (error) {
+      console.error(
+        '[LinkRay Website bot report converter]',
+        error?.message || error,
+      );
+    }
   }
 
-  if (!buffer && Buffer.isBuffer(image)) {
-    buffer = image;
-  }
+  buffer = await lrWebsiteReportToPng(buffer);
 
-  if (!buffer && image instanceof Uint8Array) {
-    buffer = Buffer.from(image);
-  }
-
-  if (!buffer && Buffer.isBuffer(image?.buffer)) {
-    buffer = image.buffer;
-  }
-
-  if (!buffer && Buffer.isBuffer(image?.data)) {
-    buffer = image.data;
-  }
-
-  if (!buffer && Buffer.isBuffer(image?.png)) {
-    buffer = image.png;
-  }
-
-  if (!buffer) {
-    const error = new Error(
-      'Генератор бота не вернул PNG-файл.',
+  if (!buffer?.length) {
+    console.error(
+      '[LinkRay Website bot report output]',
+      JSON.stringify({
+        type: typeof rendered,
+        constructor:
+          rendered?.constructor?.name || null,
+        keys:
+          rendered && typeof rendered === 'object'
+            ? Object.keys(rendered).slice(0, 30)
+            : [],
+        preview:
+          typeof rendered === 'string'
+            ? rendered.slice(0, 180)
+            : null,
+      }),
     );
-    error.code = 'BOT_REPORT_EMPTY';
+
+    const error = new Error(
+      'Генератор бота создал отчёт в неподдерживаемом формате.',
+    );
+    error.code = 'BOT_REPORT_OUTPUT_UNSUPPORTED';
     throw error;
   }
 
