@@ -812,3 +812,66 @@ button { cursor: pointer; }
   }
 }
 /* LINKRAY_PROFESSIONAL_CHARTS_V1_END */
+
+/* LINKRAY_POST_PREVIEW_PNG_V1_START */
+.post-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.post-content {
+  min-width: 0;
+}
+
+.post-channel-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.post-preview-text {
+  display: -webkit-box;
+  margin: 5px 0 0 !important;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-line;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.post-side {
+  min-width: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+}
+
+.post-date {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.25;
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (max-width: 430px) {
+  .post-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .post-side {
+    width: 100%;
+    min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .post-date {
+    text-align: left;
+  }
+}
+/* LINKRAY_POST_PREVIEW_PNG_V1_END */
