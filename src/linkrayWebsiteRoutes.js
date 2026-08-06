@@ -1135,6 +1135,44 @@ async function lrC5CabinetPayload(req) {
     },
   );
 
+  // LINKRAY_ANALYTICS_ENABLED_STATUS_V1
+  const analyticsToggleColumns = await lrC5Columns(
+    'lr_channel_analytics_daily_channels',
+  );
+
+  const analyticsToggleUserColumn = lrC5Column(
+    analyticsToggleColumns,
+    [
+      'user_id',
+      'lr_user_id',
+      'owner_user_id',
+      'max_user_id',
+      'user_chat_id',
+    ],
+  );
+
+  const analyticsToggleIdentities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const analyticsToggleRows = await lrC5JsonRows(
+    'lr_channel_analytics_daily_channels',
+    {
+      limit: 5000,
+      orderCandidates: ['updated_at', 'created_at', 'id'],
+      whereSql:
+        analyticsToggleUserColumn && analyticsToggleIdentities.length
+          ? `WHERE CAST(t.${lrC5Ident(analyticsToggleUserColumn)} AS TEXT)`
+            + ` = ANY($1::text[])`
+          : '',
+      params:
+        analyticsToggleUserColumn && analyticsToggleIdentities.length
+          ? [analyticsToggleIdentities]
+          : [],
+    },
+  );
+
   const stateRows = await lrC5JsonRows(
     'lr_channel_metrics_state',
     {
@@ -1260,6 +1298,27 @@ async function lrC5CabinetPayload(req) {
 
     const latest = matchingSnapshots[0] || null;
 
+    const matchingAnalyticsToggles = lrC5MatchingRows(
+      base.keys,
+      analyticsToggleRows,
+    );
+
+    /*
+     * При наличии пользовательского столбца строки уже отфильтрованы
+     * по владельцу. Без него используем семантику сборщика: аналитика
+     * канала включена, если существует хотя бы одна enabled=true строка.
+     */
+    const analyticsEnabled = matchingAnalyticsToggles.some((row) =>
+      lrC5Bool(
+        lrC5Pick(
+          row,
+          ['enabled', 'is_enabled', 'daily_enabled', 'active'],
+          false,
+        ),
+        false,
+      ),
+    );
+
     const matchingStates = lrC5MatchingRows(
       base.keys,
       stateRows,
@@ -1300,8 +1359,9 @@ async function lrC5CabinetPayload(req) {
         Date.now() - firstSeenTime >= 24 * 60 * 60 * 1000,
     );
 
-    const analyticsReady = Boolean(latest);
-    const full24hReady = analyticsReady && baselineComplete;
+    const analyticsReady = analyticsEnabled && Boolean(latest);
+    const full24hReady =
+      analyticsEnabled && analyticsReady && baselineComplete;
 
     return {
       id: base.id,
@@ -1339,9 +1399,10 @@ async function lrC5CabinetPayload(req) {
         ),
         true,
       ),
+      analyticsEnabled,
       analyticsReady,
       full24hReady,
-      metrics: latest
+      metrics: analyticsEnabled && latest
         ? {
             subscribers: lrC5Number(latest.subscribers),
             views24: lrC5Number(latest.views24),
@@ -1358,8 +1419,12 @@ async function lrC5CabinetPayload(req) {
             ),
           }
         : null,
-      history24h: lrC5HourlyHistory(matchingSnapshots),
-      history30d: lrC5DailyHistory(matchingSnapshots, 30),
+      history24h: analyticsEnabled
+        ? lrC5HourlyHistory(matchingSnapshots)
+        : [],
+      history30d: analyticsEnabled
+        ? lrC5DailyHistory(matchingSnapshots, 30)
+        : [],
       collector: {
         baselineComplete,
         readyAt: lrC5Pick(state, ['ready_at']),
@@ -1423,15 +1488,21 @@ async function lrC5CabinetPayload(req) {
       });
     }
 
-    if (!channel.analyticsReady) {
+    if (
+      channel.analyticsEnabled &&
+      !channel.analyticsReady
+    ) {
       notifications.push({
         type: 'analytics',
         level: 'info',
         title: `${channel.title}: данные собираются`,
-        text: 'Первый снимок аналитики ещё не получен.',
+        text: 'Аналитика включена, первый снимок ещё не получен.',
         channelId: channel.id,
       });
-    } else if (!channel.full24hReady) {
+    } else if (
+      channel.analyticsEnabled &&
+      !channel.full24hReady
+    ) {
       notifications.push({
         type: 'analytics',
         level: 'info',
@@ -1441,7 +1512,10 @@ async function lrC5CabinetPayload(req) {
       });
     }
 
-    if (channel.collector.lastError) {
+    if (
+      channel.analyticsEnabled &&
+      channel.collector.lastError
+    ) {
       notifications.push({
         type: 'collector',
         level: 'medium',
@@ -1511,6 +1585,9 @@ async function lrC5CabinetPayload(req) {
 
   const summary = {
     channels: channels.length,
+    analyticsEnabledChannels: channels.filter(
+      (channel) => channel.analyticsEnabled,
+    ).length,
     analyticsReadyChannels: readyChannels.length,
     subscribers:
       readyChannels.length > 0

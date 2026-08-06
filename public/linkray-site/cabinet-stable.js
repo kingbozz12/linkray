@@ -382,6 +382,25 @@
 
     return `
       <div class="channel-details">
+        ${
+          !channel.analyticsEnabled
+            ? `
+              <section class="panel"
+                       style="margin-bottom:12px">
+                <div class="panel-title">
+                  <h3>Аналитика канала отключена</h3>
+                </div>
+                <p class="muted"
+                   style="margin:0;font-size:12px;line-height:1.5">
+                  Сбор подписчиков, просмотров, прироста и ER для этого
+                  канала сейчас не выполняется. Включить функцию можно
+                  в разделе аналитики LinkRay в MAX.
+                </p>
+              </section>
+            `
+            : ''
+        }
+
         <section class="detail-grid">
           <article class="detail-item">
             <span>Просмотры 48 ч</span>
@@ -426,30 +445,36 @@
           </article>
         </section>
 
-        <section class="chart-card">
-          <div class="chart-head">
-            <strong>Подписчики</strong>
-            <div class="periods">
-              ${['24h', '7d', '30d'].map((item) => `
-                <button type="button"
-                        class="${period === item ? 'active' : ''}"
-                        data-action="period"
-                        data-channel-id="${escapeHtml(channel.id)}"
-                        data-period="${item}">
-                  ${item === '24h' ? '24 ч' : item === '7d' ? '7 дн' : '30 дн'}
-                </button>
-              `).join('')}
-            </div>
-          </div>
-          ${svgChart(points, 'subscribers', 'chart-line-subscribers')}
-        </section>
+        ${
+          channel.analyticsEnabled
+            ? `
+              <section class="chart-card">
+                <div class="chart-head">
+                  <strong>Подписчики</strong>
+                  <div class="periods">
+                    ${['24h', '7d', '30d'].map((item) => `
+                      <button type="button"
+                              class="${period === item ? 'active' : ''}"
+                              data-action="period"
+                              data-channel-id="${escapeHtml(channel.id)}"
+                              data-period="${item}">
+                        ${item === '24h' ? '24 ч' : item === '7d' ? '7 дн' : '30 дн'}
+                      </button>
+                    `).join('')}
+                  </div>
+                </div>
+                ${svgChart(points, 'subscribers', 'chart-line-subscribers')}
+              </section>
 
-        <section class="chart-card">
-          <div class="chart-head">
-            <strong>Просмотры за 24 часа</strong>
-          </div>
-          ${svgChart(points, 'views24', 'chart-line-views')}
-        </section>
+              <section class="chart-card">
+                <div class="chart-head">
+                  <strong>Просмотры за 24 часа</strong>
+                </div>
+                ${svgChart(points, 'views24', 'chart-line-views')}
+              </section>
+            `
+            : ''
+        }
 
         <section class="detail-section">
           <h4>AntiFraud</h4>
@@ -501,11 +526,14 @@
   function channelCardHtml(channel) {
     const open = state.openChannelId === channel.id;
     const metrics = channel.metrics || {};
-    const readyText = channel.analyticsReady
-      ? channel.full24hReady
-        ? `Обновлено ${formatDate(metrics.capturedAt)}`
-        : 'Накапливается полный период 24 часа'
-      : 'Данные аналитики собираются';
+    /* LINKRAY_ANALYTICS_ENABLED_STATUS_V1 */
+    const readyText = !channel.analyticsEnabled
+      ? 'Аналитика канала отключена'
+      : channel.analyticsReady
+        ? channel.full24hReady
+          ? `Обновлено ${formatDate(metrics.capturedAt)}`
+          : 'Накапливается полный период 24 часа'
+        : 'Данные аналитики собираются';
 
     return `
       <article class="channel-card ${open ? 'open' : ''}">
@@ -558,9 +586,11 @@
             <span class="eyebrow">Аналитика каналов</span>
             <h2>Мои каналы</h2>
             <p>
-              Данные готовы для
+              Аналитика включена для
+              ${formatNumber(payload.summary?.analyticsEnabledChannels)}
+              из ${formatNumber(payload.summary?.channels)} ·
+              данные готовы для
               ${formatNumber(payload.summary?.analyticsReadyChannels)}
-              из ${formatNumber(payload.summary?.channels)}
             </p>
           </div>
           <a href="${BOT_URL}" target="_blank" rel="noopener noreferrer">
