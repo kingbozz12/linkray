@@ -1,0 +1,379 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+ANALYTICS="src/linkrayChannelAnalytics.js"
+ROUTES="src/linkrayWebsiteRoutes.js"
+BACKUP="$(mktemp -d /tmp/linkray-bot-report-output.XXXXXX)"
+DONE=0
+
+backup_file() {
+  local file="$1"
+  local key
+  key="$(printf '%s' "$file" | tr '/' '_')"
+  test -f "$file"
+  cp -f "$file" "$BACKUP/$key"
+}
+
+restore_all() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+  for file in "$ANALYTICS" "$ROUTES"; do
+    key="$(printf '%s' "$file" | tr '/' '_')"
+    cp -f "$BACKUP/$key" "$file"
+  done
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_all
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю текущую интеграцию отчёта"
+
+backup_file "$ANALYTICS"
+backup_file "$ROUTES"
+
+grep -q "LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_START" "$ANALYTICS"
+grep -q "renderLinkRayWebsiteBotReport" "$ANALYTICS"
+grep -q "bot-report.png" "$ROUTES"
+
+echo "[2/8] Исправляю обработку результата renderSingle()"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayChannelAnalytics.js")
+source = path.read_text(encoding="utf-8")
+
+start = "/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_START */"
+end = "/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_END */"
+
+pattern = re.compile(
+    rf"{re.escape(start)}[\s\S]*?{re.escape(end)}",
+)
+
+if not pattern.search(source):
+    raise SystemExit("Не найден экспорт отчёта для сайта")
+
+replacement = r"""/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_START */
+async function lrWebsiteReportReadFile(candidate) {
+  const value = String(candidate || '').trim();
+  if (!value) return null;
+
+  const paths = [
+    value,
+    value.startsWith('file://')
+      ? new URL(value)
+      : null,
+    value.startsWith('/')
+      ? value
+      : path.resolve(process.cwd(), value),
+    value.startsWith('/generated/')
+      ? path.resolve(process.cwd(), 'public', value.slice(1))
+      : null,
+    value.startsWith('/public/')
+      ? path.resolve(process.cwd(), value.slice(1))
+      : null,
+  ].filter(Boolean);
+
+  for (const filePath of paths) {
+    try {
+      const data = await fs.readFile(filePath);
+      if (data?.length) return data;
+    } catch {}
+  }
+
+  return null;
+}
+
+async function lrWebsiteReportToPng(value, depth = 0) {
+  if (depth > 5 || value === null || value === undefined) {
+    return null;
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value.length ? value : null;
+  }
+
+  if (value instanceof Uint8Array) {
+    const buffer = Buffer.from(value);
+    return buffer.length ? buffer : null;
+  }
+
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+
+    if (/^data:image\/png;base64,/i.test(text)) {
+      const buffer = Buffer.from(
+        text.replace(/^data:image\/png;base64,/i, ''),
+        'base64',
+      );
+      return buffer.length ? buffer : null;
+    }
+
+    if (/^data:image\/svg\+xml;base64,/i.test(text)) {
+      const svg = Buffer.from(
+        text.replace(/^data:image\/svg\+xml;base64,/i, ''),
+        'base64',
+      );
+      return sharp(svg).png().toBuffer();
+    }
+
+    if (/^<svg[\s>]/i.test(text)) {
+      return sharp(Buffer.from(text)).png().toBuffer();
+    }
+
+    const file = await lrWebsiteReportReadFile(text);
+    if (file) {
+      if (
+        file.subarray(0, 8).equals(
+          Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        )
+      ) {
+        return file;
+      }
+
+      return sharp(file).png().toBuffer();
+    }
+
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    const directKeys = [
+      'buffer',
+      'data',
+      'png',
+      'image',
+      'content',
+      'body',
+      'output',
+      'result',
+      'svg',
+      'filePath',
+      'filepath',
+      'file_path',
+      'path',
+      'filename',
+      'url',
+    ];
+
+    for (const key of directKeys) {
+      if (!(key in value)) continue;
+
+      const converted = await lrWebsiteReportToPng(
+        value[key],
+        depth + 1,
+      );
+
+      if (converted?.length) return converted;
+    }
+  }
+
+  return null;
+}
+
+export async function renderLinkRayWebsiteBotReport(input = {}) {
+  const link = String(
+    input?.link ||
+    input?.public_link ||
+    input?.channel_link ||
+    input?.url ||
+    input?.max_chat_id ||
+    input?.chat_id ||
+    '',
+  ).trim();
+
+  if (!link) {
+    const error = new Error(
+      'Для этого канала не сохранена MAX-ссылка.',
+    );
+    error.code = 'CHANNEL_LINK_MISSING';
+    throw error;
+  }
+
+  const readiness = await getChannelMetricsReadiness([link]);
+
+  if (!readiness?.ready) {
+    const error = new Error(
+      'Отчёт канала ещё не готов: аналитике необходимо накопить 24 часа данных.',
+    );
+    error.code = 'REPORT_NOT_READY';
+    error.readiness = readiness;
+    throw error;
+  }
+
+  const resolved = await resolveChannel(link, {
+    ...input,
+    _lrIndex: 0,
+  });
+
+  const rendered = await renderSingle(resolved);
+
+  let buffer = await lrWebsiteReportToPng(rendered);
+
+  if (
+    !buffer &&
+    typeof lrV33ToPngBuffer === 'function'
+  ) {
+    try {
+      buffer = await lrV33ToPngBuffer(rendered);
+    } catch (error) {
+      console.error(
+        '[LinkRay Website bot report converter]',
+        error?.message || error,
+      );
+    }
+  }
+
+  buffer = await lrWebsiteReportToPng(buffer);
+
+  if (!buffer?.length) {
+    console.error(
+      '[LinkRay Website bot report output]',
+      JSON.stringify({
+        type: typeof rendered,
+        constructor:
+          rendered?.constructor?.name || null,
+        keys:
+          rendered && typeof rendered === 'object'
+            ? Object.keys(rendered).slice(0, 30)
+            : [],
+        preview:
+          typeof rendered === 'string'
+            ? rendered.slice(0, 180)
+            : null,
+      }),
+    );
+
+    const error = new Error(
+      'Генератор бота создал отчёт в неподдерживаемом формате.',
+    );
+    error.code = 'BOT_REPORT_OUTPUT_UNSUPPORTED';
+    throw error;
+  }
+
+  return buffer;
+}
+/* LINKRAY_WEBSITE_BOT_REPORT_EXPORT_V1_END */"""
+
+source = pattern.sub(lambda _match: replacement, source, count=1)
+path.write_text(source, encoding="utf-8")
+
+if source.count("export async function renderLinkRayWebsiteBotReport") != 1:
+    raise SystemExit("Экспорт отчёта установлен некорректно")
+
+print("Обработка результата renderSingle() исправлена")
+PY
+
+echo "[3/8] Возвращаю пользователю точную ошибку генератора"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+old = """        if (
+          code === 'REPORT_NOT_READY' ||
+          code === 'CHANNEL_LINK_MISSING'
+        ) {
+          return res.status(409).json({
+            ok: false,
+            error: error.message,
+          });
+        }
+"""
+
+new = """        if (
+          code === 'REPORT_NOT_READY' ||
+          code === 'CHANNEL_LINK_MISSING' ||
+          code === 'BOT_REPORT_OUTPUT_UNSUPPORTED' ||
+          code === 'BOT_REPORT_EMPTY'
+        ) {
+          return res.status(409).json({
+            ok: false,
+            error: error.message,
+          });
+        }
+"""
+
+if old in source:
+    source = source.replace(old, new, 1)
+elif "BOT_REPORT_OUTPUT_UNSUPPORTED" not in source:
+    raise SystemExit("Не найден блок обработки ошибок отчёта")
+
+path.write_text(source, encoding="utf-8")
+print("Ответ API уточнён")
+PY
+
+echo "[4/8] Проверяю синтаксис"
+
+node --check "$ANALYTICS"
+node --check "$ROUTES"
+
+grep -q "lrWebsiteReportToPng" "$ANALYTICS"
+grep -q "BOT_REPORT_OUTPUT_UNSUPPORTED" "$ANALYTICS"
+
+echo "[5/8] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[6/8] Проверяю запуск и защиту маршрута"
+
+STATUS="$(
+  curl -sS \
+    -o "$BACKUP/no-cookie.json" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/api/website/cabinet/channel/0/bot-report.png
+)"
+
+echo "Отчёт без cookie: $STATUS"
+[[ "$STATUS" == "401" ]]
+
+if docker logs --since 60s linkray-app 2>&1 |
+   grep -E "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[7/8] Сохраняю проверенную правку"
+
+git add -- "$ANALYTICS" "$ROUTES"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Fix bot report output download on website"
+  git push origin HEAD:main
+else
+  echo "Правка уже сохранена"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo "[8/8] Готово"
+echo
+echo "============================================================"
+echo "СКАЧИВАНИЕ ОТЧЁТА БОТА ИСПРАВЛЕНО"
+echo
+echo "• отчёт по-прежнему создаёт renderSingle() бота"
+echo "• поддержан Buffer"
+echo "• поддержан SVG"
+echo "• поддержан путь к PNG-файлу"
+echo "• поддержан объект с path/filePath/url/data/png"
+echo "• отдельный дизайн отчёта на сайте не используется"
+echo "============================================================"
