@@ -1,0 +1,1233 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+BACKUP="$(mktemp -d /tmp/linkray-cabinet-center-v1.XXXXXX)"
+DONE=0
+
+restore_files() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежний личный кабинет"
+
+  if [[ -f "$BACKUP/frontend.js" && -n "${FRONTEND_JS:-}" ]]; then
+    cp -f "$BACKUP/frontend.js" "$FRONTEND_JS"
+  fi
+
+  if [[ -f "$BACKUP/frontend.css" && -n "${FRONTEND_CSS:-}" ]]; then
+    cp -f "$BACKUP/frontend.css" "$FRONTEND_CSS"
+  fi
+
+  if [[ -d "$BACKUP/html" ]]; then
+    while IFS= read -r file; do
+      rel="${file#"$BACKUP/html/"}"
+      mkdir -p "$(dirname "$rel")"
+      cp -f "$file" "$rel"
+    done < <(find "$BACKUP/html" -type f)
+  fi
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+
+  if [[ "$DONE" != "1" ]]; then
+    restore_files
+  fi
+
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/9] Нахожу фактические файлы личного кабинета"
+
+mapfile -t DETECTED < <(
+  python3 - <<'PY'
+from pathlib import Path
+
+root = Path("public")
+markers = (
+    "Загружаем LinkRay",
+    "Studio в MAX",
+    "Последние публикации",
+    "Личный кабинет",
+    "/api/website/",
+    "/cabinet",
+)
+
+candidates = []
+
+for path in root.rglob("*.js"):
+    if any(part in {"node_modules", ".git"} for part in path.parts):
+        continue
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        continue
+
+    score = sum(text.count(marker) for marker in markers)
+
+    if score:
+        candidates.append((score, len(text), path))
+
+if not candidates:
+    raise SystemExit(
+        "Не найден JavaScript личного кабинета"
+    )
+
+candidates.sort(
+    key=lambda item: (
+        item[0],
+        item[1],
+    ),
+    reverse=True,
+)
+
+js_path = candidates[0][2]
+directory = js_path.parent
+
+css_candidates = []
+
+for path in directory.glob("*.css"):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        continue
+
+    score = sum(text.count(marker) for marker in markers)
+    score += 3 if path.name == "styles.css" else 0
+    css_candidates.append((score, len(text), path))
+
+if not css_candidates:
+    fallback = Path("public/linkray-site/styles.css")
+
+    if fallback.exists():
+        css_path = fallback
+    else:
+        raise SystemExit(
+            "Не найден CSS личного кабинета"
+        )
+else:
+    css_candidates.sort(
+        key=lambda item: (
+            item[0],
+            item[1],
+        ),
+        reverse=True,
+    )
+    css_path = css_candidates[0][2]
+
+print(js_path)
+print(css_path)
+PY
+)
+
+FRONTEND_JS="${DETECTED[0]}"
+FRONTEND_CSS="${DETECTED[1]}"
+
+echo "JavaScript: $FRONTEND_JS"
+echo "CSS: $FRONTEND_CSS"
+
+test -f "$FRONTEND_JS"
+test -f "$FRONTEND_CSS"
+
+cp -f "$FRONTEND_JS" "$BACKUP/frontend.js"
+cp -f "$FRONTEND_CSS" "$BACKUP/frontend.css"
+
+mkdir -p "$BACKUP/html"
+
+while IFS= read -r html; do
+  mkdir -p "$BACKUP/html/$(dirname "$html")"
+  cp -f "$html" "$BACKUP/html/$html"
+done < <(
+  find public -type f -name '*.html' \
+    -not -path '*/node_modules/*'
+)
+
+echo "[2/9] Добавляю центр уведомлений и состояние каналов"
+
+python3 - "$FRONTEND_JS" "$FRONTEND_CSS" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+js_path = Path(sys.argv[1])
+css_path = Path(sys.argv[2])
+
+js = js_path.read_text(encoding="utf-8")
+css = css_path.read_text(encoding="utf-8")
+
+JS_START = "/* LR_CABINET_CONTROL_CENTER_V1_START */"
+JS_END = "/* LR_CABINET_CONTROL_CENTER_V1_END */"
+CSS_START = "/* LR_CABINET_CONTROL_CENTER_V1_STYLES_START */"
+CSS_END = "/* LR_CABINET_CONTROL_CENTER_V1_STYLES_END */"
+
+js = re.sub(
+    rf"\s*{re.escape(JS_START)}[\s\S]*?{re.escape(JS_END)}\s*",
+    "\n",
+    js,
+)
+
+css = re.sub(
+    rf"\s*{re.escape(CSS_START)}[\s\S]*?{re.escape(CSS_END)}\s*",
+    "\n",
+    css,
+)
+
+js_patch = r'''
+/* LR_CABINET_CONTROL_CENTER_V1_START */
+(() => {
+  'use strict';
+
+  const VERSION = 'lr-cabinet-control-center-v1';
+  const STORAGE_KEY = 'linkray:cabinet:notifications:v1';
+  const BOT_URL = '/go-bot';
+  let updateTimer = null;
+
+  const clean = (value) =>
+    String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const textOf = (element) =>
+    clean(element?.textContent || '');
+
+  const cabinetVisible = () => {
+    const path = String(location.pathname || '').toLowerCase();
+    const text = textOf(document.body);
+
+    return (
+      path.includes('/cabinet') ||
+      (
+        /личный кабинет/i.test(text) &&
+        /обзор/i.test(text) &&
+        /каналы/i.test(text)
+      )
+    );
+  };
+
+  const isLoading = () => {
+    const text = textOf(document.body);
+
+    return (
+      /загружаем linkray/i.test(text) &&
+      !/подписчики|antifraud|последние публикации/i.test(text)
+    );
+  };
+
+  const findByText = (
+    pattern,
+    selector = 'button, a, [role="button"]',
+  ) =>
+    Array.from(document.querySelectorAll(selector))
+      .find((element) => pattern.test(textOf(element)));
+
+  const clickByText = (pattern) => {
+    const element = findByText(pattern);
+
+    if (!element) return false;
+
+    element.click();
+    return true;
+  };
+
+  const visible = (element) => {
+    if (!element) return false;
+
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+
+    return (
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  };
+
+  const readState = () => {
+    try {
+      const value = JSON.parse(
+        localStorage.getItem(STORAGE_KEY) || '{}',
+      );
+
+      return value && typeof value === 'object'
+        ? value
+        : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const writeState = (value) => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(value),
+      );
+    } catch {}
+  };
+
+  const fingerprint = (items) =>
+    items
+      .map((item) => `${item.level}:${item.text}`)
+      .sort()
+      .join('|');
+
+  const inferChannelCards = () => {
+    const candidates = Array.from(
+      document.querySelectorAll(
+        'main article, main section, main [class*="card"], ' +
+        '[class*="cabinet"] article, [class*="channel"]',
+      ),
+    );
+
+    const cards = [];
+    const seen = new Set();
+
+    for (const element of candidates) {
+      if (!visible(element)) continue;
+
+      const text = textOf(element);
+
+      if (
+        text.length < 80 ||
+        text.length > 8000 ||
+        !/подписчик|просмотр|antifraud|последние публикации/i
+          .test(text)
+      ) {
+        continue;
+      }
+
+      if (
+        !/доступ бота|скачать csv|открыть канал|аналитика канала|подписки за 24/i
+          .test(text)
+      ) {
+        continue;
+      }
+
+      if (
+        cards.some((card) => card.contains(element))
+      ) {
+        continue;
+      }
+
+      if (
+        cards.some((card) => element.contains(card))
+      ) {
+        continue;
+      }
+
+      const key = text.slice(0, 220);
+
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      cards.push(element);
+    }
+
+    return cards;
+  };
+
+  const channelTitle = (card, index) => {
+    const headings = Array.from(
+      card.querySelectorAll('h1, h2, h3, h4, strong'),
+    )
+      .map(textOf)
+      .filter(Boolean)
+      .filter((text) =>
+        !/подписчик|просмотр|antifraud|последние публикации|обновлено/i
+          .test(text),
+      );
+
+    return headings[0] || `Канал ${index + 1}`;
+  };
+
+  const cardStatus = (card) => {
+    const text = textOf(card);
+
+    const bot = /доступ бота\s*(есть|доступен|активен)/i.test(text)
+      ? 'ok'
+      : /нет доступа|доступ бота\s*(нет|отсутствует)/i.test(text)
+        ? 'error'
+        : 'unknown';
+
+    const analytics =
+      /аналитика канала отключена|аналитика отключена/i.test(text)
+        ? 'off'
+        : /аналитика собирается|накоплени[ея] данных|готов через/i
+          .test(text)
+          ? 'collecting'
+          : /подписки за 24|отписки за 24|er 24|просмотры за 24/i
+            .test(text)
+            ? 'on'
+            : 'unknown';
+
+    const antifraud =
+      /защита выключена|antifraud отключ/i.test(text)
+        ? 'off'
+        : /защита включена|antifraud включ/i.test(text)
+          ? 'on'
+          : 'unknown';
+
+    return {
+      bot,
+      analytics,
+      antifraud,
+    };
+  };
+
+  const makeAlerts = (cards) => {
+    const alerts = [];
+    const pageText = textOf(document.body);
+
+    if (/не удалось|ошибка загрузки|команда не обработана/i.test(pageText)) {
+      alerts.push({
+        level: 'error',
+        text: 'В кабинете обнаружена ошибка загрузки или обработки данных.',
+      });
+    }
+
+    cards.forEach((card, index) => {
+      const title = channelTitle(card, index);
+      const status = cardStatus(card);
+
+      if (status.bot === 'error') {
+        alerts.push({
+          level: 'error',
+          text: `${title}: у LinkRay нет доступа администратора.`,
+        });
+      }
+
+      if (status.analytics === 'off') {
+        alerts.push({
+          level: 'warning',
+          text: `${title}: аналитика отключена.`,
+        });
+      }
+
+      if (status.analytics === 'collecting') {
+        alerts.push({
+          level: 'info',
+          text: `${title}: аналитика накапливает данные.`,
+        });
+      }
+
+      if (status.antifraud === 'off') {
+        alerts.push({
+          level: 'warning',
+          text: `${title}: защита AntiFraud выключена.`,
+        });
+      }
+
+      if (/нет публикаций|публикаций пока нет/i.test(textOf(card))) {
+        alerts.push({
+          level: 'info',
+          text: `${title}: публикаций пока нет.`,
+        });
+      }
+    });
+
+    if (!cards.length) {
+      alerts.push({
+        level: 'info',
+        text: 'Карточки каналов ещё не загружены.',
+      });
+    }
+
+    return alerts.slice(0, 12);
+  };
+
+  const statusLabel = (type, value) => {
+    const labels = {
+      bot: {
+        ok: 'Доступ бота: есть',
+        error: 'Доступ бота: нет',
+        unknown: 'Доступ бота: проверяется',
+      },
+      analytics: {
+        on: 'Аналитика: включена',
+        off: 'Аналитика: отключена',
+        collecting: 'Аналитика: сбор данных',
+        unknown: 'Аналитика: статус неизвестен',
+      },
+      antifraud: {
+        on: 'AntiFraud: включён',
+        off: 'AntiFraud: отключён',
+        unknown: 'AntiFraud: статус неизвестен',
+      },
+    };
+
+    return labels[type]?.[value] || value;
+  };
+
+  const addChannelSettings = (cards) => {
+    cards.forEach((card, index) => {
+      if (
+        card.querySelector(
+          ':scope > .lrcc-v1-channel-settings',
+        )
+      ) {
+        return;
+      }
+
+      const status = cardStatus(card);
+      const panel = document.createElement('section');
+      panel.className = 'lrcc-v1-channel-settings';
+      panel.setAttribute(
+        'aria-label',
+        'Состояние функций канала',
+      );
+
+      const title = document.createElement('div');
+      title.className = 'lrcc-v1-channel-settings-head';
+      title.innerHTML =
+        '<strong>Управление каналом</strong>' +
+        '<span>Состояние функций</span>';
+
+      const chips = document.createElement('div');
+      chips.className = 'lrcc-v1-status-grid';
+
+      [
+        ['bot', status.bot],
+        ['analytics', status.analytics],
+        ['antifraud', status.antifraud],
+      ].forEach(([type, value]) => {
+        const chip = document.createElement('span');
+        chip.className =
+          `lrcc-v1-status lrcc-v1-status-${value}`;
+        chip.textContent = statusLabel(type, value);
+        chips.appendChild(chip);
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'lrcc-v1-channel-actions';
+
+      const maxButton = document.createElement('a');
+      maxButton.className =
+        'lrcc-v1-action lrcc-v1-action-primary';
+      maxButton.href = BOT_URL;
+      maxButton.textContent = 'Настроить в MAX';
+
+      const refreshButton = document.createElement('button');
+      refreshButton.className = 'lrcc-v1-action';
+      refreshButton.type = 'button';
+      refreshButton.textContent = 'Обновить';
+      refreshButton.addEventListener('click', () => {
+        const existing = Array.from(
+          card.querySelectorAll('button, a'),
+        ).find((element) =>
+          /обновить|проверить доступ/i.test(textOf(element)),
+        );
+
+        if (existing) {
+          existing.click();
+        } else {
+          location.reload();
+        }
+      });
+
+      actions.append(maxButton, refreshButton);
+      panel.append(title, chips, actions);
+      card.appendChild(panel);
+
+      card.dataset.lrccChannel = String(index + 1);
+    });
+  };
+
+  const findInsertRoot = () => {
+    const activeOverview = Array.from(
+      document.querySelectorAll(
+        'button, a, [role="button"]',
+      ),
+    ).find((element) =>
+      /обзор/i.test(textOf(element)) &&
+      (
+        element.classList.contains('active') ||
+        element.getAttribute('aria-current') === 'page' ||
+        element.getAttribute('aria-selected') === 'true'
+      ),
+    );
+
+    const roots = Array.from(
+      document.querySelectorAll(
+        'main, [class*="cabinet-content"], ' +
+        '[class*="dashboard-content"], [class*="page-content"]',
+      ),
+    ).filter(visible);
+
+    const root = roots[0] || document.body;
+
+    if (!activeOverview) {
+      const pageText = textOf(root);
+
+      if (
+        /последние публикации|antifraud/i.test(pageText) &&
+        !/обзор канала|общая сводка/i.test(pageText)
+      ) {
+        return null;
+      }
+    }
+
+    return root;
+  };
+
+  const escapeHtml = (value) =>
+    String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+  const renderCenter = (cards, alerts) => {
+    const root = findInsertRoot();
+
+    if (!root) return;
+
+    let center = document.getElementById(
+      'lrcc-v1-control-center',
+    );
+
+    if (!center) {
+      center = document.createElement('section');
+      center.id = 'lrcc-v1-control-center';
+      center.className = 'lrcc-v1-center';
+
+      const firstMeaningful = Array.from(root.children)
+        .find((element) => visible(element));
+
+      if (firstMeaningful) {
+        root.insertBefore(center, firstMeaningful);
+      } else {
+        root.prepend(center);
+      }
+    }
+
+    const state = readState();
+    const currentFingerprint = fingerprint(alerts);
+    const isRead =
+      state.fingerprint === currentFingerprint &&
+      state.read === true;
+
+    const unreadCount = isRead
+      ? 0
+      : alerts.filter((item) => item.level !== 'info').length;
+
+    const warnings = alerts.filter((item) =>
+      item.level === 'error' ||
+      item.level === 'warning'
+    ).length;
+
+    const stateText = alerts.some(
+      (item) => item.level === 'error',
+    )
+      ? 'Есть ошибки'
+      : alerts.some((item) => item.level === 'warning')
+        ? 'Есть замечания'
+        : 'Всё спокойно';
+
+    const alertsHtml = alerts.length
+      ? alerts.map((item) => `
+          <div class="lrcc-v1-notification lrcc-v1-notification-${item.level}">
+            <span aria-hidden="true"></span>
+            <p>${escapeHtml(item.text)}</p>
+          </div>
+        `).join('')
+      : `
+          <div class="lrcc-v1-notification lrcc-v1-notification-ok">
+            <span aria-hidden="true"></span>
+            <p>Критичных событий нет.</p>
+          </div>
+        `;
+
+    center.innerHTML = `
+      <div class="lrcc-v1-center-head">
+        <div>
+          <span class="lrcc-v1-kicker">Личный кабинет</span>
+          <h2>Центр управления</h2>
+          <p>Доступы, аналитика и защита подключённых каналов.</p>
+        </div>
+        <span class="lrcc-v1-counter${
+          unreadCount ? ' has-alerts' : ''
+        }">${unreadCount || '✓'}</span>
+      </div>
+
+      <div class="lrcc-v1-summary">
+        <article>
+          <span>Каналы</span>
+          <strong>${cards.length}</strong>
+        </article>
+        <article>
+          <span>Требует внимания</span>
+          <strong>${warnings}</strong>
+        </article>
+        <article>
+          <span>Состояние</span>
+          <strong>${stateText}</strong>
+        </article>
+      </div>
+
+      <div class="lrcc-v1-notifications">
+        <div class="lrcc-v1-notifications-head">
+          <div>
+            <strong>Уведомления</strong>
+            <span>Сводка по текущему состоянию</span>
+          </div>
+          <button type="button" data-lrcc-read>
+            ${isRead ? 'Прочитано' : 'Отметить прочитанным'}
+          </button>
+        </div>
+
+        <div class="lrcc-v1-notification-list">
+          ${alertsHtml}
+        </div>
+      </div>
+
+      <div class="lrcc-v1-quick-actions">
+        <button type="button" data-lrcc-channels>Каналы</button>
+        <button type="button" data-lrcc-refresh>Обновить данные</button>
+        <a href="${BOT_URL}">Studio в MAX</a>
+      </div>
+    `;
+
+    center
+      .querySelector('[data-lrcc-read]')
+      ?.addEventListener('click', () => {
+        writeState({
+          fingerprint: currentFingerprint,
+          read: true,
+          readAt: Date.now(),
+        });
+        scheduleUpdate();
+      });
+
+    center
+      .querySelector('[data-lrcc-channels]')
+      ?.addEventListener('click', () => {
+        if (!clickByText(/^каналы$/i)) {
+          location.hash = 'channels';
+        }
+      });
+
+    center
+      .querySelector('[data-lrcc-refresh]')
+      ?.addEventListener('click', () => {
+        const refresh = findByText(
+          /обновить|проверить доступ/i,
+        );
+
+        if (refresh) {
+          refresh.click();
+        } else {
+          location.reload();
+        }
+      });
+  };
+
+  const update = () => {
+    if (!cabinetVisible() || isLoading()) return;
+
+    const cards = inferChannelCards();
+    const alerts = makeAlerts(cards);
+
+    addChannelSettings(cards);
+    renderCenter(cards, alerts);
+
+    document.documentElement.dataset.lrccVersion = VERSION;
+  };
+
+  function scheduleUpdate() {
+    window.clearTimeout(updateTimer);
+    updateTimer = window.setTimeout(update, 120);
+  }
+
+  const start = () => {
+    if (!cabinetVisible()) return;
+
+    scheduleUpdate();
+
+    const observer = new MutationObserver(scheduleUpdate);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+
+    window.addEventListener('popstate', scheduleUpdate);
+    window.addEventListener('hashchange', scheduleUpdate);
+    window.addEventListener('focus', scheduleUpdate);
+    window.setInterval(scheduleUpdate, 15000);
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      start,
+      { once: true },
+    );
+  } else {
+    start();
+  }
+})();
+/* LR_CABINET_CONTROL_CENTER_V1_END */
+'''
+
+css_patch = r'''
+/* LR_CABINET_CONTROL_CENTER_V1_STYLES_START */
+.lrcc-v1-center {
+  width: min(100%, 980px);
+  margin: 0 auto 20px;
+  padding: 20px;
+  border: 1px solid rgba(134, 202, 212, .2);
+  border-radius: 28px;
+  background:
+    linear-gradient(145deg, rgba(8, 38, 52, .98), rgba(4, 25, 37, .98));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .22);
+  color: #f3f8fb;
+}
+
+.lrcc-v1-center-head,
+.lrcc-v1-notifications-head,
+.lrcc-v1-channel-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lrcc-v1-kicker {
+  display: block;
+  margin-bottom: 5px;
+  color: #62e4b0;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.lrcc-v1-center h2 {
+  margin: 0;
+  font-size: clamp(24px, 5vw, 36px);
+  line-height: 1.05;
+}
+
+.lrcc-v1-center-head p {
+  margin: 8px 0 0;
+  color: #93aabb;
+  font-size: 14px;
+}
+
+.lrcc-v1-counter {
+  display: grid;
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border: 1px solid rgba(99, 229, 178, .25);
+  border-radius: 16px;
+  background: rgba(72, 210, 156, .12);
+  color: #67e8b3;
+  font-weight: 900;
+}
+
+.lrcc-v1-counter.has-alerts {
+  border-color: rgba(255, 178, 92, .32);
+  background: rgba(255, 151, 64, .13);
+  color: #ffc070;
+}
+
+.lrcc-v1-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.lrcc-v1-summary article {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid rgba(135, 192, 205, .15);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.lrcc-v1-summary span {
+  display: block;
+  margin-bottom: 7px;
+  color: #8fa8b8;
+  font-size: 12px;
+}
+
+.lrcc-v1-summary strong {
+  display: block;
+  overflow: hidden;
+  color: #f4f9fb;
+  font-size: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lrcc-v1-notifications {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid rgba(135, 192, 205, .15);
+  border-radius: 20px;
+  background: rgba(1, 20, 31, .56);
+}
+
+.lrcc-v1-notifications-head strong,
+.lrcc-v1-channel-settings-head strong {
+  display: block;
+  color: #f3f8fb;
+  font-size: 17px;
+}
+
+.lrcc-v1-notifications-head span,
+.lrcc-v1-channel-settings-head span {
+  display: block;
+  margin-top: 4px;
+  color: #8fa8b8;
+  font-size: 12px;
+}
+
+.lrcc-v1-notifications-head button {
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  border: 1px solid rgba(105, 225, 180, .22);
+  border-radius: 12px;
+  background: rgba(64, 205, 151, .1);
+  color: #69e4b4;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.lrcc-v1-notification-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.lrcc-v1-notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.lrcc-v1-notification > span {
+  flex: 0 0 9px;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #62d6ff;
+  box-shadow: 0 0 0 5px rgba(98, 214, 255, .08);
+}
+
+.lrcc-v1-notification p {
+  margin: 0;
+  color: #bfd0d9;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.lrcc-v1-notification-warning > span {
+  background: #ffb35e;
+  box-shadow: 0 0 0 5px rgba(255, 179, 94, .08);
+}
+
+.lrcc-v1-notification-error > span {
+  background: #ff7087;
+  box-shadow: 0 0 0 5px rgba(255, 112, 135, .08);
+}
+
+.lrcc-v1-notification-ok > span {
+  background: #61e3ae;
+  box-shadow: 0 0 0 5px rgba(97, 227, 174, .08);
+}
+
+.lrcc-v1-quick-actions,
+.lrcc-v1-channel-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.lrcc-v1-quick-actions button,
+.lrcc-v1-quick-actions a,
+.lrcc-v1-action {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(125, 190, 203, .18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .035);
+  color: #d9e7ed;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+  text-decoration: none;
+}
+
+.lrcc-v1-quick-actions a,
+.lrcc-v1-action-primary {
+  border-color: rgba(84, 230, 174, .25);
+  background:
+    linear-gradient(135deg, rgba(45, 217, 151, .95), rgba(38, 199, 161, .95));
+  color: #05271f;
+}
+
+.lrcc-v1-channel-settings {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid rgba(126, 192, 205, .16);
+  border-radius: 20px;
+  background: rgba(3, 25, 36, .72);
+}
+
+.lrcc-v1-status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.lrcc-v1-status {
+  display: inline-flex;
+  min-height: 31px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid rgba(143, 171, 187, .18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .035);
+  color: #a9bdc9;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.lrcc-v1-status-ok,
+.lrcc-v1-status-on {
+  border-color: rgba(90, 229, 174, .24);
+  background: rgba(68, 210, 153, .1);
+  color: #69e4b2;
+}
+
+.lrcc-v1-status-off,
+.lrcc-v1-status-error {
+  border-color: rgba(255, 115, 139, .24);
+  background: rgba(255, 94, 124, .09);
+  color: #ff889a;
+}
+
+.lrcc-v1-status-collecting {
+  border-color: rgba(97, 192, 255, .24);
+  background: rgba(69, 166, 239, .1);
+  color: #78c9ff;
+}
+
+.lrcc-v1-channel-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 700px) {
+  .lrcc-v1-center {
+    width: calc(100% - 24px);
+    margin-bottom: 14px;
+    padding: 16px;
+    border-radius: 24px;
+  }
+
+  .lrcc-v1-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lrcc-v1-summary article:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .lrcc-v1-quick-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .lrcc-v1-center-head,
+  .lrcc-v1-notifications-head {
+    align-items: flex-start;
+  }
+
+  .lrcc-v1-notifications-head {
+    flex-direction: column;
+  }
+
+  .lrcc-v1-notifications-head button {
+    width: 100%;
+  }
+}
+/* LR_CABINET_CONTROL_CENTER_V1_STYLES_END */
+'''
+
+js = js.rstrip() + "\n\n" + js_patch.strip() + "\n"
+css = css.rstrip() + "\n\n" + css_patch.strip() + "\n"
+
+js_path.write_text(js, encoding="utf-8")
+css_path.write_text(css, encoding="utf-8")
+
+print("JS-блок добавлен:", js_path)
+print("CSS-блок добавлен:", css_path)
+PY
+
+echo "[3/9] Обновляю кэширование JavaScript и CSS"
+
+python3 - "$FRONTEND_JS" "$FRONTEND_CSS" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+js_name = Path(sys.argv[1]).name
+css_name = Path(sys.argv[2]).name
+version = "20260807-cabinet-center-v1"
+
+changed = 0
+
+for path in Path("public").rglob("*.html"):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        continue
+
+    original = text
+
+    text = re.sub(
+        rf'({re.escape(js_name)})(?:\?[^"\']*)?',
+        rf'\1?v={version}',
+        text,
+    )
+
+    text = re.sub(
+        rf'({re.escape(css_name)})(?:\?[^"\']*)?',
+        rf'\1?v={version}',
+        text,
+    )
+
+    if text != original:
+        path.write_text(text, encoding="utf-8")
+        changed += 1
+
+print("HTML-файлов обновлено:", changed)
+PY
+
+echo "[4/9] Проверяю синтаксис и точность установки"
+
+node --check "$FRONTEND_JS"
+
+grep -q \
+  "LR_CABINET_CONTROL_CENTER_V1_START" \
+  "$FRONTEND_JS"
+
+grep -q \
+  "LR_CABINET_CONTROL_CENTER_V1_STYLES_START" \
+  "$FRONTEND_CSS"
+
+grep -q \
+  "Центр управления" \
+  "$FRONTEND_JS"
+
+grep -q \
+  "Управление каналом" \
+  "$FRONTEND_JS"
+
+echo "[5/9] Проверяю, что серверные системы не изменялись"
+
+if ! git diff --name-only | grep -q '^public/'; then
+  echo "Не обнаружены изменения public/"
+  exit 1
+fi
+
+if git diff --name-only | grep -Eq \
+  '^(src|migrations|docker-compose\.yml|package\.json)'; then
+  echo "Обнаружено изменение серверных файлов"
+  exit 1
+fi
+
+echo "Изменены только файлы интерфейса сайта"
+
+echo "[6/9] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[7/9] Проверяю запуск и доступность файлов"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_CABINET_CONTROL_CENTER_V1_START' '/app/${FRONTEND_JS}'"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_CABINET_CONTROL_CENTER_V1_STYLES_START' '/app/${FRONTEND_CSS}'"
+
+if docker logs --since 90s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После запуска обнаружена ошибка"
+  exit 1
+fi
+
+MAIN_STATUS="$(
+  curl -ksS -o /dev/null -w '%{http_code}' \
+    https://linkray.ru/cabinet
+)"
+
+echo "Кабинет: $MAIN_STATUS"
+
+if [[ "$MAIN_STATUS" != "200" && "$MAIN_STATUS" != "302" ]]; then
+  echo "Страница кабинета недоступна"
+  exit 1
+fi
+
+echo "[8/9] Сохраняю изменения в GitHub"
+
+git add -- public
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Add cabinet notification and channel status center"
+  git push origin HEAD:main
+else
+  echo "Центр управления уже установлен"
+fi
+
+echo "[9/9] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "ЦЕНТР УПРАВЛЕНИЯ ЛИЧНОГО КАБИНЕТА УСТАНОВЛЕН"
+echo
+echo "• добавлена общая сводка по каналам"
+echo "• добавлен центр уведомлений"
+echo "• показываются проблемы доступа, аналитики и AntiFraud"
+echo "• в карточках каналов добавлено состояние функций"
+echo "• есть быстрые кнопки «Каналы», «Обновить» и «Studio в MAX»"
+echo "• уведомления можно отметить прочитанными"
+echo "• сервер, база, бот, Studio и автопостинг не изменялись"
+echo "============================================================"
