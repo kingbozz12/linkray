@@ -25496,16 +25496,7 @@ try {
 app.use(async function lrV61ForwardMainBeforeFallback(req, res, next) {
   try {
     if (req.method !== 'POST' || !String(req.path || req.url || '').includes('/webhook')) return next();
-    if (
-      await lrV79HandleAddChannelEarly(
-        req.body || {},
-      )
-    ) {
-      return res.json({
-        ok: true,
-        handled: 'lr_v79_add_channel',
-      });
-    }
+
     if (await lrV61HandleForwardFromMain(req.body || {})) return res.json({ ok: true, handled: 'lr_v61_forward_main' });
   } catch (e) {
     console.error('[v61 forward] middleware failed', e?.stack || e?.message || e);
