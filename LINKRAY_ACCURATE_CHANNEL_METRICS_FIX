@@ -1,0 +1,886 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-accurate-metrics-1"
+ROUTES="src/linkrayWebsiteRoutes.js"
+SITE="public/linkray-site"
+CABINET_JS="$SITE/cabinet-stable.js"
+CABINET_HTML="$SITE/cabinet-stable.html"
+BACKUP="/root/linkray-site-backups/accurate-metrics-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+echo "[1/8] Сохраняю резервную копию"
+mkdir -p /root/linkray-site-backups
+tar -czf "$BACKUP" "$ROUTES" "$CABINET_JS" "$CABINET_HTML"
+
+echo "[2/8] Подключаю точные показатели каналов"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+for start, end in (
+    (
+        "// LINKRAY_REAL_CABINET_API_V1_START",
+        "// LINKRAY_REAL_CABINET_API_V1_END",
+    ),
+    (
+        "// LINKRAY_ACCURATE_CHANNEL_METRICS_V2_START",
+        "// LINKRAY_ACCURATE_CHANNEL_METRICS_V2_END",
+    ),
+):
+    source = re.sub(
+        rf"\n?{re.escape(start)}[\s\S]*?{re.escape(end)}\n?",
+        "\n",
+        source,
+    )
+
+
+# Удаляем все старые незамаркированные регистрации этого маршрута.
+# Маршрут верхнего уровня вырезается до следующего app.get/app.post и т. п.
+overview_route = re.compile(
+    r"""(?ms)^[ \t]*app\.get\(\s*['"]/api/website/cabinet/overview['"][\s\S]*?(?=^[ \t]*app\.(?:get|post|put|patch|delete|use)\s*\()"""
+)
+
+source, removed_overview_routes = overview_route.subn("\n", source)
+print(f"Удалено старых маршрутов overview: {removed_overview_routes}")
+
+block = r'''
+// LINKRAY_ACCURATE_CHANNEL_METRICS_V2_START
+function lrAccurateRows(result) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.rows)) return result.rows;
+  return [];
+}
+
+function lrAccurateFirst(result) {
+  return lrAccurateRows(result)[0] ?? null;
+}
+
+function lrAccuratePick(object, names, fallback = null) {
+  if (!object || typeof object !== 'object') return fallback;
+
+  for (const name of names) {
+    const value = object[name];
+
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+
+  return fallback;
+}
+
+function lrAccurateNumberOrNull(value) {
+  if (value === undefined || value === null || value === '') return null;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function lrAccurateBoolean(value, fallback = false) {
+  if (value === true || value === 1 || value === '1') return true;
+  if (value === false || value === 0 || value === '0') return false;
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+
+  if (['true', 'yes', 'on', 'enabled', 'active'].includes(normalized)) {
+    return true;
+  }
+
+  if (['false', 'no', 'off', 'disabled', 'inactive'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function lrAccurateParseCookies(req) {
+  const result = {};
+  const source = String(req.headers.cookie ?? '');
+
+  for (const part of source.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+
+    const name = part.slice(0, separator).trim();
+    const rawValue = part.slice(separator + 1).trim();
+
+    if (!name) continue;
+
+    try {
+      result[name] = decodeURIComponent(rawValue);
+    } catch {
+      result[name] = rawValue;
+    }
+  }
+
+  return result;
+}
+
+async function lrAccurateSession(req) {
+  const cookies = lrAccurateParseCookies(req);
+  const token = String(cookies.lr_web_session ?? '').trim();
+
+  if (!token) return null;
+
+  const { createHash } = await import('node:crypto');
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+
+  const session = lrAccurateFirst(
+    await query(
+      `
+        SELECT
+          s.id AS session_id,
+          s.user_id,
+          u.max_user_id,
+          u.display_name
+        FROM public.lr_web_sessions s
+        JOIN public.lr_users u
+          ON u.id = s.user_id
+        WHERE s.token_hash = $1
+          AND s.expires_at > NOW()
+          AND s.revoked_at IS NULL
+          AND COALESCE(u.is_blocked, FALSE) = FALSE
+        ORDER BY s.created_at DESC, s.id DESC
+        LIMIT 1
+      `,
+      [tokenHash],
+    ),
+  );
+
+  if (!session) return null;
+
+  query(
+    `
+      UPDATE public.lr_web_sessions
+      SET last_seen_at = NOW()
+      WHERE id = $1
+    `,
+    [session.session_id],
+  ).catch(() => {});
+
+  return session;
+}
+
+function lrAccurateCleanUrl(value) {
+  const url = String(value ?? '').trim();
+
+  if (
+    url.startsWith('https://') ||
+    url.startsWith('http://') ||
+    url.startsWith('/')
+  ) {
+    return url;
+  }
+
+  return null;
+}
+
+function lrAccurateSnapshotMatches(snapshot, identifiers) {
+  const values = [
+    snapshot?.channel_key,
+    snapshot?.link,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+
+  return values.some((value) => identifiers.has(value));
+}
+
+app.get(
+  '/api/website/cabinet/overview',
+  applyWebsiteHeaders,
+  asyncRoute(async (req, res) => {
+    const session = await lrAccurateSession(req);
+
+    if (!session?.user_id) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Сессия входа закончилась. Войдите заново.',
+      });
+    }
+
+    const membershipRows = lrAccurateRows(
+      await query(
+        `
+          SELECT
+            to_jsonb(c) AS channel,
+            to_jsonb(uc) AS membership
+          FROM public.lr_user_channels uc
+          JOIN public.channels c
+            ON c.id = uc.channel_id
+          WHERE uc.user_id = $1
+          ORDER BY c.id ASC
+        `,
+        [session.user_id],
+      ),
+    );
+
+    const baseChannels = membershipRows
+      .map((row) => {
+        const channel = row.channel ?? {};
+        const membership = row.membership ?? {};
+
+        if (channel.is_active === false) return null;
+
+        const id = lrAccuratePick(channel, ['id']);
+        if (id === null || id === undefined) return null;
+
+        const maxChatId = String(
+          lrAccuratePick(channel, [
+            'max_chat_id',
+            'chat_id',
+            'channel_id',
+          ], ''),
+        ).trim();
+
+        const link = String(
+          lrAccuratePick(channel, [
+            'link',
+            'public_link',
+            'channel_link',
+            'url',
+          ], ''),
+        ).trim();
+
+        const identifiers = new Set(
+          [
+            String(id),
+            maxChatId,
+            link,
+          ].filter(Boolean),
+        );
+
+        return {
+          raw: channel,
+          membership,
+          id: String(id),
+          maxChatId,
+          link,
+          identifiers,
+        };
+      })
+      .filter(Boolean);
+
+    const allIdentifiers = [
+      ...new Set(
+        baseChannels.flatMap((channel) => [...channel.identifiers]),
+      ),
+    ];
+
+    const snapshots = allIdentifiers.length
+      ? lrAccurateRows(
+          await query(
+            `
+              SELECT
+                channel_key,
+                link,
+                title,
+                avatar_url,
+                subscribers,
+                views24,
+                views48,
+                views72,
+                er24,
+                delta_day,
+                captured_at
+              FROM public.lr_channel_analytics_snapshots
+              WHERE CAST(channel_key AS TEXT) = ANY($1::text[])
+                 OR COALESCE(CAST(link AS TEXT), '') = ANY($1::text[])
+              ORDER BY captured_at DESC NULLS LAST
+            `,
+            [allIdentifiers],
+          ),
+        )
+      : [];
+
+    const channelIds = baseChannels
+      .map((channel) => Number(channel.id))
+      .filter((value) => Number.isInteger(value) && value > 0);
+
+    const antifraudRows = channelIds.length
+      ? lrAccurateRows(
+          await query(
+            `
+              SELECT to_jsonb(a) AS antifraud
+              FROM public.lr_antifraud_channels a
+              WHERE a.channel_id = ANY($1::bigint[])
+            `,
+            [channelIds],
+          ).catch(() => []),
+        )
+      : [];
+
+    const antifraudById = new Map(
+      antifraudRows.map((row) => {
+        const antifraud = row.antifraud ?? {};
+        return [String(antifraud.channel_id), antifraud];
+      }),
+    );
+
+    const channels = baseChannels.map((base) => {
+      const snapshot =
+        snapshots.find((item) =>
+          lrAccurateSnapshotMatches(item, base.identifiers),
+        ) ?? null;
+
+      const analyticsReady = Boolean(snapshot?.captured_at);
+
+      const subscribers = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.subscribers)
+        : null;
+
+      const views24 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.views24)
+        : null;
+
+      const views48 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.views48)
+        : null;
+
+      const views72 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.views72)
+        : null;
+
+      const er24 = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.er24)
+        : null;
+
+      const deltaDay = analyticsReady
+        ? lrAccurateNumberOrNull(snapshot.delta_day)
+        : null;
+
+      const antifraud = antifraudById.get(base.id) ?? {};
+
+      return {
+        id: base.id,
+        maxChatId: base.maxChatId,
+        link: base.link || null,
+        title: String(
+          lrAccuratePick(
+            {
+              ...snapshot,
+              ...base.raw,
+            },
+            [
+              'title',
+              'name',
+              'channel_title',
+              'display_name',
+            ],
+            `Канал ${base.id}`,
+          ),
+        ),
+        avatar: lrAccurateCleanUrl(
+          lrAccuratePick(
+            {
+              ...snapshot,
+              ...base.raw,
+            },
+            [
+              'avatar_url',
+              'photo_url',
+              'image_url',
+              'avatar',
+            ],
+          ),
+        ),
+        role: String(
+          lrAccuratePick(
+            base.membership,
+            ['role', 'access_role', 'member_role'],
+            'Администратор',
+          ),
+        ),
+        analyticsReady,
+        subscribers,
+        views24,
+        views48,
+        views72,
+        er24,
+        deltaDay,
+        capturedAt: snapshot?.captured_at ?? null,
+        antifraudEnabled: lrAccurateBoolean(
+          lrAccuratePick(
+            antifraud,
+            [
+              'enabled',
+              'is_enabled',
+              'active',
+              'is_active',
+            ],
+          ),
+        ),
+      };
+    });
+
+    const readyChannels = channels.filter(
+      (channel) => channel.analyticsReady,
+    );
+
+    const sumNullable = (field) =>
+      readyChannels.reduce(
+        (sum, channel) => sum + Number(channel[field] ?? 0),
+        0,
+      );
+
+    return res.json({
+      ok: true,
+      user: {
+        id: String(session.user_id),
+        linkrayId: String(session.user_id).padStart(6, '0'),
+        displayName: String(
+          session.display_name || `Пользователь ${session.user_id}`,
+        ),
+        maxUserId: String(session.max_user_id ?? ''),
+      },
+      summary: {
+        channels: channels.length,
+        analyticsReadyChannels: readyChannels.length,
+        subscribers:
+          readyChannels.length > 0
+            ? sumNullable('subscribers')
+            : null,
+        views24:
+          readyChannels.length > 0
+            ? sumNullable('views24')
+            : null,
+        deltaDay:
+          readyChannels.length > 0
+            ? sumNullable('deltaDay')
+            : null,
+      },
+      channels,
+      metricsSource: 'lr_channel_analytics_snapshots',
+      updatedAt: new Date().toISOString(),
+    });
+  }),
+);
+// LINKRAY_ACCURATE_CHANNEL_METRICS_V2_END
+'''
+
+needle = "// LINKRAY_STABLE_CABINET_ROUTE_START"
+
+if needle in source:
+    source = source.replace(needle, block + "\n" + needle, 1)
+else:
+    match = re.search(r"\bapp\.get\(\s*['\"]\/cabinet", source)
+    if not match:
+        raise SystemExit("Не найдено место перед маршрутом /cabinet")
+    source = source[:match.start()] + block + "\n" + source[match.start():]
+
+path.write_text(source, encoding="utf-8")
+
+count = source.count("'/api/website/cabinet/overview'") + source.count(
+    '"/api/website/cabinet/overview"'
+)
+
+if count != 1:
+    raise SystemExit(
+        f"После очистки найдено маршрутов overview: {count}, ожидался 1"
+    )
+
+print("Точный API показателей каналов установлен")
+PY
+
+echo "[3/8] Обновляю кабинет: никаких ложных нулей"
+
+cat > "$CABINET_JS" <<'JS'
+(() => {
+  'use strict';
+
+  const API = '/api/website/cabinet/overview';
+  const BOT_URL = 'https://max.ru/se13353901_bot';
+  const root = document.getElementById('lr-cabinet');
+
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+  const formatNumber = (value) => {
+    if (value === undefined || value === null || value === '') return '—';
+
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return '—';
+
+    return new Intl.NumberFormat('ru-RU').format(parsed);
+  };
+
+  const signedNumber = (value) => {
+    if (value === undefined || value === null || value === '') return '—';
+
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return '—';
+
+    return `${parsed > 0 ? '+' : ''}${formatNumber(parsed)}`;
+  };
+
+  const formattedDate = (value) => {
+    if (!value) return null;
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+
+    return new Intl.DateTimeFormat('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  };
+
+  const loading = () => {
+    root.innerHTML = `
+      <section class="state-card">
+        <img class="state-logo"
+             src="/linkray-site/linkray-logo-exact.webp"
+             alt="LinkRay"
+             onerror="this.src='/linkray-site/icon-192.png'">
+        <h1>Загружаем кабинет</h1>
+        <p>Получаем последние показатели каналов.</p>
+        <div class="spinner" aria-label="Загрузка"></div>
+      </section>
+    `;
+  };
+
+  const errorScreen = (message, status) => {
+    const authError = status === 401 || status === 403;
+
+    root.innerHTML = `
+      <section class="state-card error-card">
+        <img class="state-logo"
+             src="/linkray-site/linkray-logo-exact.webp"
+             alt="LinkRay"
+             onerror="this.src='/linkray-site/icon-192.png'">
+        <h1>${authError ? 'Сессия входа закончилась' : 'Не удалось загрузить кабинет'}</h1>
+        <p>${escapeHtml(message || 'Сервер не вернул данные.')}</p>
+        <div class="actions">
+          ${
+            authError
+              ? '<a class="primary" href="/">Войти снова</a>'
+              : '<button class="primary" type="button" id="retry-cabinet">Повторить</button>'
+          }
+          <a class="secondary"
+             href="${BOT_URL}"
+             target="_blank"
+             rel="noopener noreferrer">
+            Открыть LinkRay в MAX
+          </a>
+        </div>
+      </section>
+    `;
+
+    document.getElementById('retry-cabinet')?.addEventListener('click', load);
+  };
+
+  const channelCard = (channel) => {
+    const ready = channel.analyticsReady === true;
+    const capturedAt = formattedDate(channel.capturedAt);
+    const delta = channel.deltaDay;
+    const deltaClass =
+      delta === null || delta === undefined
+        ? ''
+        : Number(delta) < 0
+          ? 'negative'
+          : 'positive';
+
+    return `
+      <article class="channel-card">
+        <div class="channel-top">
+          <div class="channel-title">
+            <h3>${escapeHtml(channel.title || `Канал ${channel.id}`)}</h3>
+            <p>
+              ${
+                ready
+                  ? `Данные обновлены${capturedAt ? ` ${escapeHtml(capturedAt)}` : ''}`
+                  : 'Данные аналитики ещё собираются'
+              }
+            </p>
+          </div>
+          <span class="status-dot"></span>
+        </div>
+
+        <div class="channel-metrics">
+          <div>
+            <strong>${ready ? formatNumber(channel.subscribers) : '—'}</strong>
+            <span>подписчиков сейчас</span>
+          </div>
+
+          <div>
+            <strong>${ready ? formatNumber(channel.views24) : '—'}</strong>
+            <span>просмотров за 24 ч</span>
+          </div>
+
+          <div>
+            <strong class="${deltaClass}">
+              ${ready ? signedNumber(channel.deltaDay) : '—'}
+            </strong>
+            <span>изменение за сутки</span>
+          </div>
+        </div>
+
+        ${
+          ready
+            ? `
+              <div class="channel-metrics" style="margin-top:10px">
+                <div>
+                  <strong>${formatNumber(channel.views48)}</strong>
+                  <span>просмотров за 48 ч</span>
+                </div>
+                <div>
+                  <strong>${formatNumber(channel.views72)}</strong>
+                  <span>просмотров за 72 ч</span>
+                </div>
+                <div>
+                  <strong>${formatNumber(channel.er24)}%</strong>
+                  <span>ER за 24 ч</span>
+                </div>
+              </div>
+            `
+            : ''
+        }
+      </article>
+    `;
+  };
+
+  const render = (payload) => {
+    const user = payload.user || {};
+    const summary = payload.summary || {};
+    const channels = Array.isArray(payload.channels) ? payload.channels : [];
+
+    const readyCount = Number(summary.analyticsReadyChannels || 0);
+    const totalCount = Number(summary.channels || channels.length || 0);
+
+    const cards = channels.length
+      ? channels.map(channelCard).join('')
+      : `
+        <section class="empty-card">
+          <h2>Подключённых каналов пока нет</h2>
+          <p>
+            Добавь бота LinkRay администратором канала и перешли ему
+            любой пост из этого канала.
+          </p>
+          <div class="actions">
+            <a class="primary"
+               href="${BOT_URL}"
+               target="_blank"
+               rel="noopener noreferrer">
+              Открыть LinkRay в MAX
+            </a>
+          </div>
+        </section>
+      `;
+
+    const deltaClass =
+      summary.deltaDay === null || summary.deltaDay === undefined
+        ? ''
+        : Number(summary.deltaDay) < 0
+          ? 'negative'
+          : 'positive';
+
+    root.innerHTML = `
+      <header class="header">
+        <div class="profile">
+          <img src="/linkray-site/linkray-logo-exact.webp"
+               alt="LinkRay"
+               onerror="this.src='/linkray-site/icon-192.png'">
+          <div class="profile-copy">
+            <span class="eyebrow">Личный кабинет</span>
+            <h1>${escapeHtml(user.displayName || 'Пользователь LinkRay')}</h1>
+            <p>ID LinkRay: ${escapeHtml(user.linkrayId || '')}</p>
+          </div>
+        </div>
+
+        <button type="button"
+                class="icon-button"
+                id="refresh-cabinet"
+                aria-label="Обновить">
+          ↻
+        </button>
+      </header>
+
+      <section class="summary overview-only">
+        <article class="metric">
+          <span>Каналы</span>
+          <strong>${formatNumber(totalCount)}</strong>
+        </article>
+
+        <article class="metric">
+          <span>Подписчики</span>
+          <strong>${formatNumber(summary.subscribers)}</strong>
+        </article>
+
+        <article class="metric">
+          <span>Просмотры за 24 ч</span>
+          <strong>${formatNumber(summary.views24)}</strong>
+        </article>
+
+        <article class="metric">
+          <span>Изменение за сутки</span>
+          <strong class="${deltaClass}">
+            ${signedNumber(summary.deltaDay)}
+          </strong>
+        </article>
+      </section>
+
+      <section class="section-head">
+        <div>
+          <span class="eyebrow">Мои каналы</span>
+          <h2>Показатели каналов</h2>
+          <p style="margin:6px 0 0;color:#8da3b5;font-size:12px">
+            Аналитика готова для ${formatNumber(readyCount)} из ${formatNumber(totalCount)}
+          </p>
+        </div>
+
+        <a href="${BOT_URL}"
+           target="_blank"
+           rel="noopener noreferrer">
+          Studio в MAX
+        </a>
+      </section>
+
+      <section class="channel-list">${cards}</section>
+    `;
+
+    document.getElementById('refresh-cabinet')?.addEventListener('click', load);
+  };
+
+  async function load() {
+    loading();
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+
+    try {
+      const response = await fetch(API, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+        signal: controller.signal,
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      const body = contentType.includes('application/json')
+        ? await response.json()
+        : { error: (await response.text()).slice(0, 500) };
+
+      if (!response.ok || body?.ok === false) {
+        const error = new Error(
+          body?.error ||
+          body?.message ||
+          `Ошибка API ${response.status}`,
+        );
+        error.status = response.status;
+        throw error;
+      }
+
+      render(body);
+    } catch (error) {
+      errorScreen(
+        error?.name === 'AbortError'
+          ? 'Сервер не ответил за 12 секунд.'
+          : error?.message || 'Неизвестная ошибка загрузки.',
+        Number(error?.status || 0),
+      );
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  document.querySelectorAll('[data-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      document
+        .querySelectorAll('[data-tab]')
+        .forEach((item) => item.classList.remove('active'));
+
+      button.classList.add('active');
+
+      const tab = button.getAttribute('data-tab') || 'overview';
+      root.setAttribute('data-view', tab);
+
+      if (tab === 'channels') {
+        document
+          .querySelector('.section-head')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    });
+  });
+
+  load();
+})();
+JS
+
+echo "[4/8] Обновляю версию файла против старого кэша"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("public/linkray-site/cabinet-stable.html")
+source = path.read_text(encoding="utf-8")
+version = "20260806-accurate-metrics-1"
+
+source = re.sub(
+    r'cabinet-stable\.js(?:\?v=[^"\']*)?',
+    f'cabinet-stable.js?v={version}',
+    source,
+)
+
+source = re.sub(
+    r'cabinet-stable\.css(?:\?v=[^"\']*)?',
+    f'cabinet-stable.css?v={version}',
+    source,
+)
+
+path.write_text(source, encoding="utf-8")
+print("Версия ресурсов обновлена")
+PY
+
+echo "[5/8] Проверяю синтаксис"
+node --check "$ROUTES"
+node --check "$CABINET_JS"
+
+echo "[6/8] Сохраняю в GitHub"
+git add -- "$ROUTES" "$CABINET_JS" "$CABINET_HTML"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Use exact channel analytics metrics in web cabinet"
+  git push origin HEAD:main
+else
+  echo "Изменения уже применены"
+fi
+
+echo "[7/8] Пересобираю только приложение"
+docker compose up -d --build app
+sleep 15
+
+echo "[8/8] Проверяю без создания кода входа"
+echo "Кабинет: $(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/cabinet)"
+echo "JavaScript: $(curl -sS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.js?v=$VERSION")"
+echo "API без cookie: $(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/api/website/cabinet/overview)"
+
+grep -q "metricsSource: 'lr_channel_analytics_snapshots'" "$ROUTES"
+
+echo
+echo "============================================================"
+echo "ТОЧНЫЕ ПОКАЗАТЕЛИ КАНАЛОВ ПОДКЛЮЧЕНЫ"
+echo "Подписчики, просмотры, изменение и ER берутся из одного последнего снимка"
+echo "При отсутствии снимка показывается «Данные аналитики ещё собираются», а не 0"
+echo "Коды входа, Studio, автопостинг и AntiFraud не изменялись"
+echo "Резервная копия: $BACKUP"
+echo "============================================================"
