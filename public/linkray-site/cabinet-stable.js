@@ -306,54 +306,325 @@
     return period === '7d' ? history.slice(-7) : history.slice(-30);
   }
 
-  function svgChart(points, field, cssClass) {
-    const values = points
-      .map((point) => numberOrNull(point[field]))
-      .filter((value) => value !== null);
 
-    if (values.length < 2) {
-      return '<div class="chart-empty">Недостаточно точек для графика</div>';
+  /* LINKRAY_PROFESSIONAL_CHARTS_V1 */
+  function chartTimestamp(point, index) {
+    const raw = point?.capturedAt || point?.date;
+    const time = raw ? new Date(raw).getTime() : NaN;
+    return Number.isFinite(time) ? time : index;
+  }
+
+  function chartDateLabel(time, period) {
+    const date = new Date(time);
+    if (Number.isNaN(date.getTime())) return '';
+
+    return new Intl.DateTimeFormat('ru-RU', {
+      day: period === '24h' ? undefined : '2-digit',
+      month: period === '24h' ? undefined : '2-digit',
+      hour: period === '24h' ? '2-digit' : undefined,
+      minute: period === '24h' ? '2-digit' : undefined,
+    }).format(date);
+  }
+
+  function chartAxisNumber(value) {
+    const absolute = Math.abs(value);
+
+    if (absolute >= 1000000) {
+      return `${(value / 1000000).toFixed(1).replace('.0', '')} млн`;
     }
 
-    const width = 320;
-    const height = 120;
-    const left = 8;
-    const right = 8;
-    const top = 13;
-    const bottom = 20;
+    if (absolute >= 10000) {
+      return `${(value / 1000).toFixed(1).replace('.0', '')} тыс.`;
+    }
 
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const range = Math.max(1, max - min);
+    return new Intl.NumberFormat('ru-RU', {
+      maximumFractionDigits: absolute < 10 ? 1 : 0,
+    }).format(value);
+  }
 
-    const coords = values.map((value, index) => {
-      const x =
-        left +
-        (index / Math.max(1, values.length - 1)) *
-          (width - left - right);
+  function chartNiceStep(range, targetTicks = 4) {
+    const safeRange = Math.max(Number(range) || 0, 1);
+    const rough = safeRange / Math.max(1, targetTicks - 1);
+    const power = 10 ** Math.floor(Math.log10(rough));
+    const fraction = rough / power;
 
+    const niceFraction =
+      fraction <= 1
+        ? 1
+        : fraction <= 2
+          ? 2
+          : fraction <= 5
+            ? 5
+            : 10;
+
+    return niceFraction * power;
+  }
+
+  function chartHash(value) {
+    let hash = 0;
+    const text = String(value);
+
+    for (let index = 0; index < text.length; index += 1) {
+      hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+    }
+
+    return Math.abs(hash);
+  }
+
+  function professionalChart(
+    sourcePoints,
+    field,
+    kind,
+    period,
+    channelId,
+  ) {
+    const prepared = (Array.isArray(sourcePoints) ? sourcePoints : [])
+      .map((point, index) => ({
+        point,
+        value: numberOrNull(point?.[field]),
+        time: chartTimestamp(point, index),
+        sourceIndex: index,
+      }))
+      .filter((item) => item.value !== null)
+      .sort((left, right) => {
+        if (left.time !== right.time) return left.time - right.time;
+        return left.sourceIndex - right.sourceIndex;
+      });
+
+    const deduplicated = [];
+
+    for (const item of prepared) {
+      const previous = deduplicated[deduplicated.length - 1];
+
+      if (previous && previous.time === item.time) {
+        deduplicated[deduplicated.length - 1] = item;
+      } else {
+        deduplicated.push(item);
+      }
+    }
+
+    if (deduplicated.length < 2) {
+      return `
+        <div class="lr-chart-empty">
+          <span class="lr-chart-empty-icon">↝</span>
+          <strong>Недостаточно данных</strong>
+          <small>
+            Для графика нужны минимум две разные точки наблюдения.
+          </small>
+        </div>
+      `;
+    }
+
+    const values = deduplicated.map((item) => item.value);
+    const rawMin = Math.min(...values);
+    const rawMax = Math.max(...values);
+    const rawRange = Math.max(rawMax - rawMin, 1);
+
+    const minimumVisualRange = Math.max(
+      kind === 'subscribers' ? Math.abs(rawMax) * 0.006 : 0,
+      rawRange * 1.5,
+      kind === 'subscribers' ? 10 : 5,
+    );
+
+    const centeredMin = (rawMin + rawMax - minimumVisualRange) / 2;
+    const centeredMax = (rawMin + rawMax + minimumVisualRange) / 2;
+    const step = chartNiceStep(centeredMax - centeredMin, 5);
+
+    let axisMin = Math.floor(centeredMin / step) * step;
+    let axisMax = Math.ceil(centeredMax / step) * step;
+
+    if (axisMax <= axisMin) {
+      axisMax = axisMin + step;
+    }
+
+    const width = 420;
+    const height = 232;
+    const plotLeft = 58;
+    const plotRight = 16;
+    const plotTop = 18;
+    const plotBottom = 42;
+    const plotWidth = width - plotLeft - plotRight;
+    const plotHeight = height - plotTop - plotBottom;
+
+    const firstTime = deduplicated[0].time;
+    const lastTime = deduplicated[deduplicated.length - 1].time;
+    const timeRange = Math.max(lastTime - firstTime, 1);
+    const valueRange = Math.max(axisMax - axisMin, 1);
+
+    const coordinates = deduplicated.map((item, index) => {
+      const timeRatio =
+        Number.isFinite(item.time) && lastTime !== firstTime
+          ? (item.time - firstTime) / timeRange
+          : index / Math.max(1, deduplicated.length - 1);
+
+      const x = plotLeft + timeRatio * plotWidth;
       const y =
-        top +
-        ((max - value) / range) *
-          (height - top - bottom);
+        plotTop +
+        ((axisMax - item.value) / valueRange) * plotHeight;
 
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
+      return {
+        ...item,
+        x,
+        y,
+      };
     });
 
+    const linePath = coordinates
+      .map(
+        (item, index) =>
+          `${index === 0 ? 'M' : 'L'} ${item.x.toFixed(2)} ${item.y.toFixed(2)}`,
+      )
+      .join(' ');
+
+    const areaPath = [
+      linePath,
+      `L ${coordinates[coordinates.length - 1].x.toFixed(2)} ${(plotTop + plotHeight).toFixed(2)}`,
+      `L ${coordinates[0].x.toFixed(2)} ${(plotTop + plotHeight).toFixed(2)}`,
+      'Z',
+    ].join(' ');
+
+    const gridCount = 4;
+    const grid = Array.from({ length: gridCount + 1 }, (_, index) => {
+      const ratio = index / gridCount;
+      const y = plotTop + ratio * plotHeight;
+      const value = axisMax - ratio * valueRange;
+
+      return `
+        <line class="lr-chart-grid-line"
+              x1="${plotLeft}"
+              y1="${y.toFixed(2)}"
+              x2="${width - plotRight}"
+              y2="${y.toFixed(2)}"/>
+        <text class="lr-chart-y-label"
+              x="${plotLeft - 9}"
+              y="${(y + 3).toFixed(2)}"
+              text-anchor="end">
+          ${escapeHtml(chartAxisNumber(value))}
+        </text>
+      `;
+    }).join('');
+
+    const labelIndexes = [
+      0,
+      Math.round((coordinates.length - 1) / 2),
+      coordinates.length - 1,
+    ].filter((value, index, array) => array.indexOf(value) === index);
+
+    const xLabels = labelIndexes.map((index, labelIndex) => {
+      const item = coordinates[index];
+      const anchor =
+        labelIndex === 0
+          ? 'start'
+          : labelIndex === labelIndexes.length - 1
+            ? 'end'
+            : 'middle';
+
+      return `
+        <text class="lr-chart-x-label"
+              x="${item.x.toFixed(2)}"
+              y="${height - 13}"
+              text-anchor="${anchor}">
+          ${escapeHtml(chartDateLabel(item.time, period))}
+        </text>
+      `;
+    }).join('');
+
+    const showAllPoints = coordinates.length <= 14;
+    const points = coordinates.map((item, index) => {
+      const last = index === coordinates.length - 1;
+
+      if (!showAllPoints && !last) return '';
+
+      return `
+        ${last ? `
+          <circle class="lr-chart-last-halo"
+                  cx="${item.x.toFixed(2)}"
+                  cy="${item.y.toFixed(2)}"
+                  r="9"/>
+        ` : ''}
+        <circle class="lr-chart-point ${last ? 'is-last' : ''}"
+                cx="${item.x.toFixed(2)}"
+                cy="${item.y.toFixed(2)}"
+                r="${last ? 4.5 : 3}">
+          <title>
+            ${escapeHtml(chartDateLabel(item.time, period))}: ${escapeHtml(formatNumber(item.value))}
+          </title>
+        </circle>
+      `;
+    }).join('');
+
+    const firstValue = coordinates[0].value;
+    const lastValue = coordinates[coordinates.length - 1].value;
+    const change = lastValue - firstValue;
+    const changeClass =
+      change > 0 ? 'positive' : change < 0 ? 'negative' : 'muted';
+
+    const uid = `lr-${kind}-${chartHash(
+      `${channelId}-${period}-${firstTime}-${lastTime}-${field}`,
+    )}`;
+
+    const strokeClass =
+      kind === 'subscribers'
+        ? 'lr-chart-line-subscribers'
+        : 'lr-chart-line-views';
+
+    const gradientStart =
+      kind === 'subscribers'
+        ? 'rgba(89,221,160,.30)'
+        : 'rgba(115,183,255,.28)';
+
+    const gradientEnd =
+      kind === 'subscribers'
+        ? 'rgba(89,221,160,0)'
+        : 'rgba(115,183,255,0)';
+
     return `
-      <svg class="chart"
-           viewBox="0 0 ${width} ${height}"
-           role="img"
-           aria-label="График">
-        <line x1="${left}" y1="${height - bottom}"
-              x2="${width - right}" y2="${height - bottom}"
-              stroke="rgba(255,255,255,.08)"/>
-        <text class="chart-label" x="${left}" y="9">${escapeHtml(formatNumber(max))}</text>
-        <text class="chart-label" x="${left}" y="${height - 5}">${escapeHtml(formatNumber(min))}</text>
-        <polyline class="${cssClass}" points="${coords.join(' ')}"/>
-      </svg>
+      <div class="lr-professional-chart">
+        <div class="lr-chart-summary">
+          <div>
+            <span>Текущее значение</span>
+            <strong>${escapeHtml(formatNumber(lastValue))}</strong>
+          </div>
+
+          <div>
+            <span>Изменение за период</span>
+            <strong class="${changeClass}">
+              ${escapeHtml(formatSigned(change))}
+            </strong>
+          </div>
+        </div>
+
+        <svg class="lr-chart-svg"
+             viewBox="0 0 ${width} ${height}"
+             role="img"
+             aria-label="График ${kind === 'subscribers' ? 'подписчиков' : 'просмотров'}">
+          <defs>
+            <linearGradient id="${uid}"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1">
+              <stop offset="0%" stop-color="${gradientStart}"/>
+              <stop offset="100%" stop-color="${gradientEnd}"/>
+            </linearGradient>
+          </defs>
+
+          ${grid}
+
+          <path class="lr-chart-area"
+                d="${areaPath}"
+                fill="url(#${uid})"/>
+
+          <path class="${strokeClass}"
+                d="${linePath}"/>
+
+          ${points}
+          ${xLabels}
+        </svg>
+      </div>
     `;
   }
+
 
   function channelPostRows(channel) {
     const posts = Array.isArray(channel.posts)
@@ -463,14 +734,14 @@
                     `).join('')}
                   </div>
                 </div>
-                ${svgChart(points, 'subscribers', 'chart-line-subscribers')}
+                ${professionalChart(points, 'subscribers', 'subscribers', period, channel.id)}
               </section>
 
               <section class="chart-card">
                 <div class="chart-head">
                   <strong>Просмотры за 24 часа</strong>
                 </div>
-                ${svgChart(points, 'views24', 'chart-line-views')}
+                ${professionalChart(points, 'views24', 'views', period, channel.id)}
               </section>
             `
             : ''

@@ -662,3 +662,153 @@ button { cursor: pointer; }
     grid-template-columns: repeat(4,minmax(0,1fr));
   }
 }
+
+/* LINKRAY_PROFESSIONAL_CHARTS_V1_START */
+.chart-card {
+  padding: 14px;
+  overflow: hidden;
+}
+
+.lr-professional-chart {
+  width: 100%;
+}
+
+.lr-chart-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.lr-chart-summary > div {
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,.065);
+  border-radius: 12px;
+  padding: 9px 10px;
+  background: rgba(255,255,255,.022);
+}
+
+.lr-chart-summary span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.lr-chart-summary strong {
+  display: block;
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lr-chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+  touch-action: manipulation;
+}
+
+.lr-chart-grid-line {
+  stroke: rgba(144, 170, 188, .12);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.lr-chart-y-label,
+.lr-chart-x-label {
+  fill: #7f96a8;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.lr-chart-area {
+  pointer-events: none;
+}
+
+.lr-chart-line-subscribers,
+.lr-chart-line-views {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,.22));
+}
+
+.lr-chart-line-subscribers {
+  stroke: #59dda0;
+}
+
+.lr-chart-line-views {
+  stroke: #73b7ff;
+}
+
+.lr-chart-point {
+  fill: #071b28;
+  stroke: #9fb2c0;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.lr-chart-point.is-last {
+  fill: #f4fbf8;
+  stroke: #59dda0;
+  stroke-width: 2.5;
+}
+
+.lr-chart-last-halo {
+  fill: rgba(89,221,160,.16);
+  stroke: none;
+  animation: lrChartPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes lrChartPulse {
+  0%, 100% {
+    opacity: .55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.lr-chart-empty {
+  min-height: 156px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.lr-chart-empty-icon {
+  color: rgba(141,163,181,.55);
+  font-size: 34px;
+  line-height: 1;
+}
+
+.lr-chart-empty strong {
+  color: #dbe7ed;
+  font-size: 13px;
+}
+
+.lr-chart-empty small {
+  max-width: 280px;
+  line-height: 1.45;
+}
+
+@media (max-width: 380px) {
+  .lr-chart-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .lr-chart-y-label,
+  .lr-chart-x-label {
+    font-size: 8px;
+  }
+}
+/* LINKRAY_PROFESSIONAL_CHARTS_V1_END */
