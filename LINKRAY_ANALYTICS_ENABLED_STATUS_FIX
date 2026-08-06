@@ -1,0 +1,488 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+VERSION="20260806-analytics-toggle-v1"
+ROUTES="src/linkrayWebsiteRoutes.js"
+HTML="public/linkray-site/cabinet-stable.html"
+JS="public/linkray-site/cabinet-stable.js"
+BACKUP="$(mktemp -d /tmp/linkray-analytics-toggle.XXXXXX)"
+DONE=0
+
+backup_file() {
+  local file="$1"
+  local key
+  key="$(printf '%s' "$file" | tr '/' '_')"
+
+  if [[ -f "$file" ]]; then
+    cp -f "$file" "$BACKUP/$key"
+    touch "$BACKUP/$key.exists"
+  fi
+}
+
+restore_all() {
+  echo
+  echo "[ОТКАТ] Возвращаю предыдущую версию"
+
+  for file in "$ROUTES" "$HTML" "$JS"; do
+    key="$(printf '%s' "$file" | tr '/' '_')"
+
+    if [[ -f "$BACKUP/$key.exists" ]]; then
+      mkdir -p "$(dirname "$file")"
+      cp -f "$BACKUP/$key" "$file"
+    else
+      rm -f "$file"
+    fi
+  done
+
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_all
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю текущий кабинет"
+
+test -f "$ROUTES"
+test -f "$HTML"
+test -f "$JS"
+
+grep -q "LINKRAY_CABINET_SUITE_V5_MODULE_START" "$ROUTES"
+grep -q "function channelCardHtml(channel)" "$JS"
+
+backup_file "$ROUTES"
+backup_file "$HTML"
+backup_file "$JS"
+
+echo "[2/8] Подключаю реальный переключатель аналитики"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+routes_path = Path("src/linkrayWebsiteRoutes.js")
+js_path = Path("public/linkray-site/cabinet-stable.js")
+html_path = Path("public/linkray-site/cabinet-stable.html")
+
+routes = routes_path.read_text(encoding="utf-8")
+js = js_path.read_text(encoding="utf-8")
+html = html_path.read_text(encoding="utf-8")
+
+BACKEND_MARKER = "// LINKRAY_ANALYTICS_ENABLED_STATUS_V1"
+FRONTEND_MARKER = "/* LINKRAY_ANALYTICS_ENABLED_STATUS_V1 */"
+
+if BACKEND_MARKER in routes and FRONTEND_MARKER in js:
+    print("Правка уже присутствует")
+else:
+    if "LINKRAY_CABINET_SUITE_V5_MODULE_START" not in routes:
+        raise SystemExit("Не найден текущий модуль полного кабинета")
+
+    needle = """  const stateRows = await lrC5JsonRows(
+    'lr_channel_metrics_state',
+"""
+    insertion = """  // LINKRAY_ANALYTICS_ENABLED_STATUS_V1
+  const analyticsToggleColumns = await lrC5Columns(
+    'lr_channel_analytics_daily_channels',
+  );
+
+  const analyticsToggleUserColumn = lrC5Column(
+    analyticsToggleColumns,
+    [
+      'user_id',
+      'lr_user_id',
+      'owner_user_id',
+      'max_user_id',
+      'user_chat_id',
+    ],
+  );
+
+  const analyticsToggleIdentities = [
+    identity.userId,
+    identity.maxUserId,
+  ].filter(Boolean);
+
+  const analyticsToggleRows = await lrC5JsonRows(
+    'lr_channel_analytics_daily_channels',
+    {
+      limit: 5000,
+      orderCandidates: ['updated_at', 'created_at', 'id'],
+      whereSql:
+        analyticsToggleUserColumn && analyticsToggleIdentities.length
+          ? `WHERE CAST(t.${lrC5Ident(analyticsToggleUserColumn)} AS TEXT)`
+            + ` = ANY($1::text[])`
+          : '',
+      params:
+        analyticsToggleUserColumn && analyticsToggleIdentities.length
+          ? [analyticsToggleIdentities]
+          : [],
+    },
+  );
+
+  const stateRows = await lrC5JsonRows(
+    'lr_channel_metrics_state',
+"""
+    if needle not in routes:
+        raise SystemExit("Не найдено место загрузки состояния аналитики")
+    routes = routes.replace(needle, insertion, 1)
+
+    needle = """    const latest = matchingSnapshots[0] || null;
+
+    const matchingStates = lrC5MatchingRows(
+"""
+    replacement = """    const latest = matchingSnapshots[0] || null;
+
+    const matchingAnalyticsToggles = lrC5MatchingRows(
+      base.keys,
+      analyticsToggleRows,
+    );
+
+    /*
+     * При наличии пользовательского столбца строки уже отфильтрованы
+     * по владельцу. Без него используем семантику сборщика: аналитика
+     * канала включена, если существует хотя бы одна enabled=true строка.
+     */
+    const analyticsEnabled = matchingAnalyticsToggles.some((row) =>
+      lrC5Bool(
+        lrC5Pick(
+          row,
+          ['enabled', 'is_enabled', 'daily_enabled', 'active'],
+          false,
+        ),
+        false,
+      ),
+    );
+
+    const matchingStates = lrC5MatchingRows(
+"""
+    if needle not in routes:
+        raise SystemExit("Не найден блок последнего снимка канала")
+    routes = routes.replace(needle, replacement, 1)
+
+    old = """    const analyticsReady = Boolean(latest);
+    const full24hReady = analyticsReady && baselineComplete;
+"""
+    new = """    const analyticsReady = analyticsEnabled && Boolean(latest);
+    const full24hReady =
+      analyticsEnabled && analyticsReady && baselineComplete;
+"""
+    if old not in routes:
+        raise SystemExit("Не найден расчёт готовности аналитики")
+    routes = routes.replace(old, new, 1)
+
+    old = """      analyticsReady,
+      full24hReady,
+      metrics: latest
+"""
+    new = """      analyticsEnabled,
+      analyticsReady,
+      full24hReady,
+      metrics: analyticsEnabled && latest
+"""
+    if old not in routes:
+        raise SystemExit("Не найден объект аналитики канала")
+    routes = routes.replace(old, new, 1)
+
+    old = """      history24h: lrC5HourlyHistory(matchingSnapshots),
+      history30d: lrC5DailyHistory(matchingSnapshots, 30),
+"""
+    new = """      history24h: analyticsEnabled
+        ? lrC5HourlyHistory(matchingSnapshots)
+        : [],
+      history30d: analyticsEnabled
+        ? lrC5DailyHistory(matchingSnapshots, 30)
+        : [],
+"""
+    if old not in routes:
+        raise SystemExit("Не найдена история аналитики")
+    routes = routes.replace(old, new, 1)
+
+    old = """    if (!channel.analyticsReady) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: данные собираются`,
+        text: 'Первый снимок аналитики ещё не получен.',
+        channelId: channel.id,
+      });
+    } else if (!channel.full24hReady) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: накапливаются 24 часа`,
+        text: 'Текущие показатели доступны, полный период ещё не завершён.',
+        channelId: channel.id,
+      });
+    }
+
+    if (channel.collector.lastError) {
+"""
+    new = """    if (
+      channel.analyticsEnabled &&
+      !channel.analyticsReady
+    ) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: данные собираются`,
+        text: 'Аналитика включена, первый снимок ещё не получен.',
+        channelId: channel.id,
+      });
+    } else if (
+      channel.analyticsEnabled &&
+      !channel.full24hReady
+    ) {
+      notifications.push({
+        type: 'analytics',
+        level: 'info',
+        title: `${channel.title}: накапливаются 24 часа`,
+        text: 'Текущие показатели доступны, полный период ещё не завершён.',
+        channelId: channel.id,
+      });
+    }
+
+    if (
+      channel.analyticsEnabled &&
+      channel.collector.lastError
+    ) {
+"""
+    if old not in routes:
+        raise SystemExit("Не найден блок уведомлений аналитики")
+    routes = routes.replace(old, new, 1)
+
+    old = """  const summary = {
+    channels: channels.length,
+    analyticsReadyChannels: readyChannels.length,
+"""
+    new = """  const summary = {
+    channels: channels.length,
+    analyticsEnabledChannels: channels.filter(
+      (channel) => channel.analyticsEnabled,
+    ).length,
+    analyticsReadyChannels: readyChannels.length,
+"""
+    if old not in routes:
+        raise SystemExit("Не найден общий итог кабинета")
+    routes = routes.replace(old, new, 1)
+
+    old = """    const readyText = channel.analyticsReady
+      ? channel.full24hReady
+        ? `Обновлено ${formatDate(metrics.capturedAt)}`
+        : 'Накапливается полный период 24 часа'
+      : 'Данные аналитики собираются';
+"""
+    new = """    /* LINKRAY_ANALYTICS_ENABLED_STATUS_V1 */
+    const readyText = !channel.analyticsEnabled
+      ? 'Аналитика канала отключена'
+      : channel.analyticsReady
+        ? channel.full24hReady
+          ? `Обновлено ${formatDate(metrics.capturedAt)}`
+          : 'Накапливается полный период 24 часа'
+        : 'Данные аналитики собираются';
+"""
+    if old not in js:
+        raise SystemExit("Не найдена подпись состояния канала")
+    js = js.replace(old, new, 1)
+
+    old = """            <p>
+              Данные готовы для
+              ${formatNumber(payload.summary?.analyticsReadyChannels)}
+              из ${formatNumber(payload.summary?.channels)}
+            </p>
+"""
+    new = """            <p>
+              Аналитика включена для
+              ${formatNumber(payload.summary?.analyticsEnabledChannels)}
+              из ${formatNumber(payload.summary?.channels)} ·
+              данные готовы для
+              ${formatNumber(payload.summary?.analyticsReadyChannels)}
+            </p>
+"""
+    if old not in js:
+        raise SystemExit("Не найден итог статусов каналов")
+    js = js.replace(old, new, 1)
+
+    needle = """    return `
+      <div class="channel-details">
+        <section class="detail-grid">
+"""
+    replacement = """    return `
+      <div class="channel-details">
+        ${
+          !channel.analyticsEnabled
+            ? `
+              <section class="panel"
+                       style="margin-bottom:12px">
+                <div class="panel-title">
+                  <h3>Аналитика канала отключена</h3>
+                </div>
+                <p class="muted"
+                   style="margin:0;font-size:12px;line-height:1.5">
+                  Сбор подписчиков, просмотров, прироста и ER для этого
+                  канала сейчас не выполняется. Включить функцию можно
+                  в разделе аналитики LinkRay в MAX.
+                </p>
+              </section>
+            `
+            : ''
+        }
+
+        <section class="detail-grid">
+"""
+    if needle not in js:
+        raise SystemExit("Не найдено начало подробной карточки")
+    js = js.replace(needle, replacement, 1)
+
+    old = """        <section class="chart-card">
+          <div class="chart-head">
+            <strong>Подписчики</strong>
+            <div class="periods">
+              ${['24h', '7d', '30d'].map((item) => `
+                <button type="button"
+                        class="${period === item ? 'active' : ''}"
+                        data-action="period"
+                        data-channel-id="${escapeHtml(channel.id)}"
+                        data-period="${item}">
+                  ${item === '24h' ? '24 ч' : item === '7d' ? '7 дн' : '30 дн'}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+          ${svgChart(points, 'subscribers', 'chart-line-subscribers')}
+        </section>
+
+        <section class="chart-card">
+          <div class="chart-head">
+            <strong>Просмотры за 24 часа</strong>
+          </div>
+          ${svgChart(points, 'views24', 'chart-line-views')}
+        </section>
+"""
+    new = """        ${
+          channel.analyticsEnabled
+            ? `
+              <section class="chart-card">
+                <div class="chart-head">
+                  <strong>Подписчики</strong>
+                  <div class="periods">
+                    ${['24h', '7d', '30d'].map((item) => `
+                      <button type="button"
+                              class="${period === item ? 'active' : ''}"
+                              data-action="period"
+                              data-channel-id="${escapeHtml(channel.id)}"
+                              data-period="${item}">
+                        ${item === '24h' ? '24 ч' : item === '7d' ? '7 дн' : '30 дн'}
+                      </button>
+                    `).join('')}
+                  </div>
+                </div>
+                ${svgChart(points, 'subscribers', 'chart-line-subscribers')}
+              </section>
+
+              <section class="chart-card">
+                <div class="chart-head">
+                  <strong>Просмотры за 24 часа</strong>
+                </div>
+                ${svgChart(points, 'views24', 'chart-line-views')}
+              </section>
+            `
+            : ''
+        }
+"""
+    if old not in js:
+        raise SystemExit("Не найден блок графиков аналитики")
+    js = js.replace(old, new, 1)
+
+    routes_path.write_text(routes, encoding="utf-8")
+    js_path.write_text(js, encoding="utf-8")
+
+version = "20260806-analytics-toggle-v1"
+html = re.sub(
+    r'cabinet-stable\.js(?:\?v=[^"\']*)?',
+    f'cabinet-stable.js?v={version}',
+    html,
+)
+html = re.sub(
+    r'cabinet-stable\.css(?:\?v=[^"\']*)?',
+    f'cabinet-stable.css?v={version}',
+    html,
+)
+html_path.write_text(html, encoding="utf-8")
+
+print("Статус включения аналитики подключён")
+PY
+
+echo "[3/8] Проверяю синтаксис"
+
+node --check "$ROUTES"
+node --check "$JS"
+
+grep -q "LINKRAY_ANALYTICS_ENABLED_STATUS_V1" "$ROUTES"
+grep -q "Аналитика канала отключена" "$JS"
+grep -q "analyticsEnabledChannels" "$ROUTES"
+
+echo "[4/8] Пересобираю приложение"
+
+docker compose up -d --build app
+sleep 15
+
+echo "[5/8] Проверяю страницу и ресурсы"
+
+CABINET_HTML="$(curl -fsS --max-time 20 https://linkray.ru/cabinet)"
+printf '%s' "$CABINET_HTML" |
+  grep -q "cabinet-stable.js?v=$VERSION"
+
+echo "Кабинет: 200"
+echo "JavaScript: $(curl -fsS -o /dev/null -w '%{http_code}' "https://linkray.ru/linkray-site/cabinet-stable.js?v=$VERSION")"
+
+API_STATUS="$(
+  curl -sS -o "$BACKUP/api.json" \
+    -w '%{http_code}' \
+    --max-time 20 \
+    https://linkray.ru/api/website/cabinet/full
+)"
+
+echo "API без cookie: $API_STATUS"
+[[ "$API_STATUS" == "401" ]]
+
+echo "[6/8] Проверяю запуск контейнера"
+
+if docker logs --since 45s linkray-app 2>&1 |
+   grep -E "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "Обнаружена ошибка запуска"
+  exit 1
+fi
+
+echo "[7/8] Сохраняю проверенную правку"
+
+git add -- "$ROUTES" "$HTML" "$JS"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Show disabled channel analytics state in web cabinet"
+  git push origin HEAD:main
+else
+  echo "Правка уже сохранена"
+fi
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo "[8/8] Готово"
+echo
+echo "============================================================"
+echo "СТАТУС АНАЛИТИКИ КАНАЛОВ ИСПРАВЛЕН"
+echo
+echo "• функция выключена — «Аналитика канала отключена»"
+echo "• функция включена, снимка нет — «Данные аналитики собираются»"
+echo "• снимок есть, 24 часа не прошло — «Накапливается полный период 24 часа»"
+echo "• старые данные отключённого канала не показываются как активные"
+echo "============================================================"
