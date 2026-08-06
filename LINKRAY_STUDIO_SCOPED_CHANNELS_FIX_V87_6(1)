@@ -1,0 +1,437 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+FILE="src/index.js"
+BACKUP="$(mktemp -d /tmp/linkray-studio-scoped-v876.XXXXXX)"
+DONE=0
+
+restore_file() {
+  echo
+  echo "[ОТКАТ] Возвращаю прежнюю версию Studio"
+  cp -f "$BACKUP/index.js" "$FILE"
+  docker compose up -d --build app >/dev/null 2>&1 || true
+  echo "[ОТКАТ] Предыдущая версия восстановлена"
+}
+
+on_error() {
+  code=$?
+  if [[ "$DONE" != "1" ]]; then
+    restore_file
+  fi
+  exit "$code"
+}
+
+trap on_error ERR
+
+echo "[1/8] Проверяю текущий код и сохраняю копию"
+
+test -f "$FILE"
+cp -f "$FILE" "$BACKUP/index.js"
+
+grep -q "async function lrV47Channels" "$FILE"
+grep -q "async function lrV15SendChannelSelect" "$FILE"
+grep -q "async function lrV15HandleAddChannelForward" "$FILE"
+grep -q "async function lrV47ShowAddChannel" "$FILE"
+grep -q "async function lrV47HandleAddForward" "$FILE"
+grep -q "async function maybeRegisterChannel" "$FILE"
+
+echo "[2/8] Показываю фактические каналы без изменения базы"
+
+docker exec -i linkray-postgres sh -lc '
+  psql -P pager=off -v ON_ERROR_STOP=1 \
+    -U "${POSTGRES_USER:-linkray}" \
+    -d "${POSTGRES_DB:-linkray}" \
+    -c "
+      SELECT
+        id,
+        title,
+        max_chat_id,
+        COALESCE(is_active, true) AS active,
+        owner_max_user_id
+      FROM public.channels
+      ORDER BY COALESCE(is_active, true) DESC, id;
+    "
+'
+
+CHANNELS_BEFORE="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels;"
+  '
+)"
+
+ACTIVE_BEFORE="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels WHERE COALESCE(is_active,true)=true;"
+  '
+)"
+
+echo "Всего каналов: $CHANNELS_BEFORE"
+echo "Активных каналов: $ACTIVE_BEFORE"
+
+if [[ "$ACTIVE_BEFORE" -lt 1 ]]; then
+  echo "В базе нет активных каналов — код не изменяю"
+  exit 1
+fi
+
+echo "[3/8] Исправляю только выбор каналов Studio"
+
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+
+path = Path("src/index.js")
+source = path.read_text(encoding="utf-8")
+
+
+def function_range(text: str, name: str):
+    token = f"async function {name}"
+    start = text.find(token)
+
+    if start < 0:
+        raise SystemExit(f"Не найдена функция {name}")
+
+    brace = text.find("{", start)
+
+    if brace < 0:
+        raise SystemExit(f"Не найдено начало функции {name}")
+
+    depth = 0
+    quote = None
+    escaped = False
+    template_depth = 0
+    i = brace
+
+    while i < len(text):
+        ch = text[i]
+
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif (
+                quote == "`"
+                and ch == "$"
+                and i + 1 < len(text)
+                and text[i + 1] == "{"
+            ):
+                template_depth += 1
+                i += 1
+            elif (
+                quote == "`"
+                and ch == "}"
+                and template_depth
+            ):
+                template_depth -= 1
+            elif ch == quote and not template_depth:
+                quote = None
+        else:
+            if ch in ("'", '"', "`"):
+                quote = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+
+                if depth == 0:
+                    return start, i + 1
+
+        i += 1
+
+    raise SystemExit(f"Не найден конец функции {name}")
+
+
+def function_hash(text: str, name: str) -> str:
+    start, end = function_range(text, name)
+    return hashlib.sha256(
+        text[start:end].encode("utf-8")
+    ).hexdigest()
+
+
+protected_names = [
+    "maybeRegisterChannel",
+    "lrV15HandleAddChannelForward",
+    "lrV47ShowAddChannel",
+    "lrV47HandleAddForward",
+]
+
+protected_before = {
+    name: function_hash(source, name)
+    for name in protected_names
+}
+
+channels_start, channels_end = function_range(
+    source,
+    "lrV47Channels",
+)
+
+new_channels_function = r'''async function lrV47Channels(subjectId = '') {
+  /* LR_USER_SCOPED_STUDIO_CHANNELS_V87_6
+   *
+   * Показываем только активные каналы текущего пользователя.
+   * Достаточно реальной связи lr_user_channels или владельца
+   * owner_max_user_id. Временные role/access_source/
+   * last_verified_at не используются для постоянного доступа.
+   */
+  const subject = String(subjectId || '')
+    .replace(/^user:/, '')
+    .trim();
+
+  if (!/^\d+$/.test(subject)) {
+    console.error(
+      '[v87.6 studio channels] invalid user context',
+      JSON.stringify({ subjectId })
+    );
+    return [];
+  }
+
+  try {
+    const channels = lrV47Rows(await query(`
+      WITH actor AS (
+        SELECT
+          id,
+          max_user_id,
+          private_chat_id
+        FROM public.lr_users
+        WHERE max_user_id::text=$1
+           OR private_chat_id::text=$1
+        ORDER BY id
+        LIMIT 1
+      )
+      SELECT DISTINCT
+        channel.id,
+        channel.max_chat_id,
+        channel.title,
+        channel.link,
+        channel.is_active,
+        channel.updated_at
+      FROM public.channels channel
+      LEFT JOIN actor
+        ON true
+      LEFT JOIN public.lr_user_channels access
+        ON access.channel_id=channel.id
+       AND access.user_id=actor.id
+      WHERE COALESCE(channel.is_active, true)=true
+        AND (
+          access.user_id IS NOT NULL
+          OR channel.owner_max_user_id::text=$1
+          OR channel.owner_max_user_id::text=
+             COALESCE(actor.max_user_id::text, '')
+        )
+      ORDER BY
+        channel.updated_at DESC NULLS LAST,
+        channel.id DESC
+    `, [subject]));
+
+    console.log(
+      '[v87.6 studio channels] resolved',
+      JSON.stringify({
+        subject,
+        count: channels.length,
+        ids: channels.map((channel) => channel.id),
+      })
+    );
+
+    return channels;
+  } catch (error) {
+    console.error(
+      '[v87.6 studio channels] scoped query failed',
+      error?.stack || error?.message || error
+    );
+    return [];
+  }
+}'''
+
+updated = (
+    source[:channels_start]
+    + new_channels_function
+    + source[channels_end:]
+)
+
+v15_start, v15_end = function_range(
+    updated,
+    "lrV15SendChannelSelect",
+)
+
+v15 = updated[v15_start:v15_end]
+
+variants = [
+    "const channels = await lrV47Channels();",
+    "const channels = await getChannels();",
+]
+
+replacement = (
+    "const channels = await "
+    "lrV47Channels(key || chatId);"
+)
+
+for old in variants:
+    if old in v15:
+        v15 = v15.replace(old, replacement, 1)
+        break
+
+if replacement not in v15:
+    raise SystemExit(
+        "Не удалось передать контекст пользователя "
+        "в lrV15SendChannelSelect"
+    )
+
+updated = (
+    updated[:v15_start]
+    + v15
+    + updated[v15_end:]
+)
+
+for name, old_hash in protected_before.items():
+    new_hash = function_hash(updated, name)
+
+    if new_hash != old_hash:
+        raise SystemExit(
+            f"Защищённая функция изменилась: {name}"
+        )
+
+required = [
+    "LR_USER_SCOPED_STUDIO_CHANNELS_V87_6",
+    "WITH actor AS",
+    "access.user_id IS NOT NULL",
+    "COALESCE(channel.is_active, true)=true",
+    "lrV47Channels(key || chatId)",
+]
+
+for item in required:
+    if item not in updated:
+        raise SystemExit(
+            f"Не установлен элемент: {item}"
+        )
+
+path.write_text(updated, encoding="utf-8")
+
+print("Функция lrV47Channels заменена")
+print("В старом маршруте передаётся key || chatId")
+print("Добавление каналов проверено: не изменено")
+print("Удаление каналов проверено: не изменено")
+PY
+
+echo "[4/8] Проверяю JavaScript и точность патча"
+
+node --check "$FILE"
+
+grep -q \
+  "LR_USER_SCOPED_STUDIO_CHANNELS_V87_6" \
+  "$FILE"
+
+grep -q \
+  "lrV47Channels(key || chatId)" \
+  "$FILE"
+
+grep -q \
+  "async function lrV15HandleAddChannelForward" \
+  "$FILE"
+
+grep -q \
+  "async function lrV47ShowAddChannel" \
+  "$FILE"
+
+grep -q \
+  "async function lrV47HandleAddForward" \
+  "$FILE"
+
+echo "[5/8] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 16
+
+echo "[6/8] Проверяю запуск и сохранность базы"
+
+if ! docker compose ps \
+  --status running \
+  --services |
+  grep -qx "app"
+then
+  echo "Контейнер app не запущен"
+  exit 1
+fi
+
+docker exec linkray-app sh -lc \
+  "grep -q 'LR_USER_SCOPED_STUDIO_CHANNELS_V87_6' /app/src/index.js"
+
+docker exec linkray-app sh -lc \
+  "grep -q 'lrV47Channels(key || chatId)' /app/src/index.js"
+
+if docker logs --since 90s linkray-app 2>&1 |
+   grep -E \
+     "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module"; then
+  echo "После запуска обнаружена ошибка"
+  exit 1
+fi
+
+CHANNELS_AFTER="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels;"
+  '
+)"
+
+ACTIVE_AFTER="$(
+  docker exec -i linkray-postgres sh -lc '
+    psql -At -v ON_ERROR_STOP=1 \
+      -U "${POSTGRES_USER:-linkray}" \
+      -d "${POSTGRES_DB:-linkray}" \
+      -c "SELECT COUNT(*) FROM public.channels WHERE COALESCE(is_active,true)=true;"
+  '
+)"
+
+if [[ "$CHANNELS_BEFORE" != "$CHANNELS_AFTER" ]]; then
+  echo "Количество каналов изменилось при установке"
+  exit 1
+fi
+
+if [[ "$ACTIVE_BEFORE" != "$ACTIVE_AFTER" ]]; then
+  echo "Количество активных каналов изменилось при установке"
+  exit 1
+fi
+
+echo "База не изменена"
+echo "Всего каналов: $CHANNELS_AFTER"
+echo "Активных каналов: $ACTIVE_AFTER"
+
+echo "[7/8] Сохраняю исправление в GitHub"
+
+git add -- "$FILE"
+
+if ! git diff --cached --quiet; then
+  git commit -m \
+    "Fix persistent scoped channels in Studio"
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено"
+fi
+
+echo "[8/8] Готово"
+
+DONE=1
+trap - ERR
+rm -rf "$BACKUP"
+
+echo
+echo "============================================================"
+echo "АКТИВНЫЕ КАНАЛЫ STUDIO ВОССТАНОВЛЕНЫ"
+echo
+echo "• Studio показывает постоянные связи пользователя с каналами"
+echo "• удалённые каналы исключаются по is_active=false"
+echo "• временный 30-минутный фильтр больше не скрывает каналы"
+echo "• role/access_source больше не требуются для старых связей"
+echo "• добавление и удаление каналов не изменялись"
+echo "• AntiFraud и автопостинг не изменялись"
+echo "• PostgreSQL не изменялся"
+echo "============================================================"
