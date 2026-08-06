@@ -1785,6 +1785,14 @@ async function render(update, body, buttons = [], notification = '') {
     if (page > 0) nav.push(callbackButton('⬅️', `fraud:waves:${channelId}:${page - 1}`));
     if (hasNext) nav.push(callbackButton('➡️', `fraud:waves:${channelId}:${page + 1}`));
     if (nav.length) buttons.push(nav);
+    if (list.length) {
+      buttons.push([
+        callbackButton(
+          '🗑 Очистить историю',
+          `fraud:waves_clear_prompt:${channelId}`,
+        ),
+      ]);
+    }
     buttons.push([callbackButton('⬅️ К каналу', `fraud:channel:${channelId}`)]);
 
     return render(update,
@@ -1797,7 +1805,199 @@ async function render(update, body, buttons = [], notification = '') {
     );
   }
 
-  async function waveById(waveId) {
+  
+/* LR_ANTIFRAUD_HISTORY_CLEAR_V2_START */
+async function clearWaveHistoryFromDatabase(channelId) {
+  const safeChannelId = num(channelId);
+
+  if (!safeChannelId) {
+    throw new Error('Не указан канал для очистки истории.');
+  }
+
+  const waveIds = rows(await query(`
+    SELECT id::text AS id
+    FROM public.lr_antifraud_waves
+    WHERE channel_id=$1
+    ORDER BY id
+  `, [safeChannelId]))
+    .map((item) => idText(item?.id))
+    .filter(Boolean);
+
+  if (!waveIds.length) {
+    return { waves: 0, related: 0 };
+  }
+
+  const relatedColumns = rows(await query(`
+    SELECT DISTINCT
+      c.table_name,
+      c.column_name
+    FROM information_schema.columns c
+    JOIN information_schema.tables t
+      ON t.table_schema=c.table_schema
+     AND t.table_name=c.table_name
+    WHERE c.table_schema='public'
+      AND t.table_type='BASE TABLE'
+      AND c.table_name LIKE 'lr_antifraud_%'
+      AND c.table_name<>'lr_antifraud_waves'
+      AND c.column_name IN ('wave_id','last_wave_id')
+    ORDER BY
+      CASE c.column_name WHEN 'wave_id' THEN 0 ELSE 1 END,
+      c.table_name
+  `));
+
+  let related = 0;
+
+  for (const item of relatedColumns) {
+    const tableName = String(item?.table_name || '');
+    const columnName = String(item?.column_name || '');
+
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName) ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(columnName)
+    ) {
+      throw new Error(
+        `Небезопасный SQL-идентификатор: ${tableName}.${columnName}`,
+      );
+    }
+
+    const deleted = rows(await query(`
+      DELETE FROM public."${tableName}"
+      WHERE CAST("${columnName}" AS text)=ANY($1::text[])
+      RETURNING 1 AS deleted
+    `, [waveIds]));
+
+    related += deleted.length;
+  }
+
+  const deletedWaves = rows(await query(`
+    DELETE FROM public.lr_antifraud_waves
+    WHERE channel_id=$1
+    RETURNING id
+  `, [safeChannelId]));
+
+  return {
+    waves: deletedWaves.length,
+    related,
+  };
+}
+
+async function promptClearWaveHistory(update, channelId) {
+  const safeChannelId = num(channelId);
+  const channel = await configByChannelId(safeChannelId);
+
+  if (!channel) return showUserMenu(update);
+
+  const countRow = rows(await query(`
+    SELECT count(*)::int AS count
+    FROM public.lr_antifraud_waves
+    WHERE channel_id=$1
+  `, [safeChannelId]))[0] || {};
+
+  const count = num(countRow.count);
+
+  if (!count) {
+    return render(
+      update,
+      `━━━━━━━━━━━━━━\n` +
+      `📋 <b>История наплывов уже пуста</b>\n\n` +
+      `Канал: ${esc(
+        channel.current_title ||
+        channel.title ||
+        channel.max_chat_id
+      )}\n\n` +
+      `В базе нет сохранённых периодов.\n` +
+      `━━━━━━━━━━━━━━`,
+      [[
+        callbackButton(
+          '⬅️ К каналу',
+          `fraud:channel:${safeChannelId}`,
+        ),
+      ]],
+    );
+  }
+
+  return render(
+    update,
+    `━━━━━━━━━━━━━━\n` +
+    `⚠️ <b>Очистить историю наплывов?</b>\n\n` +
+    `Канал: ${esc(
+      channel.current_title ||
+      channel.title ||
+      channel.max_chat_id
+    )}\n` +
+    `Сохранённых периодов: ${count}\n\n` +
+    `Будут удалены сами наплывы и связанные ` +
+    `с ними события, проверки, действия и уведомления.\n\n` +
+    `Настройки защиты и белый список останутся.\n` +
+    `Восстановить историю после удаления нельзя.\n` +
+    `━━━━━━━━━━━━━━`,
+    [
+      [
+        callbackButton(
+          '🗑 Да, очистить из базы',
+          `fraud:waves_clear_confirm:${safeChannelId}`,
+        ),
+      ],
+      [
+        callbackButton(
+          '⬅️ Отмена',
+          `fraud:waves:${safeChannelId}:0`,
+        ),
+      ],
+    ],
+  );
+}
+
+async function confirmClearWaveHistory(update, channelId) {
+  const safeChannelId = num(channelId);
+  const channel = await configByChannelId(safeChannelId);
+
+  if (!channel) return showUserMenu(update);
+
+  const result = await clearWaveHistoryFromDatabase(safeChannelId);
+
+  log(
+    'wave history cleared:',
+    JSON.stringify({
+      channelId: safeChannelId,
+      waves: result.waves,
+      related: result.related,
+      actor: actorId(update) || '',
+    }),
+  );
+
+  return render(
+    update,
+    `━━━━━━━━━━━━━━\n` +
+    `✅ <b>История наплывов очищена</b>\n\n` +
+    `Канал: ${esc(
+      channel.current_title ||
+      channel.title ||
+      channel.max_chat_id
+    )}\n\n` +
+    `Удалено периодов: ${result.waves}\n` +
+    `Удалено связанных записей: ${result.related}\n\n` +
+    `Защита AntiFraud и её настройки не изменены.\n` +
+    `━━━━━━━━━━━━━━`,
+    [
+      [
+        callbackButton(
+          '📋 Открыть пустую историю',
+          `fraud:waves:${safeChannelId}:0`,
+        ),
+      ],
+      [
+        callbackButton(
+          '⬅️ К каналу',
+          `fraud:channel:${safeChannelId}`,
+        ),
+      ],
+    ],
+  );
+}
+/* LR_ANTIFRAUD_HISTORY_CLEAR_V2_END */
+
+async function waveById(waveId) {
     return rows(await query(`SELECT * FROM lr_antifraud_waves WHERE id=$1 LIMIT 1`, [waveId]))[0] || null;
   }
 
@@ -3286,8 +3486,7 @@ async function executeRemoval(update, actionToken) {
     const action = parts[1] || '';
 
     if (['channel', 'toggle', 'waves',
-      'country'
-    ].includes(action)) {
+      'country', 'waves_clear_prompt', 'waves_clear_confirm' ].includes(action)) {
       return num(parts[2]);
     }
 
@@ -3641,7 +3840,7 @@ async function startWaveRescore(update, waveId) {
     else if (action === 'toggle') await toggleChannel(update, num(parts[2]));
     else if (action === 'enable_all') { await setAll(true); await showUserMenu(update); }
     else if (action === 'disable_all') { await setAll(false); await showUserMenu(update); }
-    else if (action === 'waves') await showWaves(update, num(parts[2]), num(parts[3]));
+    else if (action === 'waves_clear_prompt') await promptClearWaveHistory(update, num(parts[2])); else if (action === 'waves_clear_confirm') await confirmClearWaveHistory(update, num(parts[2])); else if (action === 'waves') await showWaves(update, num(parts[2]), num(parts[3]));
     else if (action === 'wave') await showWave(update, num(parts[2]));
     else if (action === 'list') await showRiskList(update, num(parts[2]), parts[3] || 'high', num(parts[4]));
     else if (action === 'member') await showMember(update, num(parts[2]), num(parts[3]));
