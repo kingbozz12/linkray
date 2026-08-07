@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+SERVER="src/linkrayWebsiteRoutes.js"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/opt/linkray-backups/cabinet-health-active-antifraud-v9-$STAMP"
+COMMITTED=0
+
+mkdir -p "$BACKUP"
+cp -a "$SERVER" "$BACKUP/"
+
+rollback() {
+  local code=$?
+  echo
+  echo "[ОТКАТ] Ошибка установки. Возвращаю прежний файл."
+  cp -a "$BACKUP/$(basename "$SERVER")" "$SERVER"
+
+  if [[ "$COMMITTED" == "1" ]]; then
+    git reset --hard HEAD~1 || true
+  fi
+
+  docker compose up -d --build app || true
+  exit "$code"
+}
+trap rollback ERR
+
+echo "[1/7] Проверяю текущий кабинет"
+
+test -f "$SERVER"
+grep -q "function lrC6Health" "$SERVER"
+grep -q "channelHealth: lrC6Health(payload)" "$SERVER"
+
+echo "[2/7] Добавляю проверку только активной угрозы AntiFraud"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+marker = "LINKRAY_CABINET_ACTIVE_ANTIFRAUD_HEALTH_V9"
+
+block = "\n// LINKRAY_CABINET_ACTIVE_ANTIFRAUD_HEALTH_V9\n// История AntiFraud не является текущей угрозой.\n// Красный/жёлтый статус показывается только для активного незавершённого наплыва.\nfunction lrC6ActiveAntifraudHealth(payload) {\n  const original = Array.isArray(lrC6Health(payload))\n    ? lrC6Health(payload)\n    : [];\n\n  const channels = Array.isArray(payload?.channels)\n    ? payload.channels\n    : [];\n\n  const text = (value) =>\n    String(value ?? '')\n      .trim()\n      .toLowerCase();\n\n  const truthy = (value) => {\n    if (typeof value === 'boolean') return value;\n    if (typeof value === 'number') return value > 0;\n\n    return [\n      '1',\n      'true',\n      'yes',\n      'on',\n      'enabled',\n      'active',\n      'включено',\n      'включена',\n    ].includes(text(value));\n  };\n\n  const first = (...values) =>\n    values.find(\n      (value) =>\n        value !== undefined &&\n        value !== null &&\n        String(value).trim() !== '',\n    );\n\n  const channelIdentifiers = (channel) =>\n    [\n      channel?.id,\n      channel?.channelId,\n      channel?.channel_id,\n      channel?.maxChatId,\n      channel?.max_chat_id,\n      channel?.chatId,\n      channel?.chat_id,\n      channel?.maxChannelId,\n      channel?.max_channel_id,\n    ]\n      .map((value) => text(value))\n      .filter(Boolean);\n\n  const channelTitle = (channel) =>\n    text(\n      first(\n        channel?.title,\n        channel?.name,\n        channel?.channelTitle,\n        channel?.channel_title,\n        channel?.displayName,\n        channel?.display_name,\n      ),\n    );\n\n  const itemIdentifiers = (item) =>\n    [\n      item?.id,\n      item?.channelId,\n      item?.channel_id,\n      item?.maxChatId,\n      item?.max_chat_id,\n      item?.chatId,\n      item?.chat_id,\n    ]\n      .map((value) => text(value))\n      .filter(Boolean);\n\n  const itemTitle = (item) =>\n    text(\n      first(\n        item?.title,\n        item?.name,\n        item?.channelTitle,\n        item?.channel_title,\n      ),\n    );\n\n  const findChannel = (item, index) => {\n    const ids = new Set(itemIdentifiers(item));\n\n    const byId = channels.find((channel) =>\n      channelIdentifiers(channel).some((value) => ids.has(value)),\n    );\n\n    if (byId) return byId;\n\n    const title = itemTitle(item);\n\n    const byTitle = title\n      ? channels.find((channel) => channelTitle(channel) === title)\n      : null;\n\n    return byTitle || channels[index] || null;\n  };\n\n  const antifraudObject = (channel) =>\n    channel?.antifraud ??\n    channel?.antiFraud ??\n    channel?.anti_fraud ??\n    channel?.protection ??\n    {};\n\n  const antifraudEnabled = (channel) => {\n    const antifraud = antifraudObject(channel);\n\n    const explicit = first(\n      antifraud?.enabled,\n      antifraud?.isEnabled,\n      antifraud?.is_enabled,\n      channel?.antifraudEnabled,\n      channel?.antiFraudEnabled,\n      channel?.antifraud_enabled,\n      channel?.protectionEnabled,\n      channel?.protection_enabled,\n    );\n\n    return explicit === undefined ? null : truthy(explicit);\n  };\n\n  const latestWave = (channel) => {\n    const antifraud = antifraudObject(channel);\n\n    return (\n      first(\n        channel?.activeWave,\n        channel?.active_wave,\n        antifraud?.activeWave,\n        antifraud?.active_wave,\n        antifraud?.currentWave,\n        antifraud?.current_wave,\n      ) ||\n      first(\n        channel?.latestWave,\n        channel?.latest_wave,\n        antifraud?.latestWave,\n        antifraud?.latest_wave,\n        antifraud?.wave,\n      ) ||\n      null\n    );\n  };\n\n  const waveIsCurrentThreat = (channel) => {\n    if (!channel) return false;\n\n    const enabled = antifraudEnabled(channel);\n\n    if (enabled === false) return false;\n\n    const wave = latestWave(channel);\n\n    if (!wave || typeof wave !== 'object') return false;\n\n    const status = text(\n      first(\n        wave?.status,\n        wave?.state,\n        wave?.resolution,\n        wave?.result,\n      ),\n    );\n\n    const resolvedStatuses = new Set([\n      'resolved',\n      'cleared',\n      'ignored',\n      'closed',\n      'finished',\n      'completed',\n      'safe',\n      'normal',\n      'inactive',\n      'dismissed',\n      'cancelled',\n      'canceled',\n      'очищен',\n      'очищено',\n      'решено',\n      'закрыт',\n      'закрыто',\n      'проигнорирован',\n      'завершён',\n      'завершен',\n    ]);\n\n    if (resolvedStatuses.has(status)) return false;\n\n    const activeStatuses = new Set([\n      'active',\n      'open',\n      'detected',\n      'unsafe',\n      'danger',\n      'high',\n      'critical',\n      'pending',\n      'review',\n      'processing',\n      'started',\n      'активен',\n      'обнаружен',\n      'опасный',\n      'высокий',\n      'критический',\n      'проверка',\n    ]);\n\n    const explicitActive = first(\n      wave?.active,\n      wave?.isActive,\n      wave?.is_active,\n      wave?.open,\n      wave?.unresolved,\n    );\n\n    const active =\n      explicitActive !== undefined\n        ? truthy(explicitActive)\n        : activeStatuses.has(status);\n\n    if (!active) return false;\n\n    const timestamp = first(\n      wave?.updatedAt,\n      wave?.updated_at,\n      wave?.detectedAt,\n      wave?.detected_at,\n      wave?.startedAt,\n      wave?.started_at,\n      wave?.createdAt,\n      wave?.created_at,\n    );\n\n    if (!timestamp) return true;\n\n    const time = new Date(timestamp).getTime();\n\n    if (!Number.isFinite(time)) return true;\n\n    return Date.now() - time <= 24 * 60 * 60 * 1000;\n  };\n\n  const itemText = (item) =>\n    Object.values(item || {})\n      .filter(\n        (value) =>\n          typeof value === 'string' ||\n          typeof value === 'number' ||\n          typeof value === 'boolean',\n      )\n      .map((value) => text(value))\n      .join(' ');\n\n  const mentionsAntifraud = (item) => {\n    const value = itemText(item);\n\n    return [\n      'antifraud',\n      'anti fraud',\n      'антифрод',\n      'наплыв',\n      'риск',\n      'угроз',\n      'события antifraud',\n    ].some((needle) => value.includes(needle));\n  };\n\n  return original.map((item, index) => {\n    const channel = findChannel(item, index);\n\n    if (!channel || !mentionsAntifraud(item)) {\n      return item;\n    }\n\n    if (waveIsCurrentThreat(channel)) {\n      return item;\n    }\n\n    const enabled = antifraudEnabled(channel);\n    const healthyMessage =\n      enabled === false\n        ? 'AntiFraud отключён — активных угроз нет'\n        : 'Канал работает штатно';\n\n    return {\n      ...item,\n      status: 'Работает',\n      label: 'Работает',\n      state: 'ok',\n      level: 'ok',\n      tone: 'success',\n      color: 'green',\n      problem: false,\n      warning: false,\n      hasProblem: false,\n      hasWarning: false,\n      isHealthy: true,\n      message: healthyMessage,\n      reason: healthyMessage,\n      description: healthyMessage,\n      details: healthyMessage,\n    };\n  });\n}\n"
+
+if marker not in source:
+    anchor = "async function lrC6OperationsPayload(req) {"
+
+    if source.count(anchor) != 1:
+        raise SystemExit(
+            f"Не найдена единственная точка lrC6OperationsPayload: {source.count(anchor)}"
+        )
+
+    source = source.replace(anchor, block + "\n" + anchor, 1)
+
+old_call = "channelHealth: lrC6Health(payload),"
+new_call = "channelHealth: lrC6ActiveAntifraudHealth(payload),"
+
+if source.count(old_call) != 1:
+    if new_call not in source:
+        raise SystemExit(
+            f"Не найден единственный вызов lrC6Health(payload): {source.count(old_call)}"
+        )
+else:
+    source = source.replace(old_call, new_call, 1)
+
+path.write_text(source, encoding="utf-8")
+print("Ложная оценка истории AntiFraud отключена.")
+PY
+
+echo "[3/7] Проверяю изоляцию изменения"
+
+grep -q "LINKRAY_CABINET_ACTIVE_ANTIFRAUD_HEALTH_V9" "$SERVER"
+grep -q "channelHealth: lrC6ActiveAntifraudHealth(payload)" "$SERVER"
+
+echo "[4/7] Проверяю JavaScript"
+
+node --check "$SERVER"
+
+echo "[5/7] Пересобираю только веб-приложение"
+
+docker compose up -d --build app
+sleep 14
+
+MAIN_CODE="$(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/)"
+CABINET_CODE="$(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/cabinet)"
+OPS_NO_COOKIE="$(
+  curl -sS -o /dev/null -w '%{http_code}' \
+    https://linkray.ru/api/website/cabinet/operations
+)"
+
+echo "Главная: $MAIN_CODE"
+echo "Кабинет: $CABINET_CODE"
+echo "API без cookie: $OPS_NO_COOKIE"
+
+[[ "$MAIN_CODE" == "200" ]]
+[[ "$CABINET_CODE" == "200" ]]
+[[ "$OPS_NO_COOKIE" == "401" ]]
+
+echo "[6/7] Проверяю логи"
+
+LOGS="$(docker compose logs --since=4m app 2>&1 || true)"
+
+if printf '%s\n' "$LOGS" | grep -Eqi \
+  "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module|Identifier .* already been declared"
+then
+  printf '%s\n' "$LOGS" | tail -220
+  echo "В логах найдена критическая ошибка."
+  exit 1
+fi
+
+echo "[7/7] Сохраняю исправление в GitHub"
+
+git add -- "$SERVER"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Use only active AntiFraud threats in cabinet health"
+  COMMITTED=1
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено."
+fi
+
+trap - ERR
+
+echo
+echo "============================================================"
+echo "ЛОЖНЫЕ ПРОБЛЕМЫ ANTIFRAUD В ЗДОРОВЬЕ КАНАЛОВ ИСПРАВЛЕНЫ"
+echo
+echo "• история наплывов больше не считается текущей угрозой"
+echo "• resolved / cleared / ignored / closed не дают красный статус"
+echo "• старые события старше 24 часов не дают красный статус"
+echo "• проблема остаётся только при активном незавершённом наплыве"
+echo "• бот, Studio, автопостинг и база данных не изменялись"
+echo "Резервная копия: $BACKUP"
+echo "============================================================"
