@@ -192,6 +192,8 @@ async function findLinkRayUser(identifier) {
       FROM public.lr_users
       WHERE id::text = $1
          OR max_user_id::text = $1
+        -- LINKRAY_WEBSITE_PROFILE_NUMBER_LOGIN_V1
+        OR profile_number::text = COALESCE(NULLIF(ltrim($1, '0'), ''), '0')
       ORDER BY
         CASE WHEN id::text = $1 THEN 0 ELSE 1 END,
         id
