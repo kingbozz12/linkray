@@ -1740,7 +1740,7 @@ async function lrC5CabinetPayload(req) {
     version: 'cabinet-suite-v5',
     user: {
       id: identity.userId,
-      linkrayId: String(identity.userId).padStart(6, '0'),
+      linkrayId: String(await lrWebPublicProfileNumber(identity.userId)).padStart(6, '0'),
       maxUserId: identity.maxUserId,
       displayName: identity.displayName,
       connectedChannels: channels.length,
@@ -1755,6 +1755,44 @@ async function lrC5CabinetPayload(req) {
     posts: posts.slice(0, 40),
     updatedAt: new Date().toISOString(),
   };
+}
+
+
+// LINKRAY_PUBLIC_PROFILE_NUMBER_V1
+// Внешний ID LinkRay всегда берётся из lr_users.profile_number.
+// lr_users.id остаётся только внутренним ключом БД.
+async function lrWebPublicProfileNumber(internalUserId) {
+  const internalId = Number(internalUserId);
+
+  if (!Number.isFinite(internalId) || internalId <= 0) {
+    throw new Error('Invalid internal LinkRay user id');
+  }
+
+  const result = await query(
+    `
+      SELECT profile_number
+      FROM public.lr_users
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [internalId],
+  );
+
+  const rows = Array.isArray(result)
+    ? result
+    : Array.isArray(result?.rows)
+      ? result.rows
+      : [];
+
+  const profileNumber = Number(rows[0]?.profile_number);
+
+  if (!Number.isFinite(profileNumber) || profileNumber <= 0) {
+    throw new Error(
+      `Public LinkRay profile_number not found for internal user id ${internalId}`,
+    );
+  }
+
+  return profileNumber;
 }
 
 function lrC5Async(handler) {
@@ -4135,7 +4173,7 @@ app.get(
       ok: true,
       user: {
         id: String(session.user_id),
-        linkrayId: String(session.user_id).padStart(6, '0'),
+        linkrayId: String(await lrWebPublicProfileNumber(session.user_id)).padStart(6, '0'),
         displayName: String(
           session.display_name || `Пользователь ${session.user_id}`,
         ),
@@ -4436,7 +4474,7 @@ app.use('/linkray-site', applyWebsiteHeaders);
         authenticated: true,
         user: {
           id: Number(session.user_id),
-          linkrayId: String(session.user_id).padStart(6, '0'),
+          linkrayId: String(await lrWebPublicProfileNumber(session.user_id)).padStart(6, '0'),
           maxUserId: String(session.max_user_id || ''),
           displayName: String(session.display_name || 'Пользователь LinkRay'),
         },
