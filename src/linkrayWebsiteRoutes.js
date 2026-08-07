@@ -2432,6 +2432,326 @@ async function lrC6Sessions(identity) {
   };
 }
 
+
+// LINKRAY_CABINET_ACTIVE_ANTIFRAUD_HEALTH_V9
+// История AntiFraud не является текущей угрозой.
+// Красный/жёлтый статус показывается только для активного незавершённого наплыва.
+function lrC6ActiveAntifraudHealth(payload) {
+  const original = Array.isArray(lrC6Health(payload))
+    ? lrC6Health(payload)
+    : [];
+
+  const channels = Array.isArray(payload?.channels)
+    ? payload.channels
+    : [];
+
+  const text = (value) =>
+    String(value ?? '')
+      .trim()
+      .toLowerCase();
+
+  const truthy = (value) => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value > 0;
+
+    return [
+      '1',
+      'true',
+      'yes',
+      'on',
+      'enabled',
+      'active',
+      'включено',
+      'включена',
+    ].includes(text(value));
+  };
+
+  const first = (...values) =>
+    values.find(
+      (value) =>
+        value !== undefined &&
+        value !== null &&
+        String(value).trim() !== '',
+    );
+
+  const channelIdentifiers = (channel) =>
+    [
+      channel?.id,
+      channel?.channelId,
+      channel?.channel_id,
+      channel?.maxChatId,
+      channel?.max_chat_id,
+      channel?.chatId,
+      channel?.chat_id,
+      channel?.maxChannelId,
+      channel?.max_channel_id,
+    ]
+      .map((value) => text(value))
+      .filter(Boolean);
+
+  const channelTitle = (channel) =>
+    text(
+      first(
+        channel?.title,
+        channel?.name,
+        channel?.channelTitle,
+        channel?.channel_title,
+        channel?.displayName,
+        channel?.display_name,
+      ),
+    );
+
+  const itemIdentifiers = (item) =>
+    [
+      item?.id,
+      item?.channelId,
+      item?.channel_id,
+      item?.maxChatId,
+      item?.max_chat_id,
+      item?.chatId,
+      item?.chat_id,
+    ]
+      .map((value) => text(value))
+      .filter(Boolean);
+
+  const itemTitle = (item) =>
+    text(
+      first(
+        item?.title,
+        item?.name,
+        item?.channelTitle,
+        item?.channel_title,
+      ),
+    );
+
+  const findChannel = (item, index) => {
+    const ids = new Set(itemIdentifiers(item));
+
+    const byId = channels.find((channel) =>
+      channelIdentifiers(channel).some((value) => ids.has(value)),
+    );
+
+    if (byId) return byId;
+
+    const title = itemTitle(item);
+
+    const byTitle = title
+      ? channels.find((channel) => channelTitle(channel) === title)
+      : null;
+
+    return byTitle || channels[index] || null;
+  };
+
+  const antifraudObject = (channel) =>
+    channel?.antifraud ??
+    channel?.antiFraud ??
+    channel?.anti_fraud ??
+    channel?.protection ??
+    {};
+
+  const antifraudEnabled = (channel) => {
+    const antifraud = antifraudObject(channel);
+
+    const explicit = first(
+      antifraud?.enabled,
+      antifraud?.isEnabled,
+      antifraud?.is_enabled,
+      channel?.antifraudEnabled,
+      channel?.antiFraudEnabled,
+      channel?.antifraud_enabled,
+      channel?.protectionEnabled,
+      channel?.protection_enabled,
+    );
+
+    return explicit === undefined ? null : truthy(explicit);
+  };
+
+  const latestWave = (channel) => {
+    const antifraud = antifraudObject(channel);
+
+    return (
+      first(
+        channel?.activeWave,
+        channel?.active_wave,
+        antifraud?.activeWave,
+        antifraud?.active_wave,
+        antifraud?.currentWave,
+        antifraud?.current_wave,
+      ) ||
+      first(
+        channel?.latestWave,
+        channel?.latest_wave,
+        antifraud?.latestWave,
+        antifraud?.latest_wave,
+        antifraud?.wave,
+      ) ||
+      null
+    );
+  };
+
+  const waveIsCurrentThreat = (channel) => {
+    if (!channel) return false;
+
+    const enabled = antifraudEnabled(channel);
+
+    if (enabled === false) return false;
+
+    const wave = latestWave(channel);
+
+    if (!wave || typeof wave !== 'object') return false;
+
+    const status = text(
+      first(
+        wave?.status,
+        wave?.state,
+        wave?.resolution,
+        wave?.result,
+      ),
+    );
+
+    const resolvedStatuses = new Set([
+      'resolved',
+      'cleared',
+      'ignored',
+      'closed',
+      'finished',
+      'completed',
+      'safe',
+      'normal',
+      'inactive',
+      'dismissed',
+      'cancelled',
+      'canceled',
+      'очищен',
+      'очищено',
+      'решено',
+      'закрыт',
+      'закрыто',
+      'проигнорирован',
+      'завершён',
+      'завершен',
+    ]);
+
+    if (resolvedStatuses.has(status)) return false;
+
+    const activeStatuses = new Set([
+      'active',
+      'open',
+      'detected',
+      'unsafe',
+      'danger',
+      'high',
+      'critical',
+      'pending',
+      'review',
+      'processing',
+      'started',
+      'активен',
+      'обнаружен',
+      'опасный',
+      'высокий',
+      'критический',
+      'проверка',
+    ]);
+
+    const explicitActive = first(
+      wave?.active,
+      wave?.isActive,
+      wave?.is_active,
+      wave?.open,
+      wave?.unresolved,
+    );
+
+    const active =
+      explicitActive !== undefined
+        ? truthy(explicitActive)
+        : activeStatuses.has(status);
+
+    if (!active) return false;
+
+    const timestamp = first(
+      wave?.updatedAt,
+      wave?.updated_at,
+      wave?.detectedAt,
+      wave?.detected_at,
+      wave?.startedAt,
+      wave?.started_at,
+      wave?.createdAt,
+      wave?.created_at,
+    );
+
+    if (!timestamp) return true;
+
+    const time = new Date(timestamp).getTime();
+
+    if (!Number.isFinite(time)) return true;
+
+    return Date.now() - time <= 24 * 60 * 60 * 1000;
+  };
+
+  const itemText = (item) =>
+    Object.values(item || {})
+      .filter(
+        (value) =>
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean',
+      )
+      .map((value) => text(value))
+      .join(' ');
+
+  const mentionsAntifraud = (item) => {
+    const value = itemText(item);
+
+    return [
+      'antifraud',
+      'anti fraud',
+      'антифрод',
+      'наплыв',
+      'риск',
+      'угроз',
+      'события antifraud',
+    ].some((needle) => value.includes(needle));
+  };
+
+  return original.map((item, index) => {
+    const channel = findChannel(item, index);
+
+    if (!channel || !mentionsAntifraud(item)) {
+      return item;
+    }
+
+    if (waveIsCurrentThreat(channel)) {
+      return item;
+    }
+
+    const enabled = antifraudEnabled(channel);
+    const healthyMessage =
+      enabled === false
+        ? 'AntiFraud отключён — активных угроз нет'
+        : 'Канал работает штатно';
+
+    return {
+      ...item,
+      status: 'Работает',
+      label: 'Работает',
+      state: 'ok',
+      level: 'ok',
+      tone: 'success',
+      color: 'green',
+      problem: false,
+      warning: false,
+      hasProblem: false,
+      hasWarning: false,
+      isHealthy: true,
+      message: healthyMessage,
+      reason: healthyMessage,
+      description: healthyMessage,
+      details: healthyMessage,
+    };
+  });
+}
+
 async function lrC6OperationsPayload(req) {
   const payload = await lrC5CabinetPayload(req);
   const identity = await lrC5Session(req);
@@ -2457,7 +2777,7 @@ async function lrC6OperationsPayload(req) {
     ok: true,
     version: LR_CABINET_CONTROL_VERSION,
     updatedAt: new Date().toISOString(),
-    channelHealth: lrC6Health(payload),
+    channelHealth: lrC6ActiveAntifraudHealth(payload),
     comparison: lrC6Comparison(payload),
     purchases,
     notificationHistory,
