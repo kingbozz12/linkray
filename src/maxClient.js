@@ -601,7 +601,11 @@ export async function sendMaxMessage({
     throw new Error('chatId or userId is required');
   }
 
-  await lrAssertChannelSendAllowed({
+    // LINKRAY_DISABLE_LINK_PREVIEW_QUERY_V2
+  // В POST /messages MAX принимает disable_link_preview как query-параметр.
+  url.searchParams.set('disable_link_preview', 'true');
+
+await lrAssertChannelSendAllowed({
     chatId,
     userId,
     text,

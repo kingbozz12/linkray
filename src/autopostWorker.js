@@ -59,6 +59,14 @@ function normalizeAttachment(a) {
 
   if (type === 'inline_keyboard') return a;
   if (type.includes('image') || type.includes('photo')) {
+    // LINKRAY_SCHEDULED_IMAGE_URL_V2
+    // Для отложенной картинки используем сохранённый URL, если он есть.
+    // MAX поддерживает attachments.payload.url для image.
+    // Старый token остаётся запасным вариантом.
+    const directUrl = String(p.url || a.url || '').trim();
+    if (/^https?:\/\//i.test(directUrl)) {
+      return { type: 'image', payload: { url: directUrl } };
+    }
     if (p.token) return { type: 'image', payload: { token: p.token } };
     if (a.token) return { type: 'image', payload: { token: a.token } };
     if (Array.isArray(p.photos)) return { type: 'image', payload: { photos: p.photos } };
