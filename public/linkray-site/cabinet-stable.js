@@ -1574,9 +1574,12 @@
 
     try {
       const response = await fetch(
+        // LINKRAY_CABINET_SETTINGS_REQUEST_FIX_V8
         `/api/website/cabinet/channel/${encodeURIComponent(
           channelId,
-        )}/settings`,
+        )}/settings?setting=${encodeURIComponent(
+          setting,
+        )}&enabled=${enabled ? 'true' : 'false'}`,
         {
           method: 'PATCH',
           credentials: 'include',

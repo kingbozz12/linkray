@@ -3238,8 +3238,36 @@ function lrAccurateSnapshotMatches(snapshot, identifiers) {
           });
         }
 
-        const setting = String(req.body?.setting || '').trim();
-        const enabled = req.body?.enabled;
+        // LINKRAY_CABINET_SETTINGS_API_FIX_V8
+        // Query-параметры используются как безопасный резерв,
+        // когда JSON-body ещё не разобран общим middleware.
+        const requestBody =
+          req.body &&
+          typeof req.body === 'object' &&
+          !Buffer.isBuffer(req.body)
+            ? req.body
+            : {};
+
+        const setting = String(
+          requestBody.setting ??
+            req.query?.setting ??
+            '',
+        )
+          .trim()
+          .toLowerCase();
+
+        const rawEnabled =
+          requestBody.enabled ??
+          req.query?.enabled;
+
+        const enabled =
+          typeof rawEnabled === 'boolean'
+            ? rawEnabled
+            : String(rawEnabled).toLowerCase() === 'true'
+              ? true
+              : String(rawEnabled).toLowerCase() === 'false'
+                ? false
+                : rawEnabled;
 
         if (!['daily', 'antifraud'].includes(setting)) {
           return res.status(400).json({
