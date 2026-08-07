@@ -1830,7 +1830,8 @@ async function clearWaveHistoryFromDatabase(channelId) {
   const relatedColumns = rows(await query(`
     SELECT DISTINCT
       c.table_name,
-      c.column_name
+      c.column_name,
+      CASE c.column_name WHEN 'wave_id' THEN 0 ELSE 1 END AS sort_order
     FROM information_schema.columns c
     JOIN information_schema.tables t
       ON t.table_schema=c.table_schema
@@ -1841,7 +1842,7 @@ async function clearWaveHistoryFromDatabase(channelId) {
       AND c.table_name<>'lr_antifraud_waves'
       AND c.column_name IN ('wave_id','last_wave_id')
     ORDER BY
-      CASE c.column_name WHEN 'wave_id' THEN 0 ELSE 1 END,
+      sort_order,
       c.table_name
   `));
 
