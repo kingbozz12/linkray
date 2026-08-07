@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /opt/linkray
+
+SERVER="src/linkrayWebsiteRoutes.js"
+FRONT="public/linkray-site/cabinet-stable.js"
+HTML="public/linkray-site/cabinet-stable.html"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/opt/linkray-backups/cabinet-settings-api-v8-$STAMP"
+COMMITTED=0
+
+mkdir -p "$BACKUP"
+cp -a "$SERVER" "$FRONT" "$HTML" "$BACKUP/"
+
+rollback() {
+  local code=$?
+  echo
+  echo "[ОТКАТ] Ошибка установки. Возвращаю прежние файлы."
+  cp -a "$BACKUP/$(basename "$SERVER")" "$SERVER"
+  cp -a "$BACKUP/$(basename "$FRONT")" "$FRONT"
+  cp -a "$BACKUP/$(basename "$HTML")" "$HTML"
+
+  if [[ "$COMMITTED" == "1" ]]; then
+    git reset --hard HEAD~1 || true
+  fi
+
+  docker compose up -d --build app || true
+  exit "$code"
+}
+trap rollback ERR
+
+echo "[1/7] Проверяю установленный V7"
+
+grep -q "LINKRAY_CABINET_REAL_SETTINGS_V7_START" "$SERVER"
+grep -q "LINKRAY_CABINET_REAL_SETTINGS_FRONT_V7_START" "$FRONT"
+
+echo "[2/7] Исправляю чтение настройки на сервере"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("src/linkrayWebsiteRoutes.js")
+source = path.read_text(encoding="utf-8")
+
+if "LINKRAY_CABINET_SETTINGS_API_FIX_V8" not in source:
+    old = """        const setting = String(req.body?.setting || '').trim();
+        const enabled = req.body?.enabled;
+
+        if (!['daily', 'antifraud'].includes(setting)) {"""
+
+    new = """        // LINKRAY_CABINET_SETTINGS_API_FIX_V8
+        // Query-параметры используются как безопасный резерв,
+        // когда JSON-body ещё не разобран общим middleware.
+        const requestBody =
+          req.body &&
+          typeof req.body === 'object' &&
+          !Buffer.isBuffer(req.body)
+            ? req.body
+            : {};
+
+        const setting = String(
+          requestBody.setting ??
+            req.query?.setting ??
+            '',
+        )
+          .trim()
+          .toLowerCase();
+
+        const rawEnabled =
+          requestBody.enabled ??
+          req.query?.enabled;
+
+        const enabled =
+          typeof rawEnabled === 'boolean'
+            ? rawEnabled
+            : String(rawEnabled).toLowerCase() === 'true'
+              ? true
+              : String(rawEnabled).toLowerCase() === 'false'
+                ? false
+                : rawEnabled;
+
+        if (!['daily', 'antifraud'].includes(setting)) {"""
+
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(
+            f"Не найден единственный блок PATCH V7: найдено {count}."
+        )
+
+    source = source.replace(old, new, 1)
+
+path.write_text(source, encoding="utf-8")
+print("Сервер теперь принимает setting/enabled из JSON и query.")
+PY
+
+echo "[3/7] Добавляю резервные параметры в запрос кабинета"
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("public/linkray-site/cabinet-stable.js")
+source = path.read_text(encoding="utf-8")
+
+if "LINKRAY_CABINET_SETTINGS_REQUEST_FIX_V8" not in source:
+    old = """        `/api/website/cabinet/channel/${encodeURIComponent(
+          channelId,
+        )}/settings`,"""
+
+    new = """        // LINKRAY_CABINET_SETTINGS_REQUEST_FIX_V8
+        `/api/website/cabinet/channel/${encodeURIComponent(
+          channelId,
+        )}/settings?setting=${encodeURIComponent(
+          setting,
+        )}&enabled=${enabled ? 'true' : 'false'}`,"""
+
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(
+            f"Не найден единственный запрос настроек V7: найдено {count}."
+        )
+
+    source = source.replace(old, new, 1)
+
+path.write_text(source, encoding="utf-8")
+print("Запрос кабинета передаёт настройку одновременно в JSON и URL.")
+PY
+
+echo "[4/7] Обновляю кэш JavaScript"
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("public/linkray-site/cabinet-stable.html")
+source = path.read_text(encoding="utf-8")
+version = "20260807-settings-api-v8"
+
+count = len(
+    re.findall(
+        r'cabinet-stable\.js(?:\?v=[^"\']*)?',
+        source,
+    )
+)
+
+if count < 1:
+    raise SystemExit("Ссылка cabinet-stable.js не найдена.")
+
+source = re.sub(
+    r'cabinet-stable\.js(?:\?v=[^"\']*)?',
+    f'cabinet-stable.js?v={version}',
+    source,
+)
+
+path.write_text(source, encoding="utf-8")
+print("Кэш-версия JavaScript обновлена.")
+PY
+
+echo "[5/7] Проверяю синтаксис"
+
+node --check "$SERVER"
+node --check "$FRONT"
+
+grep -q "LINKRAY_CABINET_SETTINGS_API_FIX_V8" "$SERVER"
+grep -q "LINKRAY_CABINET_SETTINGS_REQUEST_FIX_V8" "$FRONT"
+
+echo "[6/7] Пересобираю только приложение"
+
+docker compose up -d --build app
+sleep 14
+
+MAIN_CODE="$(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/)"
+CABINET_CODE="$(curl -sS -o /dev/null -w '%{http_code}' https://linkray.ru/cabinet)"
+JS_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
+  'https://linkray.ru/linkray-site/cabinet-stable.js?v=20260807-settings-api-v8')"
+PATCH_NO_COOKIE="$(
+  curl -sS -o /dev/null -w '%{http_code}' \
+    -X PATCH \
+    'https://linkray.ru/api/website/cabinet/channel/0/settings?setting=daily&enabled=true'
+)"
+
+echo "Главная: $MAIN_CODE"
+echo "Кабинет: $CABINET_CODE"
+echo "JavaScript: $JS_CODE"
+echo "PATCH без cookie: $PATCH_NO_COOKIE"
+
+[[ "$MAIN_CODE" == "200" ]]
+[[ "$CABINET_CODE" == "200" ]]
+[[ "$JS_CODE" == "200" ]]
+[[ "$PATCH_NO_COOKIE" == "401" ]]
+
+LOGS="$(docker compose logs --since=4m app 2>&1 || true)"
+
+if printf '%s\n' "$LOGS" | grep -Eqi \
+  "SyntaxError|ReferenceError|ERR_MODULE_NOT_FOUND|Cannot find module|Identifier .* already been declared"
+then
+  printf '%s\n' "$LOGS" | tail -220
+  echo "В логах найдена критическая ошибка."
+  exit 1
+fi
+
+echo "[7/7] Сохраняю исправление в GitHub"
+
+git add -- "$SERVER" "$FRONT" "$HTML"
+
+if ! git diff --cached --quiet; then
+  git commit -m "Fix cabinet channel settings request"
+  COMMITTED=1
+  git push origin HEAD:main
+else
+  echo "Исправление уже установлено."
+fi
+
+trap - ERR
+
+echo
+echo "============================================================"
+echo "ОШИБКА «НЕИЗВЕСТНАЯ НАСТРОЙКА КАНАЛА» ИСПРАВЛЕНА"
+echo
+echo "• daily и antifraud передаются одновременно в JSON и URL"
+echo "• сервер принимает оба безопасных варианта"
+echo "• база данных и остальные модули не изменялись"
+echo "• Studio, автопостинг и добавление каналов не затрагивались"
+echo "Резервная копия: $BACKUP"
+echo "============================================================"
