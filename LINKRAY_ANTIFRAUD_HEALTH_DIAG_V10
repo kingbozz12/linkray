@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -u
+
+cd /opt/linkray || exit 1
+
+echo "============================================================"
+echo "LINKRAY — ДИАГНОСТИКА ЛОЖНОГО ANTIFRAUD В КАБИНЕТЕ"
+echo "ТОЛЬКО ЧТЕНИЕ: код и база НЕ изменяются"
+echo "============================================================"
+
+echo
+echo "=== 1. GIT / УСТАНОВЛЕННЫЙ ПАТЧ ==="
+git rev-parse --short HEAD 2>/dev/null || true
+git log -1 --oneline 2>/dev/null || true
+grep -n "LINKRAY_CABINET_ACTIVE_ANTIFRAUD_HEALTH_V9" src/linkrayWebsiteRoutes.js 2>/dev/null || echo "V9 marker: NOT FOUND"
+grep -n "channelHealth:" src/linkrayWebsiteRoutes.js 2>/dev/null | tail -20 || true
+
+echo
+echo "=== 2. ТОЧНЫЕ ФУНКЦИИ HEALTH ==="
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("src/linkrayWebsiteRoutes.js")
+s = p.read_text(encoding="utf-8")
+
+def extract_function(name):
+    needles = [f"function {name}(", f"async function {name}("]
+    starts = [s.find(n) for n in needles if s.find(n) >= 0]
+    if not starts:
+        print(f"\n--- {name}: NOT FOUND ---")
+        return
+
+    start = min(starts)
+    brace = s.find("{", start)
+    if brace < 0:
+        print(f"\n--- {name}: OPEN BRACE NOT FOUND ---")
+        return
+
+    depth = 0
+    quote = None
+    escape = False
+    line_comment = False
+    block_comment = False
+    i = brace
+
+    while i < len(s):
+        ch = s[i]
+        nxt = s[i+1] if i+1 < len(s) else ""
+
+        if line_comment:
+            if ch == "\n":
+                line_comment = False
+            i += 1
+            continue
+
+        if block_comment:
+            if ch == "*" and nxt == "/":
+                block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = None
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            line_comment = True
+            i += 2
+            continue
+
+        if ch == "/" and nxt == "*":
+            block_comment = True
+            i += 2
+            continue
+
+        if ch in ("'", '"', "`"):
+            quote = ch
+            i += 1
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                print(f"\n--- {name} ---")
+                print(s[start:end])
+                return
+        i += 1
+
+    print(f"\n--- {name}: END NOT FOUND ---")
+
+for name in (
+    "lrC6Health",
+    "lrC6ActiveAntifraudHealth",
+    "lrC6OperationsPayload",
+    "lrC5CabinetPayload",
+):
+    extract_function(name)
+PY
+
+echo
+echo "=== 3. СХЕМА ANTIFRAUD ==="
+docker exec -i linkray-postgres sh -lc '
+psql -X -P pager=off -U "${POSTGRES_USER:-linkray}" -d "${POSTGRES_DB:-linkray}" <<SQL
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = '\''public'\''
+  AND table_name IN (
+    '\''channels'\'',
+    '\''lr_antifraud_channels'\'',
+    '\''lr_antifraud_waves'\'',
+    '\''lr_antifraud_events'\''
+  )
+ORDER BY table_name, ordinal_position;
+SQL
+' 2>&1 || true
+
+echo
+echo "=== 4. ТЕКУЩИЕ КАНАЛЫ ==="
+docker exec -i linkray-postgres sh -lc '
+psql -X -P pager=off -U "${POSTGRES_USER:-linkray}" -d "${POSTGRES_DB:-linkray}" <<SQL
+SELECT to_jsonb(c)
+FROM public.channels c
+ORDER BY id DESC
+LIMIT 20;
+SQL
+' 2>&1 || true
+
+echo
+echo "=== 5. НАСТРОЙКИ ANTIFRAUD ==="
+docker exec -i linkray-postgres sh -lc '
+psql -X -P pager=off -U "${POSTGRES_USER:-linkray}" -d "${POSTGRES_DB:-linkray}" <<SQL
+SELECT to_jsonb(a)
+FROM public.lr_antifraud_channels a
+ORDER BY channel_id DESC
+LIMIT 20;
+SQL
+' 2>&1 || true
+
+echo
+echo "=== 6. ПОСЛЕДНИЕ НАПЛЫВЫ ==="
+docker exec -i linkray-postgres sh -lc '
+psql -X -P pager=off -U "${POSTGRES_USER:-linkray}" -d "${POSTGRES_DB:-linkray}" <<SQL
+SELECT to_jsonb(w)
+FROM public.lr_antifraud_waves w
+ORDER BY id DESC
+LIMIT 30;
+SQL
+' 2>&1 || true
+
+echo
+echo "=== 7. ПОСЛЕДНИЕ ANTIFRAUD EVENTS ==="
+docker exec -i linkray-postgres sh -lc '
+psql -X -P pager=off -U "${POSTGRES_USER:-linkray}" -d "${POSTGRES_DB:-linkray}" <<SQL
+SELECT to_jsonb(e)
+FROM public.lr_antifraud_events e
+ORDER BY id DESC
+LIMIT 40;
+SQL
+' 2>&1 || true
+
+echo
+echo "=== 8. СВЕЖИЕ ЛОГИ КАБИНЕТА/ANTIFRAUD ==="
+docker logs --since 20m linkray-app 2>&1 \
+  | grep -Ei "cabinet|antifraud|wave|health|risk|error" \
+  | tail -250 || true
+
+echo
+echo "============================================================"
+echo "ДИАГНОСТИКА ЗАВЕРШЕНА. НИ ОДИН ФАЙЛ И НИ ОДНА ЗАПИСЬ НЕ ИЗМЕНЕНЫ."
+echo "============================================================"
