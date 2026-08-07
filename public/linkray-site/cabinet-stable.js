@@ -1,3 +1,252 @@
+
+/* LINKRAY_CABINET_CENTER_CLEAR_SYNC_V13
+ * Верхний "Центр событий" больше не показывает те же уведомления,
+ * которые пользователь уже очистил в "Уведомлениях кабинета".
+ * Новое событие с новым содержимым/счётчиком снова появится.
+ * Только сайт: бот, Studio, AntiFraud MAX и БД не меняются.
+ */
+(() => {
+  'use strict';
+
+  if (window.__LINKRAY_CABINET_CENTER_CLEAR_SYNC_V13__) return;
+  window.__LINKRAY_CABINET_CENTER_CLEAR_SYNC_V13__ = true;
+
+  const originalFetch = window.fetch.bind(window);
+  const TTL_MS = 36 * 60 * 60 * 1000;
+
+  let currentUserKey = 'anonymous';
+  let lastRawCenterNotifications = [];
+  let reloadScheduled = false;
+
+  const asText = (value) => String(value ?? '').trim();
+
+  const requestPath = (input) => {
+    try {
+      const raw =
+        typeof input === 'string'
+          ? input
+          : input && typeof input.url === 'string'
+            ? input.url
+            : '';
+      return new URL(raw, window.location.origin).pathname;
+    } catch (_) {
+      return '';
+    }
+  };
+
+  const notificationFingerprint = (item) => {
+    if (!item || typeof item !== 'object') return asText(item);
+
+    const parts = [
+      item.type,
+      item.level,
+      item.code,
+      item.channelId,
+      item.channel_id,
+      item.title,
+      item.text,
+      item.message,
+      item.reason,
+    ].map(asText);
+
+    if (parts.some(Boolean)) return JSON.stringify(parts);
+
+    try {
+      return JSON.stringify(item);
+    } catch (_) {
+      return asText(item);
+    }
+  };
+
+  const storageKey = () =>
+    `linkray.cabinet.center-dismissed.v13.${asText(currentUserKey) || 'anonymous'}`;
+
+  const readDismissed = () => {
+    const now = Date.now();
+    let raw = {};
+
+    try {
+      raw = JSON.parse(localStorage.getItem(storageKey()) || '{}') || {};
+    } catch (_) {
+      raw = {};
+    }
+
+    const clean = {};
+    for (const [key, value] of Object.entries(raw)) {
+      const ts = Number(value || 0);
+      if (Number.isFinite(ts) && now - ts <= TTL_MS) clean[key] = ts;
+    }
+
+    try {
+      localStorage.setItem(storageKey(), JSON.stringify(clean));
+    } catch (_) {}
+
+    return clean;
+  };
+
+  const writeDismissed = (items) => {
+    if (!Array.isArray(items) || !items.length) return;
+
+    const saved = readDismissed();
+    const now = Date.now();
+
+    for (const item of items) {
+      const fingerprint = notificationFingerprint(item);
+      if (fingerprint) saved[fingerprint] = now;
+    }
+
+    try {
+      localStorage.setItem(storageKey(), JSON.stringify(saved));
+    } catch (_) {}
+  };
+
+  const filterDismissed = (items) => {
+    if (!Array.isArray(items)) return items;
+
+    const dismissed = readDismissed();
+
+    return items.filter((item) => {
+      const fingerprint = notificationFingerprint(item);
+      return !fingerprint || !dismissed[fingerprint];
+    });
+  };
+
+  const detectUser = (node) => {
+    if (!node || typeof node !== 'object') return;
+
+    const user = node.user;
+    if (user && typeof user === 'object') {
+      const id =
+        user.id ??
+        user.linkrayId ??
+        user.linkray_id ??
+        user.maxUserId ??
+        user.max_user_id;
+
+      if (id !== undefined && id !== null && asText(id)) {
+        currentUserKey = asText(id);
+      }
+    }
+  };
+
+  const rewriteNotificationArrays = (node, seen = new WeakSet()) => {
+    if (!node || typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+
+    detectUser(node);
+
+    if (Array.isArray(node.notifications)) {
+      lastRawCenterNotifications = node.notifications.slice();
+      node.notifications = filterDismissed(node.notifications);
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'notificationHistory') continue;
+      if (value && typeof value === 'object') {
+        rewriteNotificationArrays(value, seen);
+      }
+    }
+  };
+
+  const scheduleReload = () => {
+    if (reloadScheduled) return;
+    reloadScheduled = true;
+
+    window.setTimeout(() => {
+      try {
+        window.location.reload();
+      } catch (_) {}
+    }, 180);
+  };
+
+  const maybeSyncAlreadyClearedHistory = (payload) => {
+    if (!payload || typeof payload !== 'object') return;
+
+    const history = payload.notificationHistory;
+
+    /*
+     * После прежней очистки история уже может быть пустой,
+     * а старый динамический Центр событий ещё показывать карточки.
+     * В таком состоянии считаем именно эти старые карточки очищенными.
+     */
+    if (
+      Array.isArray(history) &&
+      history.length === 0 &&
+      lastRawCenterNotifications.length > 0
+    ) {
+      const visible = filterDismissed(lastRawCenterNotifications);
+
+      if (visible.length > 0) {
+        writeDismissed(visible);
+
+        const onceKey =
+          `linkray.cabinet.center-clear-autosync.v13.${asText(currentUserKey)}`;
+        try {
+          if (sessionStorage.getItem(onceKey) !== '1') {
+            sessionStorage.setItem(onceKey, '1');
+            scheduleReload();
+          }
+        } catch (_) {}
+      }
+    }
+  };
+
+  const rewriteJsonResponse = async (response) => {
+    const contentType = asText(response.headers.get('content-type')).toLowerCase();
+    if (!contentType.includes('application/json')) return response;
+
+    let payload;
+    try {
+      payload = await response.clone().json();
+    } catch (_) {
+      return response;
+    }
+
+    detectUser(payload);
+    rewriteNotificationArrays(payload);
+    maybeSyncAlreadyClearedHistory(payload);
+
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+
+    return new Response(JSON.stringify(payload), {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
+
+  window.fetch = async (...args) => {
+    const path = requestPath(args[0]);
+    const response = await originalFetch(...args);
+
+    const isCabinetRead =
+      path === '/api/website/cabinet/full' ||
+      path === '/api/website/cabinet/overview' ||
+      path === '/api/website/cabinet/operations';
+
+    if (response.ok && isCabinetRead) {
+      return rewriteJsonResponse(response);
+    }
+
+    if (
+      response.ok &&
+      path === '/api/website/cabinet/notifications/clear'
+    ) {
+      /*
+       * Сначала сервер штатно очищает историю/БД.
+       * Затем помечаем текущие карточки Центра событий как уже очищенные.
+       */
+      writeDismissed(lastRawCenterNotifications);
+      scheduleReload();
+    }
+
+    return response;
+  };
+})();
+
+
 (() => {
   'use strict';
 
