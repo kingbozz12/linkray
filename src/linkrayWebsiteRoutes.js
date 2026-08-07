@@ -1343,6 +1343,124 @@ async function lrC5CabinetPayload(req) {
 
     const risk = lrC5Risk(antifraudConfig, events);
 
+    // LINKRAY_CABINET_ANTIFRAUD_LIVE_STATUS_V12
+    // Для карточки здоровья учитываем только ТЕКУЩУЮ незавершённую угрозу,
+    // возникшую после последнего включения AntiFraud.
+    // Исторические события/старые наплывы не должны делать канал красным.
+    const lrC11WaveRows = lrC5MatchingRows(
+      base.keys,
+      antifraudWaves,
+    ).sort((a, b) => lrC5Time(b) - lrC5Time(a));
+
+    const lrC11LatestWave = lrC11WaveRows[0] || null;
+    const lrC11WaveStatus = String(
+      lrC5Pick(
+        lrC11LatestWave || {},
+        ['status', 'state', 'resolution', 'result'],
+      ) || '',
+    )
+      .trim()
+      .toLowerCase();
+
+    const lrC11ResolvedStatuses = new Set([
+      'resolved',
+      'cleared',
+      'ignored',
+      'closed',
+      'finished',
+      'completed',
+      'safe',
+      'normal',
+      'inactive',
+      'dismissed',
+      'cancelled',
+      'canceled',
+      'очищен',
+      'очищено',
+      'решено',
+      'закрыт',
+      'закрыто',
+      'проигнорирован',
+      'завершён',
+      'завершен',
+    ]);
+
+    const lrC11ThreatStatuses = new Set([
+      'high',
+      'critical',
+      'danger',
+      'unsafe',
+      'suspicious',
+      'threat',
+      'высокий',
+      'критический',
+      'опасный',
+      'угроза',
+    ]);
+
+    const lrC11Enabled = lrC5Bool(
+      lrC5Pick(
+        antifraudConfig,
+        ['enabled', 'is_enabled', 'active', 'is_active'],
+      ),
+      false,
+    );
+
+    const lrC11EnabledAt = lrC5Time(
+      lrC5Pick(
+        antifraudConfig,
+        ['learning_started_at', 'enabled_at', 'created_at'],
+      ),
+    );
+
+    const lrC11WaveAt = lrC11LatestWave
+      ? lrC5Time(lrC11LatestWave)
+      : 0;
+
+    const lrC11AgeMs = lrC11WaveAt
+      ? Date.now() - lrC11WaveAt
+      : Number.POSITIVE_INFINITY;
+
+    const lrC11Recent =
+      Number.isFinite(lrC11AgeMs) &&
+      lrC11AgeMs >= -5 * 60 * 1000 &&
+      lrC11AgeMs <= 24 * 60 * 60 * 1000;
+
+    const lrC11AfterEnable =
+      !lrC11EnabledAt ||
+      (lrC11WaveAt && lrC11WaveAt >= lrC11EnabledAt - 60 * 1000);
+
+    const lrC11ThreatCountFields = [
+      ['eligible_count', 'eligibleCount'],
+      ['probable_bot_count', 'probableBotCount'],
+      ['high_confidence_bot_count', 'highConfidenceBotCount'],
+      ['high_count', 'highCount'],
+      ['medium_count', 'mediumCount'],
+      ['suspicious_count', 'suspiciousCount'],
+      ['suspected_count', 'suspectedCount'],
+    ];
+
+    const lrC11HasSuspiciousCount = lrC11ThreatCountFields.some(
+      (names) => {
+        const value = Number(
+          lrC5Pick(lrC11LatestWave || {}, names) || 0,
+        );
+        return Number.isFinite(value) && value > 0;
+      },
+    );
+
+    const lrC11CurrentThreat = Boolean(
+      lrC11Enabled &&
+      lrC11LatestWave &&
+      lrC11Recent &&
+      lrC11AfterEnable &&
+      !lrC11ResolvedStatuses.has(lrC11WaveStatus) &&
+      (
+        lrC11HasSuspiciousCount ||
+        lrC11ThreatStatuses.has(lrC11WaveStatus)
+      )
+    );
+
     const channelPosts = posts.filter(
       (post) => post.channelId === base.id,
     );
@@ -1448,7 +1566,8 @@ async function lrC5CabinetPayload(req) {
           ),
           false,
         ),
-        level: risk.level,
+        currentThreat: lrC11CurrentThreat,
+      level: risk.level,
         label: risk.label,
         score: risk.score,
         events24h: events.filter(
@@ -2596,6 +2715,16 @@ function lrC6ActiveAntifraudHealth(payload) {
 
     if (enabled === false) return false;
 
+    const antifraud = antifraudObject(channel);
+    const explicitThreat = first(
+      antifraud?.currentThreat,
+      antifraud?.current_threat,
+    );
+
+    if (explicitThreat !== undefined) {
+      return truthy(explicitThreat);
+    }
+
     const wave = latestWave(channel);
 
     if (!wave || typeof wave !== 'object') return false;
@@ -2689,16 +2818,32 @@ function lrC6ActiveAntifraudHealth(payload) {
     return Date.now() - time <= 24 * 60 * 60 * 1000;
   };
 
-  const itemText = (item) =>
-    Object.values(item || {})
-      .filter(
-        (value) =>
-          typeof value === 'string' ||
-          typeof value === 'number' ||
-          typeof value === 'boolean',
-      )
-      .map((value) => text(value))
-      .join(' ');
+  const itemText = (item) => {
+    const parts = [];
+
+    const visit = (value) => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+
+      if (value && typeof value === 'object') {
+        Object.values(value).forEach(visit);
+        return;
+      }
+
+      if (
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+      ) {
+        parts.push(text(value));
+      }
+    };
+
+    visit(item);
+    return parts.join(' ');
+  };
 
   const mentionsAntifraud = (item) => {
     const value = itemText(item);
@@ -2734,6 +2879,8 @@ function lrC6ActiveAntifraudHealth(payload) {
     return {
       ...item,
       status: 'Работает',
+      issues: [healthyMessage],
+      antifraudLevel: 'safe',
       label: 'Работает',
       state: 'ok',
       level: 'ok',
