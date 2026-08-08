@@ -1162,18 +1162,21 @@ src = replace_range(
 old_call = "await lrV34SendMaxImageUrl(update, url);"
 new_call = "await lrV34SendMaxImageUrl(update, url, channels);"
 
-call_count = src.count(old_call)
+old_count = src.count(old_call)
+new_count = src.count(new_call)
 
-if call_count != 1:
-    raise SystemExit(
-        f"ОШИБКА: старый sender-call найден {call_count} раз, файл не сохранён"
+if old_count == 1 and new_count == 0:
+    src = src.replace(
+        old_call,
+        new_call,
+        1,
     )
-
-src = src.replace(
-    old_call,
-    new_call,
-    1,
-)
+elif old_count == 0 and new_count == 1:
+    pass
+else:
+    raise SystemExit(
+        f"ОШИБКА: sender-call: old={old_count}, new={new_count}; файл не сохранён"
+    )
 
 # ------------------------------------------------------------------
 # Финальные структурные проверки ДО записи.
