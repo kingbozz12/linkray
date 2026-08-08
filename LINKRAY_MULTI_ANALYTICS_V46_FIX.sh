@@ -97,7 +97,7 @@ async function lrV34LoadChannelsByLinks(links) {
 
 '''.lstrip()
 
-s = loader_re.sub(loader, s, count=1)
+s = loader_re.sub(lambda _m: loader, s, count=1)
 
 cap_start = "/* LR_ANALYTICS_CAPTION_V44_START */"
 cap_end = "/* LR_ANALYTICS_CAPTION_V44_END */"
@@ -198,7 +198,7 @@ function lrV44AnalyticsCaption(channels = []) {
 
 s = re.sub(
     rf'{re.escape(cap_start)}[\s\S]*?{re.escape(cap_end)}',
-    caption,
+    lambda _m: caption,
     s,
     count=1,
 )
@@ -700,7 +700,7 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
 
 s = re.sub(
     rf'{re.escape(png_start)}[\s\S]*?{re.escape(png_end)}',
-    renderer,
+    lambda _m: renderer,
     s,
     count=1,
 )
@@ -786,7 +786,7 @@ async function lrV34SendMaxImageUrl(
 
 '''.lstrip()
 
-s = sender_re.sub(sender, s, count=1)
+s = sender_re.sub(lambda _m: sender, s, count=1)
 
 old_call = "await lrV34SendMaxImageUrl(update, url);"
 
