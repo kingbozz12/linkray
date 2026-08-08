@@ -698,12 +698,29 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
 /* LR_NETWORK_CARD_FINAL_V40_END */
 '''.strip()
 
-s = re.sub(
-    rf'{re.escape(png_start)}[\s\S]*?{re.escape(png_end)}',
-    lambda _m: renderer,
+renderer_body = renderer
+renderer_body = renderer_body.replace(
+    "/* LR_NETWORK_CARD_FINAL_V40_START */\n",
+    "",
+    1,
+)
+renderer_body = renderer_body.replace(
+    "\n/* LR_NETWORK_CARD_FINAL_V40_END */",
+    "",
+    1,
+)
+
+s, renderer_count = re.subn(
+    r'async function lrV40RenderFinalNetworkPng\(channels = \[\]\)\s*\{[\s\S]*?(?=/\* LR_NETWORK_CARD_FINAL_V40_END \*/)',
+    lambda _m: renderer_body,
     s,
     count=1,
 )
+
+if renderer_count != 1:
+    raise SystemExit(
+        f"ОШИБКА: функция PNG заменена {renderer_count} раз"
+    )
 
 sender_re = re.compile(
     r'async function lrV34SendMaxImageUrl\(update,\s*imageUrl\)\s*\{[\s\S]*?'
