@@ -815,10 +815,12 @@ echo "[3/8] Проверяю синтаксис"
 node --check "$FILE"
 git diff --check
 
-grep -q "LR_MULTI_ANALYTICS_CAPTION_V46" "$FILE"
-grep -q "LR_NETWORK_CARD_PREMIUM_V46" "$FILE"
-grep -q "LR_DIRECT_PUBLIC_IMAGE_V46" "$FILE"
-grep -q "lrV34SendMaxImageUrl(update, url, channels)" "$FILE"
+grep -Fq "function lrV44AnalyticsCaption(channels = [])" "$FILE"
+grep -Fq "lrV44AnalyticsCaption(channels)" "$FILE"
+grep -Fq "lrV34SendMaxImageUrl(update, url, channels)" "$FILE"
+grep -Fq "lrCb('🏠 Главное меню', 'main:menu')" "$FILE"
+grep -Fq "const W = 1280;" "$FILE"
+grep -Fq "const H = 900;" "$FILE"
 
 echo "[4/8] Проверяю, что изменена только аналитика"
 
