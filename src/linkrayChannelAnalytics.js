@@ -5468,71 +5468,42 @@ async function lrV34LoadChannelsByLinks(links) {
   for (let i = 0; i < links.length; i++) {
     const link = lrV34NormLink(links[i]);
 
-    let ch = {
+    const resolved = await resolveChannel(link, {
+      _lrIndex: i,
+    });
+
+    channels.push({
+      ...resolved,
       link,
-      title: `Канал ${i + 1}`,
-      subscribers: 0,
-      views24: 0,
-      views48: 0,
-      views72: 0,
-      er24: 0,
-    };
-
-    try {
-      const db = await import('./db.js');
-
-      const cached = await db.query(
-        `SELECT title, avatar_url
-           FROM public.lr_channel_avatar_cache
-          WHERE link_norm=$1 OR link=$1
-          ORDER BY updated_at DESC
-          LIMIT 1`,
-        [link]
-      );
-
-      const cachedRows = Array.isArray(cached) ? cached : (cached?.rows || []);
-
-      if (cachedRows[0]) {
-        if (cachedRows[0].title && !String(cachedRows[0].title).startsWith('max.ru/join')) {
-          ch.title = cachedRows[0].title;
-        }
-
-        if (lrV34GoodAvatar(cachedRows[0].avatar_url)) {
-          ch.avatar_url = cachedRows[0].avatar_url;
-        }
-      }
-
-      const snap = await db.query(
-        `SELECT title, avatar_url, subscribers, views24, views48, views72, er24
-           FROM public.lr_channel_analytics_snapshots
-          WHERE link=$1
-          ORDER BY captured_at DESC
-          LIMIT 1`,
-        [link]
-      );
-
-      const snapRows = Array.isArray(snap) ? snap : (snap?.rows || []);
-
-      if (snapRows[0]) {
-        const row = snapRows[0];
-
-        if (row.title && !String(row.title).startsWith('max.ru/join')) ch.title = row.title;
-        if (lrV34GoodAvatar(row.avatar_url)) ch.avatar_url = row.avatar_url;
-
-        ch.subscribers = Number(row.subscribers || 0);
-        ch.views24 = Number(row.views24 || 0);
-        ch.views48 = Number(row.views48 || 0);
-        ch.views72 = Number(row.views72 || 0);
-        ch.er24 = Number(row.er24 || 0);
-      }
-    } catch {}
-
-    channels.push(ch);
+      title:
+        resolved?.title ||
+        resolved?.name ||
+        resolved?.channel_title ||
+        resolved?.channel_name ||
+        `Канал ${i + 1}`,
+      avatar_url:
+        resolved?.avatar_url ||
+        resolved?.avatarUrl ||
+        resolved?.photo_url ||
+        resolved?.image_url ||
+        resolved?.icon_url ||
+        resolved?.picture_url ||
+        resolved?.avatar ||
+        resolved?.photo ||
+        '',
+      subscribers: Number(resolved?.subscribers || 0),
+      views24: Number(resolved?.views24 || 0),
+      views48: Number(resolved?.views48 || 0),
+      views72: Number(resolved?.views72 || 0),
+      er24: Number(resolved?.er24 || 0),
+      delta_day: Number(resolved?.delta_day || resolved?.deltaDay || 0),
+      joined_24h: Number(resolved?.joined_24h || resolved?.joined24h || 0),
+      left_24h: Number(resolved?.left_24h || resolved?.left24h || 0),
+    });
   }
 
-  return channels;
+  return lrV19DedupeNetworkAvatars(channels);
 }
-
 
 /* LR_SAFE_NETWORK_CARD_V37_START */
 async function lrV37RenderPrettyNetworkPng(channels = []) {
@@ -5997,17 +5968,15 @@ async function lrV38RenderCleanNetworkPng(channels = []) {
 /* LR_NETWORK_CARD_FINAL_V40_START */
 
 /* LR_ANALYTICS_CAPTION_V44_START */
+/* LR_MULTI_ANALYTICS_CAPTION_V46 */
 function lrV44AnalyticsCaption(channels = []) {
-  function num(v) {
-    const n = Number(String(v ?? 0).replace(/[^0-9.-]/g, ''));
-    return Number.isFinite(n) ? n : 0;
+  function n(v) {
+    const x = Number(v ?? 0);
+    return Number.isFinite(x) ? x : 0;
   }
 
   function fmt(v) {
-    const n = num(v);
-    if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1).replace('.', ',') + 'M';
-    if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1).replace('.', ',') + 'k';
-    return String(Math.round(n));
+    return Math.round(n(v)).toLocaleString('ru-RU');
   }
 
   function html(v) {
@@ -6017,106 +5986,84 @@ function lrV44AnalyticsCaption(channels = []) {
       .replace(/>/g, '&gt;');
   }
 
-  function short(v, max = 34) {
-    const t = String(v || 'Канал').replace(/\s+/g, ' ').trim();
-    return t.length > max ? t.slice(0, max - 1).trim() + '…' : t;
-  }
+  const list = Array.isArray(channels) ? channels : [];
 
-  function getNum(ch, keys) {
-    for (const k of keys) {
-      if (ch && ch[k] !== undefined && ch[k] !== null && ch[k] !== '') return num(ch[k]);
-    }
-    return 0;
-  }
+  const totalSubscribers = list.reduce(
+    (sum, ch) => sum + n(ch?.subscribers),
+    0,
+  );
 
-  const src = (Array.isArray(channels) && channels.length) ? channels : (Array.isArray(globalThis.__lrLastNetworkChannels) ? globalThis.__lrLastNetworkChannels : []);
-  const list = [];
-  const seen = new Set();
+  const total24 = list.reduce(
+    (sum, ch) => sum + n(ch?.views24),
+    0,
+  );
 
-  for (let i = 0; i < src.length; i++) {
-    const ch = src[i] || {};
-    const title = String(
-      ch.title ||
-      ch.name ||
-      ch.channel_title ||
-      ch.channel_name ||
-      `Канал ${i + 1}`
-    ).replace(/^https?:\/\/max\.ru\//i, '').replace(/\s+/g, ' ').trim();
+  const total48 = list.reduce(
+    (sum, ch) => sum + n(ch?.views48),
+    0,
+  );
 
-    const link = String(ch.link || ch.url || ch.key || ch.channel_link || ch.public_link || '').trim();
-    const key = link || title || String(i);
+  const total72 = list.reduce(
+    (sum, ch) => sum + n(ch?.views72),
+    0,
+  );
 
-    if (seen.has(key)) continue;
-    seen.add(key);
+  const totalDelta = list.reduce(
+    (sum, ch) =>
+      sum +
+      n(
+        ch?.delta_day ??
+        ch?.deltaDay ??
+        (
+          n(ch?.joined_24h ?? ch?.joined24h) -
+          n(ch?.left_24h ?? ch?.left24h)
+        ),
+      ),
+    0,
+  );
 
-    list.push({
-      title,
-      subscribers: getNum(ch, ['subscribers', 'members', 'subs', 'pdp', 'followers', 'count']),
-      signed: getNum(ch, ['signed', 'joined', 'joined_today', 'subscribed_today', 'subs_today', 'plus_today', 'new_subscribers']),
-      left: getNum(ch, ['left', 'unsubscribed', 'unsubscribed_today', 'unsubs_today', 'minus_today', 'lost_subscribers']),
-      views24: getNum(ch, ['views24', 'views_24', 'views_day', 'viewsToday', 'views_today']),
-      views48: getNum(ch, ['views48', 'views_48']),
-      views72: getNum(ch, ['views72', 'views_72']),
-    });
-  }
+  const er24 =
+    totalSubscribers > 0
+      ? (total24 / totalSubscribers) * 100
+      : 0;
 
-  const totalSubs = list.reduce((a, c) => a + c.subscribers, 0);
-  const signed = list.reduce((a, c) => a + c.signed, 0);
-  const left = list.reduce((a, c) => a + c.left, 0);
-  const net = signed - left;
+  const now = new Date()
+    .toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+    .replace(',', '');
 
-  const views24 = list.reduce((a, c) => a + c.views24, 0);
-  const views48 = list.reduce((a, c) => a + c.views48, 0);
-  const views72 = list.reduce((a, c) => a + c.views72, 0);
-
-  const er24 = totalSubs > 0 ? (views24 / totalSubs) * 100 : 0;
-
-  const now = new Date().toLocaleString('ru-RU', {
-    timeZone: 'Europe/Moscow',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).replace(',', '');
-
-  const top = list
-    .slice()
-    .sort((a, b) => b.views24 - a.views24)
-    .slice(0, 4);
-
-  const rows = top.length
-    ? top.map((ch, i) => `${i + 1}) ${html(short(ch.title))}: <b>${fmt(ch.views24)}</b> просмотров`).join('\n')
-    : 'Пока нет каналов для отчёта.';
-
-  return `📊 <b>LinkRay Analytics</b>
-Сводка по сети: <b>${list.length}</b> каналов
-
-
-👁 <b>Просмотры:</b>
-├ 24 часа: <b>${fmt(views24)}</b>
-├ 48 часов: <b>${fmt(views48)}</b>
-└ 72 часа: <b>${fmt(views72)}</b>
-
-📊 <b>Средний ER24:</b> ${er24.toFixed(2).replace('.', ',')}%
-
-${rows}
-
-🕘 <b>Сформировано:</b> ${html(now)} МСК
-━━━━━━━━━━━━━━
-✨ <a href="https://max.ru/se13353901_bot">LinkRay</a> — автопостинг и аналитика рекламных размещений в MAX`;
+  return (
+    '📊 <b>LinkRay Analytics</b>\n' +
+    `<b>Сводка по сети:</b> ${fmt(list.length)} каналов\n\n` +
+    `👥 <b>Подписчики:</b> ${fmt(totalSubscribers)}\n` +
+    `📈 <b>За сутки:</b> ${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}\n\n` +
+    '👁 <b>Просмотры:</b>\n' +
+    `├ 24 часа: <b>${fmt(total24)}</b>\n` +
+    `├ 48 часов: <b>${fmt(total48)}</b>\n` +
+    `└ 72 часа: <b>${fmt(total72)}</b>\n\n` +
+    `📊 <b>Средний ER24:</b> ${er24.toFixed(2).replace('.', ',')}%\n` +
+    `🕘 <b>Сформировано:</b> ${html(now)} МСК\n` +
+    '━━━━━━━━━━━━━━\n' +
+    '✨ <a href="https://max.ru/se13353901_bot">LinkRay</a> — ' +
+    'автопостинг и аналитика рекламных размещений в MAX'
+  );
 }
 /* LR_ANALYTICS_CAPTION_V44_END */
 
+/* LR_NETWORK_CARD_PREMIUM_V46 */
 async function lrV40RenderFinalNetworkPng(channels = []) {
-  try { globalThis.__lrLastNetworkChannels = Array.isArray(channels) ? channels : []; } catch {}
-
   const sharpMod = await import('sharp');
   const sharp = sharpMod.default || sharpMod;
   const fs = await import('node:fs/promises');
 
-  const WIDTH = 1280;
-  const HEIGHT = 900;
+  const W = 1280;
+  const H = 900;
 
   function esc(v) {
     return String(v ?? '')
@@ -6126,81 +6073,65 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
       .replace(/"/g, '&quot;');
   }
 
-  function num(v) {
-    const n = Number(String(v ?? 0).replace(/[^0-9.-]/g, ''));
-    return Number.isFinite(n) ? n : 0;
+  function n(v) {
+    const x = Number(v ?? 0);
+    return Number.isFinite(x) ? x : 0;
   }
 
   function fmt(v) {
-    const n = num(v);
-    if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1).replace('.', ',') + 'M';
-    if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1).replace('.', ',') + 'k';
-    return String(Math.round(n));
+    const x = Math.round(n(v));
+
+    if (Math.abs(x) >= 1000000) {
+      return (x / 1000000)
+        .toFixed(x >= 10000000 ? 0 : 1)
+        .replace('.', ',') + 'M';
+    }
+
+    if (Math.abs(x) >= 1000) {
+      return (x / 1000)
+        .toFixed(x >= 10000 ? 0 : 1)
+        .replace('.', ',') + 'k';
+    }
+
+    return String(x);
   }
 
-  function short(v, max = 17) {
-    const text = String(v || 'Канал').replace(/\s+/g, ' ').trim();
-    return text.length > max ? text.slice(0, max).trim() + '…' : text;
+  function short(v, max = 31) {
+    const t = String(v || 'Канал')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return t.length > max
+      ? t.slice(0, max - 1).trim() + '…'
+      : t;
   }
 
-  function goodUrl(v) {
-    const u = String(v || '').trim();
-    return /^https?:\/\//i.test(u) && !u.includes('/s/img/og-logo.png');
+  function avatarUrl(ch) {
+    return String(
+      ch?.avatar_url ||
+      ch?.avatarUrl ||
+      ch?.photo_url ||
+      ch?.image_url ||
+      ch?.icon_url ||
+      ch?.picture_url ||
+      ch?.avatar ||
+      ch?.photo ||
+      ''
+    ).trim();
   }
 
-  async function findCachedAvatar(ch) {
-    const direct =
-      ch.avatar_url ||
-      ch.avatarUrl ||
-      ch.photo_url ||
-      ch.image_url ||
-      ch.picture_url ||
-      ch.avatar ||
-      ch.photo ||
-      ch.image ||
-      '';
+  function goodUrl(url) {
+    const u = String(url || '').trim().toLowerCase();
 
-    if (goodUrl(direct)) return direct;
-
-    try {
-      const db = await import('./db.js');
-      const link = String(ch.link || '').trim();
-      const title = String(ch.title || '').trim();
-
-      let rows = [];
-
-      if (link) {
-        const r = await db.query(
-          `SELECT avatar_url
-             FROM public.lr_channel_avatar_cache
-            WHERE link_norm=$1 OR link=$1
-            ORDER BY updated_at DESC
-            LIMIT 1`,
-          [link]
-        );
-        rows = Array.isArray(r) ? r : (r?.rows || []);
-      }
-
-      if (!rows.length && title) {
-        const r = await db.query(
-          `SELECT avatar_url
-             FROM public.lr_channel_avatar_cache
-            WHERE title=$1
-            ORDER BY updated_at DESC
-            LIMIT 1`,
-          [title]
-        );
-        rows = Array.isArray(r) ? r : (r?.rows || []);
-      }
-
-      const url = String(rows?.[0]?.avatar_url || '').trim();
-      if (goodUrl(url)) return url;
-    } catch {}
-
-    return '';
+    return (
+      /^https?:\/\//i.test(u) &&
+      !u.includes('/s/img/og-logo.png') &&
+      !u.includes('favicon') &&
+      !u.includes('app-icon')
+    );
   }
 
-  async function dataPng(url, size = 52) {
+  async function toPngData(url, size = 72) {
     if (!goodUrl(url)) return '';
 
     try {
@@ -6208,7 +6139,7 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
         signal: AbortSignal.timeout(10000),
         headers: {
           'user-agent': 'Mozilla/5.0 LinkRayBot/1.0',
-          'accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'accept': 'image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8',
           'referer': 'https://max.ru/',
         },
       });
@@ -6216,24 +6147,45 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
       if (!res.ok) return '';
 
       const input = Buffer.from(await res.arrayBuffer());
-      const out = await sharp(input)
-        .resize(size, size, { fit: 'cover' })
+
+      const output = await sharp(input)
+        .resize(size, size, {
+          fit: 'cover',
+          position: 'centre',
+        })
         .png()
         .toBuffer();
 
-      return `data:image/png;base64,${out.toString('base64')}`;
+      return `data:image/png;base64,${output.toString('base64')}`;
     } catch {
       return '';
     }
   }
 
   async function logoData() {
-    try {
-      const buf = await fs.readFile('/app/public/brand/linkray-logo-main.jpg');
-      return `data:image/jpeg;base64,${buf.toString('base64')}`;
-    } catch {
-      return '';
+    const candidates = [
+      '/app/public/brand/linkray-logo-main.jpg',
+      '/app/public/linkray-site/linkray-logo-exact.webp',
+      '/app/public/assets/linkray-logo.webp',
+    ];
+
+    for (const file of candidates) {
+      try {
+        const input = await fs.readFile(file);
+
+        const output = await sharp(input)
+          .resize(94, 94, {
+            fit: 'cover',
+            position: 'centre',
+          })
+          .png()
+          .toBuffer();
+
+        return `data:image/png;base64,${output.toString('base64')}`;
+      } catch {}
     }
+
+    return '';
   }
 
   const clean = [];
@@ -6241,15 +6193,18 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
 
   for (let i = 0; i < channels.length; i++) {
     const raw = channels[i] || {};
+
     const title = String(
       raw.title ||
       raw.name ||
       raw.channel_title ||
       raw.channel_name ||
       `Канал ${i + 1}`
-    ).replace(/^https?:\/\/max\.ru\//i, '').replace(/\s+/g, ' ').trim();
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
 
-    const link = String(raw.link || raw.url || raw.key || raw.channel_link || raw.public_link || '').trim();
+    const link = String(raw.link || '').trim();
     const key = link || title || String(i);
 
     if (seen.has(key)) continue;
@@ -6259,141 +6214,332 @@ async function lrV40RenderFinalNetworkPng(channels = []) {
       ...raw,
       title,
       link,
-      subscribers: num(raw.subscribers || raw.members || raw.subs || raw.pdp || 0),
-      views24: num(raw.views24 || raw.views_24 || raw.views_day || 0),
-      views48: num(raw.views48 || raw.views_48 || 0),
-      views72: num(raw.views72 || raw.views_72 || 0),
+      subscribers: n(raw.subscribers),
+      views24: n(raw.views24),
+      views48: n(raw.views48),
+      views72: n(raw.views72),
+      er24: n(raw.er24),
+      deltaDay: n(raw.delta_day ?? raw.deltaDay),
     });
   }
 
   const visible = clean.slice(0, 4);
 
-  const totalSubs = clean.reduce((a, c) => a + c.subscribers, 0);
-  const total24 = clean.reduce((a, c) => a + c.views24, 0);
-  const total48 = clean.reduce((a, c) => a + c.views48, 0);
-  const total72 = clean.reduce((a, c) => a + c.views72, 0);
-  const er = totalSubs > 0 ? total24 / totalSubs * 100 : 0;
+  const totalSubscribers = clean.reduce(
+    (sum, ch) => sum + ch.subscribers,
+    0,
+  );
 
-  const now = new Date().toLocaleString('ru-RU', {
-    timeZone: 'Europe/Moscow',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).replace(',', '');
+  const total24 = clean.reduce(
+    (sum, ch) => sum + ch.views24,
+    0,
+  );
+
+  const total48 = clean.reduce(
+    (sum, ch) => sum + ch.views48,
+    0,
+  );
+
+  const total72 = clean.reduce(
+    (sum, ch) => sum + ch.views72,
+    0,
+  );
+
+  const totalDelta = clean.reduce(
+    (sum, ch) => sum + ch.deltaDay,
+    0,
+  );
+
+  const totalEr =
+    totalSubscribers > 0
+      ? (total24 / totalSubscribers) * 100
+      : 0;
+
+  const now = new Date()
+    .toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+    .replace(',', '');
 
   const logo = await logoData();
 
-  let rows = '';
+  let rowsSvg = '';
+  let clipDefs = '';
 
   for (let i = 0; i < visible.length; i++) {
     const ch = visible[i];
-    const y = 455 + i * 72;
-    const avatarUrl = await findCachedAvatar(ch);
-    const av = await dataPng(avatarUrl, 52);
-    const letter = esc((ch.title || 'К')[0] || 'К').toUpperCase();
-    const title = esc(short(ch.title, 16));
+    const y = 455 + i * 79;
+    const cx = 492;
+    const cy = y + 31;
+    const r = 29;
 
-    rows += `
-      <g font-family="DejaVu Sans, Arial, Helvetica, sans-serif">
-        <circle cx="495" cy="${y}" r="28" fill="rgba(46,255,212,.16)" stroke="#35f2cf" stroke-width="3"/>
-        ${
-          av
-            ? `<clipPath id="av40_${i}"><circle cx="495" cy="${y}" r="24"/></clipPath><image href="${av}" x="471" y="${y - 24}" width="48" height="48" preserveAspectRatio="xMidYMid slice" clip-path="url(#av40_${i})"/>`
-            : `<text x="495" y="${y + 8}" text-anchor="middle" font-size="20" font-weight="900" fill="#ecfffb">${letter}</text>`
-        }
+    const avatar = await toPngData(
+      avatarUrl(ch),
+      72,
+    );
 
-        <text x="535" y="${y + 8}" font-family="DejaVu Sans, Arial, Helvetica, sans-serif" font-size="24" font-weight="900" fill="#ffffff">${title}</text>
+    const clipId = `lrNetAvatar46_${i}`;
+    let avatarSvg = '';
 
-        <text x="900" y="${y + 8}" text-anchor="middle" font-family="DejaVu Sans, Arial, Helvetica, sans-serif" font-size="29" font-weight="1000" fill="#29d9ff">${fmt(ch.subscribers)}</text>
-        <text x="1055" y="${y + 8}" text-anchor="middle" font-family="DejaVu Sans, Arial, Helvetica, sans-serif" font-size="29" font-weight="1000" fill="#37f1ca">${fmt(ch.views24)}</text>
+    if (avatar) {
+      clipDefs += `
+        <clipPath id="${clipId}">
+          <circle cx="${cx}" cy="${cy}" r="${r}"/>
+        </clipPath>`;
 
-        ${i < visible.length - 1 ? `<line x1="470" y1="${y + 36}" x2="1130" y2="${y + 36}" stroke="rgba(255,255,255,.10)" stroke-width="1"/>` : ''}
-      </g>
-    `;
+      avatarSvg = `
+        <circle cx="${cx}" cy="${cy}" r="${r + 2}"
+                fill="#0c3b47"
+                stroke="#39e8c2"
+                stroke-width="2"/>
+        <image href="${avatar}"
+               x="${cx - r}"
+               y="${cy - r}"
+               width="${r * 2}"
+               height="${r * 2}"
+               preserveAspectRatio="xMidYMid slice"
+               clip-path="url(#${clipId})"/>`;
+    } else {
+      const letter = esc(
+        (String(ch.title || 'К').trim()[0] || 'К').toUpperCase(),
+      );
+
+      avatarSvg = `
+        <circle cx="${cx}" cy="${cy}" r="${r + 2}"
+                fill="url(#avatarFallback${i})"
+                stroke="#39e8c2"
+                stroke-width="2"/>
+        <text x="${cx}" y="${cy + 8}"
+              text-anchor="middle"
+              class="avatar-letter">${letter}</text>`;
+    }
+
+    const rowEr =
+      ch.er24 > 0
+        ? ch.er24
+        : (
+            ch.subscribers > 0
+              ? (ch.views24 / ch.subscribers) * 100
+              : 0
+          );
+
+    rowsSvg += `
+      <g>
+        <rect x="447" y="${y - 7}"
+              width="761" height="69" rx="18"
+              fill="#0a3440"
+              fill-opacity=".72"
+              stroke="#80ead1"
+              stroke-opacity=".11"/>
+        ${avatarSvg}
+        <text x="538" y="${y + 25}"
+              class="channel-name">${esc(short(ch.title))}</text>
+        <text x="953" y="${y + 25}"
+              text-anchor="end"
+              class="channel-num">${fmt(ch.subscribers)}</text>
+        <text x="1091" y="${y + 25}"
+              text-anchor="end"
+              class="channel-views">${fmt(ch.views24)}</text>
+        <text x="1178" y="${y + 25}"
+              text-anchor="end"
+              class="channel-er">${rowEr.toFixed(1).replace('.', ',')}%</text>
+      </g>`;
   }
 
-  const svg = `<?xml version="1.0" encoding="UTF-8"?>
-  <svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" font-family="DejaVu Sans, Arial, Helvetica, sans-serif">
+  const svg = `
+  <svg xmlns="http://www.w3.org/2000/svg"
+       width="${W}" height="${H}"
+       viewBox="0 0 ${W} ${H}">
     <defs>
-      <linearGradient id="bg40" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#061525"/>
-        <stop offset="46%" stop-color="#0b4c55"/>
-        <stop offset="100%" stop-color="#12c18f"/>
+      <linearGradient id="bg46" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#073d47"/>
+        <stop offset="52%" stop-color="#07545a"/>
+        <stop offset="100%" stop-color="#0a9c70"/>
       </linearGradient>
-      <linearGradient id="glass40" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="rgba(255,255,255,.15)"/>
-        <stop offset="100%" stop-color="rgba(255,255,255,.06)"/>
+
+      <linearGradient id="card46" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#164f5b"/>
+        <stop offset="100%" stop-color="#157663"/>
       </linearGradient>
-      <filter id="shadow40" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#001827" flood-opacity=".34"/>
-      </filter>
-      <clipPath id="logoClip40">
-        <circle cx="1040" cy="66" r="41"/>
+
+      <radialGradient id="glow46" cx="86%" cy="82%" r="70%">
+        <stop offset="0%" stop-color="#35ffb5" stop-opacity=".25"/>
+        <stop offset="100%" stop-color="#35ffb5" stop-opacity="0"/>
+      </radialGradient>
+
+      <linearGradient id="avatarFallback0" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#28e8ff"/>
+        <stop offset="100%" stop-color="#1376e8"/>
+      </linearGradient>
+
+      <linearGradient id="avatarFallback1" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#4bf3c7"/>
+        <stop offset="100%" stop-color="#0b9f79"/>
+      </linearGradient>
+
+      <linearGradient id="avatarFallback2" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#9a8dff"/>
+        <stop offset="100%" stop-color="#4a54c8"/>
+      </linearGradient>
+
+      <linearGradient id="avatarFallback3" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#ffd86b"/>
+        <stop offset="100%" stop-color="#e87929"/>
+      </linearGradient>
+
+      <clipPath id="logoClip46">
+        <circle cx="1161" cy="79" r="43"/>
       </clipPath>
+
+      ${clipDefs}
     </defs>
 
-    <rect width="1280" height="900" fill="url(#bg40)"/>
-    <path d="M-40 126 C230 62 455 186 680 108 C910 30 1070 105 1320 58" fill="none" stroke="rgba(255,255,255,.10)" stroke-width="3"/>
-    <path d="M-20 750 C280 665 500 780 730 650 C930 538 1085 585 1320 500" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="3"/>
+    <style>
+      text { font-family: "DejaVu Sans", Arial, sans-serif; }
+      .title { fill: #f5ffff; font-size: 43px; font-weight: 800; }
+      .subtitle { fill: #a7d6d5; font-size: 18px; font-weight: 500; }
+      .metric-label { fill: #badada; font-size: 17px; font-weight: 600; }
+      .metric-value { fill: #43edc2; font-size: 37px; font-weight: 900; }
+      .metric-value.blue { fill: #42dcff; }
+      .panel-title { fill: #f5ffff; font-size: 27px; font-weight: 800; }
+      .views-label { fill: #d7eeee; font-size: 24px; font-weight: 700; }
+      .views-value { fill: #49e4ff; font-size: 30px; font-weight: 900; }
+      .table-head { fill: #8ebcbd; font-size: 15px; font-weight: 800; }
+      .channel-name { fill: #f5ffff; font-size: 20px; font-weight: 700; }
+      .channel-num { fill: #dcf4f0; font-size: 20px; font-weight: 800; }
+      .channel-views { fill: #48e3fa; font-size: 20px; font-weight: 800; }
+      .channel-er { fill: #72eeb9; font-size: 17px; font-weight: 800; }
+      .avatar-letter { fill: #fff; font-size: 22px; font-weight: 900; }
+      .footer { fill: #c8e8e1; font-size: 16px; font-weight: 600; }
+      .footer-muted { fill: #93c0bb; font-size: 14px; }
+    </style>
 
-    <text x="56" y="72" font-size="47" font-weight="1000" fill="#ffffff">Статистика сети каналов</text>
-    <text x="58" y="112" font-size="22" font-weight="800" fill="rgba(255,255,255,.82)">LinkRay Analytics · сводка по всей сетке каналов</text>
+    <rect width="${W}" height="${H}" rx="34" fill="url(#bg46)"/>
+    <rect width="${W}" height="${H}" rx="34" fill="url(#glow46)"/>
 
-    <circle cx="1040" cy="66" r="42" fill="rgba(38,242,204,.14)" stroke="#35f2cf" stroke-width="3"/>
-    ${logo ? `<image href="${logo}" x="998" y="24" width="84" height="84" preserveAspectRatio="xMidYMid slice" clip-path="url(#logoClip40)"/>` : ''}
-    <text x="1104" y="82" font-size="37" font-weight="1000" fill="#ffffff">LinkRay</text>
+    <text x="61" y="72" class="title">Статистика сети каналов</text>
+    <text x="63" y="105" class="subtitle">LinkRay Analytics · сводка по выбранным каналам</text>
 
-    <rect x="55" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
-    <text x="192" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Подписчики</text>
-    <text x="192" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#25d9ff">${fmt(totalSubs)}</text>
+    ${
+      logo
+        ? `
+          <circle cx="1161" cy="79" r="46"
+                  fill="#ffffff" fill-opacity=".10"
+                  stroke="#87ffe0" stroke-opacity=".30"
+                  stroke-width="2"/>
+          <image href="${logo}"
+                 x="1118" y="36"
+                 width="86" height="86"
+                 preserveAspectRatio="xMidYMid slice"
+                 clip-path="url(#logoClip46)"/>`
+        : `
+          <text x="1205" y="87"
+                text-anchor="end"
+                class="panel-title">LinkRay</text>`
+    }
 
-    <rect x="352" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
-    <text x="489" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Просмотры 24ч</text>
-    <text x="489" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#35f0ca">${fmt(total24)}</text>
+    <g>
+      <rect x="61" y="146" width="271" height="119" rx="22"
+            fill="url(#card46)" stroke="#8ff7df" stroke-opacity=".14"/>
+      <text x="85" y="183" class="metric-label">Подписчики</text>
+      <text x="85" y="236" class="metric-value blue">${fmt(totalSubscribers)}</text>
+    </g>
 
-    <rect x="650" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
-    <text x="787" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Общий ER</text>
-    <text x="787" y="252" text-anchor="middle" font-size="52" font-weight="1000" fill="#27d9ff">${er.toFixed(2).replace('.', ',')}%</text>
+    <g>
+      <rect x="354" y="146" width="271" height="119" rx="22"
+            fill="url(#card46)" stroke="#8ff7df" stroke-opacity=".14"/>
+      <text x="378" y="183" class="metric-label">Просмотры 24 ч</text>
+      <text x="378" y="236" class="metric-value">${fmt(total24)}</text>
+    </g>
 
-    <rect x="948" y="155" rx="24" width="275" height="128" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
-    <text x="1085" y="196" text-anchor="middle" font-size="21" font-weight="900" fill="rgba(255,255,255,.78)">Каналов</text>
-    <text x="1085" y="252" text-anchor="middle" font-size="56" font-weight="1000" fill="#35f0ca">${fmt(clean.length)}</text>
+    <g>
+      <rect x="647" y="146" width="271" height="119" rx="22"
+            fill="url(#card46)" stroke="#8ff7df" stroke-opacity=".14"/>
+      <text x="671" y="183" class="metric-label">Средний ER24</text>
+      <text x="671" y="236" class="metric-value blue">${totalEr.toFixed(2).replace('.', ',')}%</text>
+    </g>
 
-    <rect x="55" y="330" rx="26" width="305" height="300" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
-    <text x="90" y="388" font-size="34" font-weight="1000" fill="#ffffff">Просмотры</text>
-    <text x="92" y="454" font-size="40" font-weight="1000" fill="#ffffff">24ч:</text>
-    <text x="210" y="454" font-size="40" font-weight="1000" fill="#25d9ff">${fmt(total24)}</text>
-    <text x="92" y="524" font-size="40" font-weight="1000" fill="#ffffff">48ч:</text>
-    <text x="210" y="524" font-size="40" font-weight="1000" fill="#25d9ff">${fmt(total48)}</text>
-    <text x="92" y="594" font-size="40" font-weight="1000" fill="#ffffff">72ч:</text>
-    <text x="210" y="594" font-size="40" font-weight="1000" fill="#25d9ff">${fmt(total72)}</text>
+    <g>
+      <rect x="940" y="146" width="271" height="119" rx="22"
+            fill="url(#card46)" stroke="#8ff7df" stroke-opacity=".14"/>
+      <text x="964" y="183" class="metric-label">Каналов</text>
+      <text x="964" y="236" class="metric-value">${fmt(clean.length)}</text>
+    </g>
 
-    <rect x="390" y="330" rx="26" width="835" height="430" fill="url(#glass40)" stroke="rgba(125,255,231,.34)" filter="url(#shadow40)"/>
-    <text x="425" y="388" font-size="36" font-weight="1000" fill="#ffffff">Каналы</text>
+    <rect x="61" y="303" width="340" height="450" rx="26"
+          fill="#092e39" fill-opacity=".70"
+          stroke="#89efd7" stroke-opacity=".13"/>
 
-    <text x="535" y="428" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">Канал</text>
-    <text x="900" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">ПДП</text>
-    <text x="1055" y="428" text-anchor="middle" font-size="19" font-weight="900" fill="rgba(255,255,255,.65)">24ч</text>
-    <line x1="470" y1="442" x2="1130" y2="442" stroke="rgba(255,255,255,.16)" stroke-width="1"/>
+    <text x="91" y="354" class="panel-title">Просмотры</text>
 
-    ${rows}
+    <text x="91" y="421" class="views-label">24 часа</text>
+    <text x="366" y="421" text-anchor="end" class="views-value">${fmt(total24)}</text>
 
-    <text x="470" y="735" font-size="23" font-weight="1000" fill="#45ffd9">Суммы рассчитаны по всем каналам.</text>
+    <line x1="91" y1="445" x2="366" y2="445"
+          stroke="#a6dbd4" stroke-opacity=".13"/>
 
-    <text x="55" y="837" font-size="25" font-weight="1000" fill="#ffffff">Актуально на ${esc(now)} МСК</text>
-    <text x="1224" y="837" text-anchor="end" font-size="23" font-weight="900" fill="rgba(255,255,255,.82)">LinkRay — аналитика каналов MAX</text>
+    <text x="91" y="506" class="views-label">48 часов</text>
+    <text x="366" y="506" text-anchor="end" class="views-value">${fmt(total48)}</text>
+
+    <line x1="91" y1="530" x2="366" y2="530"
+          stroke="#a6dbd4" stroke-opacity=".13"/>
+
+    <text x="91" y="591" class="views-label">72 часа</text>
+    <text x="366" y="591" text-anchor="end" class="views-value">${fmt(total72)}</text>
+
+    <line x1="91" y1="627" x2="366" y2="627"
+          stroke="#a6dbd4" stroke-opacity=".13"/>
+
+    <text x="91" y="676" class="metric-label">Изменение за сутки</text>
+    <text x="91" y="725" class="metric-value">${totalDelta > 0 ? '+' : ''}${fmt(totalDelta)}</text>
+
+    <rect x="423" y="303" width="788" height="450" rx="26"
+          fill="#092e39" fill-opacity=".66"
+          stroke="#89efd7" stroke-opacity=".13"/>
+
+    <text x="454" y="354" class="panel-title">Каналы</text>
+
+    <text x="538" y="407" class="table-head">КАНАЛ</text>
+    <text x="953" y="407" text-anchor="end" class="table-head">ПДП</text>
+    <text x="1091" y="407" text-anchor="end" class="table-head">24 Ч</text>
+    <text x="1178" y="407" text-anchor="end" class="table-head">ER</text>
+
+    ${rowsSvg}
+
+    <text x="454" y="731" class="footer-muted">
+      ${
+        clean.length > 4
+          ? `Показано 4 из ${fmt(clean.length)} каналов · суммы рассчитаны по всем.`
+          : 'Суммы рассчитаны по всем выбранным каналам.'
+      }
+    </text>
+
+    <line x1="61" y1="804" x2="1211" y2="804"
+          stroke="#bdeee5" stroke-opacity=".17"/>
+
+    <text x="61" y="845" class="footer">Актуально на ${esc(now)} МСК</text>
+    <text x="1211" y="845" text-anchor="end" class="footer">LinkRay — аналитика каналов MAX</text>
+    <text x="61" y="875" class="footer-muted">Данные собираются после подключения LinkRay к каналу</text>
   </svg>`;
 
-  console.log('[LR_NETWORK_CARD_FINAL_V40]', JSON.stringify({
-    count: clean.length,
-    visible: visible.map(x => ({ title: x.title, link: x.link }))
-  }));
+  console.log(
+    '[LR_NETWORK_CARD_PREMIUM_V46]',
+    JSON.stringify({
+      channels: clean.length,
+      views24: total24,
+      views48: total48,
+      views72: total72,
+      avatars: visible.filter((ch) => goodUrl(avatarUrl(ch))).length,
+    }),
+  );
 
-  return await sharp(Buffer.from(lrV82BrightNegativeSvg(svg))).png().toBuffer();
-}
-/* LR_NETWORK_CARD_FINAL_V40_END */
+  return await sharp(Buffer.from(svg)).png().toBuffer();
+}/* LR_NETWORK_CARD_FINAL_V40_END */
 
 async function lrV34RenderNetworkPng(channels) {
   return await lrV40RenderFinalNetworkPng(channels);
@@ -6414,23 +6560,30 @@ async function lrV34SavePublicPng(buffer) {
   return `${lrV34PublicBase()}/generated/${name}`;
 }
 
-async function lrV34SendMaxImageUrl(update, imageUrl) {
+async function lrV34SendMaxImageUrl(
+  update,
+  imageUrl,
+  channels = [],
+) {
   const token = lrV34MaxToken();
-
   if (!token) throw new Error('MAX token not found');
 
   const target = lrV34TargetFromUpdate(update);
-  const query =
-    target.chatId ? `chat_id=${encodeURIComponent(target.chatId)}` :
-    target.userId ? `user_id=${encodeURIComponent(target.userId)}` :
-    '';
 
-  if (!query) throw new Error('chat_id/user_id not found');
+  const targetQuery = target.chatId
+    ? `chat_id=${encodeURIComponent(target.chatId)}`
+    : target.userId
+      ? `user_id=${encodeURIComponent(target.userId)}`
+      : '';
+
+  if (!targetQuery) {
+    throw new Error('chat_id/user_id not found');
+  }
 
   const api = lrV34ApiBase();
 
   const body = {
-    text: lrV44AnalyticsCaption((typeof channels !== 'undefined' && channels) || (typeof clean !== 'undefined' && clean) || (typeof all !== 'undefined' && all) || (typeof visible !== 'undefined' && visible) || (typeof list !== 'undefined' && list) || []),
+    text: lrV44AnalyticsCaption(channels),
     format: 'html',
     attachments: [
       {
@@ -6439,39 +6592,42 @@ async function lrV34SendMaxImageUrl(update, imageUrl) {
           url: imageUrl,
         },
       },
+      ...lrMenuButtons([
+        [lrCb('🏠 Главное меню', 'main:menu')],
+      ]),
     ],
   };
 
-  const attempts = [
+  const res = await fetch(
+    `${api}/messages?${targetQuery}`,
     {
-      url:
-        `${api}/messages?${query}`,
+      method: 'POST',
       headers: {
         Authorization: token,
-        'Content-Type':
-          'application/json',
+        'Content-Type': 'application/json',
       },
-    },
-  ];
-  let last = '';
-
-  for (const a of attempts) {
-    const res = await fetch(a.url, {
-      method: 'POST',
-      headers: a.headers,
       body: JSON.stringify(body),
-    });
+    },
+  );
 
-    const txt = await res.text();
-    last = `${res.status}: ${txt}`;
+  const responseText = await res.text();
 
-    if (res.ok) {
-      console.log('[LR_DIRECT_PUBLIC_IMAGE_V34] sent image url', imageUrl);
-      return true;
-    }
+  if (!res.ok) {
+    throw new Error(
+      `MAX image url send failed ${res.status}: ${responseText}`,
+    );
   }
 
-  throw new Error(`MAX image url send failed ${last}`);
+  console.log(
+    '[LR_DIRECT_PUBLIC_IMAGE_V46]',
+    JSON.stringify({
+      channels: channels.length,
+      imageUrl,
+      mainMenuButton: true,
+    }),
+  );
+
+  return true;
 }
 
 async function lrV34TryDirectPublicNetworkCard(update) {
@@ -6496,7 +6652,7 @@ async function lrV34TryDirectPublicNetworkCard(update) {
   const png = await lrV34RenderNetworkPng(channels);
   const url = await lrV34SavePublicPng(png);
 
-  await lrV34SendMaxImageUrl(update, url);
+  await lrV34SendMaxImageUrl(update, url, channels);
 
   return true;
 }
