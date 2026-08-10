@@ -6926,22 +6926,17 @@ async function lrV34SendMaxImageUrl(
   channels = [],
 ) {
   const token = lrV34MaxToken();
-
-  if (!token) {
-    throw new Error('MAX token not found');
-  }
+  if (!token) throw new Error('MAX token not found');
 
   const target = lrV34TargetFromUpdate(update);
 
-  const targetQuery = target.chatId
+  const query = target.chatId
     ? `chat_id=${encodeURIComponent(target.chatId)}`
     : target.userId
       ? `user_id=${encodeURIComponent(target.userId)}`
       : '';
 
-  if (!targetQuery) {
-    throw new Error('chat_id/user_id not found');
-  }
+  if (!query) throw new Error('chat_id/user_id not found');
 
   const api = lrV34ApiBase();
 
@@ -6957,43 +6952,34 @@ async function lrV34SendMaxImageUrl(
       },
       ...lrMenuButtons([
         [
-          lrCb(
-            '🏠 Главное меню',
-            'main:menu',
-          ),
+          lrCb('🏠 Главное меню', 'main:menu'),
         ],
       ]),
     ],
   };
 
-  const response = await fetch(
-    `${api}/messages?${targetQuery}`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: token,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
+  const res = await fetch(`${api}/messages?${query}`, {
+    method: 'POST',
+    headers: {
+      Authorization: token,
+      'Content-Type': 'application/json',
     },
-  );
+    body: JSON.stringify(body),
+  });
 
-  const responseText = await response.text();
+  const txt = await res.text();
 
-  if (!response.ok) {
+  if (!res.ok) {
     throw new Error(
-      `MAX image url send failed ${response.status}: ${responseText}`,
+      `MAX image url send failed ${res.status}: ${txt}`,
     );
   }
 
   console.log(
-    '[LR_DIRECT_PUBLIC_IMAGE_V48]',
+    '[LR_MULTI_STAGE1]',
     JSON.stringify({
-      channels: Array.isArray(channels)
-        ? channels.length
-        : 0,
-      imageUrl,
-      mainMenuButton: true,
+      channels: channels.length,
+      menuButton: true,
     }),
   );
 
